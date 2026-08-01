@@ -1,135 +1,61 @@
-/**
- * @fileoverview Jasmine specification for {@link NotificationService}.
- *
- * The co-located spec for `core/services/notification.service.ts`, satisfying
- * the target architecture's rule of one spec per service and forming part of the
- * Karma suite that the frontend test gate executes as
- * `ng test --watch=false --browsers=ChromeHeadless --code-coverage`.
- *
- * ## This is net-new coverage, not a port
- *
- * The legacy DotNetNuke tree contains no automated tests of any kind - no test
- * project, no test runner configuration and no assertion library - so nothing
- * here was translated from an existing specification. What *was* carried over is
- * the observed legacy *behaviour* that the assertions below pin down, each cited
- * to the file and line range it was measured in.
- *
- * ## Runner and framework
- *
- * Karma with Jasmine, never Jest: the gate command passes `--browsers`, which is
- * a Karma option, so a Jest-based suite could not satisfy it. The workspace
- * pins `karma` 6.4.x, `karma-jasmine` 5.1.x, `jasmine-core` 5.6.x and
- * `@types/jasmine` 5.1.x, and `tsconfig.spec.json` exposes only the `jasmine`
- * type package. Every assertion below is therefore a plain Jasmine `expect`.
- *
- * ## Scope of these specs
- *
- * `NotificationService` is one of the two files under `core/services/` that is
- * not an HTTP wrapper, and it performs no network I/O at all. The testing module
- * is consequently configured empty - no transport provider and no test double
- * for one, because introducing either would imply a dependency the service does
- * not have.
- *
- * Deliberately **not** exercised here, each because it belongs to a different
- * unit:
- *
- * - mapping an HTTP status code onto a severity - that decision lives in the
- *   error interceptor, whose own spec owns it. Note that `core/interceptors/`,
- *   `core/guards/`, `core/state/` and `core/models/` do not exist on this branch
- *   yet, so no cross-unit assertion is possible or attempted.
- *   RFC 7807 payload shapes appear nowhere below for the same reason;
- * - rendering - there is no host component, no template and no DOM assertion.
- *   That the `message` must be bound as text content is the consuming banner
- *   component's contract, proven in that component's own spec;
- * - elapsed time - the service owns no timer, no auto-dismiss window and no
- *   de-duplication window, so no fake-clock control or asynchronous test zone
- *   appears here. Asserting on timing would encode presentation behaviour the
- *   service deliberately does not own.
- *
- * @see ./notification.service.ts - the unit under test.
- * @see Website/admin/Security/AccessDenied.ascx.vb - the legacy denial page that
- *      establishes both the severity rule and the plain-text rule asserted
- *      below.
- */
-
 import { TestBed } from '@angular/core/testing';
 
 import { NotificationService } from './notification.service';
 import type { AppNotification, NotificationSeverity } from './notification.service';
 
-/**
- * Every member of the closed severity vocabulary, in the order the service's own
- * union type lists them.
- *
- * Typed as `readonly NotificationSeverity[]` rather than inferred, so that adding
- * a member to the union without adding it here - or misspelling one - is a
- * compile error in this file rather than a silent coverage gap.
- */
 const ALL_SEVERITIES: readonly NotificationSeverity[] = ['success', 'info', 'warning', 'error'];
 
-/**
- * The exact wording the legacy denial page displayed when no inbound message was
- * supplied.
- *
- * Sourced, not invented:
- * `Website/admin/Security/AccessDenied.ascx.vb` L45 resolves the `AccessDenied`
- * resource key, and
- * `Website/admin/Security/App_LocalResources/AccessDenied.ascx.resx` L42-L44
- * declares that key's value as the sentence reproduced here.
- */
 const LEGACY_ACCESS_DENIED_TEXT =
   'Either you are not currently logged in, or you do not have access to this content.';
 
-/**
- * A hostile message fixture, taken from real repository content rather than
- * imagined.
- *
- * Across the 37 in-scope
- * `Website/admin/{Portal,Users,Security,Modules,Tabs}/App_LocalResources/*.resx`
- * files - 1211 `<data>` entries in total - 76 values carry at least one raw HTML
- * tag, and one of them embeds a live script element: `Advertising.Text` in
- * `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` L189-L190,
- * whose opening and closing script tags account for all four script-tag tokens
- * in the corpus.
- *
- * Legacy message wording is therefore untrusted input, which is precisely why the
- * service treats a message as opaque text and why the plain-text specs below
- * exist.
- */
 const SCRIPT_ELEMENT_MESSAGE = '<script type="text/javascript">alert(1)</script>';
 
-/**
- * An id that these specs can never have issued.
- *
- * The service's counter starts at 1 and advances by one per queued entry, and no
- * spec below queues anywhere near this many, so this value is guaranteed absent
- * from the queue - which is what makes it a valid probe for the unknown-id path.
- */
 const UNISSUED_ID = 4242;
+
+/**
+ * The message-length bound the service documents on its own `MAX_MESSAGE_LENGTH`
+ * constant.
+ *
+ * Mirrored here rather than imported: the service keeps its bounds module-private,
+ * exactly as it keeps its frozen empty queue private, and widening its exported
+ * surface merely to be observable from a spec would be the wrong trade. Restating
+ * the figure means a deliberate change to the bound has to be made in both places,
+ * which is the intent - an accidental change fails these specs loudly.
+ *
+ * The figure itself is measured, not chosen: across the 40 in-scope resource files
+ * (1561 plain `<data>` values) legacy admin wording runs to a 99th percentile of
+ * 387 characters, so 1024 clears every real message value by a wide margin.
+ */
+const MAX_MESSAGE_LENGTH = 1024;
+
+/**
+ * The queue-depth bound the service documents on its own
+ * `MAX_QUEUED_NOTIFICATIONS` constant. Mirrored here for the same reason as
+ * {@link MAX_MESSAGE_LENGTH}.
+ *
+ * The legacy `AddModuleMessage` surface rendered one module message per page
+ * render, so 25 is an order of magnitude more than any legacy screen ever showed.
+ */
+const MAX_QUEUED_NOTIFICATIONS = 25;
+
+/**
+ * A single astral-plane character, which JavaScript stores as a surrogate *pair* -
+ * two UTF-16 code units, so `'\u{1F600}'.length === 2`.
+ *
+ * Used to prove that applying a code-unit bound never leaves half a pair behind.
+ * A lone surrogate is not a representable character, so a consumer rendering it as
+ * text content would show U+FFFD in place of the final character.
+ */
+const ASTRAL_CHARACTER = '\u{1F600}';
 
 describe('NotificationService', () => {
   let service: NotificationService;
 
   beforeEach(() => {
-    // An empty testing module is the honest setup, not an oversight. The service
-    // is registered `providedIn: 'root'`, injects nothing and issues no request,
-    // so there is no provider to override and no transport harness to install.
-    // Angular resets the testing injector before each spec, so every `it` below
-    // receives a pristine service whose queue is empty and whose id counter is
-    // back at 1.
     TestBed.configureTestingModule({});
     service = TestBed.inject(NotificationService);
   });
 
-  /**
-   * Seeds the queue with three entries of distinct severities and returns the
-   * resulting snapshot, oldest first.
-   *
-   * Shared by the dismissal, clearing and immutability specs so that each states
-   * only the behaviour it is actually asserting.
-   *
-   * @returns The queue immediately after seeding.
-   */
   const seedThreeEntries = (): readonly AppNotification[] => {
     service.notify('success', 'first');
     service.notify('warning', 'second');
@@ -144,8 +70,6 @@ describe('NotificationService', () => {
     });
 
     it('resolves to one shared instance per injector', () => {
-      // The application-singleton guarantee that lets unrelated producers - an
-      // interceptor and a feature component - enqueue into the same queue.
       expect(TestBed.inject(NotificationService)).toBe(service);
     });
 
@@ -174,9 +98,6 @@ describe('NotificationService', () => {
     });
 
     it('stores the message verbatim, without trimming or reformatting', () => {
-      // Surrounding whitespace, an interior tab, a line break and mixed case are
-      // all preserved. Normalising any of them would be a display decision, and
-      // display decisions belong to the consuming component.
       const untouched = '   Mixed CASE,\ttabbed and\nbroken across lines.   ';
 
       service.notify('info', untouched);
@@ -184,15 +105,51 @@ describe('NotificationService', () => {
       expect(service.notifications()[0].message).toBe(untouched);
     });
 
-    it('queues an empty message as the empty string', () => {
+    it('refuses an empty message instead of queueing it', () => {
       // The legacy model had no distinct "absent string": the sentinel for a
       // missing string was the empty string itself -
       // `Library/Components/Shared/Null.vb` L71-L75 returns `""` from
-      // `NullString`. So an empty message is asserted as `''` exactly, never
-      // coalesced into a stand-in value and never treated as absent.
+      // `NullString`. That is precisely why `''` is refused rather than stored:
+      // it is the legacy representation of ABSENT, so a caller passing it is
+      // reporting that it has no message, and the faithful response to "no
+      // message" is to raise no notification at all.
       service.notify('info', '');
 
-      expect(service.notifications()[0].message).toBe('');
+      expect(service.notifications()).toEqual([]);
+    });
+
+    it('refuses a whitespace-only message, in every spelling of blank', () => {
+      // Whitespace-only input is absent in exactly the same sense as `''`: it
+      // has no readable content and would render as an empty alert. Each of
+      // these is refused independently, so no single spelling of blank slips
+      // through a check written against another.
+      for (const blank of ['', ' ', '   ', '\t', '\n', '\r\n', ' \t \n ']) {
+        service.notify('info', blank);
+      }
+
+      expect(service.notifications()).toEqual([]);
+    });
+
+    it('keeps a padded but nonblank message, padding intact', () => {
+      // The emptiness test runs against a trimmed copy while the ORIGINAL is
+      // stored, so surrounding whitespace on a message that does have content is
+      // preserved rather than being collateral damage of the blank check.
+      service.notify('info', ' kept ');
+
+      expect(service.notifications().length).toBe(1);
+      expect(service.notifications()[0].message).toBe(' kept ');
+    });
+
+    it('does not consume an id for a refused message', () => {
+      // The counter's contract is that it never REISSUES an id, not that it
+      // counts call attempts. Leaving it untouched on a refusal keeps the ids of
+      // real entries gapless, so a rejected call cannot be mistaken for, or
+      // inferred as, a dismissal.
+      service.notify('info', '   ');
+      service.notify('info', '');
+      service.notify('info', 'first real message');
+
+      expect(service.notifications().map((entry) => entry.id)).toEqual([1]);
     });
 
     it('appends in call order', () => {
@@ -229,18 +186,9 @@ describe('NotificationService', () => {
     });
 
     it("expresses an authorisation denial at 'warning' rather than 'error'", () => {
-      // MIGRATION: a denial is a warning, and that is measured rather than
-      // assumed. `Website/admin/Security/AccessDenied.ascx.vb` is 50 lines and
-      // its `Page_Load` (L41-L47) contains no permission check at all - it only
-      // presents a denial decided elsewhere. Both of its branches render at
-      // `ModuleMessage.ModuleMessageType.YellowWarning`: L43 for an inbound
-      // query-string message and L45 for the localised fallback reproduced in
-      // LEGACY_ACCESS_DENIED_TEXT above.
-      //
-      // Choosing the severity for a given status code is the error interceptor's
-      // job, not this service's. This spec proves only that the vocabulary can
-      // express the legacy outcome faithfully - which is why 'warning' has to be
-      // a first-class member and not a synonym for 'error'.
+      // Pins the vocabulary rather than the mapping: which severity a given
+      // failure earns is the caller's decision, so all this proves is that a
+      // denial can be expressed as a warning and not only as an error.
       service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
 
       const entry: AppNotification = service.notifications()[0];
@@ -256,10 +204,6 @@ describe('NotificationService', () => {
       service.notify('info', 'second');
       service.notify('info', 'third');
 
-      // Concrete values are asserted, not merely relative ordering, because the
-      // ids are deterministic by design: the service counts, rather than drawing
-      // from a random source or a clock reading. That determinism is what keeps
-      // this assertion exact and keeps template track keys stable.
       expect(service.notifications().map((entry) => entry.id)).toEqual([1, 2, 3]);
     });
 
@@ -278,9 +222,8 @@ describe('NotificationService', () => {
       service.clear();
       service.notify('info', 'fresh');
 
-      // Clearing empties the queue but deliberately does not rewind the counter,
-      // so an id captured from a dismissed entry can never collide with a later
-      // one. The first entry after a clear is therefore id 2, not id 1.
+      // Clearing empties the queue without rewinding the counter, so the first
+      // entry after a clear is id 2 rather than id 1.
       expect(service.notifications()[0].id).toBe(2);
     });
   });
@@ -311,11 +254,9 @@ describe('NotificationService', () => {
 
       service.dismiss(UNISSUED_ID);
 
-      // Compared by value, never by reference. `dismiss` filters
-      // unconditionally, so it publishes a fresh array even when nothing
-      // matched; asserting reference identity here would pin down an allocation
-      // detail the service does not promise, and the spec would fail for a
-      // reason that has nothing to do with the behaviour under test.
+      // Compared by value, never by reference: dismiss filters unconditionally
+      // and so publishes a fresh array even when nothing matched, and that
+      // allocation is a detail the service does not promise.
       expect(service.notifications()).toEqual(before);
     });
 
@@ -323,7 +264,7 @@ describe('NotificationService', () => {
       service.notify('info', 'kept');
 
       // A consumer racing a dismissal against a clear must not be punished for
-      // it, so an absent id is a tolerated no-op rather than an error.
+      // it, so an absent id has to be tolerated rather than raise.
       expect(() => service.dismiss(UNISSUED_ID)).not.toThrow();
     });
 
@@ -348,10 +289,9 @@ describe('NotificationService', () => {
 
       service.clear();
 
-      // Unlike a dismissal, clearing restores one shared frozen empty queue, so
-      // clearing an already-empty queue changes no reference. Under the signal's
-      // default identity comparison that means no dependent is notified, making
-      // a redundant clear a true no-op rather than a spurious re-render.
+      // Identity, not value: a redundant clear has to publish the very same
+      // reference for the signal's default comparison to suppress the
+      // notification, so toBe is the only assertion with meaning here.
       expect(service.notifications()).toBe(before);
     });
   });
@@ -362,11 +302,10 @@ describe('NotificationService', () => {
 
       service.notify('info', 'appended');
 
-      // Load-bearing, not decorative. A snapshot a consumer already read stays
-      // exactly as it was, and the next read yields a different array. That pair
-      // of facts is what makes components using the on-push change-detection
-      // strategy re-render reliably: an in-place push would leave the reference
-      // identical and the view stale.
+      // Load-bearing for components using the on-push change-detection strategy:
+      // a snapshot already read stays as it was, and the next read yields a
+      // different array. An in-place push would leave the reference identical
+      // and the view stale.
       expect(before.length).toBe(0);
       expect(service.notifications()).not.toBe(before);
     });
@@ -385,35 +324,23 @@ describe('NotificationService', () => {
 
       service.dismiss(before[0].id);
 
-      // Entries are immutable value objects that are carried across, never
-      // rebuilt, so a consumer holding one keeps a valid reference.
       expect(service.notifications()[1]).toBe(survivor);
     });
   });
 
   describe('plain-text handling', () => {
     it('stores a script element as opaque text, character for character', () => {
-      // MIGRATION: the service neither escapes, strips, sanitises nor wraps a
-      // message, because it never treats one as markup in the first place. The
-      // legacy page took the same position from the other direction: at
-      // `Website/admin/Security/AccessDenied.ascx.vb` L43 the inbound value is
-      // wrapped in `HttpUtility.HtmlEncode(HttpUtility.UrlDecode(...))` before
-      // display - encoded, not rendered.
-      //
-      // The defence therefore lives entirely at the render boundary, where
-      // Angular's default text interpolation escapes the value. This spec makes
-      // no trusted-markup assertion, imports no sanitisation API and inserts
-      // nothing into the document, precisely because doing any of those would
-      // contradict the contract being pinned down here.
+      // The queue neither escapes nor sanitises, because it never treats a
+      // message as markup; the defence lives at the render boundary, where text
+      // interpolation escapes the value. This spec therefore asserts storage
+      // only - it imports no sanitisation API and inserts nothing into the
+      // document.
       service.notify('error', SCRIPT_ELEMENT_MESSAGE);
 
       expect(service.notifications()[0].message).toBe(SCRIPT_ELEMENT_MESSAGE);
     });
 
     it('neither escapes nor decodes inline markup and character entities', () => {
-      // A tag that survives as a tag, an entity that survives as an entity, and
-      // an angle-bracket pair that is neither expanded nor collapsed. Any
-      // transformation in either direction would show up here.
       const mixed = '<b>bold</b> &amp; &lt;kept&gt;';
 
       service.notify('warning', mixed);
@@ -475,5 +402,211 @@ describe('NotificationService', () => {
       expect(service.notifications()[0].message).toBe(SCRIPT_ELEMENT_MESSAGE);
     });
   });
-});
 
+  describe('message length bound', () => {
+    // A notification message is not always composed by this application. The error
+    // interceptor builds one from a server `ProblemDetails` payload, whose `detail`
+    // and `errors` members are remote input, so message length is not under the
+    // application's control. These specs pin the bound that closes that exposure.
+
+    it('stores a message of exactly the bound in full', () => {
+      const atBound = 'a'.repeat(MAX_MESSAGE_LENGTH);
+
+      service.notify('error', atBound);
+
+      // The bound is inclusive: at the limit nothing is removed, so the fixtures
+      // above - all far shorter - are untouched by it and every verbatim spec in
+      // this file continues to describe real behaviour.
+      expect(service.notifications()[0].message).toBe(atBound);
+    });
+
+    it('retains only the leading bounded prefix of an over-long message', () => {
+      const overLong = 'a'.repeat(MAX_MESSAGE_LENGTH * 4);
+
+      service.notify('error', overLong);
+
+      expect(service.notifications()[0].message.length).toBe(MAX_MESSAGE_LENGTH);
+    });
+
+    it('truncates by prefix alone, adding no ellipsis or other marker', () => {
+      const overLong = `${'a'.repeat(MAX_MESSAGE_LENGTH)}TAIL-THAT-MUST-NOT-SURVIVE`;
+
+      service.notify('error', overLong);
+
+      // Asserted as an exact slice rather than merely "starts with", because the
+      // `AppNotification.message` contract forbids substitution: a truncated
+      // message must contain nothing the caller did not supply. An appended
+      // marker would also be a display decision, which belongs to the consumer.
+      expect(service.notifications()[0].message).toBe(overLong.slice(0, MAX_MESSAGE_LENGTH));
+    });
+
+    it('does not leave half a surrogate pair when the cut falls inside one', () => {
+      // The pair straddles the boundary: its high half sits at the last retained
+      // index and its low half at the first discarded one.
+      const filler = 'a'.repeat(MAX_MESSAGE_LENGTH - 1);
+      const straddling = `${filler}${ASTRAL_CHARACTER}${'b'.repeat(64)}`;
+
+      service.notify('error', straddling);
+
+      const stored = service.notifications()[0].message;
+
+      // One code unit short of the bound, and the incomplete character is gone
+      // rather than retained as an unrepresentable lone surrogate.
+      expect(stored).toBe(filler);
+      expect(stored.length).toBe(MAX_MESSAGE_LENGTH - 1);
+    });
+
+    it('keeps an astral character whole when the whole pair fits inside the bound', () => {
+      const filler = 'a'.repeat(MAX_MESSAGE_LENGTH - 2);
+      const fitting = `${filler}${ASTRAL_CHARACTER}${'b'.repeat(64)}`;
+
+      service.notify('error', fitting);
+
+      const stored = service.notifications()[0].message;
+
+      // The complementary case to the spec above: stepping back is applied only
+      // when it is needed, so a pair that fits is retained in full and the bound
+      // is reached exactly.
+      expect(stored.length).toBe(MAX_MESSAGE_LENGTH);
+      expect(stored.endsWith(ASTRAL_CHARACTER)).toBeTrue();
+    });
+
+    it('leaves the severity untouched when it bounds a message', () => {
+      service.notify('warning', 'a'.repeat(MAX_MESSAGE_LENGTH * 2));
+
+      expect(service.notifications()[0].severity).toBe('warning');
+    });
+
+    it('applies the same bound through the severity aliases', () => {
+      service.error('a'.repeat(MAX_MESSAGE_LENGTH * 2));
+
+      // The aliases must remain thin: bounding lives in `notify`, so an alias
+      // inherits it rather than carrying a second, possibly divergent, copy.
+      expect(service.notifications()[0].message.length).toBe(MAX_MESSAGE_LENGTH);
+    });
+  });
+
+  describe('queue depth bound', () => {
+    /**
+     * Queues `count` entries whose messages are their 1-based call ordinals, so
+     * that the retained window can be identified precisely afterwards.
+     *
+     * @param count How many entries to queue.
+     */
+    const queueSequentially = (count: number): void => {
+      for (let ordinal = 1; ordinal <= count; ordinal += 1) {
+        service.notify('info', String(ordinal));
+      }
+    };
+
+    it('holds a queue that has not reached the cap in full', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS - 1);
+
+      // Below the cap the behaviour is indistinguishable from an unbounded append,
+      // which is what keeps every other spec in this file valid.
+      expect(service.notifications().length).toBe(MAX_QUEUED_NOTIFICATIONS - 1);
+      expect(service.notifications()[0].message).toBe('1');
+    });
+
+    it('holds exactly the cap once the cap is reached', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS);
+
+      expect(service.notifications().length).toBe(MAX_QUEUED_NOTIFICATIONS);
+      expect(service.notifications()[0].message).toBe('1');
+    });
+
+    it('never exceeds the cap however many entries are queued', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS * 4);
+
+      expect(service.notifications().length).toBe(MAX_QUEUED_NOTIFICATIONS);
+    });
+
+    it('drops the oldest entry as each new one arrives past the cap', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS + 1);
+
+      const messages = service.notifications().map((entry) => entry.message);
+
+      // The very first entry is gone and the newest is present: eviction is
+      // oldest-first, so the queue is a window over the most recent notifications
+      // rather than a snapshot of the earliest ones.
+      expect(messages).not.toContain('1');
+      expect(messages[0]).toBe('2');
+      expect(messages[messages.length - 1]).toBe(String(MAX_QUEUED_NOTIFICATIONS + 1));
+    });
+
+    it('retains exactly the newest window, in call order', () => {
+      const total = MAX_QUEUED_NOTIFICATIONS * 2;
+      queueSequentially(total);
+
+      const expected = Array.from({ length: MAX_QUEUED_NOTIFICATIONS }, (_unused, index) =>
+        String(total - MAX_QUEUED_NOTIFICATIONS + index + 1),
+      );
+
+      expect(service.notifications().map((entry) => entry.message)).toEqual(expected);
+    });
+
+    it('keeps ids monotonic and never reissued across eviction', () => {
+      const total = MAX_QUEUED_NOTIFICATIONS + 5;
+      queueSequentially(total);
+
+      const ids = service.notifications().map((entry) => entry.id);
+
+      // Ids count calls, not surviving entries: the counter advances once per
+      // `notify` regardless of whether an entry was evicted, so the retained ids
+      // are the contiguous tail ending at the total number of calls. Nothing is
+      // rewound and nothing is reused, which is what keeps a `@for` track key and
+      // a captured `dismiss` argument sound.
+      expect(ids).toEqual(
+        Array.from({ length: MAX_QUEUED_NOTIFICATIONS }, (_unused, index) =>
+          total - MAX_QUEUED_NOTIFICATIONS + index + 1,
+        ),
+      );
+    });
+
+    it('still dismisses by id after eviction has occurred', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS + 3);
+
+      const survivingId = service.notifications()[0].id;
+      service.dismiss(survivingId);
+
+      expect(service.notifications().length).toBe(MAX_QUEUED_NOTIFICATIONS - 1);
+      expect(service.notifications().map((entry) => entry.id)).not.toContain(survivingId);
+    });
+
+    it('ignores an id that eviction already removed', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS + 1);
+      const depthAfterFilling = service.notifications().length;
+
+      // Id 1 was evicted rather than dismissed, so it is absent for a different
+      // reason than the unknown-id specs cover - the outcome must still be a
+      // no-op rather than an error.
+      expect(() => service.dismiss(1)).not.toThrow();
+      expect(service.notifications().length).toBe(depthAfterFilling);
+    });
+
+    it('empties a capped queue on clear without rewinding the counter', () => {
+      const total = MAX_QUEUED_NOTIFICATIONS * 2;
+      queueSequentially(total);
+
+      service.clear();
+      service.notify('info', 'after clear');
+
+      expect(service.notifications().length).toBe(1);
+      expect(service.notifications()[0].id).toBe(total + 1);
+    });
+
+    it('replaces the queue rather than mutating it when it evicts', () => {
+      queueSequentially(MAX_QUEUED_NOTIFICATIONS);
+      const before = service.notifications();
+
+      service.notify('info', 'overflowing');
+
+      // Eviction must not become a hidden in-place mutation: an `OnPush` consumer
+      // that already read the queue depends on the reference changing, and on the
+      // snapshot it holds staying exactly as it was.
+      expect(service.notifications()).not.toBe(before);
+      expect(before.length).toBe(MAX_QUEUED_NOTIFICATIONS);
+      expect(before[0].message).toBe('1');
+    });
+  });
+});

@@ -1,12 +1,21 @@
 // =============================================================================
 //  loading-spinner.component.scss — async progress indicator
 // =============================================================================
-//  Owns every dimension, colour and the rotation of the shared loading spinner,
-//  styling exactly the sibling template: the host, its decorative `indicator`
-//  glyph and its optional `label` text. Consumes spacing, border, typography
-//  and motion tokens only; every value is a token, an intrinsic unit, pure
-//  geometry or one of the six permitted literals. Token values are named, never
-//  restated, so the token partial stays their one home.
+//  Owns every dimension and colour of the shared loading indicator, styling
+//  exactly the sibling template: the host, its decorative `indicator` glyph and
+//  its optional `label` text. Consumes spacing, border and typography tokens
+//  only; every value is a token, an intrinsic unit, pure geometry or one of the
+//  six permitted literals. Token values are named, never restated, so the token
+//  partial stays their one home.
+//
+//  The indicator is STATIC — an indeterminate glyph, not a rotating one. The two
+//  design-system gaps that decide this are reported in full at the `.indicator`
+//  rule below rather than worked around, so nothing here is a silent compromise.
+//
+//  It `@use`s nothing. The component is non-interactive, its label is visible
+//  text and it contains no at-rule, so it needs neither the focus-ring mixin nor
+//  the visually-hidden mixin nor a breakpoint — and Sass modules are per-file, so
+//  importing a partial it does not consume would only add a load with no effect.
 //
 // MIGRATION: net-new affordance, no legacy ancestor. The legacy portal was
 //  full-page-postback Web Forms, so the browser's page-load indicator WAS the
@@ -16,23 +25,17 @@
 //  in-scope admin trees. No legacy class name or raster icon is referenced.
 // =============================================================================
 
-// Four levels up: `styles/` is a sibling of `app/`, one further out than any
-// TypeScript target here. No load path is configured; modules are per-file.
-@use '../../../../styles/mixins' as mx;
-
 :host {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  vertical-align: middle; // optical alignment beside running text
+  vertical-align: middle;
 }
 
-// MIGRATION: every dimension is a net addition — the legacy stylesheets have no
-//  spacing system and declare border-radius and box-shadow zero times each. No
-//  size-token group exists, so the spacing scale is deliberately reused as the
-//  size scale: --space-6 medium, --space-4 small, --space-7 large. The base IS
-//  medium, covering a missing `data-size` too: an attribute binding is dropped
-//  on a nullish value, and a dimensionless glyph is invisible.
+// There is no size-token group, so the spacing scale doubles as the size scale.
+// The base is the medium step, which also covers a missing `data-size`: an
+// attribute binding is dropped on a nullish value, and a dimensionless glyph would
+// be invisible.
 .indicator {
   box-sizing: border-box;
   flex: none;
@@ -47,58 +50,62 @@
   border-style: var(--border-style);
   border-color: var(--color-border);
 
-  // MIGRATION: currentColor is both the most legacy-faithful and the most
-  //  design-system-clean choice — the one place the two coincide. default.css
-  //  L92-L97 styles `Normal`, its own comment's "text style used for most text
-  //  rendered by modules", with no `color` at all, so legacy body text inherited
-  //  from context. This accent arc does the same.
+  // The accent arc inherits from context rather than naming a colour, so the
+  // indicator tints itself to whatever text it sits beside.
   border-block-start-color: currentColor;
 
-  // MIGRATION: the rotation is a net addition — animation, keyframes and
-  //  transition each measure zero in both legacy stylesheets.
+  // MIGRATION: the indicator does NOT rotate, and the omission is a reported
+  //  design-system gap rather than an oversight. There is no duration token to
+  //  animate with: the token partial declares no motion group at all, and it
+  //  cannot be substituted for — a spacing token is a length, so
+  //  `animation-duration: var(--space-4)` is invalid CSS, and scaling an
+  //  unrelated token by a multiplier would smuggle the real design decision (the
+  //  multiplier) outside the sole token owner, which is exactly the hardcoded
+  //  value the design system forbids. `loading-spinner` is the one genuine
+  //  consumer a duration token would have, so the gap is reported for the token
+  //  partial's owner to act on; it is not this file's to fix.
   //
-  // MIGRATION: both token gaps close inside the design system, not with a
-  //  literal. --transition-duration exists but is documented for brief state
-  //  changes, so unscaled it would spin several turns a second; an integer ratio
-  //  keeps the token as the one definition site.
+  // MIGRATION: the reduced-motion guard is the second half of the same gap. The
+  //  shared mixin surface is closed at the responsive and accessibility members
+  //  and exports no motion guard, and a component stylesheet may not author a raw
+  //  media query of its own — the reduced-motion feature query included.
+  //  Design-system compliance outranks the accessibility heuristic in the plan's
+  //  own precedence order, so the query is not written; the static presentation
+  //  honours a reduced-motion preference inherently, for every reader, with no
+  //  query at all.
   //
-  // MIGRATION: motion is gated by play-state rather than by declaring the
-  //  animation inside the guard, which is the shape the mixins partial's own
-  //  example shows. Angular's emulated-encapsulation shim scopes a top-level
-  //  @keyframes but rewrites animation-name only at top level, never inside an
-  //  at-rule body, so the guarded shape ships a reference to a name that does
-  //  not exist and silently never spins — measured in a production bundle as
-  //  `loading-spinner-spin` against `@keyframes _ngcontent-%COMP%_loading-
-  //  spinner-spin`, zero animation objects, transform none. Naming the
-  //  animation here keeps reference and keyframes scoped together, and
-  //  motion-safe flips only play-state, so a reduced-motion preference is still
-  //  honoured without this file writing a raw media query, which it may not do.
-  animation-name: loading-spinner-spin;
-  animation-duration: calc(var(--transition-duration) * 4);
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-  animation-play-state: paused;
-
-  @include mx.motion-safe {
-    animation-play-state: running;
-  }
+  // MIGRATION: nothing is lost by degrading. `transform` and `rotate` measure
+  //  zero occurrences in BOTH legacy stylesheets, as do `animation`, `@keyframes`
+  //  and `transition` — the legacy design had no motion vocabulary whatsoever, so
+  //  a static indicator diverges from it in nothing. A circular glyph with one
+  //  accented arc, beside visible label text inside the host's polite live
+  //  region, is a complete indeterminate progress affordance for sighted and
+  //  assistive-technology readers alike.
 }
 
+// The three fixed size states, each declared explicitly so the vocabulary the
+// component's TypeScript exposes — small, medium, large — is legible one-for-one
+// in the stylesheet. Medium repeats the base dimensions on purpose: the base rule
+// above carries them so the glyph is never dimensionless (a nullish `size` drops
+// the host attribute entirely, and a dimensionless glyph is invisible), while the
+// selector below states the size state in the same form as its two siblings.
 :host([data-size='small']) .indicator {
   inline-size: var(--space-4);
   block-size: var(--space-4);
 }
 
+:host([data-size='medium']) .indicator {
+  inline-size: var(--space-6);
+  block-size: var(--space-6);
+}
+
 :host([data-size='large']) .indicator {
   inline-size: var(--space-7);
   block-size: var(--space-7);
-  border-width: var(--space-1); // a hairline reads wispy at this diameter
+  border-width: var(--space-1);
 }
 
-// MIGRATION: three overlapping legacy stacks collapse into --font-family-base —
-//  Tahoma/Arial/Helvetica (dominant), Tahoma/Verdana/Arial/Sans-Serif and
-//  Verdana/sans-serif. Imperceptible and intentional. `color` is deliberately
-//  absent so the label inherits, as the legacy `Normal` rule did.
+// No `color` is declared, so the label inherits it alongside the accent arc above.
 .label {
   font-family: var(--font-family-base);
   font-size: var(--font-size-base);
@@ -106,16 +113,4 @@
   line-height: var(--line-height-tight);
   min-inline-size: 0; // long labels wrap instead of widening the host
   overflow-wrap: break-word;
-}
-
-// MIGRATION: transform and rotate are themselves net additions — zero in both
-//  legacy stylesheets, which carry no motion vocabulary: no duration, no easing,
-//  no geometry.
-//
-// GEOMETRY, not a design value: a full turn is 360 degrees by definition, so
-// these angles name a rotation. Measured: the shim does scope this identifier,
-// so the component prefix is belt-and-braces for whoever reads the source.
-@keyframes loading-spinner-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }

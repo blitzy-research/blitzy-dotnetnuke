@@ -19,8 +19,36 @@
     <PackageReference Include="FluentAssertions" Version="6.12.2" />
   </ItemGroup>
 
+  <!--
+    TEST-ONLY project references.
+
+    Application is referenced because the AAP places the service, validator and
+    mapper suites here (AAP 0.4.1.1: tests/DnnMigration.UnitTests/{Application,
+    Validation,Mapping}), and those exercise Application types directly.
+
+    Infrastructure is referenced because the AAP also places the CONCRETE security
+    suites here - tests/DnnMigration.UnitTests/Security/{BcryptPasswordHasherTests,
+    JwtTokenServiceTests, PermissionEvaluatorTests}.cs - whose subjects are
+    Infrastructure/Security/{BcryptPasswordHasher,JwtTokenService,
+    PermissionEvaluator}.cs. Those implementations cannot reach this project
+    through Application, because Application references only Domain (AAP 0.5.2.2),
+    so without this reference the planned tests could only be written against the
+    Domain interfaces - substituting interface fakes for the concrete algorithms
+    they are meant to prove. Hash round-trip, token-claim and permission-resolution
+    behaviour is only assertable against the real implementations.
+
+    This does NOT relax the production layering that AAP Rule T1 mandates. Rule T1
+    constrains the four production projects, whose graph is unchanged and remains
+    compiler-enforced: Domain references nothing, Application references Domain,
+    Infrastructure references Domain and Application, Api references Application
+    and Infrastructure. A test project is a leaf of that graph - nothing references
+    it - so it cannot create a cycle or let Application see Infrastructure. The
+    sibling integration-test project already applies the same principle,
+    referencing Api directly for WebApplicationFactory<Program>.
+  -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\DnnMigration.Application\DnnMigration.Application.csproj" />
+    <ProjectReference Include="..\..\src\DnnMigration.Infrastructure\DnnMigration.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

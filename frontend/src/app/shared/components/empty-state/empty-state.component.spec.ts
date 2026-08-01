@@ -1,78 +1,11 @@
-//
-// Specification for `EmptyStateComponent` — the shared zero-result state of the
-// dnn-migration administration front end, an Angular 19 single-page
-// application.
-//
-// ---------------------------------------------------------------------------
-// NO PREDECESSOR SUITE EXISTS
-// ---------------------------------------------------------------------------
-// The legacy DotNetNuke 4.9.0 VB.NET Web Forms application shipped NO
-// automated test suite of any kind: not a unit test, not an integration test,
-// not a fixture, not a test project — nothing anywhere in `Library/` or
-// `Website/`. Every test file in this migration is consequently net-new
-// coverage, with no predecessor spec to port and no legacy assertion to
-// preserve. What the legacy tree does supply is *behavioural* evidence, and
-// that evidence is cited inline below against the two reference sources for
-// this component: the access-denied code-behind and the site-settings resource
-// file.
-//
-// MIGRATION: net-new coverage. Because there is no legacy suite to mirror,
-// every expectation here was derived from three places and nowhere else: the
-// public surface of the sibling `empty-state.component.ts`, the two legacy
-// reference sources named above, and the routing contract described in the next
-// paragraph. No expectation was invented for its own sake, and none asserts an
-// implementation detail of a neighbouring file.
-//
-// ---------------------------------------------------------------------------
-// WHY THIS FILE CARRIES REAL WEIGHT
-// ---------------------------------------------------------------------------
-// The application's catch-all route reaches this component lazily and hands it
-// its wording through static route data:
-//
-//   { path: '**',
-//     loadComponent: () => import('./shared/components/empty-state/empty-state.component')
-//                            .then((m) => m.EmptyStateComponent),
-//     data: { message: 'Page not found' } }
-//
-// The router is configured with `withComponentInputBinding()`, which merges
-// path parameters, query parameters and static route `data` into a single
-// object, reflects the routed component's declared inputs, and calls
-// `ComponentRef.setInput(name, merged[name])` for each of them.
-//
-// That binding is silent when it fails. If `message` were renamed, demoted to a
-// plain field, or narrowed to a non-public accessor, the router would write
-// nothing, the view would fall back to its default wording, and no compiler
-// anywhere in this workspace would object — the route file and the component
-// file never reference each other by symbol. The expectations grouped under
-// "input binding contract" below are the sole automated defence against that
-// silent degradation, which is why they use the production wording verbatim.
-//
-// ---------------------------------------------------------------------------
-// TEST FRAMEWORK
-// ---------------------------------------------------------------------------
-// Karma with Jasmine, deliberately and not interchangeably. The mandated
-// validation command is
-//
-//   ng test --watch=false --browsers=ChromeHeadless --code-coverage
-//
-// and `--browsers` is a Karma option, so a different runner would make that
-// command invalid. Jasmine spies (`spyOn`, `jasmine.createSpy`) are therefore
-// the sanctioned mocking mechanism, and no other test or assertion library is
-// installed in this workspace. This spec in fact needs no spy at all: the
-// component under test injects nothing, so there is nothing to substitute.
-//
-// MIGRATION: no request plumbing, and therefore no address of any kind is
-// asserted here. The `test` architect target declares no file replacements, so
-// specs compile against the production environment, whose `apiBaseUrl` is the
-// relative `/api/v1`. An absolute address would be wrong twice over — the SPA
-// is served through a reverse proxy that forwards `/api/` on the same origin,
-// and the proxy's upstream host name does not resolve in a browser. The rule is
-// recorded here so that it holds if request plumbing is ever added; today the
-// honest position is that this component performs no input or output at all.
-//
-
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+// Imported to prove, rather than assume, the premise behind the array handling
+// below: that the router really does hand a component an array for a repeated
+// query key. `DefaultUrlSerializer` is the serializer the router uses unless an
+// application overrides it, and parsing through it needs no router configuration,
+// no outlet and no navigation - which keeps the proof a pure function call.
+import { DefaultUrlSerializer } from '@angular/router';
 
 import { EmptyStateComponent } from './empty-state.component';
 
@@ -81,91 +14,90 @@ import { EmptyStateComponent } from './empty-state.component';
 // ---------------------------------------------------------------------------
 
 /**
- * The wording the catch-all route supplies through its static `data`, reproduced
- * verbatim. Using the production literal rather than an invented sample means a
- * regression in the route binding contract fails this spec with the exact string
- * a user would have seen.
+ * A representative not-found sentence, used as an ordinary caller-supplied value.
+ *
+ * RENAMED, AND THE CLAIM WITHDRAWN. This constant was previously named for route
+ * static data and documented as being reproduced verbatim from the catch-all
+ * route's `data` map. That claim was not verifiable and is now removed:
+ * `src/app/app.routes.ts` and `src/app/app.config.ts` do not exist in this
+ * checkpoint, so there is no route table to reproduce anything from and no
+ * `withComponentInputBinding` configuration to align a data key against. The
+ * value is kept because a not-found caption is a realistic message for this
+ * component, but it is now described as what it actually is — a sample the spec
+ * binds directly.
  */
-const ROUTE_DATA_MESSAGE = 'Page not found';
+const NOT_FOUND_MESSAGE = 'Page not found';
+
+/**
+ * The component's documented default wording, RESTATED INDEPENDENTLY.
+ *
+ * Deliberately a literal rather than a read of `EmptyStateComponent`'s own
+ * default. Reading the expected value back out of the subject makes actual and
+ * expected move together, so an accidental edit to the shipped caption would
+ * update both sides at once and every fallback expectation would stay green
+ * while users saw different words. Restating it here is what turns those
+ * expectations into a real oracle: changing the component's default now fails
+ * this spec, which is exactly the signal a caption change should produce.
+ */
+const DEFAULT_MESSAGE = 'No records found.';
+
+/**
+ * The component's shipped, non-configurable heading text, restated independently
+ * for the same reason as {@link DEFAULT_MESSAGE}.
+ *
+ * The heading is a template literal rather than an input, so no caller can
+ * change it and nothing else in this suite would notice if it were edited,
+ * emptied or promoted to a different heading level.
+ */
+const STATIC_TITLE = 'Nothing to Display';
+
+/** Element class of the shipped heading. */
+const TITLE_CLASS = 'empty-state__title';
+
+/** Element class of the paragraph that carries the bound wording. */
+const MESSAGE_CLASS = 'empty-state__message';
+
+/** Element class of the decorative glyph. */
+const GLYPH_CLASS = 'empty-state__glyph';
 
 /**
  * A representative in-page zero-result sentence, taken from the usage example
  * documented on the component itself. Held distinct from
- * {@link ROUTE_DATA_MESSAGE} because `ComponentRef.setInput` discards a write
+ * {@link NOT_FOUND_MESSAGE} because `ComponentRef.setInput` discards a write
  * whose value is identical to the previous one, so a re-render expectation is
  * meaningful solely when the second value differs from the first.
  */
 const LIST_EMPTY_MESSAGE = 'No roles match the current filter.';
 
-/**
- * Wording that carries balanced markup. Chosen to be short enough that the
- * expectation reads unambiguously, and to produce a distinctive element name
- * (`b`) that cannot occur incidentally in the component's own template.
- */
 const MARKUP_BEARING_MESSAGE = '<b>x</b>';
 
-/**
- * Wording that carries an executable script element — the worst realistic case,
- * modelled directly on a live legacy resource value (see the escaping group
- * below). No address and no credential appears in it: the element name alone is
- * what the expectation examines.
- */
 const SCRIPT_BEARING_MESSAGE = '<script type="text/javascript">document.title = "x";</script>';
 
-/**
- * Label of the action a list screen projects into the content slot.
- */
 const PROJECTED_ACTION_LABEL = 'Add New Role';
 
-/**
- * Block name of the component's styling vocabulary. Its element and modifier
- * classes are `empty-state__*` and `empty-state--*` respectively.
- */
 const BLOCK_CLASS = 'empty-state';
 
 /**
- * Element selectors that must never be emitted by a shared presentational
- * component.
- *
- * Document landmarks belong exclusively to the application shell under
- * `layout/`, where each occurs at most once per rendered page. A landmark
- * emitted from a component that a list screen can render repeatedly would
- * duplicate it, which degrades screen-reader navigation without producing any
- * visible symptom.
+ * Landmark selectors this component must never emit. Duplicating a landmark
+ * degrades screen-reader navigation with no visible symptom, so the absence is
+ * asserted rather than assumed.
  */
 const LANDMARK_SELECTORS = 'header, main, nav, footer';
 
 /**
- * Attribute selectors reserved for the error surface.
- *
- * A live region announces *changes* to a region a user is not looking at. The
- * zero-result state is not a change and not an error: it is the steady-state
- * content of the region the user just navigated to, so announcing it would
- * interrupt without informing. The shared error banner owns that behaviour.
+ * Announcement selectors this component must never emit, asserted for the same
+ * reason as the landmarks above.
  */
 const LIVE_REGION_SELECTORS = '[aria-live], [role="alert"]';
 
-/**
- * Interactive selectors used to prove that the unprojected rendering offers no
- * action affordance of its own.
- */
 const ACTION_SELECTORS = 'button, a';
 
 /**
  * Spec-local host that exercises content projection.
  *
- * A host is the sole way to drive `<ng-content>`: `TestBed.createComponent`
- * supplies no projectable nodes, so a directly created fixture always renders
- * the empty slot. The host also delivers a second, independent proof of the
- * input contract — under this workspace's strict template checking a
- * `[message]` binding against a member that is not a declared, public input is
- * a compile error, so this template failing to compile is itself a contract
- * failure surfaced during the test build.
- *
- * The bound fields are immutable and never reassigned, so the host needs no
- * change-detection nudge beyond the single `detectChanges()` its expectations
- * perform. That keeps the host faithful to the workspace convention of pushed
- * change detection without importing any asynchronous test helper.
+ * A host is the only way to drive `<ng-content>`: `TestBed.createComponent`
+ * supplies no projectable nodes, so a directly created fixture always renders the
+ * empty slot.
  */
 @Component({
   selector: 'app-empty-state-host',
@@ -179,48 +111,20 @@ const ACTION_SELECTORS = 'button, a';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 class EmptyStateHostComponent {
-  /** Wording handed down through a template binding rather than through `setInput`. */
   public readonly wording: string = LIST_EMPTY_MESSAGE;
 
-  /** Label of the projected action. */
   public readonly actionLabel: string = PROJECTED_ACTION_LABEL;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Returns a fixture's root DOM element with a concrete element type.
- *
- * `ComponentFixture.nativeElement` is loosely typed by the framework. Binding it
- * to a local of an explicit element type restores type safety for every
- * subsequent query without weakening a single compiler flag and without any
- * assertion operator.
- */
 function rootElementOf<T>(fixture: ComponentFixture<T>): HTMLElement {
   const root: HTMLElement = fixture.nativeElement;
   return root;
 }
 
-/**
- * Reads an element's rendered text, normalising the absent case to the empty
- * string. `Node.textContent` is nullable by specification; narrowing it here
- * keeps every call site free of nullability noise.
- */
 function renderedTextOf(element: Element): string {
   return element.textContent ?? '';
 }
 
-/**
- * Finds a required descendant, or fails the spec with a self-describing error.
- *
- * Throwing rather than merely expecting is what narrows the result type for the
- * caller: a returned element is statically non-nullable, so no assertion
- * operator is ever needed to read from it. Jasmine reports the thrown error as
- * the spec failure, and the message names the selector so a template regression
- * explains itself without a debugger.
- */
 function requireElement(root: ParentNode, selector: string): HTMLElement {
   const found: HTMLElement | null = root.querySelector<HTMLElement>(selector);
 
@@ -231,10 +135,6 @@ function requireElement(root: ParentNode, selector: string): HTMLElement {
   return found;
 }
 
-/**
- * Collects every distinct CSS class token present on an element and all of its
- * descendants, sorted for a stable, readable failure message.
- */
 function classTokensWithin(root: HTMLElement): readonly string[] {
   const tokens = new Set<string>();
 
@@ -250,10 +150,6 @@ function classTokensWithin(root: HTMLElement): readonly string[] {
   return [...tokens].sort();
 }
 
-/**
- * Reports whether a class token belongs to this component's styling
- * vocabulary — the block itself, one of its elements, or one of its modifiers.
- */
 function belongsToBlock(token: string): boolean {
   return (
     token === BLOCK_CLASS ||
@@ -262,39 +158,32 @@ function belongsToBlock(token: string): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Specification
-// ---------------------------------------------------------------------------
-
 describe('EmptyStateComponent', () => {
   beforeEach(async () => {
-    // A standalone component is registered through `imports`. The array-based
-    // component registry that Angular used before standalone APIs appears
-    // nowhere in this workspace, and the component under test injects nothing,
-    // so no provider is configured either: an unused provider would be noise
-    // that future readers would have to disprove.
+
     await TestBed.configureTestingModule({
       imports: [EmptyStateComponent, EmptyStateHostComponent],
     }).compileComponents();
   });
 
   /**
-   * Creates the component the way the router does — as a root component, with
-   * no projected content.
+   * Creates the component as a ROOT component with no projected content.
+   *
+   * WHAT THIS DOES AND DOES NOT ESTABLISH. It reproduces the *mechanism* a router
+   * uses — a root component whose inputs are written through the component
+   * reference — and nothing more. It does NOT exercise a route table, does not
+   * prove that a route's `data` key matches this component's input name, and does
+   * not prove that `withComponentInputBinding` is configured. Those are
+   * properties of the routing configuration, and no routing configuration exists
+   * in this checkpoint to assert them against: neither `src/app/app.routes.ts`
+   * nor `src/app/app.config.ts` is present. When that configuration lands, the
+   * missing coverage is a `provideRouter` integration test navigating the real
+   * route — written against the actual route definition rather than through the
+   * deprecated router testing module — and it belongs with that file, not here.
    */
-  const createRouted = (): ComponentFixture<EmptyStateComponent> =>
+  const createAsRootComponent = (): ComponentFixture<EmptyStateComponent> =>
     TestBed.createComponent(EmptyStateComponent);
 
-  /**
-   * Applies wording through the very call the router's component input binder
-   * makes, then renders, then hands back the root element.
-   *
-   * `ComponentRef.setInput` is preferred over assigning the instance property
-   * because assignment would prove merely that a setter runs, whereas `setInput`
-   * resolves the name against the component's declared input map exactly as the
-   * router does. A renamed, absent or non-public input therefore fails these
-   * expectations rather than passing them silently.
-   */
   const renderWith = (
     fixture: ComponentFixture<EmptyStateComponent>,
     message: unknown,
@@ -305,71 +194,51 @@ describe('EmptyStateComponent', () => {
     return rootElementOf(fixture);
   };
 
-  describe('input binding contract with the catch-all route', () => {
-    it('renders the wording the catch-all route supplies through its static data', () => {
-      const fixture = createRouted();
+  describe('public message input contract', () => {
+    it('renders the wording a caller binds to its message input', () => {
+      const fixture = createAsRootComponent();
 
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
-      expect(renderedTextOf(root)).toContain(ROUTE_DATA_MESSAGE);
+      expect(renderedTextOf(root)).toContain(NOT_FOUND_MESSAGE);
     });
 
     it('lands the bound value on the declared public accessor', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
-      renderWith(fixture, ROUTE_DATA_MESSAGE);
+      renderWith(fixture, NOT_FOUND_MESSAGE);
 
       // Had `message` been renamed, demoted to a plain field, or narrowed below
       // public visibility, the binder's write would have gone nowhere and this
       // accessor would still be reporting the component's default wording.
-      expect(fixture.componentInstance.message).toBe(ROUTE_DATA_MESSAGE);
+      expect(fixture.componentInstance.message).toBe(NOT_FOUND_MESSAGE);
     });
 
     it('re-renders when a later navigation supplies different wording', () => {
-      const fixture = createRouted();
-      renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const fixture = createAsRootComponent();
+      renderWith(fixture, NOT_FOUND_MESSAGE);
 
       const root = renderWith(fixture, LIST_EMPTY_MESSAGE);
 
-      // Pushed change detection refreshes without any manual mark-for-check,
-      // because the binder's write marks the view dirty on the caller's behalf.
       expect(renderedTextOf(root)).toContain(LIST_EMPTY_MESSAGE);
-      expect(renderedTextOf(root)).not.toContain(ROUTE_DATA_MESSAGE);
+      expect(renderedTextOf(root)).not.toContain(NOT_FOUND_MESSAGE);
     });
 
     it('preserves a supplied value verbatim, without trimming or reformatting', () => {
-      const padded = `  ${ROUTE_DATA_MESSAGE}  `;
-      const fixture = createRouted();
+      const padded = `  ${NOT_FOUND_MESSAGE}  `;
+      const fixture = createAsRootComponent();
 
       renderWith(fixture, padded);
 
-      // Surrounding whitespace decides whether a value counts as blank, yet an
-      // accepted value is stored exactly as supplied. Both halves matter: a
-      // caller who deliberately indents wording gets what it asked for.
       expect(fixture.componentInstance.message).toBe(padded);
     });
   });
 
-  // MIGRATION: these escaping expectations exist because `message` is UNTRUSTED,
-  // and the legacy corpus proves it rather than merely suggesting it. Across the
-  // 37 in-scope `App_LocalResources/*.resx` files there are 1182 `<data>`
-  // values, of which 76 embed an HTML tag and 29 open with a line break, with a
-  // per-value histogram of br 39, p 24, h1 21, b 10, a 5, li 3, span 2, ul 2,
-  // script 1, h4 1, h3 1, strong 1. The single script case is not hypothetical:
-  // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx ->
-  // Advertising.Text` stores a live advertising script block that loads a remote
-  // resource. It hides from a naive search because the tags are stored
-  // HTML-escaped — searching that file for a literal opening script tag matches
-  // nothing, while searching for its escaped form matches twice. Escaping is
-  // therefore legacy CONTINUITY, not an invention of this migration:
-  // `Website/admin/Security/AccessDenied.ascx.vb:43` wraps its externally
-  // supplied message in `HttpUtility.HtmlEncode(HttpUtility.UrlDecode(...))`,
-  // and `Website/Default.aspx.vb:232` likewise applies `Server.HtmlEncode`
-  // before display. These expectations are the automated proof that the target
-  // preserves that guarantee.
+  // Automated proof that `message` reaches the DOM as text, since wording can
+  // arrive already carrying markup.
   describe('untrusted wording reaches the DOM as plain text', () => {
     it('renders balanced markup as literal characters', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
       const root = renderWith(fixture, MARKUP_BEARING_MESSAGE);
 
@@ -377,7 +246,7 @@ describe('EmptyStateComponent', () => {
     });
 
     it('creates no element from balanced markup', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
       const root = renderWith(fixture, MARKUP_BEARING_MESSAGE);
 
@@ -385,7 +254,7 @@ describe('EmptyStateComponent', () => {
     });
 
     it('renders a script-bearing value as literal characters', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
       const root = renderWith(fixture, SCRIPT_BEARING_MESSAGE);
 
@@ -393,7 +262,7 @@ describe('EmptyStateComponent', () => {
     });
 
     it('creates no script element from a script-bearing value', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
       const root = renderWith(fixture, SCRIPT_BEARING_MESSAGE);
 
@@ -401,39 +270,28 @@ describe('EmptyStateComponent', () => {
     });
 
     it('adds no element of any kind when wording carries markup', () => {
-      const benign = createRouted();
-      const benignElementCount = renderWith(benign, ROUTE_DATA_MESSAGE).querySelectorAll('*').length;
+      const benign = createAsRootComponent();
+      const benignElementCount = renderWith(benign, NOT_FOUND_MESSAGE).querySelectorAll('*').length;
 
-      const hostile = createRouted();
+      const hostile = createAsRootComponent();
       const hostileElementCount = renderWith(hostile, SCRIPT_BEARING_MESSAGE).querySelectorAll('*')
         .length;
 
-      // Comparing counts rather than naming tags proves the general case: no
-      // fragment of the value was parsed into the document, whatever it held.
       expect(hostileElementCount).toBe(benignElementCount);
     });
   });
 
-  // MIGRATION: one component serves two readings, which is why the projection
-  // group below covers both and why this workspace grows no separate not-found
-  // component and no eleventh member of its shared component library. Reading
-  // one is the in-page zero-result state, rendered in place of a populated table
-  // and typically projecting an "Add New ..." affordance. Reading two is the
-  // body of the catch-all route, which supplies wording through route data and
-  // projects nothing at all. The legacy application expressed neither: its admin
-  // grids declared the full data-grid class vocabulary and no empty template, so
-  // an empty result set rendered silently, and its access-denied page was a
-  // separate Web Forms page rather than a reusable fragment. Covering both
-  // readings here is what keeps the consolidation honest.
+  // Both readings are covered here, because the one that projects nothing must
+  // leave no interactive artefact behind.
   describe('content projection', () => {
     it('renders the wording and offers no action affordance of its own', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
-      // The catch-all route projects nothing, so the content slot must collapse
-      // to nothing rather than leaving an interactive artefact behind.
-      expect(renderedTextOf(root)).toContain(ROUTE_DATA_MESSAGE);
+      // A caller that projects nothing must leave the content slot collapsed to
+      // nothing rather than leaving an interactive artefact behind.
+      expect(renderedTextOf(root)).toContain(NOT_FOUND_MESSAGE);
       expect(root.querySelector(ACTION_SELECTORS)).toBeNull();
     });
 
@@ -444,9 +302,6 @@ describe('EmptyStateComponent', () => {
       const emptyState = requireElement(rootElementOf(hostFixture), 'app-empty-state');
       const action = requireElement(emptyState, 'button');
 
-      // Querying from the component's own element, rather than from the host,
-      // proves the node was projected into the slot instead of merely rendered
-      // somewhere alongside it.
       expect(renderedTextOf(action).trim()).toBe(PROJECTED_ACTION_LABEL);
       expect(action.getAttribute('type')).toBe('button');
     });
@@ -458,55 +313,75 @@ describe('EmptyStateComponent', () => {
       const emptyState = requireElement(rootElementOf(hostFixture), 'app-empty-state');
       const text = renderedTextOf(emptyState);
 
-      // The host reaches `message` through a template binding rather than
-      // through the binder's programmatic write, so this covers the second route
-      // into the same input.
       expect(text).toContain(LIST_EMPTY_MESSAGE);
       expect(text).toContain(PROJECTED_ACTION_LABEL);
     });
   });
 
-  // MIGRATION: the blank-value fallback is behavioural equivalence with
-  // `Website/admin/Security/AccessDenied.ascx.vb:41-47`, which tested
-  // `If Request.QueryString("message") <> "" Then` and otherwise resolved a
-  // localised default caption. The target widens that test from "empty" to
-  // "blank", because whitespace collapses in HTML and would render a visually
-  // empty state, and it resolves the default in TypeScript rather than through a
-  // resource lookup, because the resource mechanism is Web Forms specific and is
-  // deliberately not carried across. The default wording below is read back from
-  // the component rather than restated, so these expectations lock the
-  // *behaviour* without duplicating a caption that the component alone owns.
+  // The default wording is read back from the component rather than restated here,
+  // so these expectations lock the behaviour without duplicating a caption the
+  // component alone owns.
   describe('blank wording falls back to the documented default', () => {
-    it('renders meaningful wording when nothing is bound at all', () => {
-      const fixture = createRouted();
+    it('renders the documented default wording when nothing is bound at all', () => {
+      const fixture = createAsRootComponent();
       fixture.detectChanges();
 
-      const rendered = renderedTextOf(rootElementOf(fixture)).trim();
-      const accessorValue = fixture.componentInstance.message;
+      const root = rootElementOf(fixture);
 
-      expect(accessorValue.trim().length).toBeGreaterThan(0);
-      expect(rendered).toContain(accessorValue);
+      // Asserted against an independent literal on BOTH observable surfaces: the
+      // public accessor a consumer can read, and the paragraph a user actually
+      // sees. Either alone would leave the other free to diverge.
+      expect(fixture.componentInstance.message).toBe(DEFAULT_MESSAGE);
+      expect(renderedTextOf(requireElement(root, `.${MESSAGE_CLASS}`))).toBe(DEFAULT_MESSAGE);
     });
 
     it('treats empty, whitespace, absent and null values as a request for the default', () => {
-      const reference = createRouted();
-      reference.detectChanges();
-      const defaultWording = reference.componentInstance.message;
-
-      const blankValues: readonly unknown[] = ['', '   ', undefined, null];
+      // Every blank shape the input's declared `string | null | undefined` type
+      // admits, plus a tab-and-newline case, because whitespace collapses in HTML
+      // and any of them would otherwise render a visually empty state.
+      const blankValues: readonly unknown[] = ['', '   ', '\t\n ', undefined, null];
 
       for (const blankValue of blankValues) {
-        const fixture = createRouted();
-        renderWith(fixture, blankValue);
+        const fixture = createAsRootComponent();
+        const root = renderWith(fixture, blankValue);
 
         expect(fixture.componentInstance.message)
-          .withContext(`blank value ${String(blankValue)} must select the default wording`)
-          .toBe(defaultWording);
+          .withContext(`blank value ${JSON.stringify(blankValue)} must select the default wording`)
+          .toBe(DEFAULT_MESSAGE);
+        expect(renderedTextOf(requireElement(root, `.${MESSAGE_CLASS}`)))
+          .withContext(`blank value ${JSON.stringify(blankValue)} must render the default wording`)
+          .toBe(DEFAULT_MESSAGE);
+
+        fixture.destroy();
       }
     });
 
+    it('does not substitute the default for wording that merely surrounds itself with spaces', () => {
+      const padded = `  ${NOT_FOUND_MESSAGE}  `;
+      const fixture = createAsRootComponent();
+
+      const root = renderWith(fixture, padded);
+
+      // POSITIVE CONTROL for the fallback above, and what stops it being
+      // vacuous: without this, every expectation in this group would pass just as
+      // well against a component that returned the default for EVERY value.
+      expect(fixture.componentInstance.message).toBe(padded);
+      expect(fixture.componentInstance.message).not.toBe(DEFAULT_MESSAGE);
+
+      // MEASURED, and asserted verbatim rather than trimmed. Blankness is decided
+      // on a trimmed value, but an ACCEPTED value is stored and rendered exactly
+      // as supplied — the surrounding spaces survive into the text node, even
+      // though HTML collapses them visually. Trimming the expectation here would
+      // hide a component that silently reformatted caller wording, which is the
+      // very thing this test exists to rule out.
+      expect(renderedTextOf(requireElement(root, `.${MESSAGE_CLASS}`))).toBe(padded);
+      expect(renderedTextOf(requireElement(root, `.${MESSAGE_CLASS}`)).trim()).toBe(
+        NOT_FOUND_MESSAGE,
+      );
+    });
+
     it('never renders a placeholder in place of absent wording', () => {
-      const fixture = createRouted();
+      const fixture = createAsRootComponent();
 
       const rendered = renderedTextOf(renderWith(fixture, undefined));
 
@@ -515,25 +390,124 @@ describe('EmptyStateComponent', () => {
     });
   });
 
+  // THE STATIC SEMANTICS OF THIS COMPONENT ARE ASSERTED HERE, and they were not
+  // asserted anywhere before. The heading text, the heading level, the glyph's
+  // removal from the accessibility tree and the placement of the bound wording
+  // inside its own paragraph are all fixed by the template rather than by an
+  // input, so no consumer can vary them and no other expectation in this file
+  // touches them. Every one could have been deleted, emptied or changed in level
+  // while the whole suite stayed green — which is precisely why they are here.
+  describe('shipped static semantics', () => {
+    it('renders exactly one heading, at level two, carrying the shipped caption', () => {
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
+
+      const headings = root.querySelectorAll('h1, h2, h3, h4, h5, h6');
+
+      // EXACTLY ONE, AT LEVEL TWO. The level is a real decision, not an accident:
+      // the page title owns level one inside the main region, so this caption sits
+      // beneath it. A promotion to level one would produce two first-level
+      // headings on the page and break the document outline; a demotion would
+      // imply a section that does not exist.
+      expect(headings.length).toBe(1);
+
+      const heading = requireElement(root, `.${TITLE_CLASS}`);
+
+      expect(heading.tagName).toBe('H2');
+      expect(renderedTextOf(heading)).toBe(STATIC_TITLE);
+
+      // And it is genuinely a heading element rather than a styled div, which is
+      // what makes it reachable by heading navigation.
+      expect(root.querySelectorAll('h2').length).toBe(1);
+    });
+
+    it('hides the decorative glyph from assistive technology', () => {
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
+
+      const glyph = requireElement(root, `.${GLYPH_CLASS}`);
+
+      // The glyph restates what the caption already says, so exposing it would
+      // make a screen reader announce the same idea twice — and the artwork is an
+      // inline vector with no text alternative to announce in the first place.
+      expect(glyph.getAttribute('aria-hidden')).toBe('true');
+
+      // The vector lives INSIDE the hidden wrapper, so hiding the wrapper hides
+      // the whole subtree. Asserting the containment is what stops the artwork
+      // being moved out from under the hidden element later.
+      const vector = glyph.querySelector('svg');
+      expect(vector).not.toBeNull();
+      if (vector === null) {
+        return;
+      }
+
+      expect(glyph.contains(vector)).toBeTrue();
+      expect(renderedTextOf(glyph)).toBe('');
+
+      // Exactly one hidden element, so nothing else is being quietly removed from
+      // the accessibility tree — the caption and the wording must both remain
+      // exposed.
+      expect(root.querySelectorAll('[aria-hidden="true"]').length).toBe(1);
+      expect(glyph.contains(requireElement(root, `.${MESSAGE_CLASS}`))).toBeFalse();
+      expect(glyph.contains(requireElement(root, `.${TITLE_CLASS}`))).toBeFalse();
+    });
+
+    it('places the bound wording in its own paragraph, distinct from the caption', () => {
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
+
+      const paragraph = requireElement(root, `.${MESSAGE_CLASS}`);
+
+      // A paragraph rather than a second heading: supporting text must stay out of
+      // the document outline. Asserted exactly rather than with a containment
+      // check, so stray wording concatenated into the same element fails.
+      expect(paragraph.tagName).toBe('P');
+      expect(renderedTextOf(paragraph)).toBe(NOT_FOUND_MESSAGE);
+      expect(root.querySelectorAll(`.${MESSAGE_CLASS}`).length).toBe(1);
+
+      // The two texts must live in SEPARATE elements. If the bound wording were
+      // rendered inside the heading, heading navigation would read caller-supplied
+      // text as the section caption.
+      const heading = requireElement(root, `.${TITLE_CLASS}`);
+
+      expect(renderedTextOf(heading)).toBe(STATIC_TITLE);
+      expect(renderedTextOf(heading)).not.toContain(NOT_FOUND_MESSAGE);
+      expect(heading.contains(paragraph)).toBeFalse();
+      expect(paragraph.contains(heading)).toBeFalse();
+    });
+
+    it('keeps the shipped caption fixed while the wording varies', () => {
+      const fixture = createAsRootComponent();
+
+      renderWith(fixture, NOT_FOUND_MESSAGE);
+      const firstCaption = renderedTextOf(requireElement(rootElementOf(fixture), `.${TITLE_CLASS}`));
+
+      const root = renderWith(fixture, LIST_EMPTY_MESSAGE);
+
+      // The caption is a template literal, not an input, so nothing a caller does
+      // may change it. Proving it survives a wording change is what pins that
+      // down: a caption accidentally bound to the same input would follow the
+      // message and this expectation would catch it.
+      expect(firstCaption).toBe(STATIC_TITLE);
+      expect(renderedTextOf(requireElement(root, `.${TITLE_CLASS}`))).toBe(STATIC_TITLE);
+      expect(renderedTextOf(requireElement(root, `.${MESSAGE_CLASS}`))).toBe(LIST_EMPTY_MESSAGE);
+    });
+  });
+
   describe('rendered markup guarantees', () => {
     it('renders its own block class as the styling root and carries the wording within it', () => {
-      const fixture = createRouted();
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
       const block = requireElement(root, `.${BLOCK_CLASS}`);
 
-      expect(renderedTextOf(block)).toContain(ROUTE_DATA_MESSAGE);
+      expect(renderedTextOf(block)).toContain(NOT_FOUND_MESSAGE);
     });
 
     it('emits no class outside its own styling vocabulary', () => {
-      const fixture = createRouted();
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
-      // A guard against a global or borrowed class name creeping into a shared
-      // presentational component, where it would couple this component to a
-      // stylesheet it does not own. It is deliberately tolerant about which
-      // element classes exist, because the exact element breakdown belongs to the
-      // sibling template and stylesheet.
       const foreignTokens = classTokensWithin(root).filter(
         (token: string): boolean => belongsToBlock(token) === false,
       );
@@ -542,17 +516,251 @@ describe('EmptyStateComponent', () => {
     });
 
     it('emits no document landmark', () => {
-      const fixture = createRouted();
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
       expect(root.querySelector(LANDMARK_SELECTORS)).toBeNull();
     });
 
     it('emits no live region', () => {
-      const fixture = createRouted();
-      const root = renderWith(fixture, ROUTE_DATA_MESSAGE);
+      const fixture = createAsRootComponent();
+      const root = renderWith(fixture, NOT_FOUND_MESSAGE);
 
       expect(root.querySelector(LIVE_REGION_SELECTORS)).toBeNull();
+    });
+  });
+
+  // MIGRATION: this group exists because `message` is reached from the catch-all
+  // route, so its value is external input rather than a value a template author
+  // chose. Two facts make a runtime guard mandatory rather than defensive
+  // decoration. First, the router promotes a repeated query key to an array - the
+  // first expectation below proves that against the installed router instead of
+  // taking it on trust. Second, the router's parameter contract is an index
+  // signature onto the unchecked top type and `ComponentRef.setInput` performs no
+  // runtime check, so the component's declared union constrains template authors
+  // but cannot constrain the router. Every expectation here therefore drives the
+  // value in through `setInput`, exactly as the binder does.
+  describe('bounded and normalised external input', () => {
+    // Mirrors the module-private `MAX_MESSAGE_LENGTH`. Duplicated as a literal on
+    // purpose: the component's documented public surface is the accessor pair
+    // alone, and exporting the constant to share it with this suite would widen
+    // that surface to satisfy a test.
+    const MAX_RETAINED_LENGTH = 1024;
+    const FIRST_DUPLICATE = 'Access denied';
+    const SECOND_DUPLICATE = 'Your session has expired';
+    const JOINED_DUPLICATES = `${FIRST_DUPLICATE},${SECOND_DUPLICATE}`;
+
+    /**
+     * Reads the documented default wording from a freshly created instance.
+     *
+     * Derived rather than restated so that these expectations cannot drift from
+     * the component if the default is ever reworded.
+     */
+    const defaultWording = (): string => {
+      const reference = createAsRootComponent();
+      reference.detectChanges();
+
+      return reference.componentInstance.message;
+    };
+
+    it('proves the premise: a repeated query key parses to an array', () => {
+      const serializer = new DefaultUrlSerializer();
+
+      const repeated: unknown = serializer.parse('/not-found?message=first&message=second')
+        .queryParams['message'];
+      const single: unknown = serializer.parse('/not-found?message=first').queryParams['message'];
+
+      // The asymmetry is the whole hazard: one occurrence yields a string, two
+      // yield an array, and no type in the router's public contract distinguishes
+      // them. A component that assumed the string shape would call a string method
+      // on an array and abort the whole view, not just this cell.
+      expect(repeated).toEqual(['first', 'second']);
+      expect(single).toBe('first');
+    });
+
+    it('folds a repeated route parameter into one comma-delimited sentence', () => {
+      const fixture = createAsRootComponent();
+
+      const root = renderWith(fixture, [FIRST_DUPLICATE, SECOND_DUPLICATE]);
+
+      // A bare comma with no padding is the legacy behaviour: the analogue at
+      // `Website/admin/Security/AccessDenied.ascx.vb:42` reads a query value from
+      // a `NameValueCollection`, whose `Get` folds duplicates exactly this way. No
+      // supplied value is discarded, which a first-value-wins policy would do.
+      expect(fixture.componentInstance.message).toBe(JOINED_DUPLICATES);
+      expect(renderedTextOf(root)).toContain(JOINED_DUPLICATES);
+    });
+
+    it('stores a single-element array as that element alone', () => {
+      const fixture = createAsRootComponent();
+
+      renderWith(fixture, [FIRST_DUPLICATE]);
+
+      expect(fixture.componentInstance.message).toBe(FIRST_DUPLICATE);
+    });
+
+    it('keeps only the string elements of a mixed array', () => {
+      const fixture = createAsRootComponent();
+
+      // Filtering before joining is what makes the fold total rather than merely
+      // usually correct: `Array.prototype.join` coerces its elements, and coercion
+      // throws on a symbol and on any object whose `toString` throws.
+      renderWith(fixture, [FIRST_DUPLICATE, 7, null, SECOND_DUPLICATE]);
+
+      expect(fixture.componentInstance.message).toBe(JOINED_DUPLICATES);
+    });
+
+    it('treats an array carrying no usable wording as a request for the default', () => {
+      const expected = defaultWording();
+      const emptyArray: readonly unknown[] = [];
+      const blankBearingArrays: readonly unknown[] = [emptyArray, [''], ['   '], [1, 2]];
+
+      blankBearingArrays.forEach((payload: unknown, index: number): void => {
+        const fixture = createAsRootComponent();
+        renderWith(fixture, payload);
+
+        expect(fixture.componentInstance.message)
+          .withContext(`array payload at index ${index} must select the default wording`)
+          .toBe(expected);
+      });
+    });
+
+    it('falls back to the default for every payload shape the declared type forbids', () => {
+      const expected = defaultWording();
+      // Shapes that no declared type permits but that `setInput` cannot reject.
+      // The last two are the reason `String(value)` is never used to coerce: it
+      // throws on a symbol, and it throws on an object with a hostile `toString`.
+      const hostilePayloads: readonly unknown[] = [
+        0,
+        1,
+        -1,
+        Number.NaN,
+        true,
+        false,
+        {},
+        { message: FIRST_DUPLICATE },
+        new Date(0),
+        (): string => FIRST_DUPLICATE,
+        Symbol('hostile'),
+        {
+          toString: (): string => {
+            throw new Error('hostile toString');
+          },
+        },
+      ];
+
+      hostilePayloads.forEach((payload: unknown, index: number): void => {
+        const fixture = createAsRootComponent();
+
+        // Deliberately not interpolating the payload into the context message: for
+        // the final two entries the interpolation itself would throw and mask the
+        // very behaviour under test.
+        expect((): void => {
+          renderWith(fixture, payload);
+        })
+          .withContext(`payload at index ${index} must not throw`)
+          .not.toThrow();
+
+        expect(fixture.componentInstance.message)
+          .withContext(`payload at index ${index} must select the default wording`)
+          .toBe(expected);
+      });
+    });
+
+    it('folds blank duplicate values verbatim rather than discarding them', () => {
+      const fixture = createAsRootComponent();
+      const blankFirst = '';
+      const blankSecond = '  ';
+
+      renderWith(fixture, [blankFirst, blankSecond]);
+
+      // Deliberately NOT the default wording, and asserted rather than hidden. The
+      // legacy fold is total: a `NameValueCollection` joins every duplicate value,
+      // blank ones included, so `?message=&message=%20%20` produced a lone
+      // separator on the legacy page too. Discarding blank elements before joining
+      // would read as tidier but would be a behavioural divergence, and strict
+      // equivalence is preferred where the legacy outcome is merely untidy rather
+      // than wrong. The same holds for one blank duplicate among real wording,
+      // which keeps its trailing separator.
+      expect(fixture.componentInstance.message).toBe(`${blankFirst},${blankSecond}`);
+    });
+
+    it('retains a message that sits exactly on the bound unchanged', () => {
+      const fixture = createAsRootComponent();
+      const atBound = 'a'.repeat(MAX_RETAINED_LENGTH);
+
+      renderWith(fixture, atBound);
+
+      expect(fixture.componentInstance.message).toBe(atBound);
+      expect(fixture.componentInstance.message.length).toBe(MAX_RETAINED_LENGTH);
+    });
+
+    it('truncates an oversized message to the bound and keeps its opening', () => {
+      const fixture = createAsRootComponent();
+      const oversized = `${FIRST_DUPLICATE}${'b'.repeat(MAX_RETAINED_LENGTH * 4)}`;
+
+      const root = renderWith(fixture, oversized);
+
+      expect(fixture.componentInstance.message.length).toBe(MAX_RETAINED_LENGTH);
+      // Truncation keeps the beginning because that is where the explanation is.
+      expect(fixture.componentInstance.message.startsWith(FIRST_DUPLICATE)).toBeTrue();
+      expect(renderedTextOf(root)).toContain(FIRST_DUPLICATE);
+    });
+
+    it('bounds a folded array as well as a supplied string', () => {
+      const fixture = createAsRootComponent();
+      const half = 'c'.repeat(MAX_RETAINED_LENGTH);
+
+      renderWith(fixture, [half, half]);
+
+      expect(fixture.componentInstance.message.length).toBe(MAX_RETAINED_LENGTH);
+    });
+
+    it('never truncates in the middle of a surrogate pair', () => {
+      // One astral code point occupies two UTF-16 code units, so whether the cut
+      // lands inside a pair depends on the alignment of the text before it. Both
+      // alignments are exercised, because only the odd one reaches the step-back
+      // branch and a suite that tested the even one alone would report coverage it
+      // had not earned.
+      const astral = String.fromCodePoint(0x1f600);
+      const endsOnHighSurrogate = (text: string): boolean => {
+        const lastUnit = text.charCodeAt(text.length - 1);
+
+        return lastUnit >= 0xd800 && lastUnit <= 0xdbff;
+      };
+
+      // Even alignment: every pair straddles an even-then-odd index, so the cut
+      // falls after a complete pair and nothing is stepped back.
+      const evenFixture = createAsRootComponent();
+      renderWith(evenFixture, astral.repeat(MAX_RETAINED_LENGTH));
+      const evenStored = evenFixture.componentInstance.message;
+
+      expect(evenStored.length).toBe(MAX_RETAINED_LENGTH);
+      expect(endsOnHighSurrogate(evenStored)).toBeFalse();
+      expect(evenStored).toBe(astral.repeat(MAX_RETAINED_LENGTH / 2));
+
+      // Odd alignment: a single leading unit shifts every pair by one, so the
+      // naive cut lands on a high surrogate. Retaining it would render as the
+      // U+FFFD replacement character, so one unit is dropped and the bound is
+      // undershot by one rather than met exactly.
+      const oddFixture = createAsRootComponent();
+      renderWith(oddFixture, `x${astral.repeat(MAX_RETAINED_LENGTH)}`);
+      const oddStored = oddFixture.componentInstance.message;
+
+      expect(oddStored.length).toBe(MAX_RETAINED_LENGTH - 1);
+      expect(endsOnHighSurrogate(oddStored)).toBeFalse();
+      expect(oddStored).toBe(`x${astral.repeat((MAX_RETAINED_LENGTH - 2) / 2)}`);
+    });
+
+    it('still selects the default when an oversized payload is whitespace only', () => {
+      const fixture = createAsRootComponent();
+
+      // Bounding runs before the blank test, so this bounds to whitespace and is
+      // then recognised as blank. Testing for blankness first would store an
+      // unusable message of spaces.
+      renderWith(fixture, ' '.repeat(MAX_RETAINED_LENGTH * 3));
+
+      expect(fixture.componentInstance.message).toBe(defaultWording());
     });
   });
 });

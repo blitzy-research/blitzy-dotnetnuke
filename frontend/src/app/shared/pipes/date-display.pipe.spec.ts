@@ -66,96 +66,154 @@
 // strings were measured against the installed framework formatter under the pinned
 // locale and the UTC display zone the pipe fixes.
 
-import { LOCALE_ID } from '@angular/core';
+import { Injector, LOCALE_ID } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 
 import { DateDisplayPipe, type DateDisplayMode } from './date-display.pipe';
 
 describe('DateDisplayPipe', () => {
-  /**
-   * The locale every expectation below is measured under. Pinned explicitly so the
-   * asserted separators, field order and day-period wording are the same on every
-   * machine.
-   */
+  // Every expected string below is locale-sensitive, so the locale is pinned
+  // rather than inherited: a suite reading the ambient locale would be flaky by
+  // construction.
   const TEST_LOCALE = 'en-US';
 
-  /**
-   * A deliberately fictitious language tag, used to prove the pipe degrades rather
-   * than throws when locale data is unavailable. A tag that cannot exist in CLDR is
-   * chosen over a real-but-currently-unregistered one so the expectation cannot be
-   * invalidated by a later locale registration elsewhere in the workspace.
-   */
+  // Deliberately fictitious rather than merely unregistered today, so registering
+  // a real locale elsewhere later cannot invalidate the degradation case.
   const UNREGISTERED_LOCALE = 'zz-ZZ';
 
-  /** Both modes named through the pipe's own exported union, not as loose strings. */
   const DATE_MODE: DateDisplayMode = 'date';
   const DATETIME_MODE: DateDisplayMode = 'datetime';
 
-  /**
-   * What "nothing to show" looks like. `Null.NullString` returns the empty string
-   * (Library/Components/Shared/Null.vb L71-L75), so an empty cell is the faithful
-   * legacy rendering of an absent value.
-   */
+  // The legacy layer encoded an absent string as the empty string, so an empty
+  // cell is the faithful rendering of "nothing to show".
   const EMPTY = '';
 
-  // ---------------------------------------------------------------------------
-  // Inputs. Every one is a fixed ISO-8601 literal.
-  // ---------------------------------------------------------------------------
-
-  /** The legacy null-date sentinel at exact midnight UTC. */
   const SENTINEL_AT_MIDNIGHT = '0001-01-01T00:00:00.000Z';
 
-  /** The same sentinel calendar day carrying a non-zero time of day. */
   const SENTINEL_WITH_TIME_OF_DAY = '0001-01-01T13:45:30.000Z';
 
-  /** The same sentinel calendar day written without a zone designator. */
   const SENTINEL_WITHOUT_ZONE = '0001-01-01T13:45:30';
 
-  /**
-   * An ordinary date. 9/10/2004 is the revision date stamped on the legacy
-   * `DisplayDate` history block at Website/admin/Users/Users.ascx.vb L392.
-   */
   const ORDINARY_INSTANT = '2004-09-10T00:00:00.000Z';
 
-  /** The same ordinary date carrying an afternoon time of day. */
   const ORDINARY_INSTANT_WITH_TIME_OF_DAY = '2004-09-10T21:35:09.000Z';
 
-  /** The perpetual billing expiry from RoleController.vb L542. */
   const PERPETUAL_INSTANT = '9999-12-31T00:00:00.000Z';
 
-  /** A string no date parser can make sense of. */
   const UNPARSEABLE_INPUT = 'not-a-date';
+
+  /**
+   * Values the PLATFORM accepts and silently normalises into a different, real
+   * date. Every entry was measured against this workspace's runtime, and the
+   * comment records what `new Date(...)` produces for it, because that is the
+   * wrong output these expectations exist to forbid.
+   *
+   * The expected result is stated as the literal empty string in the assertions
+   * rather than read back from the pipe, so a regression in the collaborator's
+   * validation cannot move actual and expected together.
+   */
+  const CALENDAR_INVALID_INPUTS = [
+    '2024-02-30T00:00:00Z', // platform yields 2024-03-01
+    '2023-02-29', // platform yields 2023-03-01 - 2023 is not a leap year
+    '2024-09-31', // platform yields 2024-10-01 - September has 30 days
+    '2024-13-01', // month 13
+    '2024-00-10', // month 0
+  ] as const;
+
+  /**
+   * Values that are numeric, or otherwise not the wire shape, which the platform
+   * nonetheless parses into a confident date. `'0'` is the case named in review;
+   * the rest were measured alongside it and fail the same way.
+   */
+  const NUMERIC_LIKE_INPUTS = [
+    '0', // platform yields 2000-01-01
+    '1', // platform yields 2001-01-01
+    '2024', // platform yields 2024-01-01
+    '20240910', // basic-format ISO, which the platform rejects outright
+  ] as const;
+
+  /**
+   * Values shaped for a human reader or a different producer, all of which the
+   * platform accepts. None is a shape the API emits.
+   */
+  const NON_WIRE_FORMAT_INPUTS = [
+    '12/31/2024', // platform yields 2024-12-31
+    'Sep 10 2024', // platform yields 2024-09-10
+    '2024-9-10', // unpadded month; platform yields 2024-09-10
+    '-2024-09-10', // leading sign; platform silently ignores it
+  ] as const;
+
+  /**
+   * Values whose DATE portion is a real calendar date and whose overall shape is
+   * the wire format, but whose TIME portion is out of range. These are the inputs
+   * that reach the pipe's unparseable guard, because the shape check and the
+   * calendar check both pass them through: the pipe deliberately does not encode
+   * time-of-day ranges, relying instead on the platform parser, which was measured
+   * to return an invalid instant for each of these.
+   */
+  const TIME_OUT_OF_RANGE_INPUTS = [
+    '2024-09-10T25:00:00Z', // hour 25
+    '2024-09-10T14:60:00Z', // minute 60
+    '2024-09-10T14:30:61Z', // second 61
+  ] as const;
+
+  /**
+   * A real leap day, held alongside the invalid ones so the calendar check is
+   * shown to reject only what does not exist rather than everything unusual.
+   */
+  const LEAP_DAY_INSTANT = '2024-02-29T00:00:00.000Z';
+
+  /** The rendering the leap day must keep producing. */
+  const LEAP_DAY_AS_DATE = '2/29/2024';
+
+  /**
+   * A legitimate value whose numeric offset places it on a DIFFERENT UTC day from
+   * the one its own date field names: 01:00 at +02:00 is 23:00 UTC the previous
+   * day. It is held here because it is the value that distinguishes a correct
+   * calendar check from a naive one — validating by round-tripping the parsed
+   * instant back to a UTC date would reject this, and it must not be rejected.
+   */
+  const OFFSET_CROSSING_MIDNIGHT = '2024-09-10T01:00:00+02:00';
+
+  /** The rendering that value must produce: the UTC day, 2024-09-09. */
+  const OFFSET_CROSSING_MIDNIGHT_AS_DATE = '9/9/2024';
+
+  /**
+   * A date in a two-digit year that is NOT the sentinel year.
+   *
+   * This value exists to pin two things the rest of the suite leaves open. First,
+   * that the sentinel guard is PRECISE - it recognises year one specifically, and
+   * does not reject low years wholesale. Second, that the calendar check builds
+   * its probe in a way that treats a small year literally: `Date.UTC` maps years
+   * 0-99 onto 1900-1999, so a probe built that way would decide this date does not
+   * exist and blank it.
+   */
+  const LOW_YEAR_INSTANT = '0050-06-15T00:00:00.000Z';
+
+  /** Four-digit year padding is the `yyyy` pattern's documented behaviour. */
+  const LOW_YEAR_AS_DATE = '6/15/0050';
+
+  /** The same low-year value in datetime mode, at UTC midnight. */
+  const LOW_YEAR_AS_DATE_TIME = '6/15/0050 12:00:00 AM';
 
   /** A value that is present on the wire but blank. */
   const BLANK_INPUT = '';
 
-  /** A value that is blank once surrounding whitespace is discarded. */
   const WHITESPACE_INPUT = '   ';
 
-  // ---------------------------------------------------------------------------
-  // Expected renderings, measured under TEST_LOCALE and the pipe's UTC zone.
-  // ---------------------------------------------------------------------------
-
-  /** `.ToShortDateString` equivalent: `M/d/yyyy`. */
   const ORDINARY_AS_DATE = '9/10/2004';
 
-  /** `.ToString` equivalent: `M/d/yyyy h:mm:ss tt`. */
   const ORDINARY_AS_DATE_TIME = '9/10/2004 12:00:00 AM';
 
-  /** The afternoon instant rendered with its time of day. */
   const ORDINARY_WITH_TIME_OF_DAY_AS_DATE_TIME = '9/10/2004 9:35:09 PM';
 
-  /** The perpetual value rendered as an ordinary date. */
   const PERPETUAL_AS_DATE = '12/31/9999';
 
-  /** The perpetual value rendered with its time of day. */
   const PERPETUAL_AS_DATE_TIME = '12/31/9999 12:00:00 AM';
 
-  /**
-   * What an unguarded formatter would emit for the sentinel. Held as a literal so
-   * the critical cases can assert against the exact wrong answer they exist to
-   * prevent, rather than against a vague "not this shape".
-   */
+  // What an unguarded formatter would emit for the sentinel, held as a literal so
+  // the guard cases can assert against the exact wrong answer rather than against
+  // a vague "not this shape".
   const SENTINEL_IF_UNGUARDED = '1/1/0001';
 
   let pipe: DateDisplayPipe;
@@ -177,12 +235,10 @@ describe('DateDisplayPipe', () => {
   });
 
   it('agrees with itself when constructed directly on its documented fallback locale', () => {
-    // The constructor parameter carries a default precisely so a test can build the
-    // pipe without an injection context. Asserting that the two construction paths
-    // produce identical output is what makes the fallback trustworthy: were the
-    // default ever to drift away from the locale the application supplies, the same
-    // wire value would render two different ways depending on how the pipe was
-    // obtained, and that would show up here rather than on a screen.
+    // Were the constructor default ever to drift from the locale the application
+    // supplies, the same wire value would render two ways depending on how the pipe
+    // was obtained. Comparing the two construction paths surfaces that here rather
+    // than on a screen.
     const directlyConstructed = new DateDisplayPipe();
 
     expect(directlyConstructed.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
@@ -198,37 +254,22 @@ describe('DateDisplayPipe', () => {
   });
 
   it('degrades to an empty cell instead of throwing when locale data is unavailable', () => {
-    // The framework formatter raises NG0701 for a locale whose data has never been
-    // registered, and the pipe catches it. That guard is not padding: an exception
-    // escaping a template expression tears down the whole view, whereas all three
-    // legacy formatters that wrapped their body in a handler returned their seeded
-    // empty string instead - Users.ascx.vb L404-L406, Portals.ascx.vb L256-L258 and
-    // MemberServices.ascx.vb L182-L184.
-    //
-    // The tag below is deliberately fictitious rather than merely absent today, so
-    // this expectation cannot be invalidated by anyone registering a real locale
-    // later. This is a tighter pin than the suite's own locale, not a looser one.
+    // Constructed directly, because that is the only way a test can drive the
+    // formatter's own failure path.
     const withUnavailableLocale = new DateDisplayPipe(UNREGISTERED_LOCALE);
 
     expect(() => withUnavailableLocale.transform(ORDINARY_INSTANT)).not.toThrow();
     expect(withUnavailableLocale.transform(ORDINARY_INSTANT)).toBe(EMPTY);
     expect(withUnavailableLocale.transform(ORDINARY_INSTANT, DATETIME_MODE)).toBe(EMPTY);
 
-    // An absent value still short-circuits ahead of the formatter, so the two ways
-    // of arriving at an empty cell stay indistinguishable to a template.
+    // An absent value short-circuits ahead of the formatter, so the two routes to
+    // an empty cell stay indistinguishable to a template.
     expect(withUnavailableLocale.transform(null)).toBe(EMPTY);
   });
 
-  // ===========================================================================
-  // CRITICAL CASE 1 of 3 - the minimum-value instant renders as an empty cell.
-  //
-  // `Null.NullDate` is `Date.MinValue` (Null.vb L66-L70). The sentinel is not
-  // dropped in transit: the API writes a minimum-value date as a real ISO-8601
-  // string rather than omitting the property or emitting null, so the client is the
-  // component that has to recognise it. All three legacy formatters that guard the
-  // value render it as an empty string - Users.ascx.vb L402, Portals.ascx.vb L251
-  // and SecurityRoles.ascx.vb L381 - and this pipe must do the same, in BOTH modes.
-  // ===========================================================================
+  // The sentinel is not dropped in transit: a minimum-value date crosses the wire
+  // as a real ISO-8601 string rather than as an omitted property or a null, so the
+  // client is what has to recognise it - and in both modes.
   it('renders the minimum-value sentinel as an empty cell in both modes', () => {
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT, DATE_MODE)).toBe(EMPTY);
@@ -236,9 +277,9 @@ describe('DateDisplayPipe', () => {
   });
 
   it('never leaks year one onto the screen in any shape', () => {
-    // The exact wrong answers this guard exists to prevent. An unguarded formatter
-    // emits SENTINEL_IF_UNGUARDED, a zero-padded formatter emits '01/01/0001', and
-    // an unchecked parse emits the platform's invalid-date wording.
+    // The exact wrong answers this guard exists to prevent: an unguarded formatter,
+    // a zero-padded one, and an unchecked parse leaking the platform's own
+    // invalid-date wording.
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe(SENTINEL_IF_UNGUARDED);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe('01/01/0001');
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe('1/1/1');
@@ -246,68 +287,45 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT, DATETIME_MODE)).not.toContain('0001');
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toContain('Invalid');
 
-    // A real string, not a null or an undefined dressed up as one: templates
-    // interpolate the result directly, so the type of the result matters.
+    // A real string, not a null dressed up as one: a template interpolates the
+    // result directly, so its type matters.
     expect(typeof pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe('string');
     expect(typeof pipe.transform(SENTINEL_AT_MIDNIGHT, DATETIME_MODE)).toBe('string');
   });
 
-  // ===========================================================================
-  // CRITICAL CASE 2 of 3 - the sentinel is recognised on its DATE PART ALONE.
-  //
-  // This is the case a naive full-timestamp equality check fails. `Null.IsNull`
-  // compares `objDate.Date.Equals(NullDate.Date)` at Null.vb L222-L224, and
-  // `Null.GetNull` explains the choice at L183-L187: "compare the Date part of the
-  // DateTime with the DatePart of the NullDate ( this avoids subtle time
-  // differences )". Any instant on 0001-01-01 is absent, whatever the clock reads.
-  // ===========================================================================
+  // The case a naive full-timestamp equality check would let through, so it is
+  // asserted separately from the exact-midnight one.
   it('renders a sentinel carrying a time of day as an empty cell in both modes', () => {
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY, DATE_MODE)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY, DATETIME_MODE)).toBe(EMPTY);
 
-    // The time of day must not survive into the output either.
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY, DATETIME_MODE)).not.toContain('1:45:30');
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY)).not.toContain('0001');
 
-    // Both sentinel spellings collapse to the same empty cell, so the date-part
-    // comparison is genuinely indifferent to the time of day.
+    // Both sentinel spellings collapse to the same empty cell, proving the date-part
+    // comparison really is indifferent to the time of day.
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY)).toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
   });
 
   it('recognises the sentinel when the wire value carries no zone designator', () => {
-    // A serialiser that writes a date of unspecified kind omits the trailing 'Z',
-    // and such a string is parsed as LOCAL time. Left alone that could shift the
-    // instant off 0001-01-01 and leak a visible date onto the screen. The guard has
-    // to hold under both spellings, so this case is asserted rather than assumed.
+    // The zone-less spelling reaches the guard by a different parse path, so it is
+    // asserted rather than assumed to behave the same way.
     expect(pipe.transform(SENTINEL_WITHOUT_ZONE)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_WITHOUT_ZONE, DATETIME_MODE)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_WITHOUT_ZONE)).not.toContain('0001');
   });
 
-  // ===========================================================================
-  // The default mode reproduces the three-to-one legacy majority: a date alone.
-  // ===========================================================================
   it('renders an ordinary date as a short date when no mode is supplied', () => {
     expect(pipe.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
 
-    // Omitting the argument and passing 'date' explicitly must be the same call,
-    // which is what makes the default safe to rely on in a template.
     expect(pipe.transform(ORDINARY_INSTANT, DATE_MODE)).toBe(ORDINARY_AS_DATE);
     expect(pipe.transform(ORDINARY_INSTANT, DATE_MODE)).toBe(pipe.transform(ORDINARY_INSTANT));
 
-    // The date alone: no time of day, and the year is not abbreviated. A
-    // two-digit-year token would have printed '9/10/04'.
     expect(pipe.transform(ORDINARY_INSTANT)).not.toContain(':');
     expect(pipe.transform(ORDINARY_INSTANT)).toContain('2004');
   });
 
-  // ===========================================================================
-  // The two-mode contract. Formatter 1 (Users.ascx.vb L400, `.ToString`) printed a
-  // time of day; formatters 2, 3 and 4 (Portals.ascx.vb L254,
-  // SecurityRoles.ascx.vb L379, MemberServices.ascx.vb L177, all
-  // `.ToShortDateString`) did not. The modes keep both outputs reachable.
-  // ===========================================================================
   it('renders a date and a time of day in datetime mode, differing from the default', () => {
     expect(pipe.transform(ORDINARY_INSTANT, DATETIME_MODE)).not.toBe(
       pipe.transform(ORDINARY_INSTANT),
@@ -325,36 +343,23 @@ describe('DateDisplayPipe', () => {
     );
     expect(pipe.transform(ORDINARY_INSTANT_WITH_TIME_OF_DAY, DATETIME_MODE)).toContain('PM');
 
-    // The date half is identical either way, so the two modes differ in the time of
-    // day alone and never in the calendar date they report.
     expect(pipe.transform(ORDINARY_INSTANT_WITH_TIME_OF_DAY)).toBe(ORDINARY_AS_DATE);
   });
 
-  // ===========================================================================
-  // CRITICAL CASE 3 of 3 - 9999-12-31 is a real value, not a sentinel.
-  //
-  // RoleController.vb L542 assigns `New System.DateTime(9999, 12, 31)` for the
-  // one-off billing frequency "O", meaning the membership never expires. It is
-  // sentinel-shaped but genuine, so it must render normally. Deciding to show it as
-  // the word "never" is a screen's decision, not this pipe's.
-  // ===========================================================================
+  // Sentinel-shaped but genuine: the legacy one-off billing frequency used a
+  // year-9999 expiry to mean "never expires", so it must render like any other date.
   it('renders the perpetual expiry value normally rather than as absent', () => {
     expect(pipe.transform(PERPETUAL_INSTANT)).not.toBe(EMPTY);
     expect(pipe.transform(PERPETUAL_INSTANT)).toBe(PERPETUAL_AS_DATE);
     expect(pipe.transform(PERPETUAL_INSTANT, DATE_MODE)).toBe(PERPETUAL_AS_DATE);
     expect(pipe.transform(PERPETUAL_INSTANT, DATETIME_MODE)).toBe(PERPETUAL_AS_DATE_TIME);
 
-    // The full four-digit year survives: a two-digit-year token would have printed
-    // '12/31/99' and quietly turned "perpetual" into a date in the past.
+    // The four-digit year survives: a two-digit-year token would print '12/31/99'
+    // and quietly turn "perpetual" into a date in the past.
     expect(pipe.transform(PERPETUAL_INSTANT)).toContain('9999');
     expect(pipe.transform(PERPETUAL_INSTANT)).not.toContain('Invalid');
   });
 
-  // ===========================================================================
-  // Absent values. The erasure is confined to the display layer: on the wire an
-  // omitted date, an explicit null and the minimum-value sentinel remain three
-  // distinct things, and only the rendering treats them alike.
-  // ===========================================================================
   it('renders null as the same empty cell the sentinel produces', () => {
     expect(pipe.transform(null)).toBe(EMPTY);
     expect(pipe.transform(null, DATE_MODE)).toBe(EMPTY);
@@ -368,16 +373,11 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(undefined, DATETIME_MODE)).toBe(EMPTY);
     expect(pipe.transform(undefined)).toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
 
-    // And indistinguishable from null once rendered.
     expect(pipe.transform(undefined)).toBe(pipe.transform(null));
   });
 
-  // ===========================================================================
-  // An unusable value degrades to an empty cell, never to the platform's own
-  // invalid-date wording. This mirrors the legacy failure path: `DisplayDate` seeded
-  // its result with `Null.NullString` (Users.ascx.vb L397) and its handler at
-  // L404-L406 swallowed the exception, so the seeded empty string was what returned.
-  // ===========================================================================
+  // Mirrors the legacy failure path, where the formatter seeded an empty result and
+  // swallowed the exception rather than surfacing one.
   it('renders an unparseable value as an empty cell rather than an error string', () => {
     expect(pipe.transform(UNPARSEABLE_INPUT)).toBe(EMPTY);
     expect(pipe.transform(UNPARSEABLE_INPUT, DATE_MODE)).toBe(EMPTY);
@@ -386,6 +386,153 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(UNPARSEABLE_INPUT)).not.toContain('Invalid');
     expect(pipe.transform(UNPARSEABLE_INPUT, DATETIME_MODE)).not.toContain('Invalid');
     expect(pipe.transform(UNPARSEABLE_INPUT)).not.toContain('NaN');
+  });
+
+  // ===========================================================================
+  // A WRONG DATE IS WORSE THAN NO DATE.
+  //
+  // `not-a-date` is the easy negative case: the platform rejects it, so the pipe
+  // needs no help to degrade correctly. The dangerous negatives are the ones the
+  // platform ACCEPTS. It rolls a non-existent day forward into the next month and
+  // it parses bare numbers and prose into confident instants, so without explicit
+  // validation the pipe would render a plausible, wrong, unfalsifiable date - the
+  // one failure mode a reader cannot detect by looking at the screen.
+  //
+  // Each expectation below states the literal empty string rather than reading the
+  // expected value back out of the pipe, so a regression in the pipe's validation
+  // cannot move actual and expected together and stay green.
+  // ===========================================================================
+  it('renders a date that does not exist on the calendar as an empty cell', () => {
+    for (const input of CALENDAR_INVALID_INPUTS) {
+      expect(pipe.transform(input)).toBe('');
+      expect(pipe.transform(input, DATE_MODE)).toBe('');
+      expect(pipe.transform(input, DATETIME_MODE)).toBe('');
+    }
+  });
+
+  it('never renders the month a non-existent day would roll forward into', () => {
+    // The specific normalisations the platform performs, named so that a
+    // regression reports which wrong date leaked rather than merely that
+    // something did. February 30 becomes March 1, February 29 of a common year
+    // becomes March 1, and September 31 becomes October 1.
+    expect(pipe.transform('2024-02-30T00:00:00Z')).not.toBe('3/1/2024');
+    expect(pipe.transform('2023-02-29')).not.toBe('3/1/2023');
+    expect(pipe.transform('2024-09-31')).not.toBe('10/1/2024');
+
+    // And none of them leaks a partial rendering of the intended month either.
+    expect(pipe.transform('2024-02-30T00:00:00Z')).not.toContain('2024');
+    expect(pipe.transform('2023-02-29')).not.toContain('2023');
+    expect(pipe.transform('2024-09-31')).not.toContain('2024');
+  });
+
+  it('renders a numeric-like value as an empty cell rather than a year', () => {
+    for (const input of NUMERIC_LIKE_INPUTS) {
+      expect(pipe.transform(input)).toBe('');
+      expect(pipe.transform(input, DATETIME_MODE)).toBe('');
+    }
+
+    // The platform's own readings of those values, forbidden by name. A numeric
+    // identifier that reached a date field through a mismapped property would
+    // otherwise display as a January date and look entirely credible.
+    expect(pipe.transform('0')).not.toBe('1/1/2000');
+    expect(pipe.transform('1')).not.toBe('1/1/2001');
+    expect(pipe.transform('2024')).not.toBe('1/1/2024');
+  });
+
+  it('renders a value outside the wire format as an empty cell', () => {
+    for (const input of NON_WIRE_FORMAT_INPUTS) {
+      expect(pipe.transform(input)).toBe('');
+      expect(pipe.transform(input, DATETIME_MODE)).toBe('');
+    }
+
+    // A locale-formatted string is the most likely of these to arrive in practice
+    // and the least likely to be noticed, because the platform reads it correctly
+    // and the pipe would echo it back looking right.
+    expect(pipe.transform('12/31/2024')).not.toBe('12/31/2024');
+
+    // A leading sign is silently discarded by the platform, so a negative number
+    // rendered into a date field would display as a positive year.
+    expect(pipe.transform('-2024-09-10')).not.toBe('9/10/2024');
+  });
+
+  // ===========================================================================
+  // The validation must be a scalpel, not a hammer. These two cases are the ones
+  // a careless implementation breaks, and they are asserted immediately after the
+  // rejections so that tightening the pipe can never quietly cost a valid value.
+  // ===========================================================================
+  it('still renders a genuine leap day', () => {
+    expect(pipe.transform(LEAP_DAY_INSTANT)).toBe(LEAP_DAY_AS_DATE);
+    expect(pipe.transform(LEAP_DAY_INSTANT)).not.toBe('');
+
+    // February 29 exists in 2024 and does not exist in 2023, and the pipe must
+    // distinguish the two rather than treating the date as suspicious in general.
+    expect(pipe.transform('2023-02-29')).toBe('');
+  });
+
+  it('still renders a low year that is not the sentinel year', () => {
+    // The sentinel guard must be a scalpel too. It recognises year ONE, and this
+    // expectation is what stops it - or the calendar check in front of it - from
+    // degenerating into a filter on small years generally. Without this
+    // expectation the pipe's choice to build its calendar probe with
+    // `setUTCFullYear` rather than `Date.UTC` would be untested, because for the
+    // sentinel year itself the two constructions yield the same empty cell.
+    expect(pipe.transform(LOW_YEAR_INSTANT)).toBe(LOW_YEAR_AS_DATE);
+    expect(pipe.transform(LOW_YEAR_INSTANT)).not.toBe('');
+
+    // Adjacent by year, opposite in outcome: the sentinel still blanks, and this
+    // value still renders, so the two are genuinely distinguished rather than
+    // being swept up together.
+    expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
+    expect(pipe.transform(LOW_YEAR_INSTANT)).not.toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
+
+    // Also asserted in the other mode, because the sentinel guard sits ahead of
+    // the mode branch and a regression there would affect both.
+    expect(pipe.transform(LOW_YEAR_INSTANT, DATETIME_MODE)).toBe(LOW_YEAR_AS_DATE_TIME);
+  });
+
+  it('renders an out-of-range time of day as an empty cell', () => {
+    // These values document the pipe's DIVISION OF LABOUR, and they are the only
+    // inputs that still reach its unparseable guard. Their shape is the wire
+    // format and their date portion is a real calendar date, so neither the format
+    // check nor the calendar check rejects them; the platform parser does, and the
+    // pipe defers to it rather than restating hour, minute and second ranges.
+    //
+    // WHAT THESE EXPECTATIONS DO NOT PROVE, established by measurement rather than
+    // assumed. Deleting the pipe's `Number.isNaN` guard does NOT fail this test.
+    // The formatter is not lenient about an invalid instant either - `formatDate`
+    // delegates to a converter that throws `Unable to convert "Invalid Date" into
+    // a date` - and the pipe already wraps the formatter in a handler that returns
+    // an empty cell. The two guards are therefore redundant BY DESIGN, and this
+    // test pins the OUTCOME, which both of them produce, rather than which one
+    // produced it. The explicit guard is retained because relying on a third-party
+    // formatter to throw is relying on an implementation detail, but that is a
+    // defence-in-depth argument and is not something these assertions establish.
+    for (const input of TIME_OUT_OF_RANGE_INPUTS) {
+      expect(pipe.transform(input)).toBe('');
+      expect(pipe.transform(input, DATE_MODE)).toBe('');
+      expect(pipe.transform(input, DATETIME_MODE)).toBe('');
+    }
+
+    // And the date portion is not salvaged and rendered on its own, which would be
+    // a plausible-looking result assembled from an unusable value.
+    for (const input of TIME_OUT_OF_RANGE_INPUTS) {
+      expect(pipe.transform(input)).not.toBe('9/10/2024');
+      expect(pipe.transform(input)).not.toContain('2024');
+      expect(pipe.transform(input, DATETIME_MODE)).not.toContain('Invalid');
+      expect(pipe.transform(input, DATETIME_MODE)).not.toContain('NaN');
+    }
+  });
+
+  it('still renders a value whose offset places it on another UTC day', () => {
+    // 01:00 at +02:00 is 23:00 UTC on the preceding day, so the rendered date is
+    // legitimately not the date written in the string. A validation implemented by
+    // round-tripping the parsed instant back to a UTC date would reject this
+    // value; one that checks only the calendar triple accepts it, which is why
+    // this expectation is the guard on that design choice.
+    expect(pipe.transform(OFFSET_CROSSING_MIDNIGHT)).toBe(
+      OFFSET_CROSSING_MIDNIGHT_AS_DATE,
+    );
+    expect(pipe.transform(OFFSET_CROSSING_MIDNIGHT)).not.toBe('');
   });
 
   // ===========================================================================
@@ -398,10 +545,82 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(BLANK_INPUT, DATE_MODE)).toBe(EMPTY);
     expect(pipe.transform(BLANK_INPUT, DATETIME_MODE)).toBe(EMPTY);
 
-    // Whitespace is discarded before the value is judged, so a padded blank is
-    // treated as blank and not parsed into some accidental instant.
     expect(pipe.transform(WHITESPACE_INPUT)).toBe(EMPTY);
     expect(pipe.transform(WHITESPACE_INPUT, DATETIME_MODE)).toBe(EMPTY);
+  });
+
+  // ===========================================================================
+  // Impossible calendar dates. The platform's parser does not reject an
+  // out-of-range day, it NORMALISES it by rolling forward into the next month, so
+  // every value below parses successfully and would be displayed as a confidently
+  // wrong date that the record does not hold. Each expectation asserts against the
+  // exact wrong answer it exists to prevent, so it cannot pass vacuously.
+  // ===========================================================================
+  it('renders a day that does not exist in its month as an empty cell', () => {
+    // February 30 never exists in any year.
+    expect(pipe.transform('2024-02-30')).toBe(EMPTY);
+    expect(pipe.transform('2024-02-30')).not.toBe('3/1/2024');
+
+    // 2023 is a common year, so February 29 does not exist in it.
+    expect(pipe.transform('2023-02-29')).toBe(EMPTY);
+    expect(pipe.transform('2023-02-29')).not.toBe('3/1/2023');
+
+    // April and June are thirty-day months.
+    expect(pipe.transform('2024-04-31')).toBe(EMPTY);
+    expect(pipe.transform('2024-04-31')).not.toBe('5/1/2024');
+
+    // The date part is validated even when a time and a zone follow it.
+    expect(pipe.transform('2024-06-31T12:00:00Z', DATETIME_MODE)).toBe(EMPTY);
+    expect(pipe.transform('2024-06-31T12:00:00Z', DATETIME_MODE)).not.toBe(
+      '7/1/2024 12:00:00 PM',
+    );
+  });
+
+  it('renders an out-of-range month or day-of-month as an empty cell', () => {
+    // These already failed to parse, so they are guarded twice over. They are
+    // asserted anyway so the new range checks cannot silently start admitting
+    // them if the parsing behaviour ever changes.
+    expect(pipe.transform('2024-13-01')).toBe(EMPTY);
+    expect(pipe.transform('2024-00-10')).toBe(EMPTY);
+    expect(pipe.transform('2024-01-32')).toBe(EMPTY);
+    expect(pipe.transform('2024-01-00')).toBe(EMPTY);
+  });
+
+  it('still renders every legitimate date, including the leap day and both extremes', () => {
+    // 2024 is divisible by four and not by one hundred, so February 29 exists.
+    expect(pipe.transform('2024-02-29')).toBe('2/29/2024');
+
+    // The century rule and its four-hundred-year exception, which a naive
+    // divisible-by-four test would get wrong in opposite directions.
+    expect(pipe.transform('2000-02-29')).toBe('2/29/2000');
+    expect(pipe.transform('1900-02-29')).toBe(EMPTY);
+
+    // Month-length boundaries that are valid and must not be rejected.
+    expect(pipe.transform('2024-01-31')).toBe('1/31/2024');
+    expect(pipe.transform('2024-04-30')).toBe('4/30/2024');
+
+    // The perpetual expiry and the null-date sentinel both survive the new
+    // validation: the first renders normally, the second is still recognised as
+    // the sentinel rather than being mistaken for an impossible date.
+    expect(pipe.transform(PERPETUAL_INSTANT)).toBe(PERPETUAL_AS_DATE);
+    expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
+    expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe(SENTINEL_IF_UNGUARDED);
+  });
+
+  it('does not reject an offset-bearing value whose UTC date differs from its own text', () => {
+    // This is why validation is arithmetic on the string's components and never a
+    // round-trip against the parsed instant. The text says July 4 while the
+    // instant is genuinely July 3 in UTC, and a round-trip comparison would
+    // therefore reject a perfectly valid value as impossible.
+    expect(pipe.transform('2024-07-04T02:00:00+05:00', DATETIME_MODE)).toBe(
+      '7/3/2024 9:00:00 PM',
+    );
+    expect(pipe.transform('2024-07-04T02:00:00+05:00')).toBe('7/3/2024');
+
+    // The same reasoning across a month boundary, and westward as well as
+    // eastward, so the tolerance is not an artefact of one direction.
+    expect(pipe.transform('2024-07-01T02:00:00+05:00')).toBe('6/30/2024');
+    expect(pipe.transform('2024-06-30T22:00:00-05:00')).toBe('7/1/2024');
   });
 
   // ===========================================================================
@@ -423,8 +642,6 @@ describe('DateDisplayPipe', () => {
   it('is unaffected by intervening calls with other inputs and other modes', () => {
     const before = pipe.transform(ORDINARY_INSTANT);
 
-    // Interleave every other behaviour the pipe has: a sentinel, an absent value,
-    // an unusable value, the perpetual value and the other mode.
     expect(pipe.transform(SENTINEL_WITH_TIME_OF_DAY, DATETIME_MODE)).toBe(EMPTY);
     expect(pipe.transform(null)).toBe(EMPTY);
     expect(pipe.transform(UNPARSEABLE_INPUT)).toBe(EMPTY);
@@ -437,16 +654,265 @@ describe('DateDisplayPipe', () => {
     expect(after).toBe(before);
   });
 
-  it('renders the same output from a freshly resolved instance', () => {
-    // No state accumulates on the instance, so a second pipe resolved from the same
-    // injector agrees with the first for every representative input.
-    const other = TestBed.inject(DateDisplayPipe);
+  it('resolves as a singleton within one injector', () => {
+    // Stated first, because it is the fact that makes the following test necessary
+    // and it was previously mistaken for the opposite. `DateDisplayPipe` is
+    // registered once as a provider, so an injector caches the instance it creates
+    // and every later resolution returns that same object. A second
+    // `TestBed.inject` therefore cannot demonstrate anything about a fresh
+    // instance - it hands back the pipe already under test.
+    expect(TestBed.inject(DateDisplayPipe)).toBe(pipe);
+    expect(TestBed.inject(DateDisplayPipe)).toBe(TestBed.inject(DateDisplayPipe));
+  });
 
-    expect(other.transform(ORDINARY_INSTANT)).toBe(pipe.transform(ORDINARY_INSTANT));
-    expect(other.transform(ORDINARY_INSTANT, DATETIME_MODE)).toBe(
+  it('renders the same output from a genuinely independent instance', () => {
+    // A SEPARATE injector, so the pipe it produces is a different object rather
+    // than the cached one. The locale is pinned identically, which is what makes
+    // the output comparison meaningful: the only difference between the two pipes
+    // is their identity.
+    const separateInjector = Injector.create({
+      providers: [
+        { provide: LOCALE_ID, useValue: TEST_LOCALE },
+        { provide: DateDisplayPipe, useClass: DateDisplayPipe, deps: [LOCALE_ID] },
+      ],
+    });
+    const independent = separateInjector.get(DateDisplayPipe);
+
+    // Instance inequality asserted BEFORE the outputs are compared. Without this,
+    // the comparisons below could be satisfied by one object agreeing with itself,
+    // which proves nothing about state accumulation.
+    expect(independent).not.toBe(pipe);
+    expect(independent).toBeInstanceOf(DateDisplayPipe);
+
+    // No state accumulates on an instance, so two independent pipes agree for
+    // every representative input. Grids create one pipe instance per binding, so
+    // independence across instances is the contract they rely on.
+    expect(independent.transform(ORDINARY_INSTANT)).toBe(pipe.transform(ORDINARY_INSTANT));
+    expect(independent.transform(ORDINARY_INSTANT, DATETIME_MODE)).toBe(
       pipe.transform(ORDINARY_INSTANT, DATETIME_MODE),
     );
-    expect(other.transform(SENTINEL_AT_MIDNIGHT)).toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
-    expect(other.transform(PERPETUAL_INSTANT)).toBe(pipe.transform(PERPETUAL_INSTANT));
+    expect(independent.transform(SENTINEL_AT_MIDNIGHT)).toBe(
+      pipe.transform(SENTINEL_AT_MIDNIGHT),
+    );
+    expect(independent.transform(PERPETUAL_INSTANT)).toBe(pipe.transform(PERPETUAL_INSTANT));
+
+    // Stated as literals as well, so this test cannot pass by two pipes being
+    // identically broken.
+    expect(independent.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
+    expect(independent.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
+    expect(independent.transform(PERPETUAL_INSTANT)).toBe(PERPETUAL_AS_DATE);
+  });
+
+  it('carries no state from one call into the next across instances', () => {
+    // Order-independence, driven through two distinct objects. The first pipe is
+    // exercised with the values most likely to leave residue - a sentinel, an
+    // absent value and a rejected value - and the second must be unaffected.
+    const independent = new DateDisplayPipe(TEST_LOCALE);
+
+    expect(independent).not.toBe(pipe);
+
+    expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
+    expect(pipe.transform(null)).toBe(EMPTY);
+    expect(pipe.transform(UNPARSEABLE_INPUT)).toBe(EMPTY);
+    expect(pipe.transform('2024-02-30T00:00:00Z')).toBe(EMPTY);
+
+    expect(independent.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
+    expect(independent.transform(ORDINARY_INSTANT, DATETIME_MODE)).toBe(
+      ORDINARY_AS_DATE_TIME,
+    );
+  });
+
+  // ===========================================================================
+  // A value that is not a string at all.
+  //
+  // The declared parameter type says a template cannot pass one, and strict
+  // template checking enforces that at compile time. But the value normally
+  // arrives off the wire, typed only by a DTO interface that is erased at
+  // runtime, so a malformed or evolved response can still deliver a number, an
+  // object or an array. Reaching `.trim()` with one of those throws a TypeError -
+  // and because a pipe runs inside a template expression, that would abort the
+  // whole view rather than blank one cell.
+  //
+  // These expectations therefore model the erased call deliberately, rather than
+  // pretending the compile-time type is a runtime guarantee.
+  // ===========================================================================
+
+  /**
+   * Calls `transform` the way the runtime can, with the compile-time parameter
+   * type erased.
+   *
+   * The erasure is expressed as a single narrow assertion on the bound method
+   * rather than with a suppression comment or an `any`, so it stays visible,
+   * localised and type-checked at every call site below: `wireValue` is `unknown`,
+   * so nothing here can accidentally become untyped.
+   *
+   * @param wireValue The value as it would arrive from a malformed response.
+   * @param mode Optional rendering mode, forwarded unchanged.
+   * @returns Whatever the pipe returns for that value.
+   */
+  function transformWireValue(wireValue: unknown, mode?: DateDisplayMode): string {
+    const erased = pipe.transform.bind(pipe) as (
+      value: unknown,
+      mode?: DateDisplayMode,
+    ) => string;
+
+    return erased(wireValue, mode);
+  }
+
+  /**
+   * Every non-string shape a malformed payload realistically delivers where the
+   * contract promised an ISO-8601 string.
+   *
+   * A number is the likeliest of them - an epoch millisecond value is what a
+   * serialiser emits when a date is not formatted as a string - and a `Date`
+   * instance is the likeliest mistake on the client side, since the pipe's own
+   * documentation has to state that it does not accept one.
+   */
+  const NON_STRING_WIRE_VALUES: readonly unknown[] = [
+    0,
+    1094774400000,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    true,
+    false,
+    {},
+    { value: ORDINARY_INSTANT },
+    [],
+    [ORDINARY_INSTANT],
+    new Date(ORDINARY_INSTANT),
+    Symbol('date'),
+    (): string => ORDINARY_INSTANT,
+  ];
+
+  it('renders every non-string payload as an empty cell instead of throwing', () => {
+    for (const wireValue of NON_STRING_WIRE_VALUES) {
+      expect(() => transformWireValue(wireValue)).not.toThrow();
+      expect(transformWireValue(wireValue)).toBe(EMPTY);
+      expect(transformWireValue(wireValue, DATE_MODE)).toBe(EMPTY);
+      expect(transformWireValue(wireValue, DATETIME_MODE)).toBe(EMPTY);
+    }
+  });
+
+  it('renders a non-string payload indistinguishably from an absent one', () => {
+    // The rendering must not invent a new visible state for a malformed payload.
+    // An empty cell is what null, undefined, a blank string and the sentinel all
+    // produce, so an unusable value of any other shape must produce it too.
+    expect(transformWireValue(1094774400000)).toBe(pipe.transform(null));
+    expect(transformWireValue({})).toBe(pipe.transform(undefined));
+    expect(transformWireValue([ORDINARY_INSTANT])).toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
+  });
+
+  it('renders a Date instance as an empty cell, as its documented contract states', () => {
+    // The pipe accepts a string only: every date crosses the wire as one and no
+    // consumer holds a parsed instance. Passing an instance is a contract error,
+    // and a contract error must degrade rather than throw.
+    const instance = new Date(ORDINARY_INSTANT);
+
+    expect(transformWireValue(instance)).toBe(EMPTY);
+    expect(transformWireValue(instance)).not.toBe(ORDINARY_AS_DATE);
+  });
+
+  // ===========================================================================
+  // Candidate length.
+  //
+  // The wire contract is one absolute ISO-8601 instant, and no string longer than
+  // the pipe's bound can parse as one, so the bound cannot change what renders -
+  // an over-long value already produced an empty cell by failing to parse. What
+  // it changes is that no normalisation or parse is attempted over a payload whose
+  // length is set by a remote response.
+  // ===========================================================================
+  it('renders an over-long candidate as an empty cell, exactly as an unparseable one', () => {
+    const overLong = `${ORDINARY_INSTANT}${'0'.repeat(512)}`;
+
+    expect(pipe.transform(overLong)).toBe(EMPTY);
+    expect(pipe.transform(overLong, DATE_MODE)).toBe(EMPTY);
+    expect(pipe.transform(overLong, DATETIME_MODE)).toBe(EMPTY);
+
+    // Indistinguishable from the unparseable case, which is the claim the bound
+    // rests on.
+    expect(pipe.transform(overLong)).toBe(pipe.transform(UNPARSEABLE_INPUT));
+  });
+
+  it('renders a long repeated payload as an empty cell without emitting any date', () => {
+    const repeated = '2004-09-10T00:00:00.000Z '.repeat(64);
+
+    expect(pipe.transform(repeated)).toBe(EMPTY);
+    expect(pipe.transform(repeated, DATETIME_MODE)).toBe(EMPTY);
+    expect(pipe.transform(repeated)).not.toContain('2004');
+  });
+
+  it('still renders a heavily padded but legitimate value normally', () => {
+    // THE REASON THE BOUND IS APPLIED AFTER TRIMMING. This value is far longer
+    // than the bound as it arrives, and well within it once trimmed. Bounding the
+    // raw value would blank a legitimate date, which would be a behavioural
+    // change rather than a defence - so this expectation is what pins the order.
+    const padded = `${' '.repeat(96)}${ORDINARY_INSTANT}${' '.repeat(96)}`;
+
+    expect(padded.length).toBeGreaterThan(64);
+    expect(pipe.transform(padded)).toBe(ORDINARY_AS_DATE);
+    expect(pipe.transform(padded, DATETIME_MODE)).toBe(ORDINARY_AS_DATE_TIME);
+  });
+
+  it('leaves every ordinary wire shape well inside the bound', () => {
+    // Positive control: the bound must be invisible for real data. Each of these
+    // renders exactly as the expectations earlier in this file require.
+    expect(pipe.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
+    expect(pipe.transform(ORDINARY_INSTANT_WITH_TIME_OF_DAY, DATETIME_MODE)).toBe(
+      ORDINARY_WITH_TIME_OF_DAY_AS_DATE_TIME,
+    );
+    expect(pipe.transform(PERPETUAL_INSTANT)).toBe(PERPETUAL_AS_DATE);
+    expect(pipe.transform(SENTINEL_WITHOUT_ZONE)).toBe(EMPTY);
+  });
+
+  // ===========================================================================
+  // GHSA-48r7-hpm6-gfxm - `@angular/common` denial of service through an
+  // out-of-memory condition in `formatDate`. The vulnerable input is the FORMAT
+  // argument, and the advisory exempts an application whose format is hardcoded.
+  //
+  // The pipe's own `render` takes a two-member union of literal types, so the
+  // compiler rejects any other pattern - a widened signature or a derived pattern
+  // will not build. These expectations pin the observable half of that invariant:
+  // whatever the input, the output can only ever be one of the two documented
+  // shapes, so no third format can have reached the formatter.
+  // ===========================================================================
+  it('emits only the two documented output shapes, whatever the input', () => {
+    const shortDate = /^\d{1,2}\/\d{1,2}\/\d{4}$/;
+    const dateAndTime = /^\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2} (?:AM|PM)$/;
+    const inputs: readonly (string | null | undefined)[] = [
+      ORDINARY_INSTANT,
+      ORDINARY_INSTANT_WITH_TIME_OF_DAY,
+      PERPETUAL_INSTANT,
+      SENTINEL_AT_MIDNIGHT,
+      SENTINEL_WITHOUT_ZONE,
+      UNPARSEABLE_INPUT,
+      BLANK_INPUT,
+      WHITESPACE_INPUT,
+      null,
+      undefined,
+    ];
+
+    for (const input of inputs) {
+      const asDate = pipe.transform(input, DATE_MODE);
+      const asDateTime = pipe.transform(input, DATETIME_MODE);
+
+      expect(asDate === EMPTY || shortDate.test(asDate)).toBeTrue();
+      expect(asDateTime === EMPTY || dateAndTime.test(asDateTime)).toBeTrue();
+    }
+  });
+
+  it('accepts no caller influence over the format, only over the mode', () => {
+    // The public surface offers a closed two-member mode union and nothing else,
+    // so a consumer can select between two fixed patterns but can never supply,
+    // extend or assemble one. An unrecognised mode falls back to the date shape
+    // rather than being interpreted.
+    const erasedMode = pipe.transform.bind(pipe) as (
+      value: string | null | undefined,
+      mode?: unknown,
+    ) => string;
+
+    expect(erasedMode(ORDINARY_INSTANT, 'M/d/yyyy h:mm:ss a')).toBe(ORDINARY_AS_DATE);
+    expect(erasedMode(ORDINARY_INSTANT, 'a'.repeat(4096))).toBe(ORDINARY_AS_DATE);
+    expect(erasedMode(ORDINARY_INSTANT, {})).toBe(ORDINARY_AS_DATE);
+    expect(erasedMode(ORDINARY_INSTANT, 0)).toBe(ORDINARY_AS_DATE);
   });
 });

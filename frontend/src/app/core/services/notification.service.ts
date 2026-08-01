@@ -1,161 +1,137 @@
-/**
- * @fileoverview Client-side notification surface for the `dnn-migration`
- * administration application.
- *
- * This service owns one small, in-memory, append-ordered queue of user-facing
- * notifications. Every entry is nothing more than a **severity** plus an
- * **already-composed, plain-text message**.
- *
- * ## Position in the architecture
- *
- * It is one of only two files under `core/services/` that is not an HTTP
- * wrapper - the other being `token-storage.service.ts`. It performs no network
- * I/O whatsoever and imports no transport package.
- *
- * ## Producers and consumers
- *
- * - **Producer** - `core/interceptors/error.interceptor.ts` (planned path) calls
- *   {@link NotificationService.notify} once it has *already* chosen a severity
- *   and *already* composed a display string.
- * - **Producer** - feature components report post-mutation outcomes
- *   (`POST` 201, `PUT` 200, `DELETE` 204) through the thin severity aliases.
- * - **Consumer** - the shared `error-banner` component reads
- *   {@link NotificationService.notifications} and renders each `message` as
- *   **text content**, never as markup.
- *
- * ## Deliberate non-responsibilities
- *
- * The governing directive for Angular services in this migration is that they
- * are restricted to API communication. This file is a bounded exception in
- * *kind* - a client-side UI surface rather than a transport wrapper - but it is
- * emphatically **not** an exception to the prohibition on logic. It therefore
- * holds, by design:
- *
- * - no business logic, no domain decisions and no derivation of any kind;
- * - no HTTP status interpretation - mapping a status code onto a severity is
- *   the error interceptor's job (see `MIGRATION` note 1 below);
- * - no RFC 7807 payload parsing;
- * - no presentation behaviour - no auto-dismiss timer, no animation, no
- *   positioning, no de-duplication window. Auto-dismiss, if it is ever wanted,
- *   belongs to the consuming component;
- * - no localisation (see `MIGRATION` note 4 below);
- * - no caching (see `MIGRATION` note 3 below).
- *
- * @see Website/admin/Security/AccessDenied.ascx.vb - the legacy,
- *      presentation-only denial page that establishes both the severity rule and
- *      the plain-text rule recorded in the `MIGRATION` notes below.
- */
-
 import { Injectable, signal, type Signal } from '@angular/core';
 
-// MIGRATION: an HTTP 403 surfaces at 'warning' severity, not at 'error'.
-//
-// Measured first-hand in Website/admin/Security/AccessDenied.ascx.vb: `Page_Load`
-// (L41-L47) performs NO permission check at all - it only *presents* a denial
-// that was already decided elsewhere. Both of its branches render at
-// `ModuleMessage.ModuleMessageType.YellowWarning`:
-//   * L43 for an inbound query-string message, and
-//   * L45 for the localised "AccessDenied" fallback.
-// (`YellowWarning` is the only member of that legacy enum observable from this
-// file's source, so it is the only one cited.)
-//
-// The severity *decision* for a given status code is made upstream, in
-// `core/interceptors/error.interceptor.ts`. This vocabulary exists only so that
-// the decision can be expressed faithfully - which is why 'warning' is a
-// first-class member below rather than a synonym for 'error'.
-
 /**
- * The closed severity vocabulary a queued notification may carry.
+ * Closed severity vocabulary for a queued notification.
  *
- * Exactly four members, and deliberately no more:
- *
- * - `'success'` and `'info'` carry post-mutation outcomes (`POST` 201,
- *   `PUT` 200, `DELETE` 204).
- * - `'warning'` carries the legacy `YellowWarning` case documented immediately
- *   above - most importantly an authorisation denial.
- * - `'error'` carries genuine failures.
- *
- * Declared as a string-literal union rather than an enum: the workspace enables
- * `isolatedModules`, under which an inlined constant enum is not legal, and a
- * plain enum would emit a runtime object for no benefit.
- *
- * @remarks
- * This type is declared here rather than under `core/models/` on purpose. That
- * folder holds exactly nine wire-contract models - portal, module, user, role,
- * permission, tab, auth, paged-result and problem details - and a notification
- * is a purely client-side concern that never crosses the wire, so it has no
- * place among them.
+ * `'warning'` is a first-class member rather than a synonym for `'error'`,
+ * because an authorisation denial is presented as a warning rather than as a
+ * failure. Callers choose the severity; nothing here derives one.
  */
 export type NotificationSeverity = 'success' | 'info' | 'warning' | 'error';
 
 /**
- * A single queued, user-facing notification.
+ * One queued notification.
  *
- * Every member is `readonly`: entries are immutable value objects, and the queue
- * that holds them is replaced wholesale rather than mutated in place.
- *
- * @remarks
- * Named `AppNotification`, never bare `Notification`. The workspace compiles
- * against the DOM library, which already declares a global `Notification` (the
- * Web Notifications API); an unprefixed name would shadow it and invite a silent
- * mix-up between an in-page banner and an operating-system notification.
- *
- * @example
- * ```ts
- * // Produced internally by NotificationService.notify('warning', 'Access denied.')
- * const entry: AppNotification = { id: 1, severity: 'warning', message: 'Access denied.' };
- * ```
+ * Named `AppNotification` rather than `Notification` to avoid shadowing the DOM
+ * global of that name, which would silently change what `Notification` means in
+ * any file importing from here.
  */
 export interface AppNotification {
-  /**
-   * Stable, deterministic identifier, unique for the lifetime of the service
-   * instance. Monotonically increasing from 1, and never reused - not even after
-   * {@link NotificationService.clear}. Consumers use it both as the argument to
-   * {@link NotificationService.dismiss} and as the `@for` track key.
-   */
   readonly id: number;
 
-  /** The already-decided severity. This service never derives it. */
   readonly severity: NotificationSeverity;
 
-  // MIGRATION: `message` is PLAIN TEXT and is rendered as text content, never as
-  // markup - because legacy message wording is untrusted HTML.
-  //
-  // Measured across the 37 in-scope
-  // Website/admin/{Portal,Users,Security,Modules,Tabs}/App_LocalResources/*.resx
-  // files (1211 <data> entries in total): 76 values carry at least one raw HTML
-  // tag. One of them - `Advertising.Text` in
-  // Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx - embeds a
-  // live script element (type="text/javascript"), accounting for all four
-  // script-tag occurrences in the corpus.
-  //
-  // The legacy code itself encodes rather than renders, which is the precedent
-  // followed here: AccessDenied.ascx.vb:L43 wraps the inbound value in
-  // HttpUtility.HtmlEncode(HttpUtility.UrlDecode(...)) before displaying it.
-  //
-  // Consequently this service never treats a message as markup, so there is
-  // nothing here to escape, strip or filter, and no trusted-HTML bypass is
-  // offered to any consumer. Angular's default text interpolation is the whole
-  // of the defence, and it is sufficient precisely because markup is never
-  // honoured.
   /**
    * The already-composed, display-ready message, treated strictly as plain text.
    *
-   * Passed through verbatim - no trimming, no truncation, no case change, no
-   * substitution. Consumers must bind it as text content.
+   * Passed through verbatim - no trimming, no case change, no substitution and
+   * nothing appended. The single exception is length: a message longer than
+   * {@link MAX_MESSAGE_LENGTH} is retained only up to that bound, for the reason
+   * documented on the constant. No marker is added to signal the cut, because
+   * adding one would be the substitution this contract forbids and would also be
+   * a display decision.
+   *
+   * Guaranteed to carry visible text: {@link NotificationService.notify} refuses a
+   * blank or whitespace-only message outright, so no entry with an unreadable
+   * message can ever reach this queue. Consumers therefore need no emptiness guard
+   * of their own before rendering.
+   *
+   * Consumers must bind it as text content.
    */
   readonly message: string;
 }
 
 /**
- * The canonical empty queue.
- *
- * Frozen so the base state cannot be mutated even accidentally, and shared by
- * both the initial signal value and {@link NotificationService.clear} so that
- * clearing an already-empty queue is reference-stable and therefore a true
- * no-op under the signal's default `Object.is` equality check.
+ * The single empty-queue instance, used both as the initial value and as the
+ * value {@link NotificationService.clear} restores. Frozen because it is shared.
  */
 const EMPTY_QUEUE: readonly AppNotification[] = Object.freeze([]);
+
+/**
+ * The greatest number of UTF-16 code units of a single message this service will
+ * retain.
+ *
+ * A notification message reaches this service from two directions, and one of
+ * them is not under the application's control: the error interceptor composes it
+ * from a server `ProblemDetails` payload, whose `detail` and `errors` members are
+ * remote input. Retaining such a string at whatever length it happens to arrive
+ * makes the queue's memory footprint a function of a remote response rather than
+ * of this application, which is the unbounded-input exposure this bound closes.
+ *
+ * The figure is measured, not chosen for roundness. Across the 40 in-scope
+ * `App_LocalResources` and `App_GlobalResources` resource files - 1561 plain
+ * `<data>` values, the authoritative corpus of legacy admin wording - value
+ * length runs to a median of 22 characters, a 95th percentile of 166 and a 99th
+ * percentile of 387. The only values beyond about 7000 characters are
+ * `MESSAGE_PORTAL_TERMS` and `MESSAGE_PORTAL_PRIVACY`, which are long-form legal
+ * *page content* rather than banner messages and would never be queued here.
+ * 1024 is therefore roughly 2.6 times the 99th percentile and clears every
+ * in-scope message value, so it cannot truncate legitimate wording.
+ *
+ * @see boundMessage - applies this bound.
+ */
+const MAX_MESSAGE_LENGTH = 1024;
+
+/**
+ * The greatest number of entries the queue will hold at once.
+ *
+ * Beyond this depth the oldest entry is dropped as the newest is appended, so
+ * the queue behaves as a fixed-capacity window over the most recent
+ * notifications.
+ *
+ * This bound exists for two reasons that reinforce each other:
+ *
+ * - **Retained bytes become finite.** Combined with
+ *   {@link MAX_MESSAGE_LENGTH}, worst-case retained message text is a provable
+ *   25 x 1024 code units - roughly 25 KB - instead of growing without limit for
+ *   as long as a failing request is retried.
+ * - **The append cost stops compounding.** Each append copies the queue to keep
+ *   the replace-never-mutate discipline below, which is O(n) in the queue's
+ *   depth. With the depth capped, n is a constant, so a run of appends is O(1)
+ *   each and linear overall rather than quadratic.
+ *
+ * 25 is generous by an order of magnitude against the behaviour being replaced:
+ * the legacy `AddModuleMessage` surface rendered a single module message per page
+ * render, so no legacy screen ever displayed more than a handful at once.
+ *
+ * Dropping the oldest rather than refusing the newest is deliberate. The newest
+ * notification is the one describing what just happened, so it is the one the
+ * user needs; silently discarding it would hide a live failure, which is exactly
+ * what the no-de-duplication rule above is there to prevent.
+ */
+const MAX_QUEUED_NOTIFICATIONS = 25;
+
+/**
+ * Applies {@link MAX_MESSAGE_LENGTH} to one message.
+ *
+ * A message at or below the bound is returned as the very same string, so the
+ * overwhelmingly common case allocates nothing and the verbatim contract on
+ * {@link AppNotification.message} holds exactly.
+ *
+ * @param message The already-composed, display-ready plain-text message.
+ * @returns The message unchanged, or its leading {@link MAX_MESSAGE_LENGTH} code
+ *          units when it is longer.
+ */
+function boundMessage(message: string): string {
+  if (message.length <= MAX_MESSAGE_LENGTH) {
+    return message;
+  }
+
+  // `String.prototype.length` counts UTF-16 code units rather than characters, so
+  // a cut at exactly the bound can land between the two halves of a surrogate
+  // pair and leave a lone high surrogate as the final unit. Stepping back one unit
+  // in that case keeps the retained text well-formed. It matters because the
+  // consumer renders the message as text content, where a lone surrogate is not
+  // representable and shows as U+FFFD - a visible mangling of the last character.
+  //
+  // The message is known to be longer than the bound here, so when the unit at
+  // `MAX_MESSAGE_LENGTH - 1` is a high surrogate its partner really is being
+  // dropped; this is not a speculative guard.
+  const lastRetainedUnit = message.charCodeAt(MAX_MESSAGE_LENGTH - 1);
+  const cutSplitsSurrogatePair = lastRetainedUnit >= 0xd800 && lastRetainedUnit <= 0xdbff;
+
+  return message.slice(0, cutSplitsSurrogatePair ? MAX_MESSAGE_LENGTH - 1 : MAX_MESSAGE_LENGTH);
+}
 
 // MIGRATION: the 116 in-scope legacy `DataCache` call sites are deliberately NOT
 // reproduced on the client.
@@ -169,8 +145,14 @@ const EMPTY_QUEUE: readonly AppNotification[] = Object.freeze([]);
 //
 // Caching in the target architecture is a server-side concern only -
 // `IMemoryCache` behind `ICacheService`. This queue therefore holds no cache,
-// keeps no de-duplication window, expires nothing on a timer and evicts nothing:
-// it is a transient view-model slice and nothing more.
+// keeps no de-duplication window and expires nothing on a timer: it is a
+// transient view-model slice and nothing more.
+//
+// The fixed-depth overflow guard at MAX_QUEUED_NOTIFICATIONS is not a cache
+// eviction policy and must not be read as one. It is keyless and timeless: there
+// is no key to look an entry up by, no expiry to reach and no re-population path,
+// so nothing here can be a hit or a miss. It is purely a capacity ceiling on a
+// display queue, and dropping an entry loses nothing that could be fetched again.
 
 // MIGRATION: localisation is not ported.
 //
@@ -186,144 +168,135 @@ const EMPTY_QUEUE: readonly AppNotification[] = Object.freeze([]);
 // formatting.
 
 /**
- * Holds the transient queue of user-facing notifications and exposes it as a
- * read-only Angular signal.
+ * Holds an in-memory, append-ordered queue of user-facing notifications, each
+ * one a severity plus an already-composed message.
  *
- * Registered with `providedIn: 'root'`, which makes it a tree-shakeable
- * application-singleton provider. No component anywhere in this application
- * declares it in a `providers` array. It injects nothing, so it intentionally
- * declares no constructor.
- *
- * State is held in a signal rather than a stream: signals are the v19-native
- * reactive primitive, they compose directly with `computed()` in consuming
- * stores, and they need no subscription management or teardown in templates.
- *
- * The queue is always replaced, never mutated in place, so every emission hands
- * consumers a fresh immutable array and `ChangeDetectionStrategy.OnPush`
- * components refresh reliably.
- *
- * @example
- * ```ts
- * private readonly notificationService = inject(NotificationService);
- *
- * // Read (e.g. in an error-banner component):
- * protected readonly entries = this.notificationService.notifications;
- *
- * // Write:
- * this.notificationService.success('Portal saved.');
- * this.notificationService.warning('Access denied.');
- * ```
+ * It deliberately owns no presentation behaviour - no auto-dismiss window, no
+ * animation, no de-duplication - and no interpretation of transport failures:
+ * whoever reports an outcome has already chosen the severity and composed the
+ * text. Every operation replaces the queue rather than mutating it in place.
  */
 @Injectable({ providedIn: 'root' })
 export class NotificationService {
-  /**
-   * The single writable state slice. Private so that the queue can only ever be
-   * changed through this class's own vocabulary.
-   *
-   * Declared before {@link NotificationService.notifications} deliberately:
-   * class field initialisers run in declaration order, so the read-only
-   * projection below is guaranteed to see an initialised signal.
-   */
   private readonly _notifications = signal<readonly AppNotification[]>(EMPTY_QUEUE);
 
   /**
-   * The queue, in insertion order, as a read-only signal.
-   *
-   * Backed by `asReadonly()`, so consumers can read and derive from it but have
-   * no `set` or `update` to call. Combined with the `readonly` members of
-   * {@link AppNotification} and the replace-never-mutate discipline below, the
-   * queue cannot be altered from outside this class.
-   *
-   * @returns The current entries; an empty array when nothing is queued.
+   * The queue, oldest entry first. Read-only at compile time: the `readonly`
+   * element type and the read-only signal make an accidental write a compile
+   * error, they do not harden the array at runtime.
    */
   readonly notifications: Signal<readonly AppNotification[]> = this._notifications.asReadonly();
 
   /**
-   * Source of the next {@link AppNotification.id}.
-   *
-   * A plain monotonic counter, deliberately not a random or time-derived value:
-   * ids stay deterministic, which keeps specs exact and makes `@for` track keys
-   * stable. It is never reset - not even by {@link NotificationService.clear} -
-   * so an id captured from a dismissed entry can never collide with a future
-   * one.
+   * A plain counter, never rewound - neither by a dismissal nor by
+   * {@link NotificationService.clear} - so an id is unique for the whole service
+   * lifetime and stays usable as a template track key.
    */
   private nextId = 1;
 
   /**
-   * Appends one notification to the end of the queue.
+   * Appends one notification to the end of the queue, unless the message is blank.
    *
-   * Both arguments are taken as given: the severity is already decided and the
-   * message is already composed. Nothing is inspected, reinterpreted or
-   * reformatted.
+   * The severity is taken as given, and a message that carries any visible text is
+   * stored **verbatim** - never trimmed, case-folded, escaped, decoded, normalised
+   * or reformatted. Only its length is inspected, for the bound described below.
    *
-   * Edge cases, all intentional pass-through behaviour rather than oversight:
-   * - an empty `message` is queued as-is - suppressing it would be a display
-   *   decision, which belongs to the consuming component;
-   * - two identical `(severity, message)` pairs produce two distinct entries
-   *   with distinct ids, because no de-duplication window exists here;
-   * - the queue is unbounded, because trimming it would be a presentation
-   *   policy.
+   * ## Blank messages are refused rather than queued
+   *
+   * A message that is empty, or that consists only of whitespace, is discarded: no
+   * entry is created, the queue is left untouched, and {@link nextId} does not
+   * advance. The call is a no-op.
+   *
+   * A notification is not data a component may choose how to render; it is an
+   * instruction to interrupt the user. Queueing a blank one produces a visible,
+   * dismissible, screen-reader-announced alert carrying nothing to read - a defect
+   * no consumer can render its way out of, because the only correct rendering of
+   * "nothing to say" is not to appear at all. Pushing the check downstream would
+   * also multiply it across every current and future consumer.
+   *
+   * The legacy evidence points the same way: `Library/Components/Shared/Null.vb`
+   * L71-L75 returns `""` from `NullString`, so the empty string IS the legacy
+   * model's representation of an ABSENT string. A caller arriving here with `''`
+   * is reporting that it has no message, and the faithful response to "no message"
+   * is to raise no notification. Whitespace-only input is absent in exactly the
+   * same sense.
+   *
+   * `nextId` deliberately does not advance on a refusal. The counter's contract is
+   * that it never reissues an id, not that it counts call attempts, and leaving it
+   * still keeps the ids of real entries gapless.
+   *
+   * ## Two bounds apply
+   *
+   * Both exist because a message can originate in a remote `ProblemDetails`
+   * payload, so neither its length nor how many times it arrives is under this
+   * application's control:
+   *
+   * - a message longer than {@link MAX_MESSAGE_LENGTH} is retained only up to
+   *   that bound - see {@link boundMessage};
+   * - appending to a queue already holding {@link MAX_QUEUED_NOTIFICATIONS}
+   *   entries drops the oldest, so depth never exceeds the cap.
+   *
+   * Neither bound is reachable by legitimate wording or by legitimate use, so for
+   * every message this application composes itself the behaviour is identical to
+   * an unbounded append.
+   *
+   * ## Behaviour that IS intentional pass-through
+   *
+   * - two identical `(severity, message)` pairs produce two distinct entries with
+   *   distinct ids, because no de-duplication window exists here;
+   * - interior whitespace, casing, tabs and line breaks in a nonblank message are
+   *   all preserved exactly, including any leading or trailing padding, because
+   *   reformatting a message that does have content would be a display decision.
    *
    * @param severity The already-decided severity to render at.
-   * @param message The already-composed, display-ready plain-text message.
+   * @param message The already-composed, display-ready plain-text message. A blank
+   *   or whitespace-only value is refused and the call becomes a no-op.
    */
   notify(severity: NotificationSeverity, message: string): void {
-    const entry: AppNotification = { id: this.nextId++, severity, message };
-    this._notifications.update((queue) => [...queue, entry]);
+    // The bound is applied BEFORE the emptiness test, so a message that is only
+    // whitespace is still recognised as blank after truncation.
+    const bounded = boundMessage(message);
+
+    // Emptiness is tested on a trimmed COPY; the stored value is the bounded
+    // original, so a message such as `' kept '` keeps its padding while `'   '` is
+    // refused without consuming an id.
+    if (bounded.trim().length === 0) {
+      return;
+    }
+
+    const entry: AppNotification = { id: this.nextId++, severity, message: bounded };
+
+    this._notifications.update((queue) => {
+      // Written as a surplus count rather than a `length === cap` test so that it
+      // is total: it collapses to a plain append for every depth below the cap and
+      // still returns a correctly capped queue for any depth at or above it.
+      const surplus = queue.length + 1 - MAX_QUEUED_NOTIFICATIONS;
+
+      return surplus > 0 ? [...queue.slice(surplus), entry] : [...queue, entry];
+    });
   }
 
-  /**
-   * Queues a `'success'` notification. A thin alias for
-   * {@link NotificationService.notify} with a fixed severity, carrying no extra
-   * behaviour of its own.
-   *
-   * @param message The already-composed, display-ready plain-text message.
-   */
   success(message: string): void {
     this.notify('success', message);
   }
 
-  /**
-   * Queues an `'info'` notification. A thin alias for
-   * {@link NotificationService.notify} with a fixed severity, carrying no extra
-   * behaviour of its own.
-   *
-   * @param message The already-composed, display-ready plain-text message.
-   */
   info(message: string): void {
     this.notify('info', message);
   }
 
-  /**
-   * Queues a `'warning'` notification - the severity the legacy denial page
-   * used for an authorisation failure, per `MIGRATION` note 1 above. A thin
-   * alias for {@link NotificationService.notify} with a fixed severity, carrying
-   * no extra behaviour of its own.
-   *
-   * @param message The already-composed, display-ready plain-text message.
-   */
   warning(message: string): void {
     this.notify('warning', message);
   }
 
-  /**
-   * Queues an `'error'` notification. A thin alias for
-   * {@link NotificationService.notify} with a fixed severity, carrying no extra
-   * behaviour of its own.
-   *
-   * @param message The already-composed, display-ready plain-text message.
-   */
   error(message: string): void {
     this.notify('error', message);
   }
 
   /**
-   * Removes the entry carrying the given id, if one is present.
+   * Removes the entry carrying `id`, if one is present.
    *
-   * Filtering is total, so an id that is absent - already dismissed, cleared, or
-   * never issued - is simply a no-op rather than an error: a consumer racing a
-   * dismiss against a clear must not be punished for it. Every surviving entry
-   * keeps its identity and its relative order.
+   * An id that was never issued, or that a clear has already discarded, is a
+   * no-op rather than an error. Surviving entries keep their identity and order.
    *
    * @param id The {@link AppNotification.id} to remove.
    */
@@ -332,12 +305,8 @@ export class NotificationService {
   }
 
   /**
-   * Empties the queue.
-   *
-   * Restores the shared frozen {@link EMPTY_QUEUE}, so calling this on an
-   * already-empty queue changes no reference and therefore notifies no
-   * dependent. {@link NotificationService.nextId} is intentionally left
-   * untouched, keeping ids unique across the whole service lifetime.
+   * Empties the queue by restoring the shared empty instance, so clearing an
+   * already-empty queue publishes an unchanged reference and notifies nobody.
    */
   clear(): void {
     this._notifications.set(EMPTY_QUEUE);

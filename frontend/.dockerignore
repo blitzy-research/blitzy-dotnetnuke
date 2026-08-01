@@ -1,100 +1,35 @@
-# =============================================================================
-# frontend/.dockerignore
+# Build-context hygiene for a frontend-rooted context only. The shipped images
+# both build from the repository root, so the root .dockerignore is what Docker
+# consults for them; this list applies when a build is invoked against this
+# directory instead.
 #
-# Build-context hygiene for the Angular 19 workspace `dnn-migration`
-# (AAP 0.2.1.2 CREATE target, placed at the workspace root by AAP 0.4.1.2,
-# recorded as "no legacy equivalent" by AAP 0.5.1.6).
-#
-# ----------------------------- READ THIS FIRST -------------------------------
-# THIS FILE DOES NOT GOVERN THE IMAGES THAT ARE ACTUALLY SHIPPED.
-#
-# The real Docker build context for BOTH images is the REPOSITORY ROOT, not
-# this directory. The exclusion list Docker consults during validation Gate 6
-# (`docker-compose build`) and Gate 7 (`docker-compose up -d`) is therefore
-# the .dockerignore at the repository root - NOT this one. Three independent
-# proofs:
-#
-#   1. docker/docker-compose.yml declares `context: ..` for both the `api`
-#      and the `frontend` service. Relative to docker/, `..` is the
-#      repository root.
-#   2. docker/frontend.Dockerfile copies `frontend/package.json` and
-#      `docker/nginx.conf`. Neither path is reachable from a context rooted
-#      at frontend/, so the context cannot be this directory.
-#   3. docs/project-guide.md L233-237 documents the per-image commands
-#        docker build -f docker/api.Dockerfile      -t dnnmigration-api      .
-#        docker build -f docker/frontend.Dockerfile -t dnnmigration-frontend .
-#      The trailing `.` IS the context: the repository root.
-#
-# This file consequently governs ONLY a frontend-rooted context - a local
-# experiment, a future per-application pipeline, or a tool invoked as
-# `docker build ./frontend`. It deliberately does NOT compensate for anything
-# the repository-root .dockerignore does: that file is what keeps the ~35 MB
-# of read-only legacy VB.NET reference material out of the real context, and
-# those trees are not inside frontend/, so they are correctly absent here.
-#
-# ------------------------------ DESIGN RULES ---------------------------------
-# * Because this file is not load-bearing for the shipped images, an
-#   accidental over-exclusion here fails SILENTLY and LATE. Only generated,
-#   transient and machine-local material is excluded below. No source file
-#   and no build configuration file is excluded, ever.
-# * Nothing that `npm ci`, `ng build` or `ng test` needs may appear below.
-#   That means package.json, the committed npm lockfile, angular.json, all
-#   three tsconfig files, karma.conf.js, .nvmrc, the whole of src/ (every
-#   component, every style partial, src/environments/* and every Jasmine
-#   spec file) and the whole of public/ all stay in the context. Two of
-#   those are hard gates: `npm ci` aborts outright without the committed
-#   npm lockfile, and Gate 4 fails outright without karma.conf.js, which
-#   supplies the ChromeHeadlessNoSandbox launcher that headless Chrome
-#   needs in order to start as root.
-# * This file contains no negation entry (no line beginning with an
-#   exclamation mark) and no broad directory pattern, so no later line can
-#   shadow an earlier one. Docker applies patterns in order and the last
-#   match wins; the safest design is one that needs no ordering at all.
-# * Version-control patterns are spelled out in full rather than globbed,
-#   because public/.gitkeep is a required asset: it is what keeps the
-#   angular.json assets glob (`input: "public"`) valid. A `.git*` wildcard
-#   would silently empty public/ and break the production build.
-#
-# Pattern semantics: an unprefixed pattern is anchored at the context root; a
-# `**/` prefix matches at any depth; a directory match excludes its subtree.
-# =============================================================================
+# Because it is not load-bearing for the shipped images, an over-exclusion here
+# fails silently and late. Only generated, transient and machine-local material
+# is listed: nothing that `npm ci`, `ng build` or `ng test` reads may be added,
+# and version-control patterns are enumerated rather than globbed so that no
+# `.git*` wildcard can reach an asset under public/. There are no negation
+# entries, so no later line can shadow an earlier one.
 
-# -----------------------------------------------------------------------------
-# Installed dependencies - the single most important entry.
-# AAP 0.1.1.3: "A .dockerignore is required to keep node_modules, bin and obj
-# out of the build contexts." docker/frontend.Dockerfile runs `npm ci` INSIDE
-# the node:20-alpine build stage, so a host tree copied in would ship
-# wrong-platform native bindings and defeat the deterministic, reproducible
-# install that the committed npm lockfile exists to guarantee.
-# -----------------------------------------------------------------------------
+# Installed dependencies - the single most important entry. The frontend image
+# runs `npm ci` inside its build stage, so a host tree copied in would ship
+# wrong-platform native bindings and defeat the deterministic lockfile install.
 **/node_modules/
 
-# -----------------------------------------------------------------------------
-# Build output and compiler caches.
-# `ng build --configuration production` emits dist/dnn-migration/browser
-# inside the image; it is produced there and never copied in. out-tsc/ is the
-# TypeScript outDir declared by tsconfig.app.json and tsconfig.spec.json.
-# -----------------------------------------------------------------------------
+# Build output and compiler caches. The production bundle is produced inside the
+# image, never copied in; out-tsc/ is the TypeScript outDir.
 **/dist/
 **/.angular/
 out-tsc/
 **/*.tsbuildinfo
 
-# -----------------------------------------------------------------------------
 # Test and coverage output.
-# Gate 4 runs `ng test --watch=false --browsers=ChromeHeadless
-# --code-coverage`, and karma.conf.js writes to coverage/dnn-migration, so
-# these are real local artefacts on any developer machine.
-# -----------------------------------------------------------------------------
 **/coverage/
 **/.nyc_output/
 karma-results*
 chrome-profiler-events*.json
 speed-measure-plugin*.json
 
-# -----------------------------------------------------------------------------
 # Logs and package-manager caches.
-# -----------------------------------------------------------------------------
 **/*.log
 npm-debug.log*
 yarn-error.log*
@@ -102,17 +37,12 @@ yarn-error.log*
 .eslintcache
 .npm/
 
-# -----------------------------------------------------------------------------
-# Version-control metadata. Enumerated exactly, and anchored at the context
-# root, so that no pattern can reach public/.gitkeep (see DESIGN RULES above).
-# -----------------------------------------------------------------------------
+# Version-control metadata, enumerated exactly and anchored at the context root.
 .git/
 .gitignore
 .gitattributes
 
-# -----------------------------------------------------------------------------
 # Editor and operating-system noise.
-# -----------------------------------------------------------------------------
 .vscode/
 .idea/
 **/*.swp
@@ -125,16 +55,40 @@ yarn-error.log*
 
 # -----------------------------------------------------------------------------
 # Machine-local environment overrides and credentials.
-# NOTE: the workspace's real, committed configuration lives in
-# src/environments/ (environment.ts and environment.development.ts, per
-# AAP 0.4.1.2) and is NOT matched by anything here - every pattern in this
-# group is anchored at the context root or keyed to a credential extension.
+#
+# Matched by FAMILY, never by enumerated suffix. An earlier revision listed
+# `.env`, `.env.local` and `.env.*.local` individually, which left
+# `.env.production` and `.env.development` - the two most common deployment
+# overrides - free to be copied into an image layer, and covered only two of the
+# credential containers. `**/.env*` now closes the whole family at every depth,
+# matching the repository-root .dockerignore that governs the context
+# docker/frontend.Dockerfile actually builds from.
+#
+# NOTE: the workspace's real, committed configuration lives in src/environments/
+# (environment.ts and environment.development.ts, per AAP 0.4.1.2) and is NOT
+# matched by anything here. `**/.env*` requires a basename beginning with a
+# literal dot, and `environment.ts` / `environment.development.ts` do not, so
+# the production build keeps every file it needs. Every other pattern in this
+# group is keyed to a credential extension that no workspace source file uses.
 # -----------------------------------------------------------------------------
-.env
-.env.local
-.env.*.local
+.env*
+*.pem
+*.key
+*.pfx
+*.p12
+*.p8
+*.jks
+*.keystore
+*.ppk
+**/.env*
 **/*.pem
 **/*.key
+**/*.pfx
+**/*.p12
+**/*.p8
+**/*.jks
+**/*.keystore
+**/*.ppk
 
 # -----------------------------------------------------------------------------
 # Deliberately NOT excluded: .editorconfig, README.md and this file itself.

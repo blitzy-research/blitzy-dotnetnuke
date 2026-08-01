@@ -1,32 +1,31 @@
-/**
- * Application footer — the single `contentinfo` band of the administration shell.
- *
- * Composition: rendered exactly once, by `layout/shell`, positioned after the shell's
- * `<main>` element so that DOM order and tab order both place the footer last. It is
- * never routed and it is never instantiated with bindings.
- *
- * Responsibility boundary — deliberately minimal. This class owns ONLY the copyright
- * data. It depends on nothing, performs no I/O, subscribes to nothing, declares no
- * template inputs or outputs, registers no provider and implements no lifecycle hook.
- * `footer.component.html` owns the semantics and the plain-text rendering;
- * `footer.component.scss` owns every visual value, resolved through the global design
- * tokens. No colour, spacing or typographic literal appears in this file.
- *
- * Legacy provenance — the DotNetNuke `Copyright` skin object:
- * - `Website/admin/Skins/Copyright.ascx.vb` `Page_Load` L78-L91 selected between
- *   `PortalSettings.FooterText` (L85-L86) and a formatted resource string (L88).
- * - `Website/admin/Skins/copyright.ascx` L2 rendered the result into
- *   `<asp:label id="lblCopyright" cssclass="SkinObject" enableviewstate="False">`.
- * - `Website/admin/Skins/App_LocalResources/Copyright.ascx.resx` L42-L44 holds that
- *   file's only resource entry: `Copyright.Text` = `Copyright (c) {0} {1}`, where
- *   `{0}` is `Year(Now())` and `{1}` is `PortalSettings.PortalName`.
- * - `Website/Default.aspx.vb` L191-L199 independently corroborates the same wording
- *   and the same two substitutions on the code path that fed the copyright meta tag.
- *
- * Every behavioural difference from that legacy band is annotated below with a
- * `// MIGRATION:` comment, per AAP Rule T5.
- */
 import { ChangeDetectionStrategy, Component } from '@angular/core';
+
+/**
+ * Resolves the four-digit calendar year from the platform clock.
+ *
+ * The workspace's ONE clock read for this band, deliberately given a name and
+ * lifted to module scope so that the value has a single, greppable origin
+ * instead of being computed inline wherever it happens to be needed. Two
+ * independent reads — one in the class and another in the paired markup or in a
+ * specification — could straddle a New Year boundary and disagree, which is a
+ * genuine, if rare, source of nondeterminism; one named seam makes that
+ * impossible by construction, and the paired specification asserts precisely
+ * that the rendered year is the value this function returned.
+ *
+ * No injected clock abstraction is introduced, and that is a scope decision
+ * rather than an oversight. `IClock` is a BACKEND Domain abstraction, and the
+ * frontend's service inventory is closed at the nine services the plan
+ * enumerates — portal, module, user, role, permission, tab, auth, token storage
+ * and notification. Adding a tenth to serve one static line of chrome would
+ * create surface the plan does not sanction, contrary to Minimal Change Clause
+ * item 5, so the platform is read directly and the read is centralised here
+ * instead.
+ *
+ * @returns The current four-digit calendar year in the host's local time zone.
+ */
+function resolveCurrentYear(): number {
+  return new Date().getFullYear();
+}
 
 // ---------------------------------------------------------------------------
 // Documented divergences from the legacy footer band. AAP Rule T5: "Preserve
@@ -56,15 +55,20 @@ import { ChangeDetectionStrategy, Component } from '@angular/core';
 // value at `Copyright.ascx.resx` L43. The typographic copyright glyph is deliberately
 // NOT substituted — altering the rendered characters would be a silent divergence.
 //
-// MIGRATION: The year is computed component-locally via `new Date().getFullYear()`.
-// There is no frontend clock abstraction to depend on — `IClock` is a backend Domain
-// abstraction (AAP 0.5.1.1) — so a direct platform read is the correct and only
-// mechanism available here, and the closed dependency surface contains no date library.
+// MIGRATION: The year is computed component-locally, through the single named
+// `resolveCurrentYear()` seam declared below. There is no frontend clock abstraction to
+// depend on — `IClock` is a backend Domain abstraction (AAP 0.5.1.1), the frontend
+// service inventory is closed at the nine services AAP 0.4.1.2 enumerates, and the
+// closed dependency surface contains no date library — so a direct platform read behind
+// one named function is the correct and only mechanism available here.
 // It is evaluated exactly once, when the component is created, and never in the paired
-// markup — a markup-side `new Date()` would re-evaluate on every change-detection pass
-// and could not be asserted against. The paired specification therefore asserts a
-// four-digit pattern, never a literal year, so the band stays correct across year
-// boundaries without a rebuild of the assertion.
+// markup — a markup-side clock read would re-evaluate on every change-detection pass
+// and could not be asserted against. Centralising it also removes the only realistic
+// source of nondeterminism in this band: two independent reads straddling a New Year
+// boundary could disagree, whereas one read cannot. The paired specification asserts a
+// four-digit pattern and asserts that the rendered year IS this member's value, never a
+// literal year, so the band stays correct across year boundaries without a rebuild of
+// the assertion.
 //
 // MIGRATION: `PortalSettings.FooterText` (`Library/Components/Portal/PortalInfo.vb`
 // L36 and L109-L116, edited through the "Copyright:" field at
@@ -113,34 +117,36 @@ import { ChangeDetectionStrategy, Component } from '@angular/core';
 @Component({
   selector: 'app-footer',
   standalone: true,
+  // Intentionally empty, and stated rather than omitted: the paired template
+  // uses only plain elements and interpolation, so it needs no imported
+  // selector, pipe or directive. Declaring the empty array keeps this component's
+  // metadata shaped like every sibling standalone component in the workspace —
+  // the shared confirm-dialog and loading-spinner components both declare
+  // `imports: []` for the same reason — so a reader never has to infer whether
+  // the omission was deliberate.
+  imports: [],
   templateUrl: './footer.component.html',
   styleUrl: './footer.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class FooterComponent {
   /**
-   * Four-digit calendar year of the copyright notice.
+   * Read once at construction and immutable thereafter, so on-push change
+   * detection never has to re-evaluate it and a plain field carries no reactivity
+   * it would never use.
    *
    * Replaces the legacy `Year(Now())` argument supplied as `{0}` to the
    * `Copyright.Text` resource string (`Copyright.ascx.vb` L88). Read once from the
    * platform clock at creation time and held immutable for the component's lifetime,
    * so `OnPush` change detection never needs to re-evaluate it. A signal would add
    * reactivity with nothing to react to, so a plain `readonly` field is used.
+   *
+   * The read goes through {@link resolveCurrentYear}, the single named seam for it,
+   * so this component performs exactly one clock read per instance and every other
+   * member — and the paired specification — derives from that one value rather than
+   * consulting the clock again.
    */
-  readonly currentYear: number = new Date().getFullYear();
+  readonly currentYear: number = resolveCurrentYear();
 
-  /**
-   * The fully composed copyright notice, for example `Copyright (c) 2026 DotNetNuke`.
-   *
-   * Derived from {@link FooterComponent.currentYear}, which keeps the year a single
-   * source of truth across both members. The wording reproduces the measured
-   * `Copyright (c) {0} {1}` resource value byte-for-byte apart from the two documented
-   * substitutions above, and it is plain text — never markup.
-   *
-   * Both this member and `currentYear` are exposed so that the paired template may
-   * bind whichever granularity it needs: the precomposed line, or just the year with
-   * the wording expressed in the markup. Neither is a placeholder; both are fully
-   * computed values.
-   */
   readonly copyrightText: string = `Copyright (c) ${this.currentYear} DotNetNuke`;
 }

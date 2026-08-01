@@ -6,9 +6,11 @@
   the size attribute all sit on the HOST element, supplied by the `host`
   metadata in loading-spinner.component.ts; repeating any of them would nest a
   second live region inside the host's own and leave the two competing to
-  announce the same thing. Every dimension, colour and the spin animation
-  likewise live in loading-spinner.component.scss as design tokens, so this
-  template carries no inline styling and no branching on size.
+  announce the same thing. Every dimension and colour likewise lives in
+  loading-spinner.component.scss as design tokens, so this template carries no
+  inline styling and no branching on size. The glyph below is a static
+  indeterminate indicator, not a rotating one, for the reasons that stylesheet
+  records.
 
   MIGRATION: net-new affordance with no legacy ancestor. The five in-scope
   DotNetNuke admin trees are pure full-page-postback Web Forms, with measured
@@ -40,6 +42,6 @@
   message, not a progress affordance.
 -->
 <span class="indicator" aria-hidden="true"></span>
-@if (label) {
+@if (hasVisibleLabel) {
   <span class="label">{{ label }}</span>
 }

@@ -1,125 +1,10 @@
-// =============================================================================
-//  module-export.component.scss — scoped styles for the module content-export
-//  screen
-// =============================================================================
-//
-//  ROLE — LAYOUT AND FOCUS ONLY
-//  ----------------------------
-//  This stylesheet does two things and deliberately nothing else. It arranges
-//  the blocks the paired template renders — the page title block, the failure
-//  surface, the single-field form and the in-flight indicator — and it gives
-//  the elements this component declares a visible keyboard focus indicator.
-//
-//  It declares no colour, no font family, no font size and no control
-//  appearance. Every one of those belongs either to a shared component, which
-//  carries its own scoped styles, or to the global partials, which load in the
-//  fixed order tokens, reset, layout, tables, forms and therefore have the last
-//  word on a control's look. Restating any of them here would put two owners on
-//  one decision and guarantee drift.
-//
-//  It also reaches into nothing. Per-component style scoping is left at its
-//  default, and no encapsulation-piercing combinator is used anywhere, so the
-//  internals of the title block, the field wrapper, the spinner and the failure
-//  banner are untouchable from here and are not touched. What this file styles
-//  is this screen's own boxes plus the controls this screen's template declares
-//  — including any control projected into a shared component's slot, which
-//  keeps this component's scope rather than the host component's.
-//
-//  WHAT IT REPLACES — Website/admin/Modules/export.ascx, all 17 lines
-//  -----------------------------------------------------------------
-//    L3   a bare line-break element used as vertical spacing
-//    L4   a layout-table element pinned to a width of 560, with zero cell
-//         spacing, zero cell padding, no border, and a summary attribute
-//         ("Edit Links Design Table") copy-pasted from an unrelated screen —
-//         which is what proves it was never tabular data. In-scope legacy
-//         markup carries 68 such layout-table summaries against only 8 real
-//         grids.
-//    L6   a label cell pinned to 150, carrying the legacy bold-label class
-//    L7   a folder drop-down pinned to 300 — dropped in full, because no
-//         folder, file, upload or disk-space endpoint exists in the target API
-//    L10  a second label cell pinned to 150
-//    L11  the filename text box pinned to 300, carrying the legacy text-box
-//         class
-//    L14  a paragraph element wrapping the action row
-//    L15  the export action, followed by a literal non-breaking-space text node
-//    L16  the cancel action
-//
-//  Not one of those fixed dimensions is translated into a length literal, and
-//  none of those legacy class names is defined, referenced or reproduced. The
-//  label-and-control pairing that the layout-table element expressed is not
-//  rebuilt here either: the shared field wrapper owns the label, the help
-//  affordance and the validation message for the one remaining field, so a
-//  two-column grid at screen level would be a second, competing implementation
-//  of a layout that component already performs.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every declaration below resolves to a design token from
-//  frontend/src/styles/_tokens.scss, to a compile-time value taken from the
-//  shared breakpoint scale in frontend/src/styles/_mixins.scss, or to a plain
-//  CSS keyword that names a layout mechanism rather than a design decision. No
-//  hex colour, no named colour, no length literal, no raw numeric weight, no
-//  raw radius and no raw shadow appears anywhere in this file, and no custom
-//  property is declared here — the single document-root block that owns them
-//  all lives in the tokens partial.
-//
-//  Tokens consumed: --space-2, --space-4, --space-3.
-//  Mixins consumed: focus-ring, and the breakpoint() lookup.
-//
-//  HOW THE PARTIALS ARE LOADED — FOUR LEVELS, VERIFIED BY COMPILATION
-//  -----------------------------------------------------------------
-//  The workspace configures no Sass load path: angular.json declares no style
-//  preprocessor include paths and tsconfig.json declares no path mapping. Every
-//  load is therefore relative, and this file sits four directories below the
-//  source root — module-export, module, features, app — so the partials in
-//  src/styles are reached with four steps up. Both depths were compiled at this
-//  exact location before this file was written: four steps resolved and emitted
-//  the expected declarations, three steps failed outright with "Can't find
-//  stylesheet to import." The modern module system is used, never the
-//  deprecated file-inclusion at-rule, so the production build reports no Sass
-//  deprecation warning from here.
-//
-//  The tokens partial is deliberately NOT loaded. Its values are published as
-//  custom properties from one document-root block and are consumed by reference
-//  at run time; nothing here needs a compile-time Sass value from it. The
-//  mixins partial IS loaded, because Sass module scope is per file and a load
-//  performed anywhere else cannot make these members visible here.
-// =============================================================================
-
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  Screen flow — the vertical rhythm that replaces the legacy line-break
-//
-//  The legacy screen expressed all of its vertical spacing as content: a bare
-//  line-break element before the layout-table element, then the user-agent
-//  margins of the paragraph element that wrapped the actions. Measured against
-//  the legacy body type that break is roughly 13 units tall. Here the rhythm is
-//  a single gap declared once, so it is inspectable and adjustable instead of
-//  being smuggled into the markup, and no empty element is emitted to create
-//  space.
-//
-// MIGRATION: --space-4 rather than the --space-3 step that sits nearest the
-//  measured 13. The legacy screen had exactly one break to place; this screen
-//  separates four independent blocks — title, failure banner, form, in-flight
-//  indicator — and needs a gap that reads as a section boundary rather than as
-//  a line of leading. The spacing scale is itself a net addition rather than a
-//  translation, because the legacy stylesheets declare no spacing system at
-//  all, so choosing the step that expresses the intent is the correct use of
-//  it. The divergence is one step, and it is recorded here rather than absorbed.
-//
-//  Both selectors carry the same flow on purpose, and that is coordination
-//  rather than duplication. The paired template is authored independently, and
-//  either shape is legitimate: a screen may flow its blocks directly on the
-//  component host, or it may introduce one block wrapper in the BEM style the
-//  shared components already use. Declaring the flow for both means the rhythm
-//  is correct under either, and the redundant case costs nothing — a flow
-//  container holding a single child simply has no gap to apply. The host also
-//  needs a box-generating display value regardless, because a custom element
-//  defaults to inline and would otherwise refuse to contain block-level
-//  children correctly.
-// -----------------------------------------------------------------------------
-
+// The host needs a box-generating display regardless, because a custom element
+// defaults to inline and would not contain block-level children correctly. Both
+// selectors carry the same flow so the rhythm holds whether the blocks sit
+// directly on the host or inside one wrapper; a flow container with a single
+// child simply has no gap to apply.
 :host,
 .module-export {
   display: flex;
@@ -127,39 +12,10 @@
   gap: var(--space-4);
 }
 
-// -----------------------------------------------------------------------------
-//  The form — what the 560-wide layout-table element becomes
-//
-//  The legacy shell was 150 for the label column plus 300 for the control,
-//  inside a container pinned to 560. That container is replaced by a measure
-//  constraint taken from the shared breakpoint scale, which the mixins partial
-//  exports precisely for this use: it documents breakpoint() as available
-//  "because a container query-free layout occasionally needs the raw width — a
-//  grid max-inline-size, say", while forbidding its use inside a hand-rolled
-//  media query. This is that sanctioned case.
-//
-// MIGRATION: the 560 shell snaps to the 'sm' step, which is 480. That step is
-//  the nearest value on the shared scale — 80 away, against 208 for the next
-//  step up — and it still exceeds the 450 the legacy content actually occupied,
-//  so nothing that fitted before is squeezed now. A width token does not exist
-//  in the token vocabulary, which publishes colour, type, spacing, radius,
-//  elevation, border, motion, layering and focus scales but no measure scale;
-//  that gap is reported rather than papered over with a literal, and the shared
-//  breakpoint scale is the one design-system source of widths available.
-//
-//  A maximum rather than a fixed measure, so the form is fluid below the step
-//  and capped above it. That is why this screen needs no breakpoint mixin: the
-//  constraint already collapses gracefully on a narrow viewport, the shared
-//  field wrapper owns the label-and-control reflow, and the action row wraps
-//  intrinsically. Inventing a media query to restate behaviour the box model
-//  already provides would add a breakpoint this screen does not need.
-//
-//  The gap is one step tighter than the screen rhythm, so the form's parts read
-//  as belonging together while the screen's blocks read as separate. It applies
-//  between the field and an action row placed inside the form; with a single
-//  child it is simply inert.
-// -----------------------------------------------------------------------------
-
+// `breakpoint()` read for a raw width is the sanctioned use of that function —
+// what is barred is writing a media query by hand. A maximum rather than a fixed
+// measure keeps the form fluid below the step and capped above it, which is why
+// this screen needs no breakpoint mixin at all.
 .module-export__form {
   display: flex;
   flex-direction: column;
@@ -167,29 +23,9 @@
   max-inline-size: mx.breakpoint('sm');
 }
 
-// -----------------------------------------------------------------------------
-//  The action row — what the paragraph element and its literal space become
-//
-//  The legacy row was a paragraph holding two link actions separated by a
-//  single non-breaking-space text node. The paragraph is gone and the separator
-//  is a real gap, so the spacing survives white-space collapsing, reflows
-//  correctly, and can be reasoned about.
-//
-// MIGRATION: --space-2 rather than the --space-1 step that matches the measured
-//  space glyph, roughly 4 units at the legacy body size. The legacy separator
-//  was a typographic accident of writing two links on adjacent lines of markup,
-//  not a spacing decision, and the migration plan classifies the spacing scale
-//  as rationalised and net-new rather than translated. One space glyph does not
-//  reliably read as a boundary between two separately activatable targets, and
-//  --space-2 is the smallest step that does while staying visually tight and
-//  faithful in character. One step of divergence, recorded rather than absorbed.
-//
-//  Wrapping is intrinsic and deliberate: on a narrow viewport the second action
-//  drops to its own line instead of overflowing, and the gap then supplies the
-//  row spacing as well as the column spacing. Cross-axis centring keeps the two
-//  actions aligned to each other should their rendered heights differ.
-// -----------------------------------------------------------------------------
-
+// Wrapping is intrinsic and deliberate: on a narrow viewport the second action
+// drops to its own line instead of overflowing, and the gap then supplies the row
+// spacing as well as the column spacing.
 .module-export__actions {
   display: flex;
   flex-wrap: wrap;
@@ -198,45 +34,29 @@
 }
 
 // -----------------------------------------------------------------------------
-//  Focus visibility for the controls this screen declares
+//  FOCUS VISIBILITY IS NOT DECLARED HERE — IT IS GLOBAL
 //
-//  The shared focus-ring mixin, so the indicator is the one the design system
-//  defines rather than a local invention. It attaches to :focus-visible, which
-//  means a keyboard or assistive-technology user gets a ring and a mouse user
-//  sees no change at all — the improvement therefore carries zero visual cost,
-//  which is exactly what the design system's accessibility rank requires. It
-//  emits an outline, never a border or a shadow, so the ring cannot reflow the
-//  control it marks and survives forced-colours mode. No outline is removed
-//  anywhere in this file.
+//  This file previously carried its own `button, a[href], input` group applying
+//  the shared focus-ring mixin. That group is removed: src/styles/_reset.scss
+//  section 13 already applies the same mixin to a strict SUPERSET of those
+//  elements — a, button, input, select, textarea, summary and every element with
+//  a non-negative explicit tab index — so every control this screen can render
+//  already receives the ring, from one definition site.
 //
-//  Element selectors rather than class selectors, for two reasons. They are
-//  independent of the class names the paired template chooses, so the indicator
-//  cannot be lost to a naming mismatch; and they cover the controls wherever
-//  the template places them — the two actions in a form footer or projected
-//  into the title block's action slot, and the filename control projected into
-//  the shared field wrapper — because projected content keeps this component's
-//  style scope. Per-component scoping confines all three selectors to this
-//  screen's own markup, so nothing inside a shared component is reached, and
-//  the mixin is documented as idempotent, so a control that also receives the
-//  ring from a global rule is unaffected.
+//  The removed block defended itself on the grounds that the mixin is idempotent,
+//  so a control receiving the ring twice is unaffected. That is true and beside
+//  the point: idempotence makes the duplicate HARMLESS, not NECESSARY. A second
+//  declaration of a shared primitive is still a second definition, free to drift
+//  from the first the moment either is edited, and free to keep applying an old
+//  treatment after the global one changes. The design system owns focus
+//  indication; a feature screen consumes it.
 //
-//  Exactly three selectors, because those are the elements this screen has. The
-//  legacy actions were anchors and the target uses real buttons, so both are
-//  listed; the anchor form also covers a download affordance offered after a
-//  successful export. There is no select and no textarea on this screen — the
-//  folder drop-down is dropped — so neither is styled.
-//
-// MIGRATION: net-new, from a baseline of literal zero. Across all 34 legacy
-//  stylesheets under Website/ there is not one focus declaration and not one
-//  outline declaration, so keyboard users had only the browser default. Two
-//  legacy affordances were worse than absent: the shared label control put a
-//  negative tab index on both its help trigger and its help image, removing
-//  them from the tab order outright. That defect is not reproduced, and the
-//  affordance itself belongs to the shared field wrapper, not to this screen.
+// MIGRATION: focus indication remains a NET ADDITION relative to the legacy site —
+//  across all 34 legacy stylesheets under Website/ there is not one focus or
+//  outline declaration, so keyboard users had only the browser default. Two legacy
+//  affordances were worse than absent: the shared label control put a negative tab
+//  index on both its help trigger and its help image, removing them from the tab
+//  order outright. That defect is not reproduced. None of this is declared here
+//  any longer, but the addition itself is unchanged — only its single definition
+//  site is.
 // -----------------------------------------------------------------------------
-
-button,
-a[href],
-input {
-  @include mx.focus-ring;
-}

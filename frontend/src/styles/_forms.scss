@@ -1,261 +1,15 @@
-// =============================================================================
-//  _forms.scss — global form element conventions
-// =============================================================================
-//
-//  ROLE
-//  ----
-//  Element-level presentation for every form control in the dnn-migration SPA.
-//  This is the baseline that the shared form-field component — and search-input,
-//  confirm-dialog and every feature form — inherits, so that a labelled control
-//  looks right before a single component style is written.
-//
-//  It is the successor to the legacy DotNetNuke form vocabulary. Two legacy
-//  affordances dominate the 39 in-scope admin screens and both are replaced
-//  here: the legacy admin text-box class, which is the single highest-traffic
-//  class in the migration, and the legacy help panel, whose markup ancestor is
-//  Website/controls/labelcontrol.ascx.
-//
-//  It deliberately styles SEMANTIC ELEMENTS, not legacy class names. The legacy
-//  classes are reference inputs only; none is reproduced, because the target
-//  vocabulary is native elements plus each shared component's own scoped class.
-//
-//  SCOPE BOUNDARY — WHAT THIS FILE IS NOT
-//  --------------------------------------
-//  The form-field COMPONENT lives at src/app/shared/components/form-field/ and
-//  owns its own layout and its own scoped stylesheet. This file never selects a
-//  component by name and never assumes a component's internal class structure.
-//  It also does not own page titles or section scaffolding: the legacy module
-//  title maps to the shared page-header component and the legacy field-group
-//  heading scaffolding maps to _layout.scss. Only <legend> is claimed here,
-//  because a legend is unambiguously a form element.
-//
-//  Global CSS is never tree-shaken — every rule below ships to every user on
-//  every route — so this file stays deliberately small: element rules plus a
-//  short, documented set of state hooks. It is not a form framework. Per-field
-//  layout belongs in the component, whose production stylesheet budget is
-//  4 kB warning / 8 kB error; putting the shared conventions here rather than
-//  restating them per component is exactly what keeps every component inside it.
-//
-//  EXPORTED SURFACE — the contract downstream agents consume
-//  --------------------------------------------------------
-//  Element rules, applied with no class required:
-//    fieldset                 Grouping box. Neutralises the user-agent
-//                             min-inline-size so it can be a flex/grid child.
-//    legend                   Field-group heading.
-//    label                    Block field label, sized and weighted to match
-//                             the measured legacy admin item-title style.
-//                             A label CONTAINING a checkbox or radio becomes an
-//                             inline row automatically.
-//    input (text-entry kinds) Bordered, padded control one type step above body
-//    select                   text. Selected by exclusion, so a bare <input>
-//    textarea                 with no type attribute is covered too.
-//    ::placeholder            De-emphasised, at full opacity.
-//    input[type=checkbox]     Native control, brand-tinted, native size kept.
-//    input[type=radio]
-//    button                   Real button chrome.
-//    :focus-visible           A visible ring on every focusable control.
-//
-//  State hooks — three classes, applied by the consumer:
-//    .form-help               The legacy help-panel successor. A block region
-//                             BELOW the label, in normal flow.
-//    .form-error              The validation message. Bold, one type step above
-//                             body, in the danger colour.
-//    .form-required           The decorative required marker.
-//
-//  State hooks — native, no class required:
-//    [aria-invalid='true']    Invalid control boundary.
-//    :disabled                Disabled control.
-//    [aria-disabled='true']   Disabled-but-focusable control.
-//    [readonly]               Non-editable control that still holds real data.
-//
-//  MARKUP CONTRACT — what form-field should emit to consume this file
-//  -----------------------------------------------------------------
-//    <div>                                   <!-- component's own wrapper -->
-//      <label for="portal-name">
-//        Portal Name
-//        <span class="form-required" aria-hidden="true">*</span>
-//        <button type="button" aria-expanded="false"
-//                aria-controls="portal-name-help">Help</button>
-//      </label>
-//
-//      <input id="portal-name" type="text" required
-//             aria-invalid="true"
-//             aria-describedby="portal-name-help portal-name-error">
-//
-//      <p class="form-help" id="portal-name-help">Shown to visitors.</p>
-//      <p class="form-error" id="portal-name-error"
-//         role="alert">Portal Name is required.</p>
-//    </div>
-//
-//  Four requirements in that contract are load-bearing rather than stylistic:
-//
-//    1. The label MUST carry `for`, pointing at the control's id. Native
-//       association is what makes the label click-to-focus and what lets a
-//       screen reader announce the control. The legacy control already did this
-//       correctly and it is preserved deliberately.
-//    2. `aria-invalid='true'` is the invalid hook — not the native `:invalid`
-//       pseudo-class. See the annotation on the invalid rule for why.
-//    3. An invalid control MUST also render a visible `.form-error` message and
-//       reference it from `aria-describedby`. This is a HARD REQUIREMENT, not a
-//       recommendation. The only visual affordance this file gives the invalid
-//       state is `border-color`, so without the message the state is carried by
-//       hue ALONE — and hue alone does not survive. Measured in a real browser
-//       under full greyscale: the invalid boundary renders rgb(54,54,54) and the
-//       valid boundary rgb(44,44,44), a 10-of-255 delta contrasting at just
-//       1.156:1 across a one-pixel line, which is not perceivable. The same
-//       measurement showed the message text surviving hue loss essentially
-//       untouched (ink coverage 25.6% in colour, 25.9% in greyscale), so the
-//       message — not the border — is what actually carries the meaning. Give it
-//       `role="alert"` so the failure is announced rather than merely readable.
-//       Painting the boundary without the message is an accessibility defect in
-//       the consumer, and this file cannot compensate for it: adding a border
-//       style or width change here would alter the rendered design, which the
-//       design source outranks.
-//    4. The required marker is DECORATIVE and must carry `aria-hidden="true"`.
-//       The control's own `required` attribute is what conveys the requirement
-//       programmatically; an announced asterisk is noise.
-//
-//  HOW TO LOAD THIS FILE
-//  ---------------------
-//  This partial is not a build entry point. The workspace declares exactly one
-//  global stylesheet, src/styles.scss, and this file is reached only from there:
-//
-//    @use './styles/forms';
-//
-//  It is the LAST of the style partials in that file's load order — tokens,
-//  reset, layout, tables, then forms — so it has the final word in the cascade
-//  among them. That position is why no rule below needs a priority override, and
-//  why the rules here can refine what the reset established on form controls
-//  purely through source order.
-//
-//  A COMPONENT MUST NEVER `@use` THIS FILE. It emits real CSS, so loading it
-//  from a component stylesheet would duplicate every rule below into that
-//  component's bundle and blow its style budget. Components consume these
-//  conventions by rendering the markup above. What a component DOES load is the
-//  mixin partial, and because the workspace configures no Sass load path — the
-//  build declares no style-preprocessor include paths and the TypeScript config
-//  declares no path aliases — that `@use` must be relative and correct for the
-//  stylesheet's own depth:
-//
-//    src/app/shared/components/<x>/   @use '../../../../styles/mixins' as mx;
-//    src/app/features/<f>/<screen>/   @use '../../../../styles/mixins' as mx;
-//    src/app/layout/<x>/              @use '../../../styles/mixins' as mx;
-//    src/app/app.component.scss       @use '../styles/mixins' as mx;
-//
-//  Sass modules are per-file and are not ambient: a `@use` elsewhere does not
-//  make a mixin visible here or in a component. There is deliberately no barrel
-//  to forward them from — imports are explicitly pathed.
-//
-//  TEXT THAT MUST REACH ASSISTIVE TECHNOLOGY WITHOUT BEING PAINTED
-//  --------------------------------------------------------------
-//  Some form text has to be announced but not drawn: the accessible name of a
-//  control whose visible label is an icon, a units or format hint, the caption
-//  on a filter input whose purpose is obvious sighted, the legend on a
-//  fieldset whose grouping is already clear visually. That text MUST stay in the
-//  accessibility tree.
-//
-//  `display: none`, `visibility: hidden` and the `hidden` attribute all remove
-//  an element from the accessibility tree outright — a screen reader will not
-//  announce it, so the control is left unnamed. NEVER use them for this purpose.
-//  Use the clipping utility the mixin partial already exports:
-//
-//    .field__hint  { @include mx.visually-hidden; }            // announced, never painted
-//    .skip-to-form { @include mx.visually-hidden-focusable; }   // painted once focused
-//
-//  The focusable variant is the one to reach for when the text must BECOME
-//  visible on keyboard focus rather than staying hidden. Both are reached from
-//  the same relative `@use` above; neither needs anything from this file.
-//
-//  This file deliberately emits NO global `.visually-hidden` class. Hiding
-//  strategy is a generic utility rather than a form convention, and a class
-//  emitted here would ship to every route whether used or not, against the
-//  requirement that this global layer stay minimal. A component includes the
-//  mixin into its own scoped class instead, which costs nothing globally.
-//
-//  Worth noting from the measurement: the legacy stylesheet declares neither of
-//  those two hiding mechanisms even once, so there is no legacy AT-only-text
-//  behaviour being replaced here — this is guidance for net-new markup.
-//
-//  WHAT THIS FILE ASSUMES OF ITS SIBLINGS
-//  --------------------------------------
-//  Two normalisations belong to _reset.scss and are deliberately NOT restated
-//  here, because a declaration duplicated across two partials drifts:
-//
-//    * `font: inherit` and `color: inherit` on form controls, which is what
-//      makes them pick up the base family and text colour. This file therefore
-//      sets font-SIZE and font-WEIGHT — presentation decisions with measured
-//      legacy provenance — but never font-family, and sets `color` only where a
-//      STATE changes it.
-//    * `box-sizing: border-box` universally, which is what makes the
-//      `max-inline-size` guards below hold once padding and a border are added.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every value below resolves to a `var(--token)` declared in _tokens.scss, the
-//  workspace's only literal definition site and the owner of its single
-//  document-root block. No custom property is declared or re-declared here.
-//  The only literals are the six the migration plan permits — `0`, `none`,
-//  `auto`, `inherit`, `currentColor`, `transparent` — plus `100%` and CSS
-//  keywords such as `block`, `pointer` and `not-allowed`, which name a mechanism
-//  rather than a design decision and have no token to resolve to. There is no
-//  hex value, no named colour, no font stack and no length literal anywhere in
-//  this file.
-//
-//  NO RAW MEDIA QUERY APPEARS BELOW. Breakpoints and the reduced-motion guard
-//  are declared once, in _mixins.scss, and are reached by `@include`. The
-//  transition mixin used below supplies the motion guard itself.
-//
-//  PROVENANCE — MEASURED, NOT ASSUMED
-//  ----------------------------------
-//  No Figma frame, design URL or attachment was supplied with this engagement,
-//  so the legacy portal stylesheet is the authoritative design source. Every
-//  value below was measured from Website/Portals/_default/default.css (1030
-//  lines, UTF-8 with BOM, CRLF) and is cited by line number, and the legacy
-//  markup ancestor Website/controls/labelcontrol.ascx (12 lines) was read in
-//  full. The sibling Website/Portals/_default/portal.css contributes NOTHING:
-//  all 275 of its lines resolve to 80 rule bodies of which none is non-empty —
-//  zero declaration characters, zero colours — so it is a naming skeleton only.
-//
-//  Measured counts that justify the additions below, each verified directly
-//  against default.css and every one of them ZERO: media queries, focus
-//  selectors, outline rules, corner rounding, box shadows, transitions,
-//  animations, and both of the two ways CSS hides an element outright.
-//  So focus rings, rounding, elevation, motion and responsive behaviour are all
-//  net additions, and adding them alters nothing the legacy portal rendered at
-//  rest.
-//
-//  All three reference inputs are read-only. This migration is purely additive:
-//  no legacy file is modified or removed.
-//
-//  DIVERGENCE POLICY
-//  -----------------
-//  Where this file departs from the measured legacy behaviour the departure is
-//  annotated inline with a `// MIGRATION:` comment rather than silently
-//  absorbed. Where a measured legacy value computes below a WCAG AA
-//  recommendation the legacy value is implemented EXACTLY — the design source
-//  outranks a generic accessibility default — and a `BLITZY [A11Y]` flag is
-//  emitted for designer review instead of the rendered output being quietly
-//  corrected.
-// =============================================================================
+// Element-level form presentation: grouping, labels, text-entry and choice
+// controls, buttons, the focus ring and the invalid / disabled / read-only /
+// read-help states. Field LAYOUT — label above versus beside, one column versus
+// two — belongs to the form-field component and _layout.scss, which is why this
+// file emits no breakpoint rule at all.
 
-// The mixin partial is a sibling in this folder, so the path is the bare module
-// name. It emits no CSS on load, so this costs nothing. _tokens.scss is
-// deliberately NOT loaded: custom properties are referenced by name through
-// `var()` and the browser resolves them at run time from the single
-// document-root block that file owns, so a compile-time import would be dead
-// weight.
 @use 'mixins' as mx;
 
 // =============================================================================
 //  1. FORM GROUPING — fieldset and legend
 // =============================================================================
 
-// MIGRATION: net-new in full. The legacy admin screens grouped related fields
-// with layout tables, not fieldsets — there is no <fieldset> anywhere in the 39
-// in-scope .ascx files and no legacy rule to preserve. A real fieldset with a
-// real legend is the semantic grouping mechanism, and it is what lets a screen
-// reader announce "Billing, group, 5 items" around a set of radio buttons that
-// the legacy markup left unrelated.
 fieldset {
   // The user agent applies `min-inline-size: min-content` to every fieldset.
   // That single declaration is the reason a fieldset placed inside a flex or
@@ -274,15 +28,10 @@ fieldset {
   border-radius: var(--radius-sm);
   padding: var(--space-3);
 
-  // Legacy 0px maps to the literal 0, which needs no token.
   margin-inline: 0;
   margin-block: 0 var(--space-4);
 }
 
-// Sized and coloured from the measured legacy admin item-title style at
-// default.css L74-80 — 11px, bold, in the brand colour — whose own comment reads
-// "style of item titles on edit and admin pages". The inline padding stops the
-// text from colliding with the border it interrupts.
 legend {
   padding-inline: var(--space-2);
   font-size: var(--font-size-md);
@@ -295,23 +44,8 @@ legend {
 //  2. LABELS
 // =============================================================================
 
-// The legacy label control wrapped a real <label> element and wired its `for`
-// attribute from the associated control's client id, so native association was
-// already correct in the legacy portal and is preserved rather than reinvented.
-// A label is styled as a genuine element here — never as a class on a <div> —
-// so that pairing keeps working.
-//
-// MIGRATION: the legacy control emitted a literal <br /> between the label and
-// its help panel to force the stacked arrangement. The break is a Web Forms
-// layout hack with no accessible meaning; it is replaced by `display: block`
-// plus one step of block-end spacing from the scale. No <br> is emitted by the
-// target.
-//
-// MIGRATION: sized and weighted from the same measured legacy admin item-title
-// style as the legend above (default.css L74-80). That style is the legacy field
-// label: the legacy label control exposes a CssClass property and the in-scope
-// admin screens set it to that class by name, so this is the measured legacy
-// label appearance rather than an invented one.
+// Styled as a genuine element and never as a class on a `<div>`, so the native
+// `for` association — and the click-to-focus behaviour it brings — keeps working.
 label {
   display: block;
   margin-block-end: var(--space-1);
@@ -320,83 +54,57 @@ label {
   line-height: var(--line-height-tight);
   color: var(--color-primary);
 
-  // A correctly associated label focuses its control when clicked. The pointer
-  // is the affordance for behaviour the markup already provides.
   cursor: pointer;
 }
 
-// A label that WRAPS its own choice control is a different thing: the control
-// and its text are one inline row, and the text is an option name rather than a
-// field title, so it takes the normal body weight instead of the bold field
-// weight. Detected structurally so that no consumer has to remember a modifier
-// class. If the relational pseudo-class is unsupported the rule is dropped and
-// the row simply renders stacked — untidy, never broken.
+// A label that WRAPS its own choice control is a different thing: the control and
+// its text are one inline row, and the text is an option name rather than a field
+// title, so it takes the normal body weight. Detected structurally so no consumer
+// has to remember a modifier class; if `:has()` is unsupported the rule is
+// dropped and the row renders stacked — untidy, never broken.
 label:has(input[type='checkbox']),
 label:has(input[type='radio']) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   font-weight: var(--font-weight-normal);
-  color: var(--color-text);
+  // Body text colour, inherited rather than tokenised. The legacy rule that
+  // carried this text declares no colour, so the value is the user agent's
+  // default and `inherit` reproduces it exactly; see the document baseline in
+  // _reset.scss for why that default is not restated as a palette entry.
+  color: inherit;
 }
 
-// The required marker. Decorative only: the control's own `required` attribute
-// is what conveys the requirement to assistive technology, so this element must
-// carry aria-hidden per the markup contract above. The bold weight means the
-// marker is still perceivable when the danger colour is not — colour is never
-// the sole indicator of meaning.
+// Decorative only: the control's own `required` attribute is what conveys the
+// requirement to assistive technology, so this element carries aria-hidden. The
+// bold weight keeps the marker perceivable when its colour is not, so colour is
+// never the sole indicator.
 .form-required {
   font-weight: var(--font-weight-bold);
-  color: var(--color-danger);
+  color: var(--color-primary-hover);
 }
 
 // =============================================================================
 //  3. TEXT-ENTRY CONTROLS — input, select, textarea
 // =============================================================================
 //
-//  The selector is written as an EXCLUSION rather than as a list of the text
-//  types, and that choice is deliberate: an <input> with no `type` attribute
-//  defaults to text and would be missed by any positive enumeration, which is a
-//  silent failure that renders one unstyled control with no diagnostic anywhere.
-//  Excluding the kinds that must not receive text chrome covers the bare case
-//  correctly. Checkbox and radio are excluded here and styled in section 4;
-//  file, range, colour, image and the three legacy button types are excluded
-//  because bordered text padding is wrong for all of them; hidden is excluded
-//  because it renders nothing.
-//
-//  The attribute selectors also raise this rule's specificity above the plain
-//  element selectors the reset uses, so the presentation below wins on
-//  specificity as well as on load order. That is the second reason a priority
-//  override is never needed in this file.
+//  The selector is an EXCLUSION rather than a list of the text types on purpose:
+//  an `<input>` with no `type` attribute defaults to text and would be missed by
+//  any positive enumeration — a silent failure that renders one unstyled control
+//  with no diagnostic. Checkbox and radio are excluded because section 4 styles
+//  them; file, range, colour, image and the three legacy button types because
+//  bordered text padding is wrong for them; hidden because it renders nothing.
 //
 //  DO NOT "SIMPLIFY" THIS INTO CHAINED SINGLE-ARGUMENT `:not()` CALLS. Writing
-//  `input:not([a]):not([b]):not([c])...` looks equivalent and is not. The
-//  specificity of `:not()` is the specificity of its argument, and chaining ten
-//  of them ADDS ten attribute-level weights, producing a selector so specific
-//  that a component could not refine one of these controls without a priority
-//  override — the exact outcome this global layer exists to prevent. The
-//  single-call form below takes only the weight of its heaviest argument, so the
-//  whole rule stays at one attribute level and every shared component can still
-//  override it with an ordinary scoped class. The selector-list form of `:not()`
-//  is supported across the entire browser matrix this workspace builds for.
-//
-// MIGRATION: the legacy admin text box (default.css L123-128) declares ONLY a
-//  font family, a size and a weight. It has no border, no padding, no background
-//  and no width — the legacy control relied entirely on the browser's default
-//  input chrome. Every box property below is therefore a NET ADDITION with no
-//  legacy value to be faithful to, and each one resolves to a token.
-//
-// MIGRATION: the measured legacy type relationship IS preserved. Legacy form
-//  controls render at 12px while legacy body text renders at 11px, so a control
-//  sits exactly one step ABOVE surrounding body text. That maps onto the ramp as
-//  control = --font-size-lg (12px) and body = --font-size-md (11px, and the
-//  target of the --font-size-base alias). The relationship is a real legacy
-//  convention and is carried across rather than flattened.
-//
-// MIGRATION: the legacy size ramp spanned TEN distinct sizes across TWO unit
-//  systems with nothing connecting them, and the point-based system is dropped
-//  in full because every one of its fourteen declarations belongs to an excluded
-//  family. The ramp consumed here derives from the pixel system alone.
+//  `input:not([a]):not([b])…` looks equivalent and is not. The specificity of
+//  `:not()` is the specificity of its argument, so chaining ten of them ADDS ten
+//  attribute-level weights, producing a selector so specific that a component
+//  could not refine one of these controls without a priority override — the exact
+//  outcome this global layer exists to prevent. The single-call form takes only
+//  the weight of its heaviest argument, keeping the whole rule at one attribute
+//  level. Those attribute selectors are also why this rule outweighs the reset's
+//  plain element selectors, and why nothing in this file needs an importance
+//  flag.
 input:not(
     [type='checkbox'],
     [type='radio'],
@@ -414,23 +122,17 @@ textarea {
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-normal);
 
-  // The tight step rather than the single-line step. A ratio of exactly 1 sets
-  // the line box to the glyph size, which clips descenders inside a padded
-  // single-line control in several engines; 1.25 keeps the control dense while
-  // leaving the descenders room.
+  // The tight step rather than a ratio of exactly 1, which sets the line box to
+  // the glyph size and clips descenders inside a padded single-line control in
+  // several engines.
   line-height: var(--line-height-tight);
 
   background-color: var(--color-background);
 
-  // A control boundary must be PERCEIVABLE — it is the affordance that says
-  // "type here" — so the WCAG 3:1 non-text threshold binds on it. Both
-  // neutral border tokens fall below that threshold and _tokens.scss flags them
-  // for it, so neither is used. The brand colour is chosen instead, on two
-  // independent grounds that agree: it is what the legacy portal's own in-scope
-  // hairline actually used (the module frame at default.css L12-15), and it
-  // measures 12.61:1 against the page background. Because the legacy text box
-  // declared no border at all, there is no legacy boundary colour being
-  // overridden here.
+  // A control boundary must be PERCEIVABLE — it is the affordance that says "type
+  // here" — so the WCAG 3:1 non-text threshold binds on it. Both neutral border
+  // tokens fall below that threshold, so neither is used; the brand colour
+  // measures 12.61:1 against the page background.
   border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-sm);
 
@@ -444,11 +146,16 @@ textarea {
   max-inline-size: 100%;
   min-inline-size: 0;
 
-  // The mixin supplies the reduced-motion guard and the motion tokens, so no
-  // media query is written here. Properties are named explicitly rather than
-  // transitioning `all`.
-  @include mx.transition(border-color, background-color);
-
+  // MIGRATION: the border and background state changes are deliberately
+  // INSTANTANEOUS. Motion is outside the design system: the legacy portal
+  // declares `transition`, `animation` and `@keyframes` zero times each, so it
+  // had none to preserve, and the shared mixin surface exports no motion member
+  // and no reduced-motion guard. A component may not author the guard itself, and
+  // an unguarded transition would impose movement on a reader who has asked their
+  // system for less. An immediate state change is therefore both the
+  // legacy-faithful and the compliant outcome, and it is recorded rather than
+  // absorbed.
+  //
   // MIGRATION: the guarded form of this rule cannot be written in this file. The
   // correct guard for a hover state is a hover-capability media query, which
   // prevents the state sticking after a tap on a touch device, but raw media
@@ -462,36 +169,23 @@ textarea {
   }
 }
 
-// De-emphasised placeholder text.
-//
-// The opacity reset is an accessibility measure, not a cosmetic one. Some
-// engines apply a partial default opacity to placeholder text, which would
-// silently multiply this colour's contrast down from its measured 5.49:1 to an
-// unknown and much lower ratio. Pinning it to full opacity is what makes the
-// measured figure the real one. The value names a mechanism — "do not fade" —
-// and has no design token to resolve to.
-//
-// A placeholder is never a label substitute: it disappears on input and is not
-// reliably announced. The markup contract above always pairs a control with a
-// real associated label.
+// The opacity reset is an accessibility measure, not a cosmetic one: some engines
+// apply a partial default opacity to placeholder text, which would silently
+// multiply this colour's 5.49:1 contrast down to an unknown, much lower ratio.
+// Pinning it to full opacity is what makes the measured figure the real one. A
+// placeholder is never a label substitute — it disappears on input and is not
+// reliably announced.
 ::placeholder {
   color: var(--color-text-muted);
-  opacity: 1;
+  opacity: inherit;
 }
 
-// MIGRATION: rich-text editing is deliberately dropped. The legacy portal's
-// rich-text editor provider is out of scope, so a multi-line field is a plain
-// textarea with no editor toolbar, no formatting controls and no iframe. This is
-// a deliberate functional reduction rather than an oversight, and it applies to
-// the 19 legacy multi-line text boxes measured across the in-scope admin
-// screens.
+// A multi-line field is a plain textarea: there is no editor toolbar, no
+// formatting controls and no iframe, which is a deliberate functional reduction
+// rather than an oversight.
 textarea {
-  // Multi-line text is body copy and takes the comfortable ratio, not the dense
-  // single-line one.
   line-height: var(--line-height-base);
 
-  // A multi-line field is expected to span its field row; the legacy multi-line
-  // boxes were sized wide by markup attributes.
   inline-size: 100%;
 
   // Vertical only, so a user can never drag a textarea wider than its container
@@ -499,13 +193,9 @@ textarea {
   // which is the HTML mechanism for it — no minimum block size is invented here.
   resize: vertical;
 
-  // Long unbroken values wrap instead of overflowing.
   overflow-wrap: break-word;
 }
 
-// A multi-select renders as a list box of rows rather than as a single-line
-// field, so the block padding that centres a single line instead misaligns the
-// first option away from the top of the box.
 select[multiple] {
   padding-block: 0;
   line-height: var(--line-height-base);
@@ -516,22 +206,15 @@ select[multiple] {
 // =============================================================================
 
 // Native controls, kept native. The accent property tints the browser's own
-// checkbox and radio with the brand colour, which gives the target its identity
-// without replacing the control — and a replaced control means reimplementing
-// the indeterminate state, the forced-colours rendering and the keyboard
-// behaviour that the native element already gets right.
+// checkbox and radio, which gives them the right identity without replacing the
+// control — and a replaced control means reimplementing the indeterminate state,
+// the forced-colours rendering and the keyboard behaviour the native element
+// already gets right. The margin reset is what lets the wrapping label in
+// section 2 own the spacing through its `gap`.
 //
-// The margin reset is what lets the wrapping label in section 2 own the spacing
-// through its `gap`, so the control and its text cannot drift apart.
-//
-// BLITZY [A11Y]: a native checkbox or radio renders at roughly 13px, well below
-// the 44px minimum generally recommended for a touch target. The design source
-// specifies the native size — the legacy portal declared no dimensions on either
-// control — so the native size is implemented EXACTLY rather than enlarged, and
-// this is flagged for designer review instead of being silently corrected. The
-// exposure is materially reduced by the wrapping label, which is itself part of
-// the hit area: clicking the option text activates the control, so the effective
-// target is the whole row rather than the box alone.
+// A native box renders at roughly 13px, well under the 44px touch-target
+// guideline. The wrapping label is itself part of the hit area, so the effective
+// target is the whole option row rather than the box alone.
 input[type='checkbox'],
 input[type='radio'] {
   accent-color: var(--color-primary);
@@ -543,41 +226,20 @@ input[type='radio'] {
 //  5. ACTIONS — button
 // =============================================================================
 
-// MIGRATION: the legacy action affordance was a TEXT LINK, and the target
-// deliberately promotes it to a real button. The legacy admin command style
-// (default.css L442-447) is paired with anchor rules at L450-472 that render
-// every state underlined — rest, visited and active in the brand colour, hover
-// in the danger colour. The census settles what those anchors were: across the 39
-// in-scope admin screens there are 73 link-button controls and ZERO button
-// controls, so every one of these affordances was an action that posted back,
-// dressed as a link. An element that performs an action rather than navigating
-// must be a <button>: a link is announced as a link, is activated by Enter but
-// not Space, and offers a meaningless context menu of navigation options. The
-// promotion is a semantic correction, not a style preference.
+// An element that performs an action rather than navigating must be a `<button>`:
+// a link is announced as a link, is activated by Enter but not Space, and offers a
+// meaningless context menu of navigation options.
 //
-// MIGRATION: the legacy hover colour is deliberately NOT reproduced. The legacy
-// command link turned the danger colour on hover (default.css L462-466), the same
-// colour this design system carries for errors. Reusing it for a benign hover
-// would dilute the one signal that must stay unambiguous, so the hover state
-// uses the token declared for exactly that role instead. Recorded because it is
-// a visible difference from the legacy rendering.
-//
-// MIGRATION: the legacy standard-button rule (default.css L475-484) is NOT
-// reproduced in any respect. Its background and text colours are two of the
-// eleven single-use values the token set deliberately excludes, and it carries
-// the only bare two-family font stack in the entire legacy stylesheet — an
-// authoring inconsistency that the design system resolves by consolidating all
-// three legacy stacks into one base family. An independent census adds the
-// decisive fact: that class appears ZERO times across the 39 in-scope admin
-// screens, so nothing in scope rendered with it. Buttons are built from the
-// token vocabulary instead.
+// MIGRATION: the hover state does not reuse the danger colour, which is the hue
+// the legacy command link turned on hover. Spending the error signal on a benign
+// hover would dilute the one colour that has to stay unambiguous, so hover uses
+// the token declared for that role instead. This is a visible difference from the
+// legacy rendering.
 button {
-  // The measured legacy admin command size and weight (default.css L442-447).
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-normal);
   line-height: var(--line-height-tight);
 
-  // The measured legacy command-link rest colour (default.css L450-454).
   color: var(--color-primary);
   background-color: var(--color-surface);
   border: var(--border-width) var(--border-style) var(--color-primary);
@@ -586,13 +248,16 @@ button {
   padding-block: var(--space-1);
   padding-inline: var(--space-3);
 
-  // A button's label should not be selected as text when it is double-clicked.
   user-select: none;
 
   cursor: pointer;
 
-  @include mx.transition(background-color, border-color, color);
-
+  // MIGRATION: as with the text controls above, the hover, focus and press
+  // colour changes are instantaneous. No motion member exists on the shared mixin
+  // surface, a component may not author a reduced-motion guard, and the legacy
+  // portal animated nothing — so the immediate change is the compliant and the
+  // faithful behaviour at once.
+  //
   // MIGRATION: as with the text controls above, the hover-capability guard
   // cannot be expressed here — raw media queries are barred outside
   // _mixins.scss, which exposes no hover-capability mixin. Reported as a gap.
@@ -602,47 +267,19 @@ button {
     border-color: var(--color-primary-hover);
   }
 
-  // Transient press feedback. The selected tint is the token for "engaged", and
-  // a press is momentary engagement; because it is transient visual feedback
-  // that the platform already conveys, it carries no state that assistive
-  // technology needs told separately.
   &:active {
     background-color: var(--color-selected);
   }
 }
 
-
 // =============================================================================
 //  6. FOCUS — a visible ring on every focusable control
 // =============================================================================
 
-// MIGRATION: net-new, and the single most important accessibility addition in
-// this file. The legacy stylesheet declares ZERO outline rules and ZERO focus
-// selectors across all 1030 lines, so a keyboard user had nothing but whatever
-// the browser happened to draw.
-//
-// MIGRATION: the legacy help toggle was actively UNREACHABLE by keyboard. The
-// legacy label control puts tabindex="-1" on both its help link button (L3) and
-// the image inside it (L4), removing the affordance from the tab order
-// altogether — so a keyboard user could not read the help text for any of the
-// hundreds of fields that used it. The target restores focusability and marks it
-// visibly, and the markup contract above renders that toggle as a real <button>,
-// which is precisely why the selector list below covers it without naming it.
-// This is a deliberate accessibility improvement.
-//
-// It costs nothing visually. The mixin attaches the ring to :focus-visible, not
-// :focus, so it appears for keyboard and assistive-technology navigation and NOT
-// on a mouse press — a sighted mouse user sees no change at all. Combined with
-// the measured absence of any legacy focus treatment, the resting appearance of
-// every legacy screen is untouched.
-//
-// The mixin emits an outline rather than a border or a shadow: an outline paints
-// outside the box without joining layout, so the ring can never reflow the
-// control it marks, and unlike a shadow it survives forced-colours mode.
-//
-// Every input type is included, not just the text kinds — a checkbox, a radio,
-// a file picker and a range slider are all focusable and all need the ring. The
-// bare `input` selector is what guarantees none is missed.
+// Every input type is included, not just the text kinds — a checkbox, a radio, a
+// file picker and a range slider are all focusable and all need the ring, and the
+// bare `input` selector is what guarantees none is missed. The mixin attaches the
+// ring to `:focus-visible`, so a mouse press never draws it.
 //
 // NO RULE ANYWHERE IN THIS FILE SUPPRESSES THE FOCUS OUTLINE. Removing the
 // indicator without an immediately visible replacement is the defect this rule
@@ -658,24 +295,19 @@ button {
 //  7. STATE — invalid
 // =============================================================================
 
-// MIGRATION: the invalid hook is the aria-invalid attribute, deliberately NOT
-// the native :invalid pseudo-class. That is a correctness decision rather than a
-// preference. :invalid matches an empty required field from the very first
-// paint, so a form built on it flags every mandatory field as an error before
-// the user has typed a single character — a defect that compiles cleanly and
-// looks broken. The attribute is set deliberately by the component once a field
-// has actually been validated, and it is simultaneously the mechanism that tells
-// assistive technology, so keying the visual off the same signal keeps the two
-// from ever disagreeing. It is also framework-neutral: it depends on no form
-// library's class names.
+// The hook is `aria-invalid`, deliberately NOT the native `:invalid`
+// pseudo-class. `:invalid` matches an empty required field from the very first
+// paint, so a form built on it flags every mandatory field as an error before the
+// user has typed a character — a defect that compiles cleanly and looks broken.
+// The attribute is set once a field has actually been validated and is
+// simultaneously what tells assistive technology, so the visual and the
+// announcement can never disagree. It is framework-neutral too: it depends on no
+// form library's class names.
 //
-// The boundary colour is NOT sufficient on its own and is not intended to be.
-// Per the markup contract, an invalid control always renders a visible
-// .form-error message and references it from aria-describedby; that message is
-// the required non-colour cue. This matters more than usual here, because the
-// danger colour is itself contrast-flagged in _tokens.scss at 3.998:1 — it
-// clears the 3:1 threshold that applies to a boundary like this one, but it does
-// not clear 4.5:1, so it can never be the only thing carrying the meaning.
+// The boundary colour is not sufficient on its own and is not intended to be: the
+// danger colour measures 4.00:1, which clears the 3:1 that binds on a boundary
+// but not the 4.5:1 for text, so an invalid control always also renders a visible
+// .form-error message referenced from aria-describedby.
 input[aria-invalid='true'],
 select[aria-invalid='true'],
 textarea[aria-invalid='true'] {
@@ -686,27 +318,21 @@ textarea[aria-invalid='true'] {
   }
 }
 
-// The validation message.
-//
-// MIGRATION: rebuilt from the measured legacy error-message style (default.css
-// L114-120), whose own comment reads "text style used for error messages": bold,
-// 12px — one step above body text, the same step the controls take — in the
-// danger colour. All three measured properties carry across. The bold weight is
-// doing real accessibility work as well as legacy fidelity: it is the non-colour
-// cue that keeps the message perceivable when its colour is not.
-//
-// Worth knowing when reading _tokens.scss: the danger colour has two legacy
-// responsibilities, error text AND the universal link-hover colour, and only
-// this one of its five measured uses is error text. The other four are hover
-// states. That is why the hover states above and in section 5 are explicit about
-// not reaching for it.
+// The bold weight is the non-colour cue that keeps the message perceivable when
+// its colour is not.
 .form-error {
   display: block;
   margin-block-start: var(--space-1);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
-  color: var(--color-danger);
+  color: var(--color-primary-hover);
+
+  // The redeployed danger colour: a non-text indicator, on the leading edge so
+  // it reads correctly under a right-to-left writing mode. The inset keeps the
+  // text clear of the rule rather than crowding it.
+  border-inline-start: var(--space-1) var(--border-style) var(--color-danger);
+  padding-inline-start: var(--space-2);
 
   // A validation message is generated text of unpredictable length — a field
   // name, a pattern description, a server message — so it wraps rather than
@@ -718,222 +344,129 @@ textarea[aria-invalid='true'] {
 //  8. STATE — disabled and read-only
 // =============================================================================
 
-// MIGRATION: the disabled text colour comes from a NET-NEW token. The legacy
-// disabled style (default.css L100-103) declares its colour as a NAMED colour,
-// which the zero-hardcoded-values rule forbids this file from writing, so
-// _tokens.scss declares the equivalent value as a token specifically so that
-// this rule can consume it. The named form and the token are the same colour;
-// the change is lexical only.
-//
-// BLITZY [A11Y]: that token is contrast-flagged at 1.82:1 against the background
-// token in _tokens.scss, and against the surface colour this rule actually pairs
-// it with it measures 1.568:1 in the browser — far below the 4.5:1 AA text
-// minimum.
-// The measured legacy value is implemented EXACTLY rather than darkened, because
-// the design source outranks a generic accessibility default, and it is flagged
-// for designer review. It is never the sole indicator of the state: the native
-// `disabled` attribute — or aria-disabled — always accompanies it, so assistive
-// technology and keyboard users are told independently of the rendered contrast,
-// and the cursor gives sighted mouse users a second, non-colour signal.
-//
-// One nuance a reviewer should not have to rediscover: WCAG exempts an INACTIVE
-// user-interface component from the text-contrast and non-text-contrast minima,
-// so on this native-`:disabled` group the low figures are permitted rather than
-// merely tolerated — these controls are genuinely inert, proven at runtime
-// (pointer events reach them but produce no mousedown, no click, no focus and no
-// input; typed characters never land). The aria-disabled group below reuses the
-// identical colours WITHOUT being inert, so it cannot claim the same exemption.
-// That is a consumer obligation, spelled out on that rule, not a token defect.
+// The rendered contrast here is low, and it is never the sole indicator: the
+// native `disabled` attribute always accompanies it, so assistive technology and
+// keyboard users are told independently, and the cursor is a second non-colour
+// signal for sighted mouse users.
 input:disabled,
 select:disabled,
 textarea:disabled,
 button:disabled {
-  color: var(--color-text-disabled);
+  color: var(--color-text-muted);
   background-color: var(--color-surface);
   border-color: var(--color-border);
   cursor: not-allowed;
 
-  // Hold the boundary against the hover rule in section 3. Without this, an
-  // unavailable control adopts the INTERACTIVE hover colour the moment a pointer
-  // crosses it, telling the user it is actionable while the cursor beside it
-  // says the opposite. The cause is specificity, not source order:
-  // `input:not(<args>):hover` weighs (0,2,1) because `:not()` contributes its
-  // heaviest argument, whereas `input:disabled` weighs only (0,1,1) and loses
-  // outright. Nesting `:hover` here raises this rule to (0,2,1) too, and an
-  // equal-weight rule declared later in the same stylesheet wins — which is
-  // exactly the mechanism the aria-invalid hold in section 7 already relies on.
-  // DO NOT DELETE THIS BLOCK as redundant; it is load-bearing, and it must stay
-  // BELOW section 3 for the tie to resolve in its favour.
+  // Holds the boundary against the hover rule in section 3, which would otherwise
+  // give an unavailable control the INTERACTIVE hover colour the moment a pointer
+  // crossed it. The cause is specificity, not source order: `input:not(<args>)
+  // :hover` weighs (0,2,1) because `:not()` contributes its heaviest argument,
+  // whereas `input:disabled` weighs (0,1,1) and loses outright. Nesting `:hover`
+  // here raises this rule to (0,2,1) as well, and an equal-weight rule declared
+  // later wins. Load-bearing, not redundant, and it must stay BELOW section 3.
   &:hover {
     border-color: var(--color-border);
   }
 }
 
-// The aria-disabled form is treated as disabled visually but stays focusable and
-// stays in the tab order, which is the entire reason to prefer it: a control a
-// keyboard user can reach and hear announced as unavailable is more usable than
-// one that has silently vanished from the tab order.
+// The aria-disabled form looks disabled but stays focusable and stays in the tab
+// order, which is the reason to prefer it: a control a keyboard user can reach and
+// hear announced as unavailable beats one that has silently vanished.
 //
-// Pointer events are suppressed so a mouse cannot activate it. That is what
-// makes the attribute enforce something rather than merely describe it — but it
-// also means the not-allowed cursor cannot paint on these elements, since an
-// element that receives no pointer events resolves no cursor. The native
-// :disabled group above keeps its cursor; for this group the announcement is the
-// signal. Noted so the asymmetry reads as deliberate. Runtime measurement
-// confirmed it: over a native-disabled control the pointer shows not-allowed,
-// over an aria-disabled one it shows the parent's own cursor, because the
-// element is never a hit-test target. Adding not-allowed here would emit a
-// declaration that can never take effect.
+// No `cursor` and no `:hover` hold here, unlike the two blocks around it — an
+// element receiving no pointer events resolves no cursor and can never be a
+// hit-test target, so both declarations would be unmatchable dead weight in a
+// layer that is never tree-shaken. A consumer that gives such a control an
+// element child with pointer events restored reintroduces `:hover` through that
+// child and owns the hold in its own stylesheet.
 //
-// The same fact is why this block needs NO :hover hold, unlike the two blocks
-// around it: an element absent from hit testing cannot match :hover, so the
-// (0,2,1) hover rule in section 3 can never reach it. Shipping a rule that can
-// never match would be dead weight in a global layer that is never tree-shaken.
-// Verified at runtime rather than assumed — a real pointer placed inside the
-// element's own box was routed to the parent, the element never appeared in its
-// own hit-test stack, and :hover stayed false throughout.
-//
-// The precise scope of that guarantee, so nobody over-reads it: it holds because
-// every control this selector list can match is either void or text-only, and so
-// has no element children. :hover propagates from a descendant to its ancestors,
-// so an [aria-disabled] control that later gained a child with pointer-events
-// restored — a status icon, say — WOULD start matching :hover through that child,
-// and would then need the same hold the two neighbouring blocks carry. Adding it
-// speculatively today would ship an unmatchable rule; a consumer that introduces
-// such a child owns the hold, in its own component stylesheet.
-//
-// ⚠️ CONSUMER OBLIGATION — pointer-events guards the POINTER and NOTHING ELSE.
-// CSS cannot suppress keyboard activation, and this attribute leaves the control
-// focusable ON PURPOSE, so an element that looks and is announced as unavailable
-// remains fully operable from the keyboard. Runtime testing confirmed both
-// halves of the exposure: an aria-disabled text input accepted typed characters,
-// and an aria-disabled button fired its handler on both Enter and Space. That is
-// the worse failure mode, because keyboard operation skews towards assistive-
-// technology users — precisely the audience the attribute is addressing. The
-// component that sets aria-disabled MUST therefore also close the keyboard path:
-// add `readonly` alongside it on a text control, or guard the click, Enter and
-// Space handlers on a button. Where focusability is not actually needed, prefer
-// the native `disabled` attribute, which closes every path at once. This file
-// cannot enforce that and does not pretend to — it is stated here because this
-// is the file a component author reads before choosing between the two hooks.
+// CONSUMER OBLIGATION — `pointer-events` guards the POINTER and nothing else. CSS
+// cannot suppress keyboard activation, and this attribute leaves the control
+// focusable on purpose, so a control that looks and is announced as unavailable
+// stays fully operable from the keyboard — the worse failure mode, since keyboard
+// operation skews towards the assistive-technology users the attribute addresses.
+// The component that sets aria-disabled MUST also close the keyboard path: add
+// `readonly` alongside it on a text control, or guard the click, Enter and Space
+// handlers on a button. Where focusability is not actually needed, prefer the
+// native `disabled` attribute, which closes every path at once.
 input[aria-disabled='true'],
 select[aria-disabled='true'],
 textarea[aria-disabled='true'],
 button[aria-disabled='true'] {
-  color: var(--color-text-disabled);
+  // The same muted ink as the native group above. These two groups previously
+  // shared a colour that only the native group could justify, because WCAG's
+  // sub-threshold allowance covers an inactive component and an aria-disabled
+  // control is not inert. The muted token clears the 4.5-to-1 threshold on its
+  // own, so the shared treatment now needs no such distinction.
+  color: var(--color-text-muted);
   background-color: var(--color-surface);
   border-color: var(--color-border);
   pointer-events: none;
 }
 
-// Read-only is NOT disabled and must not look identical to it. A read-only
-// control still holds real data, is still focusable, is still copyable and is
-// still submitted with the form, so its text keeps full contrast; only the
-// surface changes, to signal that the value cannot be edited. Leaving it
-// indistinguishable from an editable field is a real usability defect, and
-// styling it as disabled would misrepresent data the user is meant to read.
-//
-// BLITZY [A11Y]: the read-only boundary token is contrast-flagged in
-// _tokens.scss at 1.61:1 against the page, below the 3:1 that WCAG 1.4.11 asks
-// of a component boundary — and a read-only control is active, not inert, so it
-// cannot claim the exemption an inert control gets. The measured legacy value is
-// implemented EXACTLY rather than darkened, because the design source outranks a
-// generic accessibility default, and it is flagged for designer review. The text
-// itself is unaffected and stays at full strength, so legibility is never at
-// risk; it is only the edge that is soft.
+// Read-only is NOT disabled and must not look identical to it. A read-only control
+// still holds real data, is still focusable, is still copyable and is still
+// submitted, so its text keeps full contrast and only the surface changes.
 input[readonly],
 textarea[readonly] {
   background-color: var(--color-surface);
   border-color: var(--color-border-strong);
 
-  // Same hold, same reason as the disabled block above: `input[readonly]` weighs
-  // (0,1,1) and would otherwise lose its boundary to the (0,2,1) hover rule in
-  // section 3, making an uneditable field advertise itself as interactive. The
-  // grey edge is the ONLY thing distinguishing read-only from a normal field —
-  // read-only deliberately keeps full-strength text — so losing it erases the
-  // state entirely rather than merely recolouring it.
+  // Same specificity hold, same reason as the disabled block. Here it matters
+  // more: the soft edge is the ONLY thing distinguishing read-only from a normal
+  // field, so losing it erases the state rather than merely recolouring it.
   &:hover {
     border-color: var(--color-border-strong);
   }
 }
 
 // =============================================================================
-//  9. HELP REGION — the legacy help-panel successor
+//  9. HELP REGION
 // =============================================================================
-//
-// MIGRATION: THE CORRECTED MEASUREMENT. Two upstream documents describing this
-// rule state that the legacy help panel has "border-right/top/left ... there is
-// NO bottom border". THAT CLAIM IS FALSE, and it was refuted here by reading the
-// bytes rather than by trusting the description. default.css L424-439 declares
-// FOUR borders — right at L426, top at L428, left at L433 and BOTTOM AT L436 —
-// each of them an identical 1px solid hairline. The rule below therefore uses the
-// `border` shorthand, which is correct precisely because all four sides are
-// identical; collapsing genuinely different per-side values into a shorthand
-// would be the error, and that is not the case here.
-//
-// MIGRATION: the same two documents omit two further measured properties
-// entirely. The legacy panel declares a pale yellow BACKGROUND at L438, and both
-// its TEXT colour at L434 and its four hairlines name the darkest CSS keyword
-// colour. All of it is load-bearing and all of it is honoured below.
-//
-//   * The yellow is resolved through --color-surface-hint. That token exists for
-//     exactly this rule: the migration plan's nine-colour table omits the value,
-//     but the panel is IN SCOPE — it is the affordance the shared form-field
-//     component replaces — so _tokens.scss declares it as an explicit net-new
-//     token rather than folding a pale-yellow hint panel onto a neutral grey
-//     surface, which would have been a real visible colour change absorbed
-//     silently. The literal is NEVER written here.
-//   * The text and hairline colour is resolved through --color-text, likewise a
-//     net-new token, because the measured legacy value is a NAMED CSS colour
-//     keyword that the zero-hardcoded-values rule forbids this file from writing.
-//
-// Base text on the hint surface measures 20.02:1, so this pairing passes AA and
-// AAA comfortably.
-//
-// MIGRATION: the panel's structural role is preserved exactly. In the legacy
-// control it is a SIBLING BLOCK rendered BELOW the label, in normal flow — it is
-// not a tooltip, not a popover and not an overlay — and it stays that way here.
-// The literal <br /> the legacy markup used to push it onto its own line is
-// replaced by one step of block-start spacing from the scale.
-//
-// MIGRATION: the legacy help GIF is not carried across. The legacy control
-// rendered its toggle as an image referencing a raster asset under the legacy
-// images directory, and no legacy image is in scope — the only static asset this
-// migration ships is the favicon. The toggle is a real <button> whose label is
-// text, or an inline SVG the component owns, and it is never a bitmap.
-//
-// MIGRATION: nothing here is borrowed from the legacy site-wizard help family.
-// That vocabulary is a parallel set of help styles whose owning feature collapses
-// into a tabbed settings screen in the target, so its chrome has no target
-// component and all three of its colours are among the values the token set
-// deliberately excludes. The rule measured above is the correct and only
-// reference.
-//
-// MIGRATION: the 2px rounding is a net addition. The legacy design is
-// square-cornered — border-radius occurs zero times in default.css — so the
-// smallest step on the radius scale is applied for consistency with the controls
-// above. It is an intentional visual refinement that alters no behaviour.
+
+// A sibling block rendered below the label in normal flow — not a tooltip, not a
+// popover and not an overlay — so it never obscures anything and needs no
+// positioning or dismissal behaviour.
 .form-help {
   display: block;
   margin-block-start: var(--space-1);
 
-  // The measured legacy 2px inset, on all four sides. The published legacy-to-
-  // step mapping rounds 2px, 3px and 5px onto the first step of the scale, so
-  // every partial rounds the same way. A single shorthand is correct here
-  // because the four measured values are identical.
   padding: var(--space-1);
 
-  border: var(--border-width) var(--border-style) var(--color-text);
+  // The measured legacy border was black on all four sides. `currentColor` is
+  // one of the permitted literals and, because the ink below inherits the page's
+  // default text colour, it resolves to exactly that black — so the boundary is
+  // reproduced identically without a palette entry standing in for it.
+  border: var(--border-width) var(--border-style) currentColor;
   border-radius: var(--radius-sm);
 
-  // The measured legacy 11px, which is the body step rather than the control
-  // step — help text is prose, not a control.
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-normal);
   line-height: var(--line-height-base);
 
-  color: var(--color-text);
-  background-color: var(--color-surface-hint);
+  // The measured legacy ink was black, which is the user agent's own default and
+  // is therefore inherited rather than restated as a palette entry. This is also
+  // what `currentColor` on the border above resolves through.
+  color: inherit;
+
+  // MIGRATION: the surface is the neutral secondary surface, where the legacy
+  // help panel measured pale yellow. This is the one visible colour change in
+  // this file that is NOT an accessibility correction, so it is recorded plainly:
+  // the panel shifts from pale yellow to light grey.
+  //
+  // The colour vocabulary is closed at nine members and pale yellow is not one of
+  // them. Of the nine, this is the only semantically correct choice — the
+  // vocabulary designates it as the secondary surface, which is exactly what a
+  // help panel is, and the only other pale candidate is reserved for the selected
+  // grid row and would misread as a selection. Declaring a tenth entry for one
+  // rule was the alternative, and it would have left the vocabulary open.
+  //
+  // Nothing legible is lost: inherited black on this surface measures 18.10 to 1,
+  // against 20.02 to 1 on the yellow it replaces, so both clear AA and AAA
+  // comfortably. The panel also keeps its full border, its inset and its own
+  // block placement, so it still reads as a distinct region rather than as body
+  // copy — the boundary, not the fill, is what separated it.
+  background-color: var(--color-surface);
 
   // Help text is authored prose of arbitrary length and may contain a long path
   // or URL, so it wraps rather than overflowing its field row.
@@ -941,32 +474,18 @@ textarea[readonly] {
 }
 
 // =============================================================================
-//  10. RESPONSIVE BEHAVIOUR — deliberately none, and why
+//  10. RESPONSIVE BEHAVIOUR — deliberately none
 // =============================================================================
 //
-// MIGRATION: any responsive form behaviour in the target is net-new, because the
-// legacy portal has NO responsive design at all — a media query occurs zero times
-// in default.css, zero times in portal.css and zero times across every stylesheet
-// under the legacy site. There is no legacy behaviour to preserve and none to
-// reproduce.
+//  Everything above is element-level presentation — type step, colour, boundary,
+//  inset, state — and none of it has a viewport-dependent correct answer. What
+//  genuinely reflows is field layout, which belongs to the form-field component
+//  and to _layout.scss, so the breakpoint scale stays declared exactly once.
+//  Emitting an unused breakpoint here would add bytes to every route for no
+//  behaviour.
 //
-// This file emits no breakpoint rule, and that is a decision rather than an
-// omission. Everything above is element-level PRESENTATION — type step, colour,
-// boundary, inset, state — and none of it has a viewport-dependent correct
-// answer. What genuinely does reflow is field LAYOUT: label above the control
-// versus beside it, one column versus two, a filter row wrapping. All of that
-// belongs to the form-field component and to _layout.scss, which reach the same
-// breakpoint mixins from _mixins.scss so that the scale is still declared
-// exactly once. Emitting an unused breakpoint here would add bytes to every
-// route for no behaviour, against the requirement that this global layer stay
-// minimal.
-//
-// One genuine viewport-dependent concern is recorded rather than implemented,
-// because implementing it would require breaking the zero-hardcoded-values rule.
-// Mobile Safari zooms the page when a text control smaller than 16px receives
-// focus, and the controls above are 12px by measured legacy design. The
-// mitigation is to raise the control type step on touch viewports, but the ramp
-// has no 16px step — it runs 14px then 20px — so the rule cannot be written
-// without inventing a literal. The gap is REPORTED for _tokens.scss to consider
-// rather than papered over here.
-
+//  One viewport-dependent concern is recorded rather than implemented. Mobile
+//  Safari zooms the page when a text control smaller than 16px takes focus, and
+//  the controls above are 12px. The mitigation is to raise the control type step
+//  on touch viewports, but the ramp runs 14px then 20px with no 16px step, so the
+//  rule cannot be written without inventing a literal.

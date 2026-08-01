@@ -1,121 +1,11 @@
-<!--
-  app-page-header - the page title and action bar of the in-repository shared
-  component library (plan section 0.3.2, row 2: "Page title and action bar ...
-  Props/Inputs title, subtitle; content slot for actions").
-
-  PROJECT STANDARDS: the project rules review reports that NO user-specified
-  rules exist. Completeness is established by the RANGES read rather than by a
-  count of calls - the default window, a whole-document range, and a window
-  beginning past line 1 all returned the same single line, so a document with a
-  body would have answered that last window differently. No rules document and
-  no coding-standards document is assumed, invented or implied here, and their
-  absence is not treated as licence to lower the bar. This template holds
-  instead to the plan's own normative sections, which section 0.8.2 gives
-  rule-force, and to the enterprise baseline of section 0.8.3. The precedence
-  order applied throughout is section 0.3.5: design-system compliance, then
-  visual continuity with the legacy portal, then accessibility, then responsive
-  behaviour, then code quality.
-
-  CLASS-NAME CONTRACT, shared verbatim with page-header.component.scss - the
-  block "page-header" with the four elements "page-header__text",
-  "page-header__title", "page-header__subtitle" and "page-header__actions".
-  Nothing else is emitted and no modifier class exists, because the component
-  declares no variants. Every value those selectors resolve to must be a design
-  token; this template contributes no styling of its own, and carries no inline
-  style attribute, no identifier selector and no presentational attribute.
-
-  API consumed, and nothing beyond it: the two string members declared on the
-  paired component class. Both are plain properties rather than reactive
-  primitives, so both are read directly. No pipe, no directive, no service, no
-  routing state and no build-time configuration value is referenced, and that
-  is why the paired class can legitimately declare an empty imports array -
-  plain elements and the built-in control-flow blocks require no imported
-  selector under strict template checking.
--->
-
-<!--
-  MIGRATION: no landmark element is emitted here, and that is deliberate rather
-  than an oversight - the name of this component invites exactly the wrong
-  instinct. The banner, navigation, main and contentinfo landmarks belong
-  exclusively to frontend/src/app/layout/**, where the application shell owns
-  them together with the routed outlet. This component always renders inside the
-  main region, so emitting a second banner landmark - whether as an element or
-  as an explicit banner role - would be an accessibility defect rather than an
-  improvement, and none of the nine components in this shared library emits a
-  landmark. The legacy precedent agrees exactly: the shared legacy title control
-  Website/controls/sectionheadcontrol.ascx wraps its title in a bare div at
-  L2-L5, with no landmark element of any kind. A plain, non-landmark container
-  plus a real heading element is therefore the correct translation.
--->
 <div class="page-header">
   <div class="page-header__text">
-    <!--
-      MIGRATION: the title is promoted from a plain legacy label to a real
-      level-1 heading element, and the level is fixed at 1 and documented here
-      so that feature screens can compose a coherent outline beneath it. This is
-      a genuine divergence measured against a baseline of literal zero: across
-      the 39 in-scope admin screens under Website/admin/{Portal,Users,Security,
-      Modules,Tabs}/ there are 0 heading elements of any level and 0 ARIA
-      attributes, and across all 34 stylesheets under Website/ there are 0 focus
-      declarations and 0 outline declarations. The legacy title was a label in
-      three independent places - sectionheadcontrol.ascx L4 (a label with the
-      identifier lblTitle), the skin container's title skin-object, and
-      Website/admin/Containers/title.ascx's editable label. Accessibility
-      outranks visual continuity in the precedence order, which is what
-      authorises the promotion; and the promotion is free of visual cost anyway,
-      because the measured font size is the same 20 units in all three relevant
-      rules of Website/Portals/_default/default.css - the legacy module-title
-      class at L65-71, the generic level-1 rule at L488-494 and the generic
-      level-2 rule at L496-502. Only the colour differs, and the token vocabulary
-      already carries a heading-colour token for precisely this element. The
-      title is NOT a styled div dressed up as a heading, and there must never be
-      two instances of this component on one screen.
-
-      COORDINATION NOTE, reported and not acted upon: layout/** owns the
-      application shell. If that shell also renders a level-1 heading for the
-      site brand, a page would carry two of them. The page title inside the main
-      region is the correct owner of level 1, so nothing is changed here and
-      layout/** is not edited.
-
-      MIGRATION: titles arrive already resolved. The legacy convention produced
-      22 distinct mode-qualified title keys across the 37 in-scope resource
-      files - the empty-mode key ten times (the portals screen resolves to
-      'Portals'), the edit-mode key five times (the edit-roles screen resolves
-      to 'Edit Security Roles', a file from which the empty-mode key is absent
-      because each resource file carries only the modes its own screen
-      supports), one key with no value-suffix at all, and one mode name
-      containing a space. Mode resolution therefore stays in the feature: this
-      component takes a plain resolved string, maps no keys, models no modes and
-      consults no routing state.
-
-      MIGRATION: the input name collides with the global HTML advisory-text
-      attribute. The name is kept because the fixed shared-library API mandates
-      it, and the value is never published to the host element - this template
-      binds nothing to that attribute, and the paired class strips it from the
-      host outright, so no native tooltip and no spurious accessible name can
-      appear. The legacy portal offered no such tooltip either: across the 39
-      in-scope admin screens the title carries no advisory-text attribute
-      anywhere.
-    -->
     <h1 class="page-header__title">{{ title }}</h1>
 
     <!--
-      MIGRATION: the subtitle is supporting text, never a second heading, so it
-      renders as a paragraph and stays out of the document outline. The legacy
-      precedent is exact - editroles.ascx L17-18 and L75-76 render their
-      supporting sentences ('In this section, you can set up the basic settings
-      for this role.' and 'In this section, you can set up more advanced
-      settings for this role.') through plain labels carrying the legacy
-      body-text class, never through a heading. Promoting either to a
-      second-level heading would invent an outline the legacy screens never had.
-
-      The guard is a truthiness test rather than a defined-or-not test on
-      purpose: the member is optional, so an absent value renders nothing, and
-      an empty or omitted string renders nothing either instead of leaving a
-      blank paragraph occupying vertical space and adding an empty node to the
-      accessibility tree. Interpolation of an absent value yields the empty
-      string, so the words "null" and "undefined" can never surface as visible
-      text.
+      A truthiness guard rather than a presence check: an empty or omitted value
+      renders nothing at all, instead of a blank paragraph that would occupy
+      vertical space and add an empty node to the accessibility tree.
     -->
     @if (subtitle) {
       <p class="page-header__subtitle">{{ subtitle }}</p>
@@ -133,10 +23,26 @@
     ('Add New Portal', 'Export Portal Template', 'Delete Expired Portals'). One
     unnamed slot therefore covers every case: nothing is enumerated, counted or
     capped, no selector is used, no content query is declared and no third input
-    is added. Collapse-at-zero is achieved entirely in the stylesheet, because a
-    wrapper carrying no padding, no border and no background occupies no space
-    when nothing is projected into it - which is both simpler and sturdier than
-    an empty-element selector or projected-content state.
+    is added. Collapse-at-zero is achieved entirely in the stylesheet, and the
+    slot deliberately stays on its own line here because the mechanism depends on
+    it: the paired stylesheet suppresses this wrapper with an empty-element
+    selector, and that selector tolerates a comment child - the compiler's own
+    projection anchor - but not a space-only text child, which the compiler
+    strips by default. Nothing conditional is introduced in this template. The
+    wrapper is always emitted and the stylesheet decides whether it generates a
+    box, which keeps the markup free of layout logic.
+
+    CORRECTED ON MEASUREMENT: an earlier reading of this file claimed collapse
+    needed no empty-element selector, on the grounds that a wrapper with no
+    padding, border or background occupies no space. That reasoning does not hold
+    in this layout, and the reason is the parent rather than this element. The
+    enclosing block is a flex container declaring a gap, and a flex gap applies
+    BETWEEN ITEMS regardless of whether an item has any size - so the 29 of 37
+    in-scope screens that project no action were paying a phantom gap beneath the
+    title. Only removing the wrapper from the flex formatting context suppresses
+    it, which no amount of zeroed padding can do. The corrected mechanism is
+    verified by its own assertion in the paired specification rather than argued
+    for here.
 
     MIGRATION: provenance of the slot. The action-suffixed resource keys were
     literally the command names of the legacy skin container's action buttons,

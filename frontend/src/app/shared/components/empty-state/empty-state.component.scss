@@ -1,50 +1,20 @@
-// empty-state.component.scss — EmptyStateComponent, shared component library.
-//
-// One rule set serves both readings of this component: the in-page stand-in for
-// an empty data table, and the body of the catch-all route where it is the whole
-// page and projects nothing. It assumes no table/grid/list ancestor and owns no
-// page width and no landmark — the layout shell and _layout.scss own those.
-// Every value is a var(--token); the only literals are 0, none and 100%.
-//
-// LOAD PATH — four segments, because styles/ is a sibling of app/ one level
-// above it. Resolved on disk (one, two, three and five all miss) and documented
-// identically at _mixins.scss:87; angular.json configures no includePaths, so the
-// path must be relative. Sass modules are per-file, so this @use is required even
-// though src/styles.scss also loads the partial. Only mixins is loaded — tokens
-// are custom properties that inherit through the DOM from the one
-// document-root block that partial owns.
 @use '../../../../styles/mixins' as mx;
 
-// MIGRATION: effectively a NET ADDITION. The cited legacy affordance
-// (default.css:957-962) gives a name and no design — comment "used to collapse
-// panes without any content in them" plus one property, a zero width. It is also
-// unreachable from in-scope code: the only other reference under Website or
-// Library is Library/Components/Skins/Skin.vb, and skins are excluded from this
-// migration. Legacy admin grids declare no empty-data template, so zero rows
-// rendered SILENTLY; explaining the absence is a documented improvement. No
-// legacy class identifier is carried over.
+// One rule set serves both readings of this component — the in-page stand-in for
+// an empty table and the whole-page catch-all body — so nothing here assumes a
+// table, grid or list ancestor, and nothing here owns a page width.
 
-// The custom element defaults to display:inline, leaving the block below without
-// a proper containing block for its percentage clamp.
 :host {
   display: block;
 }
 
-// MIGRATION: the radius and four-pixel spacing scale are net-new — rounded
-// corners, shadows and media queries each occur ZERO times across all 34
-// stylesheets under Website/. Elevation exists but is DECLINED rather than applied for symmetry:
-// this is a passive placeholder in the page surface, not a floating overlay, so
-// it keeps the flat legacy aesthetic and leaves elevation to the dialog. The
-// legacy secondary surface is what lets it read as a distinct region under a
-// table header as well as standing alone.
+// Elevation is declined rather than applied: this is a passive placeholder within
+// the page surface, not a floating overlay. The secondary surface colour is what
+// lets it read as a distinct region under a table header as well as standing alone.
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  // The one legacy centring precedent — the centre-alignment class at
-  // default.css:973-976.
-  // Needed alongside align-items: that centres the child boxes, this the wrapped
-  // lines inside them.
   text-align: center;
   gap: var(--space-4);
   padding-block: var(--space-8);
@@ -53,26 +23,19 @@
   border: var(--border-width) var(--border-style) var(--color-border);
   border-radius: var(--radius-md);
 
-  // MIGRATION: net-new responsive behaviour, through the shared breakpoint mixin
-  // only — a component may never write a media query itself. Mobile-first, so
-  // the narrowest viewports keep the tighter inline padding and leave the message
-  // the most room to reflow; the narrowest measured viewport is the worst case.
+  // Through the shared breakpoint mixin only, because a component may never write
+  // a media query itself. Mobile-first, so the narrowest viewports keep the
+  // tighter inline padding and leave the message the most room to reflow.
   @include mx.respond-above('sm') {
     padding-inline: var(--space-6);
   }
 }
 
-// Glyph sizing and colour belong here by contract: the template sets no width or
-// height on the drawing and leaves its presentation attributes overridable. The
-// spacing scale is the only length scale, so it supplies the box, and
-// currentColor on the strokes picks up the colour below. Decorative and
-// aria-hidden, so the WCAG contrast minimum does not apply — the heading and
-// message carry every piece of information.
 .empty-state__glyph {
   display: flex;
   inline-size: var(--space-8);
   block-size: var(--space-8);
-  color: var(--color-text-disabled);
+  color: var(--color-text-muted);
 
   svg {
     inline-size: 100%;
@@ -80,40 +43,29 @@
   }
 }
 
-// MIGRATION: reproduces the measured legacy module-title style token-for-token
-// (default.css:65-71 — the largest legacy size, weight normal, and the dark
-// neutral declared at line 70). The brief expected that colour to be a gap; it
-// is not — the token vocabulary carries it verbatim — so no gap is reported here
-// and no substitute colour is used. font-weight is load-bearing (the user-agent default here is
-// bold, the legacy style is not) and so is margin-block:0 — the parent spaces
-// children with gap, so a user-agent margin would double it.
+// The weight is load-bearing, because the user-agent default for this element is
+// bold and the intended style is not. Zeroing the margin is too: the parent spaces
+// its children with a gap, so a user-agent margin would double it.
 .empty-state__title {
   margin-block: 0;
   font-size: var(--font-size-xxl);
   font-weight: var(--font-weight-normal);
   line-height: var(--line-height-tight);
-  color: var(--color-text-heading);
+  color: var(--color-primary);
 }
 
-// MIGRATION: the body-text register is the measured legacy one
-// (default.css:92-97 — the legacy body size, weight normal), deliberately NOT the
-// legacy error register: an empty state is not an error, and that belongs to error-banner. The
-// family is inherited rather than restated, from the single base stack into which
-// three near-identical legacy stacks (38, 2 and 1 uses) were consolidated.
+// The overflow pair diverges from generic break-word guidance and both halves are
+// required. Breaking on word boundaries does not lower this element's intrinsic
+// minimum-content width, and a centred flex child is sized to its own content, so
+// a long unbroken run — an address pasted into a caption, say — pushes the element
+// past its parent on both sides. Breaking anywhere lowers that width and the clamp
+// holds the box inside the parent; together they reflow instead of escaping.
+// Truncation is not the remedy, because this sentence is the reader's only
+// explanation.
 //
-// MIGRATION: the overflow pair diverges from generic break-word guidance, and is
-// browser-measured rather than assumed. break-word alone does not lower the
-// intrinsic minimum-content width, and a centred flex child is sized to its own
-// content: at the narrowest measured viewport a 75-character unbroken run pushed
-// this element past its parent on both sides. anywhere lowers that width, the clamp holds the box
-// inside the parent, and together they reflow instead of escaping. Truncation is
-// not the remedy — this sentence is the reader's only explanation.
-//
-// MIGRATION — REPORTED TOKEN GAP, not hardcoded. A wide-viewport line-length cap
-// needs a prose-measure token and none exists (the largest length token is a
-// spacing step). The literal would breach zero-hardcoded-values, which outranks
-// visual refinement, so only the tokenised clamp is applied; page-width capping
-// stays with the page container in _layout.scss.
+// No wide-viewport line-length cap is set: the only tokenised clamp available is
+// the proportional one, and a literal measure would be a hardcoded value. Capping
+// page width stays with the page container.
 .empty-state__message {
   margin-block: 0;
   max-inline-size: 100%;
@@ -124,22 +76,20 @@
   color: var(--color-text-muted);
 }
 
-// MIGRATION: no focus rule is emitted, deliberately. The legacy portal declares
-// :focus and outline zero times, so a ring would be a net addition — but this
-// component renders nothing focusable, and under emulated view encapsulation a
-// projected control carries the CALLER's scoping attribute, so a descendant rule
-// here provably could not match it. The shared focus-ring mixin is applied
-// globally to interactive elements instead (_mixins.scss:363-369).
+// No focus rule is emitted here and one would not work if it were: this component
+// renders nothing focusable, and under emulated view encapsulation a projected
+// control carries the caller's scoping attribute, so a descendant rule written
+// here could not match it. Focus styling reaches projected controls through the
+// shared mixin at their own origin instead.
 //
-// The wrapper must contribute NO space when nothing is projected, as the
-// catch-all reading always does. gap alone fails: a childless wrapper is still a
-// zero-sized flex item and gap is inserted between adjacent items, measuring one
-// full dead spacing slot. Out of flow it is not an item, so no slot exists.
+// The wrapper must contribute no space when nothing is projected. A gap alone
+// fails, because a childless wrapper is still a zero-sized flex item and the gap
+// is inserted between adjacent items; taken out of flow it is not an item at all,
+// so no gap slot is created.
 //
-// CONSTRAINT: :empty tolerates a comment child (so the compiler's projection
-// anchor is harmless) but not a space-only text child. Both verified in-browser.
-// The template puts the slot on its own line, so this relies on the compiler
-// default that strips space-only nodes — confirmed not overridden in tsconfig.
+// The emptiness pseudo-class tolerates a comment child but not a space-only text
+// child, so the slot is placed on its own line and this relies on space-only nodes
+// being stripped at compile time.
 .empty-state__actions {
   display: flex;
   flex-wrap: wrap;

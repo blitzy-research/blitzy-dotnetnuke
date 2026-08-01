@@ -1,96 +1,34 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    DnnMigration.IntegrationTests (AAP 0.4.1.1 / 0.5.1.5)
+    Hosts the real API request pipeline in process, which requires the API's
+    Program class to be public and partial in the global namespace. Every test
+    class here must carry [Trait("Category", "Integration")], because that is
+    what the "Category=Integration" test filter selects.
 
-    Hosts the real DnnMigration.Api request pipeline in process through
-    WebApplicationFactory<Program>, which is why Program.cs in DnnMigration.Api is
-    declared `public partial` in the global namespace. Every test class in this
-    project carries [Trait("Category", "Integration")]; Validation Gate 5 selects
-    exactly this suite with a "Category=Integration" test filter, a mechanism AAP
-    0.9.4 records as verified by execution.
+    Test-database strategy: the InMemory and Sqlite providers are the default
+    stores so the suite runs without a container runtime. Testcontainers.MsSql is
+    available for schema-faithful runs but is deliberately not the default.
 
-    Test-database strategy (AAP 0.6.1): Microsoft.EntityFrameworkCore.InMemory and
-    Microsoft.EntityFrameworkCore.Sqlite are the DEFAULT stores, so the suite runs
-    with no container runtime present. Testcontainers.MsSql is available for
-    schema-faithful runs where a Docker daemon exists but is deliberately NOT the
-    default.
-  -->
+    ANALYZER HAZARD: xunit.analyzers ships transitively with xunit and reports its
+    xUnit#### rules as warnings, which the inherited warnings-as-errors policy
+    promotes to build errors. Fix them in the test — never add an xUnit#### code
+    to a NoWarn property, to backend/.editorconfig or to a new config file. The
+    one that bites most often is the ban on blocking a Task inside a test, so
+    every test method is `async Task`, never `async void`. Restore diagnostics are
+    promoted the same way and are fixed by aligning versions.
 
-  <!--
-    BUILD POLICY IS INHERITED. DO NOT RE-DECLARE IT AND DO NOT SHADOW IT.
-
-    TargetFramework, LangVersion, Nullable, ImplicitUsings, TreatWarningsAsErrors,
-    NoWarn, GenerateDocumentationFile and EnforceCodeStyleInBuild all arrive from
-    backend/Directory.Build.props. AAP 0.1.1.3 mandates a single props file so the
-    policy applies uniformly across all six projects rather than being duplicated
-    per .csproj. MSBuild stops at the FIRST Directory.Build.props it finds walking
-    upward, so adding a Directory.Build.props or Directory.Build.targets to this
-    folder or to backend/tests/ would silently shadow the parent and build this one
-    project under a different policy.
-
-    AssemblyName and RootNamespace are intentionally left at the SDK default,
-    $(MSBuildProjectName), which already resolves to DnnMigration.IntegrationTests.
-    IsTestProject is set automatically by Microsoft.NET.Test.Sdk.props, so it is not
-    restated here either. IsPackable is the only property this project adds.
-  -->
-
-  <!--
-    ANALYZER HAZARD, RECORDED FOR EVERY AUTHOR OF A TEST IN THIS PROJECT.
-
-    xunit.analyzers ships transitively with xunit and reports its xUnit#### rules as
-    warnings. The inherited TreatWarningsAsErrors=true, plus the warnaserror switch
-    that Validation Gate 1 passes explicitly, promote every one of them to a build
-    ERROR. They must be fixed in the test, never suppressed: only CS8618 and CS1591
-    are suppressed anywhere in this solution and AAP 0.6.3 is categorical that "no
-    other warning is suppressed". No xUnit#### code may be added to a NoWarn
-    property, to this file, to backend/.editorconfig or to any new config file.
-
-    Verified against xunit.analyzers 1.18.0 (the version xunit 2.9.3 resolves), these
-    four are warning-severity by default and therefore BREAK THE BUILD here:
-      xUnit1031 forbids blocking on a Task inside a test, which turns AAP Rule T6
-                (async all the way down, no .Result, no .Wait(), no
-                GetAwaiter().GetResult()) into a compile-time guarantee. It bites
-                hardest in this project because every HttpClient and EF Core call is
-                awaitable. Every test method must be `async Task`, never `async void`.
-      xUnit1012 rejects a null [InlineData] value bound to a non-nullable
-                parameter, interacting directly with Nullable=enable.
-      xUnit1026 rejects an unused theory parameter.
-      xUnit2013 requires Assert.Single or Assert.Empty over a count assertion.
-    Two further rules worth knowing are info-severity by default, so they surface in
-    the IDE but are NOT promoted to errors: xUnit1004 (a test skipped on purpose) and
-    xUnit1033 (a test class that ignores a collection fixture it declares). Treat
-    both as review findings rather than build failures.
-
-    CS8618 being suppressed is convenient here: it covers the uninitialised
-    non-nullable fixture fields that the xUnit fixture pattern makes unavoidable.
-
-    Restore diagnostics are promoted the same way, so any NUxxxx must be fixed by
-    aligning versions rather than by suppressing it.
-  -->
-
-  <!--
-    THREE EF CORE PROVIDERS ARE REACHABLE FROM THIS PROJECT.
-
-    SqlServer arrives transitively through DnnMigration.Infrastructure while
-    InMemory and Sqlite are referenced below. Referencing all three is legal;
-    applying two Use* calls to the SAME DbContextOptions is not, and EF Core throws
-    InvalidOperationException ("Only a single database provider can be registered")
-    when it happens. A test fixture must therefore REMOVE the existing provider
-    registration before adding its own, never layer one on top.
+    THREE EF CORE PROVIDERS ARE REACHABLE: SqlServer transitively through
+    Infrastructure, plus the InMemory and Sqlite references below. Only one
+    provider may be applied to a single DbContextOptions, so a fixture must remove
+    the existing provider registration before adding its own rather than layering
+    one on top.
   -->
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
-  <!--
-    Exact version pins only (AAP 0.6.1 and the 0.8.3 deterministic-restore
-    baseline): no floating range, no wildcard, no version-less PackageReference.
-    Every Microsoft.* 8.x package is pinned to the 8.0.29 patch line so it matches
-    the installed Microsoft.NETCore.App / Microsoft.AspNetCore.App shared
-    frameworks recorded in AAP 0.1.2.4. Ordered alphabetically for reviewability.
-  -->
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4">
       <PrivateAssets>all</PrivateAssets>
@@ -102,6 +40,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
@@ -111,16 +50,13 @@
   </ItemGroup>
 
   <!--
-    EXACTLY ONE ProjectReference (AAP Rule T1 and the 0.8.3 Clean Architecture
-    baseline). Application, Infrastructure and Domain arrive transitively through
-    the API; naming them explicitly would blur the dependency direction that the
-    reference graph exists to enforce.
+    Exactly one project reference: Application, Infrastructure and Domain arrive
+    transitively through the API, and naming them would blur the dependency
+    direction the reference graph exists to enforce.
 
-    Microsoft.AspNetCore.Mvc.Testing supplies the Microsoft.AspNetCore.App
-    framework reference needed to host Program in process, so this project stays on
-    Microsoft.NET.Sdk and adds no FrameworkReference of its own. The referenced
-    project must keep emitting DnnMigration.Api.dll, the filename that
-    docker/api.Dockerfile hard-codes in its ENTRYPOINT.
+    Microsoft.AspNetCore.Mvc.Testing supplies the ASP.NET Core framework
+    reference needed to host the API in process, so this project stays on
+    Microsoft.NET.Sdk and adds no FrameworkReference of its own.
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\DnnMigration.Api\DnnMigration.Api.csproj" />

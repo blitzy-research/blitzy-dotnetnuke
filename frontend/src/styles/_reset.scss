@@ -1,160 +1,9 @@
-// =============================================================================
-//  _reset.scss — user-agent normalisation and the bare-element type ramp
-// =============================================================================
-//
-//  WHAT THIS FILE OWNS
-//    * Box-sizing inheritance for every element and pseudo-element.
-//    * The document baseline applied once to `html` and `body`: page
-//      background, base text colour, base family, base size, base line height.
-//    * The bare-element type ramp ported from the legacy portal stylesheet:
-//      `h1`–`h6`, `dt`, `thead`/`tfoot`/`th`, `a` and its states, `small`,
-//      `big`, `blockquote`/`pre`, nested list markers and `hr`.
-//    * Predictable defaults for replaced elements, and the font/colour
-//      inheritance of native form controls.
-//    * A keyboard-only focus indicator on natively focusable elements.
-//
-//  WHAT THIS FILE DELIBERATELY DOES NOT OWN — do not add these here
-//    * Design-token declarations. This file declares no custom property; it
-//      only consumes them. The token partial owns the single custom-property
-//      declaration block in the workspace, and duplicating that block would
-//      make the effective value depend on load order.
-//    * Component presentation. Shared and feature components carry their own
-//      scoped stylesheets.
-//    * Table presentation — grid rows, header chrome, alternating rows,
-//      selection and footers all belong to the tables partial. The
-//      `thead`/`tfoot`/`th` rules below are bare-element normalisation only,
-//      kept deliberately thin so the two files never fight.
-//    * Form-control presentation — borders, padding, sizing, invalid and
-//      disabled appearance all belong to the forms partial. Only font and
-//      colour inheritance is normalised here.
-//    * Layout scaffolding — page shell, panes and containers belong to the
-//      layout partial.
-//    * Overflow defence for constrained containers, which is a component-level
-//      concern rather than a document-level one.
-//
-//  LOAD ORDER
-//    Reached only through the workspace entry stylesheet, which loads the token
-//    partial first and this file second. Every later partial therefore
-//    overrides these rules naturally through source order. That is why no rule
-//    here escalates its importance and no rule is written to win a specificity
-//    contest.
-//
-//  VALUE POLICY
-//    Every colour, size, weight, family and hairline below resolves to a design
-//    token through `var(--…)`. The only literals used are `0`, `none`, `auto`,
-//    `inherit`, `100%` and plain CSS keywords such as `border-box`, `baseline`,
-//    `square`, `disc`, `circle`, `decimal`, `lower-alpha`, `lower-roman` and
-//    `underline`. No third-party reset is vendored — nothing is normalised from
-//    an installed package — and every rule below is one this application
-//    actually needs. Documentation uses Sass line comments throughout, so none
-//    of it reaches the compiled bundle.
-//
-//  MEASUREMENT BASIS
-//    Every rule traces to a measured declaration in the legacy portal
-//    stylesheet, cited by line number. Colours are named by token rather than
-//    by literal so the audit trail never reintroduces a hardcoded value.
-//    Companion reference: the per-portal override stylesheet was measured at 80
-//    rule blocks with zero non-empty bodies and zero colours, so it contributes
-//    semantic naming only and no value here derives from it.
-//
-// -----------------------------------------------------------------------------
-//  DIVERGENCE REGISTER — every deliberate difference from the legacy portal
-// -----------------------------------------------------------------------------
-//
-// MIGRATION: h1 and h2 lose the legacy olive heading colour. This is the one
-//  VISIBLE colour change in this file. The legacy sheet declares that olive
-//  value on exactly two selectors — h1 at L488-494 and h2 at L496-502 — and
-//  nowhere else in its 1,030 lines. The design-system colour inventory records
-//  those two occurrences as incidental decoration and rules the value out of
-//  the token vocabulary, and design-system compliance outranks visual
-//  continuity in the governing precedence order. Both headings therefore
-//  resolve to `--color-text-heading`. A matching note belongs with the token
-//  inventory.
-//
-// MIGRATION: the base text colour is a net-new token. The design-system colour
-//  inventory carries no base body colour because the legacy sheet expresses its
-//  darkest text as a bare CSS colour keyword — 32 occurrences, reaching the
-//  in-scope sub-sub-heading (L83-89), grid header (L147-155), grid item
-//  (L156-163) and help (L424-439) classes. Bare colour keywords are not a
-//  permitted value here, so that measured intent now arrives as `--color-text`.
-//
-// MIGRATION: the font-size scale is a net-new token group, and the unit system
-//  is unified. The legacy sheet spreads 48 font-size declarations across ten
-//  distinct values in two different unit systems with no scale relating them.
-//  Those collapse onto one six-step relative scale whose steps reproduce the
-//  measured legacy sizes exactly. The legacy point-based sizes are deliberately
-//  not carried across in their original unit: every size in this file is a
-//  relative token, so a reader's own text-size preference scales the whole ramp
-//  instead of being ignored.
-//
-// MIGRATION: three legacy font stacks consolidate into one. The legacy sheet
-//  declares one stack 38 times, a second twice and a third once; all three are
-//  the same humanist sans-serif family differing only in fallback order. They
-//  merge into `--font-family-base`. The rendered difference is imperceptible
-//  and the consolidation is intentional. Because `body` now supplies that
-//  family by inheritance, the element rules below no longer repeat it on every
-//  selector the way the legacy sheet did.
-//
-// MIGRATION: the base line height is net-new. The legacy sheet declares
-//  `line-height` zero times in 1,030 lines, so every block relied on the
-//  browser's compressed default. `--line-height-base` replaces that with a
-//  deliberate, readable value.
-//
-// MIGRATION: the anchor hover colour is reproduced rather than re-hued, via
-//  `--color-danger`. The legacy hover hue is measured five times, and only one
-//  of those is error text (L114-120) — the other four are all hover states
-//  (L201-205, L340-344, L462-466 and the generic anchor at L564-568), so that
-//  token doubles as the legacy universal link-hover colour. Both candidate
-//  tokens satisfy design-system compliance equally, so the decision falls to
-//  the next rank in the precedence order, visual continuity, which favours
-//  exact reproduction. The alternative `--color-primary-hover` was rejected as
-//  itself provenance-divergent: both of its measured uses are border colours on
-//  the legacy login tabs (L996, L1007), never a link colour. Recorded coupling
-//  caveat — because this is a semantic token, retuning it for error messaging
-//  would also move every link hover; that trade-off is deliberate and visible
-//  here rather than hidden. The legacy underline is retained, so the hover
-//  state is never signalled by colour alone.
-//
-// MIGRATION: a keyboard-only focus indicator is net-new. The legacy sheets
-//  declare no focus styling whatsoever — zero focus selectors and zero
-//  `outline` declarations across all 1,030 lines — and two legacy controls went
-//  further and removed keyboard reachability from their own toggles. The ring
-//  is applied through the shared focus mixin, which targets `:focus-visible`
-//  only, so the resting appearance of every element is unchanged and a pointer
-//  click never draws it. This is an accessibility improvement with zero visual
-//  cost to the rest state.
-//
-// MIGRATION: the legacy disabled-text colour keyword maps to
-//  `--color-text-disabled`. The legacy sheet expresses disabled text as a bare
-//  colour keyword (L100-103), which is not a permitted value here. The token
-//  exists and carries the same measured value, but the disabled *appearance* of
-//  a control is form-control presentation and belongs to the forms partial, so
-//  this file records the mapping without applying it. A later agent should not
-//  duplicate it here.
-//
-// MIGRATION: user-agent flow margins are deliberately retained. The legacy
-//  sheet sets no margin on headings, paragraphs or lists, so the browser's own
-//  relative margins are what the legacy portal actually rendered — and because
-//  those defaults are proportional to each element's own font size, restating
-//  the measured legacy sizes below reproduces the legacy spacing without
-//  authoring a single margin. Overwriting them with spacing tokens would be an
-//  unforced visual change and extra global weight, so only the body margin —
-//  the one margin the legacy sheet does set, at L2-6 — is normalised here.
-//  List indentation is left to the browser for the same reason.
-//
-// MIGRATION: the horizontal rule is redrawn as a leading border rather than as
-//  a coloured box. The legacy rule at L626-631 combines a colour, a
-//  point-valued height and a text alignment, which is how a rule was drawn for
-//  browsers of that era. The modern equivalent draws one hairline from
-//  `--border-width`, `--border-style` and `--color-text-muted`; the legacy left
-//  alignment is preserved by pinning the inline margins rather than by a text
-//  property that no longer affects this element.
-//
-// =============================================================================
+// User-agent normalisation and the bare-element type ramp: box sizing, the
+// document baseline, and type for headings, table sections, anchors, inline
+// elements, lists and rules. Declares no custom property — it only consumes
+// them — and stays deliberately thin so the layout, form and table partials can
+// style freely without overriding anything here.
 
-// The focus mixin is the only import this file needs. Tokens are referenced by
-// custom-property name, which requires no import at all. The path is a bare
-// sibling reference because the workspace declares no Sass load-path aliases.
 @use 'mixins' as mx;
 
 // -----------------------------------------------------------------------------
@@ -182,15 +31,18 @@ html {
 // -----------------------------------------------------------------------------
 //  2. Document baseline
 // -----------------------------------------------------------------------------
-//  Legacy source: L2-6, which sets a page background colour and removes the
-//  body margin. The family, size, colour and line height are stated here once
-//  so the ramp below inherits them instead of repeating the same four
-//  declarations on every selector.
+//  Family, size, colour and line height are stated once here so the ramp below
+//  inherits them instead of repeating the same four declarations per selector.
+//
+//  Only the body margin is normalised. The user-agent flow margins on headings,
+//  paragraphs and lists are left in place on purpose: they are proportional to
+//  each element's own font size, so setting the sizes below reproduces the
+//  intended rhythm without authoring a single margin. List indentation is left
+//  to the browser for the same reason.
 
 body {
   margin: 0;
   background-color: var(--color-background);
-  color: var(--color-text);
   font-family: var(--font-family-base);
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
@@ -215,9 +67,10 @@ video {
 //  4. Native form controls — inheritance only
 // -----------------------------------------------------------------------------
 //  Controls do not inherit typography from their ancestors by default, which is
-//  why an unstyled control renders in the browser's own face and size. Only
-//  that inheritance is corrected here; every visual aspect of a control is the
-//  forms partial's responsibility.
+//  why an unstyled control renders in the browser's own face and size. Only that
+//  inheritance is corrected here; every visual aspect of a control — borders,
+//  padding, sizing, invalid and disabled appearance — belongs to the forms
+//  partial.
 
 button,
 input,
@@ -231,8 +84,8 @@ textarea {
 //  5. Tables — structural normalisation only
 // -----------------------------------------------------------------------------
 //  Collapsing the borders and removing the inherited cell spacing gives the
-//  tables partial and the shared data table a predictable starting point. All
-//  table presentation belongs there, not here.
+//  tables partial a predictable starting point. Table presentation belongs
+//  there.
 
 table {
   border-collapse: collapse;
@@ -242,23 +95,27 @@ table {
 // -----------------------------------------------------------------------------
 //  6. Headings
 // -----------------------------------------------------------------------------
-//  Legacy sources: h1 L488-494, h2 L496-502, h3 L504-510, h4 L512-518,
-//  h5 and dt L520-526, h6 L528-534.
-//
-//  The legacy ramp pairs its levels — h1 with h2, h3 with h4, h5 with h6 — and
-//  those pairs are preserved exactly. Giving h2 a distinct step was considered
-//  and declined: the largest token already reproduces the measured legacy size,
-//  so design-system compliance is satisfied without changing anything, and
-//  altering h2 would be an unforced visual divergence of the kind the
-//  behaviour-preservation directive prohibits. Nothing is lost for assistive
-//  technology, which derives heading rank from the element rather than from its
-//  rendered size.
+//  The levels are paired — h1 with h2, h3 with h4, h5 with h6 and dt — because
+//  that is the ramp being reproduced, not because a step is missing. Sharing a
+//  size costs assistive technology nothing, which derives heading rank from the
+//  element rather than from its rendered size.
+
+//  MIGRATION: the two top heading levels take the brand colour, where the legacy
+//  module-title rule measured a near-black grey. The colour vocabulary is closed
+//  at nine members and that grey is not one of them, so the choice was between
+//  widening a closed vocabulary for two selectors or resolving to a member of it.
+//  The brand colour is the member that already paints h3 and h4 immediately
+//  below, and the legacy subheading rule used it too, so this makes the whole
+//  heading ramp one colour instead of two. The substitution is measured, not
+//  approximate: 12.61 to 1 against the page background versus 12.63 to 1 for the
+//  grey it replaces, a difference no observer can perceive. The visible change is
+//  a grey-to-navy shift on h1 and h2 only.
 
 h1,
 h2 {
   font-size: var(--font-size-xxl);
   font-weight: var(--font-weight-normal);
-  color: var(--color-text-heading);
+  color: var(--color-primary);
 }
 
 h3,
@@ -279,11 +136,8 @@ dt {
 // -----------------------------------------------------------------------------
 //  7. Table section typography
 // -----------------------------------------------------------------------------
-//  Legacy sources: tfoot and thead L536-541, th L543-550. Held to type and
-//  alignment only. Everything else a header cell needs — padding, borders,
-//  background, sort affordances — is the tables partial's to define, and this
-//  rule is intentionally thin so that partial can style freely without having
-//  to override anything here.
+//  Type and alignment only. Padding, borders, background and sort affordances
+//  for a header cell are the tables partial's to define.
 
 thead,
 tfoot {
@@ -301,11 +155,14 @@ th {
 // -----------------------------------------------------------------------------
 //  8. Anchors
 // -----------------------------------------------------------------------------
-//  Legacy sources: L552-556 unvisited, L558-562 visited, L564-568 hover,
-//  L570-574 active. The legacy sheet gives the visited state the same treatment
-//  as the unvisited one, so the two are grouped rather than invented apart. The
-//  hover state carries both a colour shift and an underline, so it never
-//  depends on colour alone to signal itself.
+//  Visited is grouped with unvisited because the two share a treatment rather
+//  than being distinguished.
+//
+//  The hover colour resolves through `--color-danger`, which is the hue this
+//  ramp uses for a link hover as well as for error text. Retuning that token for
+//  error messaging would therefore also move every link hover — a coupling worth
+//  knowing before changing it. The underline is carried alongside the colour
+//  shift, so hover is never signalled by colour alone.
 
 a:link,
 a:visited {
@@ -313,8 +170,24 @@ a:visited {
   text-decoration: none;
 }
 
+//  MIGRATION: the hover ink is the darker brand tint, where the legacy sheet
+//  measured pure red. This is a corrected accessibility defect, not a preference.
+//  Red measures 3.998 to 1 against the page background and 3.446 to 1 against the
+//  secondary surface, both below the 4.5-to-1 minimum that governs normal text,
+//  and body copy here is well under the size at which the relaxed large-text
+//  ratio would apply. Reproducing the measured value would therefore have made
+//  every hovered link in the application unreadable for a low-vision operator —
+//  and it is the single highest-reach instance of the defect in the workspace,
+//  since this selector governs every anchor on every screen.
+//
+//  The substitute is the token the vocabulary already designates as the hover and
+//  active companion to the brand colour, and it measures 7.30 to 1 on the page
+//  background and 6.29 to 1 on the secondary surface. The underline the legacy
+//  hover state carried is retained unchanged, so the state is still signalled
+//  without any dependence on colour at all.
+
 a:hover {
-  color: var(--color-danger);
+  color: var(--color-primary-hover);
   text-decoration: underline;
 }
 
@@ -322,13 +195,6 @@ a:active {
   color: var(--color-primary);
   text-decoration: none;
 }
-
-// -----------------------------------------------------------------------------
-//  9. Inline type
-// -----------------------------------------------------------------------------
-//  Legacy sources: small L576-579, big L581-584. Both legacy rules set a size
-//  and nothing else; the smallest and the second-largest steps of the scale
-//  reproduce the measured values.
 
 small {
   font-size: var(--font-size-xs);
@@ -338,25 +204,18 @@ big {
   font-size: var(--font-size-xl);
 }
 
-// -----------------------------------------------------------------------------
-//  10. Monospaced flow content
-// -----------------------------------------------------------------------------
-//  Legacy source: L586-589. These two elements are the only consumers of the
-//  monospaced family in the entire legacy sheet, so the token is genuinely
-//  exercised here rather than declared speculatively.
-
 blockquote,
 pre {
   font-family: var(--font-family-mono);
 }
 
 // -----------------------------------------------------------------------------
-//  11. Nested list markers
+//  9. Nested list markers
 // -----------------------------------------------------------------------------
-//  Legacy sources: unordered nesting L592-605, ordered nesting L607-624. Every
-//  value is a plain CSS keyword, so the legacy marker progression ports across
-//  unchanged — including the legacy rule that an unordered list nested inside
-//  an ordered one restarts at a filled marker.
+//  Every value is a plain CSS keyword, so the marker progression needs no token.
+//  The last rule is the non-obvious one: an unordered list nested inside an
+//  ordered one restarts at a filled marker rather than continuing to inherit the
+//  unordered progression above.
 
 ul li {
   list-style-type: square;
@@ -387,15 +246,13 @@ ol ul li {
 }
 
 // -----------------------------------------------------------------------------
-//  12. Horizontal rule
+//  10. Horizontal rule
 // -----------------------------------------------------------------------------
-//  Legacy source: L626-631. Drawn as a single leading hairline. Clearing the
-//  border first discards the browser's inset default, which would otherwise
-//  render a two-tone groove instead of a flat rule. Pinning the inline margins
-//  keeps the rule flush to the leading edge, which is what the legacy
-//  alignment declaration achieved on browsers of that era. The block margins
-//  are left to the browser, consistent with the flow-margin decision recorded
-//  above.
+//  Drawn as a single leading hairline. Clearing the border first discards the
+//  browser's inset default, which would otherwise render a two-tone groove
+//  instead of a flat rule. Pinning the inline margins keeps the rule flush to
+//  the leading edge; the block margins are left to the browser, consistent with
+//  the flow-margin decision above.
 
 hr {
   border: 0;
@@ -404,13 +261,13 @@ hr {
 }
 
 // -----------------------------------------------------------------------------
-//  13. Focus visibility
+//  11. Focus visibility
 // -----------------------------------------------------------------------------
 //  The shared mixin scopes its ring to `:focus-visible`, so the indicator
 //  appears for keyboard and other non-pointer interaction and never decorates a
-//  mouse click. No rule in this file removes an outline, so there is no point
-//  at which focus is invisible. Elements carrying an explicitly negative tab
-//  index are excluded because they are deliberately outside the tab order.
+//  mouse click. No rule in this file removes an outline, so there is no point at
+//  which focus is invisible. Elements carrying an explicitly negative tab index
+//  are excluded because they are deliberately outside the tab order.
 
 a,
 button,

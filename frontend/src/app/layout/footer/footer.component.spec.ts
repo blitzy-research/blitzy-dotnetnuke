@@ -1,93 +1,32 @@
-/**
- * Specification for `FooterComponent` — the administration shell's single
- * `contentinfo` band.
- *
- * Why this file matters beyond the assertions it makes: `tsconfig.app.json`
- * declares `files: ["src/main.ts"]` together with an empty `types` list, so the
- * production build type-checks by import graph alone and never sees a spec. The
- * spec configuration is glob-included with the Jasmine types and carries no
- * `files` array, which makes it the second, independent route into a gated
- * compile. This file is therefore a real safety net rather than ceremony, and
- * the browser test run is the only gate that proves it.
- *
- * Three contracts are proven here, none of which is proven anywhere else in the
- * workspace:
- *
- * 1. Landmark ownership. The shell allocates exactly one semantic landmark per
- *    layout folder — the header band owns `<header>`, the sidebar owns `<nav>`,
- *    the shell owns `<main>` — and this band owns `<footer>` and nothing else.
- * 2. Copyright wording. The rendered line reproduces the measured legacy
- *    resource value.
- * 3. Year shape. Whatever year is rendered matches a four-digit pattern. It is
- *    never compared against a hard-coded value, so the suite stays correct
- *    across calendar boundaries without ever being rewritten.
- *
- * Measured legacy provenance — the DotNetNuke `Copyright` skin object:
- * - `Website/admin/Skins/App_LocalResources/Copyright.ascx.resx` L42-L43 holds
- *   that file's ONLY resource entry, verified by counting exactly one `<data>`
- *   element in the whole file: `Copyright.Text` = `Copyright (c) {0} {1}`. The
- *   parenthesised letter is plain ASCII in the source, which is why the
- *   assertions below match that exact byte sequence and deliberately do not
- *   match the typographic glyph — matching the glyph would let a silent wording
- *   divergence through unnoticed.
- * - `Website/admin/Skins/Copyright.ascx.vb` L85-L89 supplied the substitutions:
- *   `PortalSettings.FooterText` when non-empty, otherwise the resource string
- *   formatted with `Year(Now())` as `{0}` and `PortalSettings.PortalName` as
- *   `{1}`.
- * - `Website/Default.aspx.vb` L197-L199 independently corroborates the same
- *   wording and the same two substitutions on the separate code path that fed
- *   the copyright meta tag.
- *
- * Negative inventory — three legacy footer affordances are deliberately absent,
- * and the assertions below are the regression guards that keep them absent:
- * - The root-navigation strip. `Website/Portals/_default/Skins/MinimalExtropy/
- *   index.ascx` L109 emitted a root-level links control, registered at L10,
- *   inside the footer band opened at L108. It merely duplicated the primary
- *   navigation, which now lives once in the sidebar — the shell's sole
- *   navigation landmark. That is precisely what the `<nav>` count assertion
- *   guards against re-introducing.
- * - The Privacy Statement and Terms Of Use links, emitted by the same skin at
- *   L114-L116. Their wording is measured — `Privacy.ascx.resx` yields
- *   `Privacy Statement` and `Terms.ascx.resx` yields `Terms Of Use` — but the
- *   target route table declares neither a privacy nor a terms route, so either
- *   link would dangle.
- * - Any image. The notice is text, never a graphic.
- *
- * Escaping. `PortalSettings.FooterText` was an admin-editable, database-stored
- * fragment that the legacy label emitted as live markup, and the in-scope legacy
- * resource files genuinely do carry HTML-bearing values. The paired template
- * must therefore interpolate plain text and must never bind markup, so one spec
- * below asserts that no script element ever reaches the rendered band.
- *
- * Determinism. This suite reads no clock, schedules no timer and installs no
- * fake time source. The component resolves its year once, at construction, from
- * the platform; a spec that recomputed that same value would merely be asserting
- * the implementation against itself and would prove nothing. Pattern matching is
- * therefore both the correct and the sufficient assertion.
- */
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { FooterComponent } from './footer.component';
 
-/**
- * The literal, ASCII-only opening of the copyright notice, byte-exact with the
- * measured resource value. Asserted as a substring so the surrounding markup
- * structure stays free to evolve without breaking the wording contract.
- */
 const COPYRIGHT_PREFIX = 'Copyright (c)';
 
-/**
- * The product designation substituted for the legacy portal-name argument. It is
- * grounded in the repository's own committed catalogue and published
- * documentation rather than invented.
- */
 const PRODUCT_DESIGNATION = 'DotNetNuke';
 
-/**
- * Matches a four-digit run anywhere inside a longer string. Used against
- * rendered text, which carries the wording around the year.
- */
 const FOUR_DIGIT_YEAR_ANYWHERE = /\b\d{4}\b/;
+
+/**
+ * The WHOLE rendered sentence, anchored at both ends, with the year captured.
+ *
+ * This is the mutation-sensitive oracle for the wording contract, and it is
+ * anchored deliberately. A substring check on the opening words and the product
+ * name passes against any amount of extra text, any reordering and any
+ * substituted year, so it cannot distinguish the correct band from a band whose
+ * year was hard-coded to a past value or whose wording gained a stray word. The
+ * anchored form fails on all three. The single capture group is what lets the
+ * rendered year be compared against the component's own year without the
+ * specification reading a clock of its own.
+ *
+ * The shape reproduces the measured resource value
+ * `Copyright (c) {0} {1}`
+ * (`Website/admin/Skins/App_LocalResources/Copyright.ascx.resx` L42-L43) with
+ * `{1}` resolved to the product designation. The parenthesised letter is escaped
+ * because it is a literal in the source, not a group.
+ */
+const COPYRIGHT_SENTENCE = /^Copyright \(c\) (\d{4}) DotNetNuke$/;
 
 /**
  * Matches a string that is exactly four digits end to end. Used against the
@@ -95,18 +34,8 @@ const FOUR_DIGIT_YEAR_ANYWHERE = /\b\d{4}\b/;
  */
 const FOUR_DIGIT_YEAR_EXACT = /^\d{4}$/;
 
-/**
- * Every semantic landmark this band must NOT emit. Each one is owned by a
- * different layout folder, so a hit here means two components are competing for
- * the same landmark and assistive technology would report a duplicate.
- */
 const FOREIGN_LANDMARKS: readonly string[] = ['header', 'nav', 'main', 'aside'];
 
-/**
- * Lower-cased wording of the omitted legacy skin objects. Their absence is
- * asserted against the band's lower-cased text so the check is insensitive to
- * how the wording might be capitalised.
- */
 const OMITTED_LEGACY_LABELS: readonly string[] = ['privacy', 'terms'];
 
 describe('FooterComponent', () => {
@@ -115,37 +44,54 @@ describe('FooterComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      // The component is standalone, so it is supplied as an import. No provider
-      // is registered anywhere in this suite, deliberately: the class has no
-      // constructor and injects nothing, so a provider here would be dead weight
-      // that misrepresents its dependency surface.
       imports: [FooterComponent],
     }).compileComponents();
 
     fixture = TestBed.createComponent(FooterComponent);
     component = fixture.componentInstance;
 
-    // Change detection is driven explicitly. The component opts into the on-push
-    // strategy, and automatic detection would obscure exactly when the template
-    // is evaluated.
     fixture.detectChanges();
   });
 
-  /** The fixture host element, cast in exactly one place for the whole suite. */
   const hostElement = (): HTMLElement => fixture.nativeElement as HTMLElement;
 
-  /** The rendered band, or `null` when the template emitted none. */
   const footerElement = (): HTMLElement | null => hostElement().querySelector('footer');
 
-  /**
-   * The band's text, with a missing band or absent text normalised to the empty
-   * string so that string matchers always receive a `string`. This coalescing is
-   * the narrowing strategy used throughout, in place of a non-null assertion.
-   */
   const footerText = (): string => footerElement()?.textContent ?? '';
 
-  it('creates the component', () => {
-    expect(component).toBeTruthy();
+  /**
+   * The band's text with every run of whitespace collapsed to one space and the
+   * ends trimmed.
+   *
+   * Normalisation is what makes an anchored, whole-sentence assertion possible:
+   * the template is authored across several lines for readability, so the raw
+   * text node carries the indentation around the interpolation. Collapsing it
+   * compares the words the reader actually sees, and it deliberately does NOT
+   * discard whitespace entirely — a missing space between the year and the
+   * product name would still fail.
+   */
+  const normalisedFooterText = (): string => footerText().replace(/\s+/g, ' ').trim();
+
+  it('renders the notice as a single paragraph and emits no other element', () => {
+    const footer = footerElement();
+
+    expect(footer).not.toBeNull();
+    if (footer === null) {
+      return;
+    }
+
+    // The band's whole structure, asserted as a structure rather than as a
+    // truthiness check on the fixture. A wrapper `<div>`, a second paragraph, a
+    // `<span>` around the year or a nested element inside the paragraph would
+    // each fail here, and each would be a real change: the paired stylesheet
+    // addresses both elements BY TYPE rather than by class, so it silently stops
+    // matching the moment an intervening element appears, and the sibling
+    // `<p>` rule that zeroes the user-agent margin would leave the band's
+    // intrinsic height wrong.
+    const descendants = Array.from(footer.querySelectorAll('*'));
+
+    expect(descendants.map((element: Element): string => element.tagName)).toEqual(['P']);
+    expect(descendants[0].children.length).toBe(0);
   });
 
   it('emits exactly one footer contentinfo landmark', () => {
@@ -160,26 +106,86 @@ describe('FooterComponent', () => {
     }
   });
 
-  it('renders the copyright line with the measured legacy wording', () => {
+  it('renders the exact copyright sentence and nothing besides', () => {
     expect(footerElement()).not.toBeNull();
-    expect(footerText()).toContain(COPYRIGHT_PREFIX);
-    expect(footerText()).toContain(PRODUCT_DESIGNATION);
+
+    // ANCHORED, WHOLE-SENTENCE assertion. The wording, the word order, the
+    // spacing and the absence of any extra text are all proven in one
+    // expectation, so a reworded, reordered or padded band fails rather than
+    // passing on a substring match.
+    expect(normalisedFooterText()).toMatch(COPYRIGHT_SENTENCE);
+
+    // The opening words and the product designation are asserted separately as
+    // well, purely so a failure names WHICH half of the sentence drifted rather
+    // than reporting one opaque pattern mismatch.
+    expect(normalisedFooterText()).toContain(COPYRIGHT_PREFIX);
+    expect(normalisedFooterText()).toContain(PRODUCT_DESIGNATION);
   });
 
-  it('renders a four-digit year', () => {
+  it('renders the year the component resolved, not some other four-digit run', () => {
     expect(footerElement()).not.toBeNull();
-    expect(footerText()).toMatch(FOUR_DIGIT_YEAR_ANYWHERE);
+
+    const match = COPYRIGHT_SENTENCE.exec(normalisedFooterText());
+
+    expect(match).not.toBeNull();
+    if (match === null) {
+      return;
+    }
+
+    // THE POINT OF THIS TEST. A four-digit pattern alone is satisfied by a
+    // template that hard-codes an old year, which is exactly the regression this
+    // band is exposed to — the year is resolved once in TypeScript and
+    // interpolated in markup, so the two could drift apart silently. Comparing
+    // the captured run against the component's own member closes that gap
+    // without the specification reading a clock: whatever year the platform
+    // supplied, the rendered band has to agree with it.
+    expect(match[1]).toBe(String(component.currentYear));
   });
 
   it('exposes the year as exactly four digits', () => {
     expect(String(component.currentYear)).toMatch(FOUR_DIGIT_YEAR_EXACT);
   });
 
-  it('exposes a precomposed copyright line consistent with its own year', () => {
+  it('renders exactly the year it resolved once at construction', () => {
+    // The determinism guard. The component reads the platform clock through one
+    // named seam, exactly once per instance, and every other member derives from
+    // that value — so the rendered year is compared against the component's own
+    // member rather than against a freshly computed year. A second, independent
+    // clock read introduced anywhere in the band could disagree with the first
+    // across a New Year boundary; this expectation is what would catch it, and
+    // it cannot itself become flaky because both sides of the comparison come
+    // from the same single read.
+    expect(footerText()).toContain(String(component.currentYear));
+  });
+
+  it('exposes a precomposed copyright line matching the rendered sentence exactly', () => {
+    // The precomposed member is held to the SAME anchored sentence as the
+    // rendered band, so the two published granularities — the whole line, and
+    // the year on its own — cannot drift apart. The band interpolates the year
+    // and re-states the wording in markup, so without this the member could keep
+    // the correct wording while the template lost it, or vice versa.
+    expect(component.copyrightText).toMatch(COPYRIGHT_SENTENCE);
     expect(component.copyrightText).toContain(COPYRIGHT_PREFIX);
     expect(component.copyrightText).toContain(PRODUCT_DESIGNATION);
-    expect(component.copyrightText).toMatch(FOUR_DIGIT_YEAR_ANYWHERE);
-    expect(component.copyrightText).toContain(String(component.currentYear));
+
+    const match = COPYRIGHT_SENTENCE.exec(component.copyrightText);
+
+    expect(match).not.toBeNull();
+    if (match === null) {
+      return;
+    }
+
+    expect(match[1]).toBe(String(component.currentYear));
+  });
+
+  it('composes the precomposed line from the same year the band renders', () => {
+    // Cross-checks the two published members against each other through the
+    // RENDERED output, which is the only place a divergence would actually be
+    // visible to a user. Asserting the member against itself would prove
+    // nothing; asserting it against the band proves the single-source-of-truth
+    // claim the component documents.
+    expect(normalisedFooterText()).toBe(component.copyrightText);
+    expect(normalisedFooterText()).toMatch(FOUR_DIGIT_YEAR_ANYWHERE);
   });
 
   it('does not reproduce the legacy footer links, privacy or terms affordances', () => {

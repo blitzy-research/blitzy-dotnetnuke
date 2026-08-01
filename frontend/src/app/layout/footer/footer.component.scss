@@ -1,0 +1,229 @@
+// =============================================================================
+//  footer.component.scss
+//  Application footer — the administration shell's single contentinfo band
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Styles the one `contentinfo` band of the dnn-migration administration shell.
+//  The band renders a single line of static, plain-text copyright and nothing
+//  else, so this file is deliberately short: it declares the band's separation
+//  from the main region, its type, its ink and its gutter, and stops there.
+//
+//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
+//  ------------------------------------------------
+//  The project rules document reports that no user rules were provided, and that
+//  absence is not treated as licence to lower the bar. What governs instead is
+//  the migration plan's own normative sections and its enterprise baseline. The
+//  precedence order applied here is the plan's: design-system compliance, then
+//  visual continuity with the legacy portal, then accessibility, then responsive
+//  behaviour, then code quality.
+//
+//  ZERO HARDCODED VALUES
+//  ---------------------
+//  Every property value below resolves either to a design token declared in
+//  src/styles/_tokens.scss or to one of the six literals the plan permits — 0,
+//  none, auto, inherit, currentColor, transparent. `block` and `end` name a
+//  layout mechanism and a writing-mode-relative alignment rather than a measured
+//  design decision, and neither has a token to resolve to. There is no colour
+//  literal, no length literal, no bare numeric transparency, no importance flag
+//  and no asset-reference function anywhere in this file.
+//
+//  SELECTOR CONTRACT — shared verbatim with footer.component.html
+//  -------------------------------------------------------------
+//  The paired template emits exactly two elements and NO class attribute, so
+//  both are addressed by type. Emulated view encapsulation rewrites each
+//  selector with this component's own content attribute, which confines both
+//  rules to this component: they cannot reach the shell's other bands, and they
+//  cannot reach a `<footer>` or `<p>` a feature screen renders inside `<main>`.
+//  A block-and-element class vocabulary was considered and rejected — this band
+//  has one element per role and no variant, so class names would add a naming
+//  layer that carries no information.
+//
+//  WHY THE HOST IS A BLOCK AND NOT `display: contents`
+//  --------------------------------------------------
+//  The shell places this component as a named grid area — src/styles/_layout.scss
+//  declares `.shell__footer { grid-area: footer; }` and its intended markup is
+//  `<app-footer class="shell__footer">`. The host element is therefore the grid
+//  ITEM, and a grid item with `display: contents` is removed from the grid, which
+//  would drop the band out of its own row. The sibling confirm-dialog component
+//  does use `display: contents`, correctly, because its host wraps a top-layer
+//  dialog rather than participating in any layout. Declaring `block` here is
+//  redundant with the blockification a grid item already receives, and it is
+//  stated anyway so the band still lays out correctly if it is ever mounted
+//  outside the shell grid — an unknown element such as a component host is
+//  inline by default, and an inline host would collapse the band's block padding.
+//
+//  MIGRATION: this stylesheet is a NET ADDITION IN FULL, and the values below are
+//  measured rather than invented wherever a measurement exists. There was no
+//  component stylesheet to port: the legacy band was assembled at request time by
+//  `LoadSkin` (Website/Default.aspx.vb L217-L243) and styled by the cached,
+//  twice-executed cascade `ManageStyleSheets` built (L355-L408, invoked at L587
+//  and again at L593). Skinning and containers are out of scope (AAP 0.2.2.2,
+//  0.2.2.4), so the skin tree is read here as measurement and negative inventory
+//  only, never as a porting target.
+//
+//  MIGRATION: the type is measured from the legacy copyright label's own class.
+//  Website/admin/Skins/copyright.ascx L2 renders the notice through
+//  `<asp:label id="lblCopyright" cssclass="SkinObject" …>`, and `.SkinObject`
+//  (Website/Portals/_default/default.css L18-L25) declares `font-weight: bold`,
+//  `font-size: 8.5pt`, `color: #003366` and `font-family: Tahoma, Arial,
+//  Helvetica`. Three of those four resolve to tokens exactly: the bold weight,
+//  the brand colour — #003366 is --color-primary verbatim — and the family, which
+//  --font-family-base consolidates from the three near-identical legacy stacks.
+//  The size is the one approximation: 8.5pt is 11.33px and the nearest step of
+//  the ramp is --font-size-base at 11px, which is also the size the legacy body
+//  rule `.Normal` (default.css L92-L97) declared. The 0.33px difference is
+//  imperceptible and the token is the correct resolution under the
+//  zero-hardcoded-values rule. `text-decoration: none` is not restated: the band
+//  emits no anchor, so there is nothing to un-decorate.
+//
+//  MIGRATION: the notice is END-ALIGNED because that is where the legacy skin put
+//  it. The only real skin in the checkout floats the copyright to the trailing
+//  edge — `#copy_style { float: right; }` at
+//  Website/Portals/_default/Skins/MinimalExtropy/skin.css L52 — with the legal
+//  strip floated to the leading edge at L51. The strip is not reproduced, for the
+//  reasons the paired template records, so the band now holds one item; that
+//  item keeps its measured position. The alignment is expressed
+//  writing-mode-relatively rather than as a physical direction, matching the
+//  logical-property convention src/styles/_mixins.scss establishes, so the notice
+//  moves to the leading edge under a right-to-left locale instead of stranding
+//  itself against the wrong margin.
+//
+//  MIGRATION: the four float-clearing and sliding-doors wrapper elements are
+//  eliminated and produce no rule here. The legacy band nested `.bot_left`,
+//  `.bot_right`, `.bot_bg` and `.bot_pad` (skin.css L46-L50), each a raster
+//  background image, and closed with an empty `.clear_float` element (L54) —
+//  pre-Flexbox float clearing plus rounded-corner image hacks. AAP Rule T8:
+//  delete the workaround, adopt the primitive. The shell's Grid supersedes all
+//  five, and no raster asset is referenced because the only static asset this
+//  workspace ships is the favicon.
+//
+//  MIGRATION: the band's separation from the main region is a FILL plus a
+//  hairline, replacing that raster strip. The fill is --color-surface, which is a
+//  net addition: `.bot_bg` carried an image rather than a colour, so there is no
+//  measured band colour to be faithful to, and the surface token is the
+//  vocabulary's designated non-white band fill. The hairline resolves to
+//  --color-primary rather than to either border token, following the explicit
+//  direction in src/styles/_tokens.scss L232-L235: both border tokens are flagged
+//  there as falling below the contrast threshold for a non-text boundary — 1.37
+//  and 1.61 to 1 — and consumers are told to use the strong border or the brand
+//  colour wherever a boundary must be perceivable rather than decorative. The
+//  brand colour measures 10.87 to 1 against this band's fill, and it is also what
+//  the legacy in-scope frame actually used, `#003366 1px solid` at default.css
+//  L12-L15. The sibling confirm-dialog panel border resolves the same way, so
+//  this is the established convention here rather than a local invention.
+//
+//  MIGRATION: the legacy band's fixed height is NOT restated, and it does not
+//  need to be. `.bot_bg` pinned `height: 41px` (skin.css L48) because its
+//  background image was 41px tall. The intrinsic height here lands on the same
+//  measurement from content and padding alone: --space-3 above and below is 12px
+//  each, and the line box is --line-height-base 1.5 against --font-size-base
+//  11px, which is 16.5px — 40.5px in total. A fixed height would clip the notice
+//  the moment a reader raised their browser base font size, so the band is left
+//  to size itself.
+//
+//  MIGRATION: the inline gutter is --space-4, matching the shell's own main
+//  gutter — src/styles/_layout.scss declares `.shell__main { padding:
+//  var(--space-6) var(--space-4); }` — so the notice aligns with the trailing
+//  edge of the page content above it rather than with the viewport. That
+//  alignment is why the gutter is a shared value and not a locally chosen one. It
+//  also sits inside the legacy `.bot_pad` inline padding of 20px and 30px
+//  (skin.css L50), whose asymmetry existed to clear the sliding-doors images and
+//  has nothing left to clear.
+//
+//  WHY THERE IS NO MEDIA QUERY
+//  ---------------------------
+//  MIGRATION: no breakpoint is used, deliberately, and this is a decision rather
+//  than an omission — src/styles/_mixins.scss exposes both `respond-above` and
+//  `respond-below`, and a raw media query is forbidden here in any case. The band
+//  is one line of text in a single grid row: it has no columns to collapse and no
+//  second element to reflow, and its gutter is deliberately pinned to the shell's
+//  main gutter, which is itself breakpoint-free, so widening it at any step would
+//  break the alignment the paragraph above exists to establish. The legacy
+//  baseline agrees: there are zero media queries across every stylesheet in the
+//  legacy site.
+//
+//  WHY THERE IS NO MOTION, NO HOVER RULE AND NO FOCUS RULE
+//  ------------------------------------------------------
+//  MIGRATION: no timed state change, no keyframe block and no reduced-motion
+//  query appears here. The legacy portal declares all three zero times across
+//  both reference stylesheets, so stillness is the faithful choice; the
+//  framework's optional animations package is absent from the pinned dependency
+//  set; and nothing in the requirements asks a copyright band to move.
+//
+//  No hover rule is declared because the band contains nothing interactive to
+//  respond to a pointer. No focus rule is declared for the same reason: the
+//  template emits no anchor, no button and no control, so this band contributes
+//  no entry to the tab order and there is no focus to indicate. The shared
+//  focus-ring mixin is therefore not included — including it would attach a
+//  focus-visible pseudo-class to an element that can never match it. The paired
+//  specification asserts that absence directly, by requiring zero anchors in the
+//  rendered band, so the claim is enforced rather than merely stated.
+//
+//  ACCESSIBILITY
+//  -------------
+//  Colour contrast is the whole accessibility surface of a non-interactive text
+//  band, and it is measured, not assumed: --color-primary on --color-surface is
+//  10.87 to 1, comfortably above the 4.5-to-1 minimum for normal text, so no
+//  accessibility flag is required and no measured legacy value had to be
+//  compromised to reach it. The line height is the vocabulary's base 1.5 rather
+//  than a tighter step, which is the readability-preserving choice for body copy.
+//  The landmark itself is supplied by the template's `<footer>` element with no
+//  ARIA attribute at all, which is the correct treatment for a top-level
+//  contentinfo element; nothing here suppresses or competes with it.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//  Host — the shell's contentinfo grid item
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+}
+
+// -----------------------------------------------------------------------------
+//  The band
+//
+//  The hairline is a block-start border, so it draws only where the band meets
+//  the main region above it and never boxes the band in. Border-box sizing is
+//  not needed: no width or height is declared, so the padding and border simply
+//  add to an intrinsic size.
+//
+//  MIGRATION: the hairline colour is the muted-text token, not the primary one.
+//  The measured legacy rule for a horizontal separator is
+//  `Website/Portals/_default/default.css` L626-631, `HR { color: #696969;
+//  height: 1pt; text-align: left; }` - mid grey at one point - and #696969 is
+//  the value the token vocabulary carries as `--color-text-muted` while the one
+//  point becomes `--border-width`. Using it here also keeps ONE separator
+//  treatment expressed one way across the workspace: `_reset.scss` L451 styles
+//  the rule element itself with exactly this recipe, and `_layout.scss` L485
+//  uses it for the shared section separator. The band's TEXT keeps
+//  `--color-primary` (#003366) and bold weight, because that is the measured
+//  `.SkinObject` treatment at default.css L18-25 that the legacy copyright skin
+//  object rendered with - the two are different legacy rules and stay distinct.
+// -----------------------------------------------------------------------------
+footer {
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  text-align: end;
+}
+
+// -----------------------------------------------------------------------------
+//  The notice
+//
+//  The paragraph's user-agent block margin is removed because the band's own
+//  padding owns the vertical rhythm; leaving it would double the space and push
+//  the intrinsic height past the measured legacy band. No other property is
+//  declared here: type, ink and alignment all inherit from the band above, which
+//  keeps every value declared exactly once.
+// -----------------------------------------------------------------------------
+p {
+  margin: 0;
+}

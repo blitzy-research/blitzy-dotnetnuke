@@ -1,108 +1,27 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <!--
-    =========================================================================
-    DnnMigration.Api : the API layer of the DnnMigration Clean Architecture
-    solution (AAP 0.4.1.1 / 0.4.3).
+    The only project in the solution built with the Web SDK; Domain, Application
+    and Infrastructure use plain Microsoft.NET.Sdk.
 
-    This is the ASP.NET Core 8 Backend for Frontend host that replaces the
-    legacy Web Forms request pipeline. Website/Default.aspx.vb (700 lines,
-    InitializePage L90, LoadSkin L217, ManageRequest L304, ManageStyleSheets
-    L355, Page_Init L499, Page_Load L639, Page_PreRender L648) and the
-    Website/release.config module chain (8 HTTP modules at L67 to L74, 7
-    handler entries at L77 to L83) are NOT ported: all of it collapses into
-    the single explicit middleware pipeline declared in Program.cs.
+    CONTAINER ENTRYPOINT CONTRACT — do not add an AssemblyName or RootNamespace
+    property here. The SDK derives both from this file's name, which is what
+    makes the published assembly DnnMigration.Api.dll, the exact name
+    docker/api.Dockerfile starts. Declaring either value adds a second place the
+    name can drift from, and no compiler catches the mismatch. The same path is
+    spelled in backend/DnnMigration.sln, in the integration test project's
+    reference and in the Dockerfile, and the Alpine build stage is
+    case-sensitive, so the casing must not change.
 
-    This is the ONLY project in the solution built with Microsoft.NET.Sdk.Web.
-    Domain, Application and Infrastructure all use plain Microsoft.NET.Sdk.
+    Build policy is inherited from backend/Directory.Build.props, which is why
+    this file declares no PropertyGroup. Any diagnostic that survives a Release
+    build with warnings promoted to errors is fixed in code, never suppressed
+    here.
 
-    Rule T1, layer inward only: this project references Application and
-    Infrastructure, and nothing else, so a layering violation is a compile
-    error rather than a review finding. Rule T2: controllers validate the
-    request shape, delegate to an Application service and translate the
-    result into an HTTP status code. They hold no business logic.
-    =========================================================================
-  -->
-
-  <!--
-    #########################################################################
-    #  CONTAINER ENTRYPOINT CONTRACT : NO COMPILER WILL CATCH A MISMATCH.   #
-    #  Do NOT add an assembly name or root namespace property to this file. #
-    #########################################################################
-
-    docker/api.Dockerfile publishes this project framework dependent and ends
-    with:
-
-        ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"]
-
-    The SDK derives both the assembly name and the root namespace from this
-    project's FILE NAME, so DnnMigration.Api.csproj yields the assembly
-    DnnMigration.Api and therefore exactly the DnnMigration.Api.dll that the
-    container starts. Declaring either value explicitly creates a second
-    place from which the name can silently drift; AAP 0.1.2.3 is explicit
-    that resolving it incorrectly "breaks the container build in a way no
-    compiler will catch".
-
-    The file name is therefore a hard cross folder contract in three places:
-    backend/DnnMigration.sln enumerates
-    src\DnnMigration.Api\DnnMigration.Api.csproj, the integration test
-    project references ..\..\src\DnnMigration.Api\DnnMigration.Api.csproj,
-    and api.Dockerfile copies and restores that same path before publishing.
-    The build stage runs on mcr.microsoft.com/dotnet/sdk:8.0-alpine, whose
-    filesystem is case sensitive, so the casing must stay exactly as it is.
-    (The Angular workspace deliberately uses the lower case hyphenated name
-    dnn-migration; the two conventions must never be interchanged.)
-  -->
-
-  <!--
-    Build policy is INHERITED from backend/Directory.Build.props, which
-    MSBuild imports implicitly by walking upward from this directory. The
-    .NET 8 target framework, language version 12, nullable reference types,
-    implicit usings, warnings as errors, the bounded warning suppression
-    list, XML documentation generation and code style enforcement are all
-    declared there, once. backend/global.json pins the SDK to 8.0.423 and
-    backend/.editorconfig keeps every style rule advisory so that code style
-    enforcement cannot break the build.
-
-    That is why this project file declares no property group at all: one
-    decision, one place to change it. The suppression list is bounded to
-    exactly CS8618 and CS1591 solution wide (AAP 0.6.3, "no other warning is
-    suppressed"). If this project ever emits any other diagnostic under
-    `dotnet build -configuration Release -warnaserror`, FIX THE CODE: never
-    add a suppression, an exemption or an analyser level override here.
-
-    Container hardening (AAP 0.8.3): api.Dockerfile creates and switches to
-    the unprivileged user `adduser -D -u 1000 appuser` and listens on 8080,
-    so nothing here may require root, a privileged port below 1024, or a
-    writable path outside the application directory. Secrets reach the host
-    as environment variables (ConnectionStrings__Default, Jwt__Secret), never
-    from a project scoped secret store.
-  -->
-
-  <!--
-    Package ownership follows the layering (AAP 0.6.1): the API layer owns
-    the JWT bearer, OpenAPI/Swagger, API versioning and Serilog references,
-    and only those. Every version is an exact pin, with no wildcard, no
-    floating range and no moving tag anywhere (AAP 0.8.3), and the 8.0.29
-    band matches the installed Microsoft.AspNetCore.App and
-    Microsoft.NETCore.App shared frameworks exactly.
-
-    DELIBERATELY ABSENT because Infrastructure owns them and they arrive
-    transitively through the project reference below: EF Core with its
-    relational, SQL Server and design time companions (Rule T3 keeps the
-    database context internal to Infrastructure), the SQL Server data client
-    (pinned there at 5.2.3 to defeat a transitive downgrade), the password
-    hashing library and the SQL Server health check package. The validation
-    library is likewise Application owned and transitive.
-
-    ALSO DELIBERATELY ABSENT: the Serilog console sink. It appears in the
-    superseded prior specification at docs/technical-specifications.md L937
-    but NOT in the AAP 0.6.1 dependency set, and Serilog.AspNetCore already
-    carries what the request logging middleware needs. The object to object
-    mapping library is rejected solution wide in favour of hand written
-    static mappers (AAP 0.4.3). Rate limiting, CORS and health check
-    endpoint mapping all ship in the ASP.NET Core 8 shared framework that the
-    Web SDK brings in implicitly, so none of them needs a package here.
+    The API image runs as an unprivileged user and listens on 8080, so nothing
+    added here may require root, a port below 1024, or a writable path outside
+    the application directory. Secrets arrive as environment variables, never
+    from a project-scoped secret store.
   -->
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.29" />
@@ -114,20 +33,15 @@
   </ItemGroup>
 
   <!--
-    Exactly two project references (AAP 0.5.2.2). Application supplies the
-    service abstractions, DTOs and options classes the controllers bind to,
-    plus the AddApplication() registration extension. Infrastructure is
-    referenced for one reason only: Program.cs calls
-    AddInfrastructure(builder.Configuration) as the composition root, which
-    registers the database context, the nine repositories, the unit of work,
-    the security services and the database health check that
-    MapHealthChecks("/health") surfaces. That endpoint must stay anonymous,
-    because the frontend container waits on the API health check.
+    Two references, and no more. Application supplies the service abstractions,
+    DTOs and options the controllers bind to; Infrastructure is referenced only
+    so this project's composition root can register the persistence and security
+    services, including the database health check behind /health, which must stay
+    anonymous because the frontend container waits on it.
 
-    The Domain project is NOT referenced explicitly. It arrives transitively
-    through both references, and naming it here would advertise that the API
-    may consume domain entities directly, contradicting the DTO boundary rule
-    that no entity crosses the wire in either direction (AAP 0.8.3).
+    Domain is deliberately not named: it arrives transitively, and listing it
+    would advertise that the API may consume domain entities directly instead of
+    crossing the boundary through DTOs.
   -->
   <ItemGroup>
     <ProjectReference Include="..\DnnMigration.Application\DnnMigration.Application.csproj" />

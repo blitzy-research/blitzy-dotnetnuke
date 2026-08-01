@@ -1,120 +1,20 @@
-# ==============================================================================
-# backend/.editorconfig
-# CODING CONVENTIONS AND ANALYSER SEVERITIES FOR THE DnnMigration SOLUTION
-# Reference: https://editorconfig.org
-#            https://learn.microsoft.com/dotnet/fundamentals/code-analysis/code-style-rule-options
-# ==============================================================================
+# Coding conventions and analyser severities for the DnnMigration solution.
 #
-# SCOPE - THE SIX PROJECTS OF THE .NET 8 SOLUTION, AND NOTHING ELSE
+# THIS FILE IS BUILD-AFFECTING. backend/Directory.Build.props pairs
+# EnforceCodeStyleInBuild with TreatWarningsAsErrors, so a style rule declared
+# even one notch above `suggestion` fails the build rather than showing a
+# squiggle, and the compiler-warning suppression list is bounded and must not be
+# widened to rescue it. Every preference and severity below is therefore held at
+# `suggestion` or `silent`: guidance here is advisory, and correctness is
+# enforced by the compiler, the nullable context and the project reference
+# graph. When a build reports a style diagnostic, fix the code.
 #
-#   src/DnnMigration.Domain           src/DnnMigration.Api
-#   src/DnnMigration.Application      tests/DnnMigration.UnitTests
-#   src/DnnMigration.Infrastructure   tests/DnnMigration.IntegrationTests
-#
-# THIS FILE IS BUILD-AFFECTING. THAT IS THE WHOLE POINT, AND THE WHOLE DANGER.
-#
-#   The sibling backend/Directory.Build.props pairs two properties whose
-#   combination turns editor guidance into a delivery gate:
-#
-#     EnforceCodeStyleInBuild  true  ->  the IDE-prefixed code-style analysers
-#                                        run during `dotnet build`, not only
-#                                        inside an editor.
-#     TreatWarningsAsErrors    true  ->  and Validation Gate 1 additionally
-#                                        builds the Release configuration with
-#                                        the warnaserror switch.
-#
-#   Consequence: any style rule declared here one notch above `suggestion`
-#   STOPS THE BUILD. Not a squiggle - a failed gate. And there is no rescue
-#   afterwards, because the compiler-warning suppression list in
-#   Directory.Build.props is bounded to exactly two codes and must never be
-#   widened, per its own comment on that element.
-#
-# THEREFORE, THE ONE BINDING RULE OF THIS FILE
-#
-#   Every code-style preference and every analyser severity below sits at
-#   `suggestion` or at `silent`. Nothing is raised higher - not naming, not
-#   member ordering, not `var` usage, not expression bodies, not brace
-#   placement, not using-directive placement, not formatting. Guidance here is
-#   ADVISORY. Correctness is enforced elsewhere and more strongly: by the
-#   compiler, by the nullable annotation context, and by the project reference
-#   graph.
-#
-#   The two severity values that would break the build are deliberately never
-#   spelled anywhere in this file, and neither are the two suppressed compiler
-#   codes - they are referred to only as "the two bounded suppressions declared
-#   in Directory.Build.props". Both omissions are on purpose, so that a guard
-#   grepping this file for those tokens keeps returning nothing. This mirrors
-#   the same discipline Directory.Build.props applies to itself.
-#
-#   When a build reports a style diagnostic, FIX THE CODE. Never lower a
-#   severity to make a real problem invisible, and never add a suppression here
-#   or anywhere else.
-#
-# WHAT THIS FILE DELIBERATELY DOES NOT DO
-#
-#   * It does not enforce Clean Architecture layering. That is enforced by the
-#     project reference graph, which points inward only: Domain references
-#     nothing at all, Application references Domain, Infrastructure references
-#     Application, and Api references Application and Infrastructure. A layering
-#     violation is therefore a compile failure, which no style rule improves on.
-#   * It escalates no analyser category wholesale. Doing so would emit large
-#     numbers of new diagnostics that the warning policy above would convert
-#     into build failures on the spot.
-#   * It declares no section for the legacy tree. No Visual Basic source, Web
-#     Forms page, user control or resource file is authored or edited by this
-#     migration, and `root = true` below stops this file ever reaching them.
-#   * It declares no section for TypeScript, SCSS or HTML. The Angular workspace
-#     carries its own frontend/.editorconfig, which is editor-facing only
-#     because no step of the frontend build reads it.
-#
-# WHY THIS FILE LIVES AT backend/ AND MUST NEVER MOVE TO THE REPOSITORY ROOT
-#
-#   EditorConfig resolution walks UPWARD from each source file and stops at the
-#   first file declaring `root = true`. A copy at the repository root would
-#   therefore also govern the 634 legacy Visual Basic sources under Library/ and
-#   Website/, the 15 pages, the 147 user controls, the 139 resource files, the
-#   legacy configuration files, and - most consequentially - the one stray
-#   legacy .NET Framework C# project in this checkout,
-#   Library/Components/Syndication/DotNetNuke.Syndication.csproj.
-#
-#   This migration is side by side and purely additive: the legacy Library/ and
-#   Website/ trees, both legacy solution files and the legacy configuration
-#   files remain byte identical, which is exactly what gives the work a zero
-#   regression surface. Keeping this file at backend/, with `root = true`,
-#   confines its effect to the six projects listed above.
-#
-# THE BASELINE THIS REPLACES
-#
-#   Library/DotNetNuke.Library.vbproj is the legacy analogue of this file plus
-#   Directory.Build.props. It compiled with Option Compare Binary, Option
-#   Explicit On and Option Strict On, and it promoted ten Visual Basic specific
-#   warning codes into build failures - yet it set warnings as errors to false,
-#   warning level 1 and an empty suppression list in both of its configurations.
-#   The legacy policy was therefore SELECTIVE PROMOTION INSIDE AN OTHERWISE LAX
-#   BUILD. The target inverts it exactly: a strict build declared once in
-#   Directory.Build.props, and purely advisory style guidance declared once
-#   here. Those ten codes are compiler specific, have no C# analogue, and are
-#   not carried forward.
-#
-#   One legacy asymmetry is worth naming because it is NOT solvable here.
-#   Website/release.config line 125 compiled the admin code-behinds with Option
-#   Strict OFF, so they may legally contain late binding and implicit narrowing
-#   conversions that C# rejects outright. Making every such conversion explicit,
-#   annotating it inline and recording it in MIGRATION_NOTES.md, is an
-#   obligation on the code authored under src/. No EditorConfig setting can
-#   express it and nothing below pretends to.
-# ==============================================================================
-
+# The file must stay at backend/ with `root = true`. EditorConfig resolution
+# walks upward and stops at the first root, so a copy at the repository root
+# would also govern the legacy VB.NET trees and the stray legacy .NET Framework
+# project under Library/.
 root = true
 
-# ------------------------------------------------------------------------------
-# EVERY FILE UNDER backend/
-#
-# end_of_line is LF rather than CRLF on purpose: the API image is built on
-# mcr.microsoft.com/dotnet/sdk:8.0-alpine and runs on
-# mcr.microsoft.com/dotnet/aspnet:8.0-alpine, so the source is kept consistent
-# with its Linux deployment target and with the container build context.
-# ------------------------------------------------------------------------------
 [*]
 charset = utf-8
 end_of_line = lf
@@ -127,26 +27,16 @@ tab_width = 4
 # ==============================================================================
 # C# SOURCE
 #
-# `csx` is included so that any script-form C# is formatted identically to
-# compiled source. Everything in this section that carries an explicit severity
-# carries `suggestion` or `silent`, for the reason set out in the header.
+# `csx` is included so script-form C# is formatted like compiled source.
 # ==============================================================================
-[*.{cs,csx}]
+[*.cs]
 indent_size = 4
 tab_width = 4
 
-# --- using directives ---------------------------------------------------------
-# ImplicitUsings is enabled solution-wide, which removes the System namespace
-# boilerplate the legacy project declared explicitly. Explicit System imports
-# are therefore rare by design, and this ordering preference mostly governs the
-# third-party and first-party imports that remain.
 dotnet_sort_system_directives_first = true
 dotnet_separate_import_directive_groups = false
 csharp_using_directive_placement = outside_namespace:suggestion
 
-# --- namespace declarations ---------------------------------------------------
-# File-scoped namespaces are the C# 10 and later idiom, and LangVersion is 12.0.
-# Advisory only: a block-scoped namespace must never fail a build.
 csharp_style_namespace_declarations = file_scoped:suggestion
 dotnet_style_namespace_match_folder = true:suggestion
 
@@ -191,11 +81,6 @@ csharp_style_prefer_switch_expression = true:suggestion
 csharp_style_prefer_not_pattern = true:suggestion
 csharp_style_prefer_extended_property_pattern = true:suggestion
 
-# --- null checking ------------------------------------------------------------
-# Directly relevant to this migration: the legacy sentinel module represented
-# absence with magic values, and the ported domain expresses it with nullable
-# CLR types instead. These preferences keep the resulting null handling idiomatic
-# without ever failing a build over its shape.
 dotnet_style_coalesce_expression = true:suggestion
 dotnet_style_null_propagation = true:suggestion
 dotnet_style_prefer_is_null_check_over_reference_equality_method = true:suggestion
@@ -212,10 +97,6 @@ dotnet_style_explicit_tuple_names = true:suggestion
 dotnet_style_prefer_inferred_tuple_names = true:suggestion
 dotnet_style_prefer_inferred_anonymous_type_member_names = true:suggestion
 
-# --- C# 12 and modern conveniences --------------------------------------------
-# Primary constructors are held at `silent`: the ported services take their
-# dependencies through conventional constructors with documented parameters, and
-# a rewrite suggestion on every service would be noise rather than guidance.
 csharp_style_prefer_primary_constructors = false:silent
 csharp_style_prefer_range_operator = true:suggestion
 csharp_style_prefer_index_operator = true:suggestion
@@ -242,10 +123,9 @@ csharp_style_unused_value_expression_statement_preference = discard_variable:sil
 # ------------------------------------------------------------------------------
 # C# FORMATTING - NEW LINES (ALLMAN)
 #
-# Formatting options are inert on their own: they describe layout but emit no
-# diagnostic by themselves. Only the formatting analyser pinned further down
-# reports on them, and it is pinned advisory. That is what makes it safe to state
-# a complete, opinionated layout here under a warnings-as-errors build.
+# Formatting options emit no diagnostic of their own; only IDE0055 reports them,
+# and it is pinned advisory below. That is what makes a complete, opinionated
+# layout safe to state under a warnings-as-errors build.
 # ------------------------------------------------------------------------------
 csharp_new_line_before_open_brace = all
 csharp_new_line_before_else = true
@@ -293,40 +173,26 @@ csharp_preserve_single_line_blocks = true
 dotnet_style_operator_placement_when_wrapping = beginning_of_line
 
 # ==============================================================================
-# ANALYSER SEVERITIES - EVERY ONE HELD ADVISORY, ON PURPOSE
+# ANALYSER SEVERITIES - EVERY ONE HELD ADVISORY
 #
-# Only rules with no corresponding preference option above need pinning here;
-# every preference option already carries its own severity inline. Each pin below
-# is a rule that has bitten strict .NET 8 builds in practice, so each is stated
-# explicitly rather than left to a default that a future SDK could change.
+# Only rules with no corresponding preference option above are pinned here, and
+# each is pinned explicitly rather than left to an SDK default that could change.
 # ==============================================================================
 
-# IDE0005 - unnecessary using directive. This one is a genuine trap in THIS
-# solution rather than a theoretical risk: the rule only reports during a build
-# when XML documentation generation is switched on, and Directory.Build.props
-# switches it on for all six projects. Combined with the strict warning policy,
-# a single leftover import would otherwise become a delivery blocker. It stays
-# advisory, and unused imports are removed by the author, not by the gate.
+# IDE0005 (unnecessary using directive) only reports during a build when XML
+# documentation generation is on, which it is for every project here, so a single
+# leftover import would otherwise block delivery. Authors remove unused imports.
 dotnet_diagnostic.IDE0005.severity = suggestion
 
-# IDE0055 - "Fix formatting". This is the single rule that reports every layout
-# option declared in the formatting sections above, so raising it would turn a
-# stray blank line or a misplaced brace into a failed Gate 1. It must remain at
-# this level. Run `dotnet format` to apply the layout instead of escalating it.
+# IDE0055 ("fix formatting") is the one rule that reports every layout option
+# declared above, so raising it would turn a stray blank line into a build
+# failure. Run `dotnet format` to apply the layout instead of escalating it.
 dotnet_diagnostic.IDE0055.severity = suggestion
 
-# IDE0161 - block-scoped namespace could be file-scoped. Paired with the
-# namespace preference above and held at the same advisory level, so a
-# block-scoped namespace is a suggestion to the author and never a build failure.
 dotnet_diagnostic.IDE0161.severity = suggestion
 
 # ==============================================================================
 # NAMING
-#
-# Roslyn applies naming rules in the order they are declared and stops at the
-# first rule whose symbol group matches, so these run from most specific to most
-# general. Reordering them changes which suggestion appears; it cannot change the
-# build outcome, because every rule below is advisory.
 # ==============================================================================
 
 # --- naming styles ------------------------------------------------------------
@@ -378,11 +244,9 @@ dotnet_naming_symbols.parameters.applicable_accessibilities = *
 dotnet_naming_symbols.locals.applicable_kinds = local
 dotnet_naming_symbols.locals.applicable_accessibilities = *
 
-# --- rules, most specific first -----------------------------------------------
-# Interfaces are I-prefixed PascalCase. The Domain layer alone declares nine
-# repository abstractions plus a unit-of-work abstraction, and five service
-# abstractions for password hashing, the clock, caching, host settings and the
-# per-request portal context, so this convention carries real weight here.
+# --- naming rules -------------------------------------------------------------
+# Roslyn applies these in declaration order and stops at the first matching
+# symbol group, so they run from most specific to most general.
 dotnet_naming_rule.interfaces_are_prefixed_with_i.symbols = interfaces
 dotnet_naming_rule.interfaces_are_prefixed_with_i.style = prefix_interface_with_i
 dotnet_naming_rule.interfaces_are_prefixed_with_i.severity = suggestion
@@ -414,12 +278,8 @@ dotnet_naming_rule.public_fields_are_pascal_case.symbols = public_fields
 dotnet_naming_rule.public_fields_are_pascal_case.style = pascal_case
 dotnet_naming_rule.public_fields_are_pascal_case.severity = suggestion
 
-# Asynchronous methods carry the Async suffix. This encodes the migration's
-# async-all-the-way-down rule, under which every I/O-bound method returns a task
-# and nothing bridges back to a synchronous call. The rule sits before the
-# general non-field-member rule so that it wins for async methods, and it stays
-# advisory: the convention is upheld by authorship and review, not by a
-# build-breaking diagnostic.
+# The Async suffix rule sits before the general non-field-member rule so that it
+# wins for asynchronous methods.
 dotnet_naming_rule.async_methods_end_with_async.symbols = async_methods
 dotnet_naming_rule.async_methods_end_with_async.style = pascal_case_with_async_suffix
 dotnet_naming_rule.async_methods_end_with_async.severity = suggestion
@@ -439,13 +299,50 @@ dotnet_naming_rule.locals_are_camel_case.severity = suggestion
 # ==============================================================================
 # PROJECT AND BUILD FILES
 #
-# Two-space indentation, matching backend/Directory.Build.props, the six project
-# files and backend/DnnMigration.sln conventions already in place. No `.config`
-# glob appears here: legacy configuration files live under Website/, are
-# read-only reference inputs, and are outside this file's reach in any case.
+# Two-space indentation, matching backend/Directory.Build.props and the six
+# project files already in place. `.sln` is deliberately NOT part of this glob:
+# a solution file is tab-indented by its own format convention and therefore
+# gets its own section immediately below. No `.config` glob appears here either:
+# legacy configuration files live under Website/, are read-only reference
+# inputs, and are outside this file's reach in any case.
 # ==============================================================================
 [*.{csproj,props,targets}]
 indent_size = 2
+
+# ==============================================================================
+# THE SOLUTION FILE - AN EXPLICIT, DELIBERATE EXCEPTION
+#
+# backend/DnnMigration.sln indents its section bodies with TABS, because that is
+# the solution-file format's own convention - the two legacy solutions at the
+# repository root are tab-indented as well. Forcing the `[*]` space policy onto
+# it would fight every tool that rewrites the file, so the exception is declared
+# here explicitly instead of being left as a silent contradiction between this
+# file and the artefact it governs.
+#
+# Every OTHER setting in the `[*]` block is honoured exactly, which is a
+# deliberate narrowing of the conventional Visual Studio form:
+#
+#   charset = utf-8 (no BOM)  ->  the file carries NO byte-order mark
+#   end_of_line = lf          ->  LF, never CRLF
+#
+# LF-without-BOM is a fully supported form for a solution file - MSBuild, the
+# dotnet CLI and Visual Studio all parse it, and `dotnet sln list` resolves all
+# six projects from it - and it is required here for two concrete reasons:
+#
+#   1. `git diff --check` treats a CR at end of line as trailing whitespace, so
+#      a CRLF solution turns every one of its own lines into a whitespace error
+#      and the repository's diff hygiene could never be clean.
+#   2. The API image builds on mcr.microsoft.com/dotnet/sdk:8.0-alpine and runs
+#      on aspnet:8.0-alpine, and the Docker build context carries this file, so
+#      it is kept in the same Linux form as the rest of the backend tree.
+# ==============================================================================
+[*.sln]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+tab_width = 4
 
 # ==============================================================================
 # JSON AND YAML
@@ -460,9 +357,7 @@ indent_size = 2
 # MARKDOWN
 #
 # Trailing whitespace is preserved here and only here: two trailing spaces are a
-# meaningful hard line break in Markdown, so trimming them would silently change
-# rendered output.
+# meaningful hard line break, so trimming them would change rendered output.
 # ==============================================================================
 [*.md]
 trim_trailing_whitespace = false
-

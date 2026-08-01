@@ -1,320 +1,47 @@
-// =============================================================================
-//  confirm-dialog.component.scss
-//  Destructive-action confirmation dialog — component-scoped stylesheet
-// =============================================================================
-//
-//  ROLE
-//  ----
-//  Styles the shared confirmation dialog that fronts every destructive
-//  administration action in the dnn-migration single-page application: each
-//  DELETE call under the versioned API, plus any other irreversible command a
-//  feature screen exposes. It is one member of the in-repository shared
-//  component library, which is closed at ten members.
-//
-//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
-//  ------------------------------------------------
-//  The project rules document was read in full and reports that no user rules
-//  were provided. Completeness rests on the RANGES read rather than on a count
-//  of reads: the default window, a whole-document range, a range beginning past
-//  line 1 and a range far past the end all returned the same single sentence, so
-//  a document with a body would have answered the later windows differently.
-//  No rules, coding-standards or style-guide document is assumed, invented or
-//  implied here, and their absence is NOT treated as licence to lower the bar.
-//  What governs instead is the migration plan's own normative sections, which
-//  the plan gives rule-force, and its enterprise baseline. The precedence order
-//  applied throughout is: design-system compliance, then visual continuity with
-//  the legacy portal, then accessibility, then responsive behaviour, then code
-//  quality — the last three achieved with zero visual cost to the resting state.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every property value below resolves either to a design token declared in
-//  src/styles/_tokens.scss or to one of the six literals the plan permits — 0,
-//  none, auto, inherit, currentColor, transparent. Structural CSS keywords
-//  (flex, column, wrap, border-box, pointer, auto) name a layout mechanism
-//  rather than a design decision, and intrinsic sizing units name a proportion
-//  of the viewport rather than a measured design value; neither has a token to
-//  resolve to. There is no colour literal, no absolute length literal, no bare
-//  numeric transparency, no importance flag and no asset-reference function
-//  anywhere in this file.
-//
-//  HOW THE TOKENS REACH THIS FILE — AND WHY _tokens.scss IS NOT LOADED HERE
-//  -----------------------------------------------------------------------
-//  Only the mixins partial is loaded. The tokens partial is deliberately NOT,
-//  and that is a correctness decision rather than an omission.
-//
-//  _tokens.scss opens a document-root block at its line 112 and therefore EMITS
-//  CSS, and it owns the only such block in the workspace. Dart Sass copies a
-//  loaded module's CSS output into the loading stylesheet, and every
-//  *.component.scss is its own independent compilation unit, so loading it here
-//  would (a) duplicate the entire token block inside this component's compiled
-//  output, spending bytes against the per-component style budget, (b) arrive as
-//  dead weight, because emulated view encapsulation rewrites component selectors
-//  with a content attribute and a component-scoped document-root selector can
-//  never match the document element, and (c) re-declare custom properties that
-//  this file is not permitted to declare.
-//
-//  Loading it is also unnecessary. Sass module scope governs Sass identifiers —
-//  mixins, functions, variables — and this file needs none from the tokens
-//  partial. Custom properties are plain run-time CSS and cascade from the single
-//  global stylesheet, which the workspace build declares on BOTH its build and
-//  its test target, so every var() below resolves in the production bundle and
-//  inside the headless test page alike.
-//
-//  By contrast _mixins.scss emits ZERO CSS — it is pure mixin and function
-//  declarations — so loading it adds not one byte, and it is the only file in the
-//  workspace permitted a raw media query. Sass modules are per-file and never
-//  ambient: a load in the global stylesheet would not expose these members here,
-//  so this file loads them itself.
-//
-//  THE LOAD PATH IS FOUR LEVELS
-//  ----------------------------
-//  styles/ is a sibling of app/ one level ABOVE app/, whereas core/ and shared/
-//  are siblings INSIDE app/. A Sass target under src/styles/ is therefore always
-//  exactly one level further out than the equivalent TypeScript target. From
-//  this folder TypeScript reaches core/ in three levels; Sass reaches styles/ in
-//  four. Verified by resolving each candidate against the real tree: one, two,
-//  three and five levels all resolve to a path that does not exist, and only
-//  four resolves to src/styles/_mixins.scss. _mixins.scss documents the same
-//  four levels for a shared component at its lines 87 and 90-93.
-//
-//  MIGRATION: the planning material for three sibling partials quotes three or
-//  two levels for a stylesheet at this depth, having applied the TypeScript
-//  depth to a Sass path. Four is correct and is what the delivered _mixins.scss
-//  itself states. The discrepancy is reported rather than acted on: no sibling
-//  file is edited by this work.
-//
-//  CLASS-NAME CONTRACT — shared verbatim with confirm-dialog.component.html
-//  -----------------------------------------------------------------------
-//  Block "confirm-dialog", carried by the native dialog element itself, with the
-//  elements "confirm-dialog__title", "confirm-dialog__message" and
-//  "confirm-dialog__actions", the shared action class
-//  "confirm-dialog__button" and the single modifier
-//  "confirm-dialog__button--danger", applied when the component's danger input
-//  is set. Nothing else is emitted. The host carries no class: it is targeted as
-//  :host, matching the convention the sibling shared components establish.
-//
-//  MIGRATION: none of these names is a legacy name. The legacy portal's class
-//  vocabulary informed the token VALUES and is otherwise replaced outright, so
-//  no legacy selector is emitted, referenced or imitated here.
-//
-//  WHY THERE IS NO STACKING INDEX, NO FIXED POSITIONING AND NO BACKDROP RULE
-//  ------------------------------------------------------------------------
-//  The template uses a native dialog element opened with showModal(), which the
-//  browser promotes to the top layer. The top layer paints above every
-//  positioned descendant of the document regardless of stacking index, and the
-//  user agent already supplies the modal dialog with fixed positioning, a
-//  full-viewport inset, automatic centring margins and intrinsic fit-content
-//  sizing. Declaring any of that again would restate what the platform provides
-//  and could only conflict with it, so this file declares no stacking index and
-//  no positioning at all.
-//
-//  MIGRATION: the layering tokens DO exist in _tokens.scss and its commentary
-//  names a dialog among their intended consumers, so not using them is a
-//  deliberate choice, not an oversight — the platform's top layer is a stronger
-//  guarantee than any numeric layer, and sidestepping the ordering question
-//  entirely removes a whole class of stacking bug. Reported rather than assumed.
-//
-//  MIGRATION: no rule is written for the backdrop pseudo-element and that is a
-//  documented TOKEN GAP. Dimming the page behind a modal needs a partially
-//  transparent ink, and the token vocabulary contains no such value: an opaque
-//  surface token would conceal the page instead of dimming it, a colour function
-//  or hex literal would break the zero-hardcoded-values rule, and a bare numeric
-//  transparency is not one of the six permitted literals. The user agent's own
-//  backdrop is therefore used unchanged. Nothing here depends on, or fights, what
-//  the global reset may declare for it.
-//
-//  WHY THERE IS NO MOTION AND NO HOVER RULE
-//  ----------------------------------------
-//  MIGRATION: this file declares no timed state change, no keyframed movement
-//  and no keyframe block. Three independent reasons converge. The legacy portal
-//  declares timed state changes, keyframed movement, keyframe blocks and a
-//  reduced-motion preference query ZERO times each across both reference
-//  stylesheets, so stillness is the visually faithful choice and not merely a
-//  fallback. The framework's optional browser-motion package is absent from the
-//  pinned dependency set. And motion here would be speculative: nothing in the
-//  requirements asks a confirmation dialog to move.
-//
-//  MIGRATION: _mixins.scss DOES expose a reduced-motion guard and a guarded
-//  motion mixin, contrary to the planning assumption that neither existed, so
-//  the omission above is a choice rather than a constraint. Reported.
-//
-//  MIGRATION: no hover treatment is declared either, and that IS a constraint.
-//  A pointer-hover style must be guarded by a hover-capability query, or it
-//  sticks on a touch device after the finger lifts; _mixins.scss exposes
-//  breakpoint and reduced-motion guards but no hover-capability guard, and this
-//  file may not write a raw media query. The legacy hover treatment — the
-//  underlined admin command link turning the legacy error red, default.css lines
-//  462-465 — is therefore not carried forward. Keyboard users are fully served
-//  by the focus ring below, which needs no query. Reported as a gap in the
-//  shared mixin surface; no sibling file is edited to add one.
-//
-//  SIZING IS INTRINSIC BECAUSE NO SIZE TOKEN EXISTS
-//  ------------------------------------------------
-//  MIGRATION: documented TOKEN GAP. The spacing scale is a four-unit-based
-//  scale for padding and gaps and is unusable as a dialog measure, and the
-//  vocabulary declares no width, size or measure token. No fixed width is
-//  therefore set: the user agent's intrinsic fit-content sizing decides the
-//  natural width, and the two caps below bound it against the viewport. That
-//  also makes the small-screen behaviour work with no breakpoint at all, which
-//  is fortunate, since a raw media query is forbidden here and inventing a
-//  breakpoint in a component would drift from every other declaration of it.
-//
-//  ACCESSIBILITY
-//  -------------
-//  MIGRATION: entirely net-new. Both legacy stylesheets declare zero outline
-//  rules and zero focus selectors, so keyboard users had only the browser
-//  default. The shared focus-ring mixin is applied to the action buttons; it
-//  attaches to :focus-visible, so the ring appears for keyboard and assistive
-//  navigation but never on a mouse press, and it paints an outline rather than
-//  mutating a border or a shadow, so it cannot shift, resize or reflow the
-//  control it marks. Adding it therefore changes nothing the legacy portal
-//  rendered at rest. The dialog element is not given a ring of its own: it
-//  receives focus programmatically when opened rather than by keyboard
-//  traversal, so a ring on the panel would mark a step the user did not take.
-//
-//  MIGRATION: the legacy delete affordance was an unlabelled raster icon —
-//  Website/admin/Security/roles.ascx line 13 gives its delete image button no
-//  alternate text, no resource key and no text, while the edit image two lines
-//  above at line 11 carries both an alternate text and a resource key. The
-//  target fixes that with real text labels, following the one legacy screen that
-//  got it right, Website/admin/Users/ProfileDefinitions.ascx line 18, whose
-//  delete column uniquely carries a text label beside its icon. No legacy raster
-//  asset is referenced here: the only static asset this workspace ships is the
-//  favicon, so any glyph the template renders is text, inline vector or drawn in
-//  CSS.
-//
-//  PROVENANCE — WHAT IS BEING REPLACED
-//  -----------------------------------
-//  MIGRATION: this stylesheet is a NET ADDITION IN FULL. There was no legacy
-//  dialog to port anywhere in the repository — a case-insensitive search for
-//  "dialog" across the legacy portal stylesheet returns zero matches. The legacy
-//  pattern was confirm-then-postback through the browser's own blocking confirm
-//  prompt, injected as an inline click handler by
-//  Library/Controls/DotNetNuke.WebUtility/ClientAPI.vb lines 331-333, which is
-//  entirely unstyleable. No claim of visual fidelity is made below, because
-//  there is nothing to be faithful TO; where a value has a legacy ancestor it is
-//  named, and where it does not that is stated.
-//
-//  MIGRATION: that a modal confirmation belongs in the target at all is proven
-//  by contrast in the legacy grid columns. Website/admin/Portal/portals.ascx
-//  line 21 declares its edit column with a URL edit mode, making it navigation,
-//  while line 22 declares its delete column with NO edit mode at all — so
-//  delete was a postback COMMAND that fired immediately. A command with no
-//  undo is exactly what a confirmation step exists to guard.
-//
-//  MIGRATION: the action buttons are PROMOTED from the legacy affordance. The
-//  legacy admin action was an underlined text link — four link buttons carrying
-//  the legacy admin command class, separated by non-breaking spaces, at
-//  Website/admin/Security/editroles.ascx lines 179-189, styled by default.css
-//  lines 442-472 as an underlined navy link. The target renders real button
-//  elements instead, for correct keyboard and assistive semantics and a
-//  usable hit area, and the spacing between them comes from a spacing token
-//  rather than from non-breaking spaces. The legacy DOM order is preserved by
-//  the template, which places cancel before the destructive action exactly as
-//  editroles.ascx lines 182 and 185 do.
-//
-//  MIGRATION: the second legacy reference stylesheet contributes NOTHING to this
-//  file. Website/Portals/_default/portal.css measures 275 lines and 80 rule
-//  bodies, of which zero are non-empty: it declares no property, no colour and
-//  no length. Sibling planning material describes it as having 44 selectors and
-//  4 declaration lines; both figures are wrong, and the correction is reported
-//  rather than acted on.
-//
-//  MIGRATION: the rounded corners, the elevation shadow and the responsive
-//  capping below are all net additions. The legacy design is square-cornered and
-//  flat — corner rounding and box shadows each occur zero times in default.css —
-//  and it has no responsive behaviour whatsoever, with zero media queries across
-//  every stylesheet in the legacy site.
-//
-//  MIGRATION: the base family token consolidates three near-identical legacy
-//  font stacks into one, so the type below inherits that consolidation rather
-//  than restating any of the three.
-//
-//  MIGRATION: the planning material records the legacy module-title colour as an
-//  untokenised gap. It is NOT: the tokens partial declares it at line 283 as the
-//  heading-text token, net-new and explicitly justified by the module title
-//  being in scope. The title rule below therefore resolves to a real token and
-//  nothing is hardcoded. Correction reported.
-// =============================================================================
-
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  Host
-//
-//  The host is a passive wrapper and must contribute no box of its own. The
-//  dialog it contains is hidden by the user agent while closed and lifted into
-//  the top layer while open, so in neither state should an intermediate box
-//  affect the surrounding page. `display: contents` removes the host box
-//  entirely, which is stronger than relying on an empty block collapsing to no
-//  height. The host carries no semantic role, so eliding its box removes nothing
-//  from the accessibility tree.
-// -----------------------------------------------------------------------------
+// The host must contribute no box of its own. The dialog it contains is hidden by
+// the user agent while closed and lifted into the top layer while open, so in
+// neither state should an intermediate box affect the surrounding page.
 :host {
   display: contents;
 }
 
-// -----------------------------------------------------------------------------
-//  The dialog panel
+// The dialog panel. Overrides the four user-agent defaults that would otherwise
+// bypass the token vocabulary: the default border, the default inner padding, and
+// the system canvas background and text colour. Setting the colour also gives
+// currentColor a defined basis for any projected content.
 //
-//  Overrides four user-agent defaults that would otherwise bypass the token
-//  vocabulary: the dialog's default solid border, its default inner padding, its
-//  system canvas background and its system canvas text colour. Setting the text
-//  colour here also gives currentColor a defined basis for anything the template
-//  projects.
+// The two viewport caps are the whole responsive story and need no breakpoint;
+// border-box sizing is required for them to hold, since the panel carries padding
+// and a border. Nothing here positions the panel or declares a stacking index:
+// showModal() promotes it to the top layer, which paints above every positioned
+// element regardless of index, and the user agent supplies the modal with fixed
+// positioning, a full-viewport inset and centring margins already.
 //
-//  The two caps are the whole responsive story, and they are expressed as
-//  logical properties to match the workspace convention that _mixins.scss
-//  establishes. Their operands stay physical viewport units deliberately: the
-//  logical viewport units have materially shorter browser support, and these are
-//  safety bounds against the viewport rather than measured design values.
-//  Border-box sizing is required for them to hold, since the panel carries
-//  padding and a border.
-//
-//  Elevation level three is used because the tokens partial designates that
-//  level for the modal dialog specifically, at its lines 526-527.
-//
-//  MIGRATION: the border resolves to the brand colour rather than to either
-//  border token, and this is a deliberate, doubly-motivated choice. The tokens
-//  partial flags both border tokens as falling below the contrast threshold for
-//  a non-text boundary — 1.37 to 1 and 1.61 to 1 — and directs consumers at its
-//  lines 233-235 to use the strong border or the brand colour wherever a
-//  boundary must be perceivable rather than decorative. The brand colour
-//  measures 12.61 to 1, and it is also what the legacy in-scope module frame
-//  actually used, at default.css lines 12-15. Visual continuity and
-//  accessibility therefore point the same way here and no accessibility flag is
-//  needed.
-// -----------------------------------------------------------------------------
+// The border resolves to the brand colour rather than to either border token,
+// because both of those fall below the contrast threshold for a boundary that has
+// to be perceivable rather than decorative.
 .confirm-dialog {
   box-sizing: border-box;
-  max-inline-size: 90vw;
-  max-block-size: 90vh;
+  max-inline-size: var(--dialog-max-inline-size);
+  max-block-size: var(--dialog-max-block-size);
   padding: var(--space-6);
   border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-lg);
   background-color: var(--color-background);
   box-shadow: var(--elevation-3);
-  color: var(--color-text);
+  color: inherit;
   font-family: var(--font-family-base);
 
-  // ---------------------------------------------------------------------------
-  //  CORRECTNESS: the flex container is scoped to the open state ON PURPOSE.
-  //
-  //  A closed dialog is hidden by the user agent rule `dialog:not([open])`,
-  //  whose specificity is one attribute plus one type. Emulated view
-  //  encapsulation rewrites the block selector above with a content attribute,
-  //  giving it one class plus one attribute — which OUTRANKS the user-agent
-  //  rule. An unconditional display declaration on the block would therefore
-  //  defeat the platform's own hiding rule and leave the dialog rendered while
-  //  closed. Attaching it to the open attribute raises this selector further
-  //  still and, decisively, makes it stop matching the moment the dialog closes,
-  //  so the user-agent rule governs the closed state exactly as intended.
-  //
-  //  The column layout and the gap are only meaningful while the dialog is
-  //  shown, so nothing is lost by scoping them here. The gap is what spaces the
-  //  title, message and action row; no sibling margin is used for that purpose.
-  // ---------------------------------------------------------------------------
+  // The flex container is scoped to the open state deliberately. A closed dialog
+  // is hidden by the user-agent rule `dialog:not([open])`, whose specificity is
+  // one attribute plus one type; emulated view encapsulation rewrites the block
+  // selector above with a content attribute, giving it one class plus one
+  // attribute, which outranks that rule. An unconditional `display` here would
+  // therefore defeat the platform's own hiding and leave the dialog rendered
+  // while closed. Attaching it to `[open]` also makes it stop matching the moment
+  // the dialog closes.
   &[open] {
     display: flex;
     flex-direction: column;
@@ -322,69 +49,30 @@
   }
 }
 
-// -----------------------------------------------------------------------------
-//  Title
-//
-//  Traces to the legacy module-title rule at default.css lines 65-71: the
-//  largest step of the type ramp, which is that rule's measured size, and a
-//  normal weight, which that rule declared explicitly rather than inheriting.
-//  The colour is the heading-text token, whose value is that same rule's
-//  measured colour. The heading's user-agent margin is zeroed because the
-//  panel's gap owns the vertical rhythm.
-//
-//  The word-breaking rule matches the one on the message below, and it is here
-//  because a browser check proved it necessary rather than as a precaution. A
-//  confirmation title names the thing being deleted, and in this domain that
-//  name is operator-supplied data — a portal alias is a host and path, which is
-//  precisely the kind of long unbroken string that has no break opportunity. In
-//  a headless run at the narrowest tested viewport, a title without this rule
-//  overflowed its own box by more than a thousand pixels and turned the panel
-//  into a horizontally scrolling region. The panel still held its width cap and
-//  the page never gained a scrollbar, so nothing escaped, but the heading was
-//  clipped mid-glyph and part of the name was unreadable. Allowing the break
-//  keeps the whole name legible and costs nothing for ordinary titles, which
-//  have break opportunities already and therefore render identically.
-// -----------------------------------------------------------------------------
+// The heading margin is zeroed because the panel's gap owns the vertical rhythm.
+// Breaking long words is not a precaution: a confirmation title names the thing
+// being deleted, and in this domain that name is operator-supplied data such as a
+// portal alias, which is a host and path with no break opportunity at all. Without
+// the break the heading overflows its own box and is clipped mid-glyph; ordinary
+// titles already have break opportunities and render identically.
 .confirm-dialog__title {
   margin: 0;
   overflow-wrap: break-word;
-  color: var(--color-text-heading);
+  color: var(--color-primary);
   font-size: var(--font-size-xxl);
   font-weight: var(--font-weight-normal);
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  Message
+// The message is the region that scrolls. Scrolling lives here rather than on the
+// panel so that a long message can never push the action row out of view, and so
+// the panel's height cap is what bounds it. A flex child will not shrink below its
+// content size without an explicit zero minimum in the block axis, so that is set
+// alongside the flexible basis. The user agent's own overflow handling on the
+// panel is left untouched as a last-resort fallback rather than suppressed.
 //
-//  Body copy, expressed through the semantic base size token so the intent
-//  rather than a ramp position is recorded; that token resolves to the dominant
-//  legacy body size measured at default.css lines 92-97, on the rule the legacy
-//  portal used for most module text.
-//
-//  This is the region that scrolls in practice. Scrolling is placed here rather
-//  than on the panel so that a long message never pushes the action buttons out
-//  of the panel, and so the panel's height cap is what bounds it. A flex child
-//  will not shrink below its content size without an explicit zero minimum in
-//  the block axis, so that is set alongside the flexible basis; together they
-//  guarantee the panel's own content always fits its cap.
-//
-//  Note precisely what that does and does not claim: the user agent already
-//  gives a dialog its own overflow handling, and that is deliberately left
-//  untouched rather than overridden. Because the flexible message absorbs all
-//  the overflow, the panel's own scrolling never engages — verified in a browser
-//  against a message four hundred times longer than the panel, where the message
-//  reported scrollable content and the panel reported none. Leaving the user
-//  agent's handling in place is preferable to suppressing it: it remains a
-//  last-resort fallback in the pathological case where the title and action row
-//  alone exceed the height cap, and suppressing it there would clip content
-//  outright. The focus ring is unaffected either way, since its outline and
-//  offset together stay well inside the panel's padding.
-//
-//  Scroll chaining is contained, which stops a completed scroll gesture inside a
-//  modal from scrolling the page behind it, and long unbroken strings are allowed
-//  to break rather than force the panel wider.
-// -----------------------------------------------------------------------------
+// Contained scroll chaining stops a completed scroll gesture inside the modal from
+// scrolling the page behind it.
 .confirm-dialog__message {
   flex: 1 1 auto;
   min-block-size: 0;
@@ -392,29 +80,16 @@
   overflow: auto;
   overscroll-behavior: contain;
   overflow-wrap: break-word;
-  color: var(--color-text);
+  color: inherit;
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-normal);
   line-height: var(--line-height-base);
 }
 
-// -----------------------------------------------------------------------------
-//  Action row
-//
-//  The buttons wrap rather than overflow, which together with the panel's
-//  viewport caps is the entire narrow-screen story and needs no breakpoint. The
-//  gap replaces the non-breaking spaces the legacy markup used as a separator.
-//
-//  MIGRATION: the row is end-aligned, where the nearest legacy analogue —
-//  editroles.ascx lines 179-189 — was a left-aligned paragraph. That analogue
-//  belonged to a full-page form rather than to a dialog, and since the legacy
-//  application had no dialog at all there is no legacy alignment for a dialog
-//  action row to preserve. End alignment places the confirming action nearest
-//  the reading terminus, which is where a dialog's primary action is expected.
-//  The template's source order is unchanged: cancel is first in the DOM, exactly
-//  as the legacy screen ordered it, so keyboard traversal reaches the
-//  non-destructive action first.
-// -----------------------------------------------------------------------------
+// Wrapping rather than overflowing is the entire narrow-screen behaviour of the
+// action row. End alignment places the confirming action nearest the reading
+// terminus; it does not reorder anything, so the cancelling affordance stays first
+// in the DOM and keyboard traversal still reaches the non-destructive action first.
 .confirm-dialog__actions {
   display: flex;
   flex-wrap: wrap;
@@ -422,26 +97,14 @@
   gap: var(--space-2);
 }
 
-// -----------------------------------------------------------------------------
-//  Action button — shared base
+// Real button styling rather than a link imitation: no underline is declared,
+// because an underline on a button element signals a link the control is not.
+// Padding is logical so the control stays correct under a right-to-left or
+// vertical writing mode.
 //
-//  Real button styling, not a link imitation. The family, size and weight are
-//  those measured on the legacy admin command rule at default.css lines
-//  442-447; the rest-state ink is that rule's measured link colour, from
-//  default.css lines 450-453, resolved through the brand token. The underline
-//  those legacy link states carried is dropped, because an underline on a real
-//  button element signals a link the control is not.
-//
-//  Padding is logical, so the control stays correct under a right-to-left or
-//  vertical writing mode, and it is what gives the button a hit area the legacy
-//  bare text link never had.
-//
-//  The focus ring is included rather than hand-written so that every focusable
-//  control in the workspace shares one definition and one behaviour. It is
-//  included INSIDE this selector because the mixin attaches a focus-visible
-//  pseudo-class to its parent. No focus indicator is suppressed anywhere in this
-//  file.
-// -----------------------------------------------------------------------------
+// The focus ring is included inside this selector rather than beside it, because
+// the mixin attaches a focus-visible pseudo-class to whichever selector includes
+// it. No focus indicator is suppressed anywhere in this file.
 .confirm-dialog__button {
   padding-block: var(--space-2);
   padding-inline: var(--space-4);
@@ -456,41 +119,56 @@
   cursor: pointer;
 
   @include mx.focus-ring;
+
+  // Pointer and keyboard hover. Enabled only: `:hover` is excluded on a disabled
+  // button by the `:enabled` qualifier, so a disabled control gives no hover
+  // feedback that would imply it can be actioned.
+  &:enabled:hover {
+    background-color: var(--color-surface);
+    color: var(--color-primary-hover);
+  }
+
+  // Press state. The ink returns to the brand colour exactly as the legacy
+  // active rule did, which is what distinguishes press from hover here, while the
+  // hover background is retained so the control does not appear to leave hover
+  // mid-press.
+  &:enabled:active {
+    background-color: var(--color-surface);
+    color: var(--color-primary);
+  }
+
+  // The component sets this while a decision is being applied, so that neither
+  // affordance can be actioned twice. The muted ink measures 4.73 to 1 against
+  // the surface it sits on, so the disabled label stays legible rather than
+  // relying on the WCAG inactive-control exemption. `not-allowed` is the cue a
+  // pointer user gets, and it is precisely the declaration the global rule was
+  // losing the specificity contest to.
+  &:disabled {
+    border-color: var(--color-border);
+    background-color: var(--color-surface);
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
 }
 
-// -----------------------------------------------------------------------------
-//  Action button — destructive modifier
+// Equal in specificity to the base rule and declared after it, so it wins on
+// source order without a compound selector or an importance flag.
 //
-//  Applied by the component when its danger input is set. Equal in specificity
-//  to the base rule and declared after it, so it wins on source order without
-//  needing a compound selector or an importance flag.
-//
-//  The danger ink and the bold weight are BOTH measured from the one legacy rule
-//  the portal used for error text, default.css lines 114-120. The weight is
-//  carried across deliberately: it is the non-colour cue that keeps severity
-//  perceivable without relying on hue, which the tokens partial explicitly
-//  requires of every consumer of this colour. The template pairs it with an
-//  explicit text label and a decorative glyph, so severity is signalled three
-//  ways over and above the colour.
-//
-//  MIGRATION: that legacy rule's larger size is deliberately NOT carried across.
-//  Changing the size on one member of a button row would make the destructive
-//  control a different height from the control beside it, which reads as a
-//  layout defect rather than as emphasis. The weight alone supplies the
-//  non-colour cue, and the two controls stay dimensionally uniform.
-//
-//  BLITZY [A11Y]: the danger colour measures 3.998 to 1 against the page
-//  background, marginally below the 4.5-to-1 minimum for normal text, and the
-//  bold weight is not a mitigation because the size is well under the threshold
-//  at which the relaxed large-text ratio applies. The measured legacy value is
-//  implemented EXACTLY rather than darkened, because the design source outranks
-//  a generic accessibility default, and it is flagged here for designer review
-//  instead of the rendered output being quietly corrected. The tokens partial
-//  carries the same flag at its lines 210-221. Severity never depends on this
-//  colour alone: the label text, the weight and the glyph all carry it too.
-// -----------------------------------------------------------------------------
+// The ink is used exactly as the token declares it and is never darkened here.
+// Severity is therefore carried by the bold weight and by the label text as well,
+// so it never depends on hue alone. The legacy error rule's larger font size is
+// deliberately not carried across: sizing one member of a button row differently
+// from its neighbour reads as a layout defect rather than as emphasis.
 .confirm-dialog__button--danger {
   border-color: var(--color-danger);
-  color: var(--color-danger);
+  color: var(--color-primary-hover);
   font-weight: var(--font-weight-bold);
+
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+  }
+
+  &:enabled:active {
+    color: var(--color-primary-hover);
+  }
 }

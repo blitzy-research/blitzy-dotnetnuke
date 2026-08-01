@@ -1,37 +1,12 @@
-# =============================================================================
-# DotNetNuke migration repository — root ignore rules
+# Root ignore rules. backend/ and frontend/ are the new trees; Library/ and
+# Website/ are read-only legacy inputs that must stay fully tracked. Two
+# consequences shape the rules below and must be preserved:
 #
-# This repository hosts a side-by-side ("strangler pattern") technology
-# migration. The modern trees — backend/ (C# 12 / .NET 8 ASP.NET Core API) and
-# frontend/ (Angular 19 SPA) — live ALONGSIDE the original VB.NET trees
-# Library/ and Website/, which are read-only reference inputs: they must remain
-# byte-identical and fully tracked, and the legacy solutions must stay
-# buildable. Nothing here may change the git status of a single legacy file.
-#
-# Two properties of this repository shape the rules below. Anyone editing this
-# file must preserve both, or tracked legacy sources start disappearing from
-# `git status` on other developers' machines:
-#
-#   1. The legacy trees COMMIT their pre-built bin/ assemblies to source
-#      control — 52 tracked .dll/.xml files across 8 bin/ directories. The
-#      build-output rules are therefore followed by explicit directory
-#      negations; see "Legacy committed binaries" below.
-#
-#   2. Several patterns in everyday use collide with real legacy directory
-#      names — Library/Components/Packages/, Website/admin/Packages/ and
-#      Website/Portals/_default/Logs/. Those patterns are ANCHORED to the new
-#      trees with a leading slash instead of being applied repository-wide.
-#      Never un-anchor them: git folds case when matching ignore patterns on
-#      any clone where core.ignorecase is true (macOS and Windows), so a bare
-#      `packages/` or `logs/` rule silently swallows those legacy sources even
-#      though the casing differs.
-#
-# Verify any change to this file with:
-#   git ls-files | git check-ignore --no-index --stdin
-# It must print nothing. `--no-index` is required — without it git reports
-# already-tracked files as "not ignored" and masks exactly this class of bug.
-# =============================================================================
-
+#   * the legacy trees commit their pre-built bin/ assemblies, so build-output
+#     patterns are followed by explicit directory negations;
+#   * patterns whose names collide with legacy directories (packages/, logs/)
+#     are anchored with a leading slash, because git folds case wherever
+#     core.ignorecase is true and a bare rule would swallow tracked sources.
 
 # -----------------------------------------------------------------------------
 # Build output — required exclusions
@@ -42,29 +17,16 @@ node_modules/
 dist/
 coverage/
 
-
 # -----------------------------------------------------------------------------
 # Legacy committed binaries — DO NOT ignore
 #
-# These directories hold source-less, pre-built reference assemblies that are
-# already under source control and that the legacy build links against
-# directly. Dropping them would break DotNetNuke.sln and destroy the only copy
-# of binaries that have no source anywhere in the checkout, for example:
-#   Library/Components/DataAccessBlock/bin/Microsoft.ApplicationBlocks.Data.dll
-#       — the SqlHelper implementation the entire legacy ADO.NET layer calls
-#   Library/Controls/DotNetNuke.WebControls/bin/DotNetNuke.WebControls.dll
-#   Library/Components/SharpZipLib/bin/SharpZipLib.dll
-#       — both referenced by HintPath from Library/DotNetNuke.Library.vbproj
-#   Website/bin/*.dll + *.xml  — 44 tracked files, the deployed legacy binaries
-#
-# Git cannot re-include a file whose PARENT DIRECTORY is excluded, so these
-# negations re-include the DIRECTORIES themselves (`!Website/bin/`), not their
-# contents (`!Website/bin/**`, which does NOT work). They must stay AFTER the
-# `[Bb]in/` rule above — for ignore rules, the last matching pattern wins.
+# Source-less reference assemblies that the legacy build links against by
+# HintPath. The negations re-include the DIRECTORIES themselves: git cannot
+# re-include a file whose parent directory is excluded, so `!Website/bin/**`
+# would not work. They must stay AFTER `[Bb]in/` — the last match wins.
 # -----------------------------------------------------------------------------
 !Website/bin/
 !Library/**/bin/
-
 
 # -----------------------------------------------------------------------------
 # .NET build, test and tooling artefacts
@@ -85,11 +47,8 @@ msbuild.log
 artifacts/
 project.lock.json
 
-# Test and coverage output (`dotnet test`, coverlet.collector).
-# The `coverage*` globs use a single wildcard on purpose so they catch both
-# coverlet's default file names (coverage.json, coverage.info) and its
-# format-qualified ones (coverage.cobertura.xml, coverage.opencover.xml).
-# No tracked file in this repository has a basename beginning "coverage".
+# The `coverage*` globs use a single wildcard so they catch coverlet's default
+# names and its format-qualified ones alike.
 TestResults/
 [Tt]est[Rr]esult*/
 *.trx
@@ -99,7 +58,6 @@ coverage*.json
 coverage*.xml
 coverage*.info
 
-
 # -----------------------------------------------------------------------------
 # NuGet
 # -----------------------------------------------------------------------------
@@ -107,33 +65,21 @@ coverage*.info
 *.snupkg
 .nuget/packages/
 
-# The packages.config-era restore folder. ANCHORED to the backend solution on
-# purpose — an un-anchored `packages/` rule matches the legacy VB source trees
-# Library/Components/Packages/ (34 tracked files) and Website/admin/Packages/
-# (7 tracked files) on any case-insensitive clone. backend/DnnMigration.sln
-# restores via PackageReference into the global cache, so this folder should
-# never appear at all; the rule exists only as a guard.
+# The packages.config-era restore folder, anchored to the backend solution: an
+# un-anchored `packages/` rule also matches legacy source directories on a
+# case-insensitive clone. PackageReference restores into the global cache, so
+# this folder should never appear at all and the rule is only a guard.
 /backend/packages/*
 !/backend/packages/build/
 
-
-# -----------------------------------------------------------------------------
-# Entity Framework Core — intentionally NOTHING is ignored
-#
-# backend/src/DnnMigration.Infrastructure/Persistence/Migrations/ holds the
-# baseline migration and MUST be committed. It is deliberately a no-op that
-# only seeds __EFMigrationsHistory, because the legacy schema is immutable and
-# depends on externally installed aspnet_* objects. Never ignore Migrations/.
-# -----------------------------------------------------------------------------
-
+# EF Core migrations are never ignored. Should a migrations folder be generated
+# under backend/src/, it must be committed.
 
 # -----------------------------------------------------------------------------
 # Node / Angular
 #
-# NOTE: frontend/package-lock.json and frontend/karma.conf.js are
-# gate-critical and must never be ignored — `npm ci` fails outright without a
-# committed lockfile, and the headless-Chrome test run fails outright without
-# the karma config. Do not add `package-lock.json` or `*-lock.json` here.
+# frontend/package-lock.json must never be ignored: `npm ci` fails outright
+# without a committed lockfile. Do not add `package-lock.json` or `*-lock.json`.
 # -----------------------------------------------------------------------------
 .angular/
 npm-debug.log*
@@ -145,21 +91,17 @@ yarn-error.log*
 chrome-profiler-events*.json
 speed-measure-plugin*.json
 
-# Explicit anchors for the Angular workspace output (also covered by the
-# repository-wide `dist/` and `coverage/` rules above).
 /frontend/dist/
 /frontend/coverage/
-
 
 # -----------------------------------------------------------------------------
 # Runtime log directories
 #
-# ANCHORED for the same reason as the NuGet rule: a bare `logs/` would match
-# Website/Portals/_default/Logs/, which has tracked files.
+# Anchored for the same reason as the NuGet rule: a bare `logs/` would match a
+# legacy directory that has tracked files.
 # -----------------------------------------------------------------------------
 /backend/logs/
 /frontend/logs/
-
 
 # -----------------------------------------------------------------------------
 # IDE and editor state
@@ -171,7 +113,6 @@ speed-measure-plugin*.json
 *.swo
 *~
 
-
 # -----------------------------------------------------------------------------
 # OS noise
 # -----------------------------------------------------------------------------
@@ -180,23 +121,47 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-
 # -----------------------------------------------------------------------------
 # Secrets and local environment overrides
 #
-# Real credentials never enter source control. Only the committed
-# docker/.env.example template documents the required variables, and
-# appsettings.json / appsettings.Development.json / appsettings.Production.json
-# are tracked configuration — only *.local.json overlays are ignored.
+# Real credentials never enter source control. appsettings.json and its
+# environment overlays are tracked configuration; only *.local.json overlays
+# are ignored.
 # -----------------------------------------------------------------------------
+
+# Every machine-local environment override, at any depth: .env, .env.local,
+# .env.production, .env.development, .env.test, .env.docker.local, and so on.
+# `*.env` covers the dotless spelling some tooling emits (`local.env`,
+# `production.env`) and is retained from the previous revision.
+.env*
 *.env
-.env
-.env.local
-.env.*.local
+!**/.env.example
+
+# Local-only configuration overlays and credential stores.
+appsettings.local.json
 appsettings.*.local.json
+secrets.json
+
+# Private-key and keystore containers. PEM and DER-encoded `.key` files hold
+# raw private keys; PFX/P12/JKS/keystore/P8 are password-protected key stores;
+# the `id_*` and `.ppk` entries are SSH identities.
+*.pem
+*.key
 *.pfx
 *.p12
-*.key
+*.p8
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
 
-# Keep the credential-free template that docker-compose.yml documents.
-!docker/.env.example
+# Public keys are not secrets, and the `id_*.*` globs above would otherwise
+# swallow the `.pub` half of every SSH key pair.
+!*.pub

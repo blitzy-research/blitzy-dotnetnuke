@@ -69,62 +69,36 @@
  *   - No URL of any kind appears, so there is no absolute-address hazard.
  */
 
-import { Component } from '@angular/core';
+import { Component, Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { PageHeaderComponent } from './page-header.component';
 
-// ---------------------------------------------------------------------------
-//  Measured wording fixtures.
-//
-//  Every string below is a VERBATIM value read out of the legacy resource
-//  files, so the specification exercises the component against wording the
-//  application actually shipped rather than against invented sample text.
-// ---------------------------------------------------------------------------
-
-/** `ControlTitle_.Text` — `Website/admin/Portal/App_LocalResources/Portals.ascx.resx`. */
 const TITLE_PORTALS = 'Portals';
 
-/**
- * `ControlTitle_edit.Text` — `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx`.
- *
- * A second, differently-moded title. The legacy `ControlTitle_<mode>.Text`
- * convention produced 22 distinct keys across the 37 in-scope resource files,
- * and each file carries only the modes its own screen supports, so mode
- * resolution belongs to the feature. The component takes an already-resolved
- * string and is therefore mode-agnostic, which is what the pair of titles here
- * demonstrates.
- */
 const TITLE_EDIT_SECURITY_ROLES = 'Edit Security Roles';
 
-/**
- * `BasicSettingsDescription.Text` — `EditRoles.ascx.resx`.
- *
- * The legacy precedent for this text is a plain label carrying
- * `CssClass="Normal"` (`editroles.ascx` L17–18 `lblBasicSettingsHelp`, L75–76
- * `lblAdvancedSettingsHelp`) — supporting text, never a second heading.
- */
 const SUBTITLE_BASIC_SETTINGS =
   'In this section, you can set up the basic settings for this role.';
 
-/**
- * `valBillingPeriod2.Text` — `EditRoles.ascx.resx`.
- *
- * A real shipped value that OPENS with a literal `<br>`. All nine validator
- * messages on that screen do, and the key suffix is `.Text`, not
- * `.ErrorMessage`. It must render as visible literal text, not as a line break.
- */
 const SUBTITLE_LEADING_BREAK = '<br>Billing Period Must Be Greater Than Zero';
 
-/** A minimal markup probe for the escaping path. */
 const MARKUP_PROBE = '<b>x</b>';
 
-/**
- * Tag names that would place an element in the document outline.
- *
- * Used to prove the subtitle is supporting text rather than a second heading.
- */
 const HEADING_TAG_NAMES: readonly string[] = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+
+/**
+ * A concrete stand-in for the `--space-4` spacing token, in pixels.
+ *
+ * Used only by the geometry expectation that measures the collapsed action
+ * wrapper. The token itself is declared in the global stylesheet, which a
+ * component-level test does not load, so a value has to be supplied locally for
+ * the flex gap under measurement to resolve to anything at all. The specific
+ * number is immaterial — the expectation compares two measured heights rather
+ * than asserting this figure — it only has to be large enough that a residual gap
+ * would be unmistakable.
+ */
+const MEASURED_GAP_PX = 16;
 
 /**
  * Landmark selectors this component must NEVER emit.
@@ -143,27 +117,6 @@ const FORBIDDEN_LANDMARK_SELECTORS: readonly string[] = [
   '[role="banner"]',
 ];
 
-// ---------------------------------------------------------------------------
-//  Host test components.
-//
-//  Projection cannot be exercised through `TestBed.createComponent` on the
-//  component itself, because a directly-created fixture has no content to
-//  project. Each host below therefore wraps the component and projects a
-//  measured number of actions into its single unnamed content slot.
-//
-//  The hosts are left at the default change-detection strategy on purpose. An
-//  input change from a host always marks an `OnPush` child for check, so a
-//  plain `detectChanges()` on the host fixture propagates correctly.
-// ---------------------------------------------------------------------------
-
-/**
- * Three projected actions — the measured shape of the portal-listing screen.
- *
- * Labels are the verbatim `.Action` values from `Portals.ascx.resx`:
- * `AddContent.Action`, `ExportTemplate.Action` and `DeleteExpired.Action`. The
- * `*.Action` keys were literally the legacy skin container's action-button
- * command names.
- */
 @Component({
   standalone: true,
   imports: [PageHeaderComponent],
@@ -179,16 +132,6 @@ class ThreeActionHostComponent {
   readonly headingText = TITLE_PORTALS;
 }
 
-/**
- * Five projected actions — the measured MAXIMUM anywhere in the in-scope set.
- *
- * Labels are the verbatim `.Action` values from
- * `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, in document
- * order: `Roles.Action`, `AddContent.Action`, `Profile.Action`,
- * `Password.Action` and `ManageProfile.Action`. Two of them contain an
- * apostrophe, which is deliberate — it exercises the escaping path through
- * projected content as well as through interpolation.
- */
 @Component({
   standalone: true,
   imports: [PageHeaderComponent],
@@ -203,26 +146,10 @@ class ThreeActionHostComponent {
   `,
 })
 class FiveActionHostComponent {
-  // Binding BOTH inputs from a host template is the compile-time proof that
-  // both are public. `strictInputAccessModifiers` is enabled, so a `private` or
-  // `protected` input would fail this file's own compilation — which is a
-  // stronger guarantee than any runtime reflection check could give.
   readonly headingText = TITLE_EDIT_SECURITY_ROLES;
   readonly supportingText = SUBTITLE_BASIC_SETTINGS;
 }
 
-/**
- * Zero projected actions — the collapse case.
- *
- * Measured basis for making the slot count-agnostic: 19 `.Action` keys spread
- * over exactly 8 of the 37 in-scope resource files, distribution
- * {1 action: 4 screens, 3: 2, 4: 1, 5: 1}, maximum 5. Half the action-carrying
- * screens carry more than one, and the remaining 29 screens carry none at all.
- *
- * Collapse-at-zero is achieved purely in the stylesheet — an actions wrapper
- * carrying no padding, border or background occupies no space when nothing is
- * projected — so this host asserts DOM sanity rather than computed geometry.
- */
 @Component({
   standalone: true,
   imports: [PageHeaderComponent],
@@ -232,18 +159,6 @@ class ZeroActionHostComponent {
   readonly headingText = TITLE_PORTALS;
 }
 
-/**
- * A consumer call site that writes `title` as a STATIC template attribute.
- *
- * This is the ordinary, most likely way a feature screen would use the
- * component, and it is the exact shape that makes the input's collision with the
- * global HTML `title` attribute observable: the framework copies a static
- * template attribute onto the rendered element IN ADDITION to assigning the
- * matching input, so the attribute would survive on the host unless the
- * component strips it. A property binding cannot exercise this path, because a
- * property binding never creates an attribute in the first place — which is
- * precisely why this host exists alongside the binding-based ones above.
- */
 @Component({
   standalone: true,
   imports: [PageHeaderComponent],
@@ -251,31 +166,19 @@ class ZeroActionHostComponent {
 })
 class StaticTitleAttributeHostComponent {}
 
-// ---------------------------------------------------------------------------
-//  Specification.
-//
-//  Narrowing discipline, applied without exception below: every
-//  `querySelector` result is asserted non-null and THEN narrowed with an
-//  explicit `if (… === null) { return; }` guard. A non-null assertion and a
-//  cast are both absent from this file, so the compiler — not a convention —
-//  guarantees that no assertion runs against a possibly-absent element.
-// ---------------------------------------------------------------------------
-
 describe('PageHeaderComponent', () => {
   beforeEach(async () => {
-    // MANDATED HARNESS SHAPE. The component is standalone, so it is registered
-    // through `imports`; a declaration array is neither used nor available for
-    // a standalone component. There is deliberately no `providers` key: the
-    // component injects nothing, so registering anything would be noise, and
-    // there would be nothing to verify in a teardown hook.
     await TestBed.configureTestingModule({
-      imports: [PageHeaderComponent],
+      imports: [
+        PageHeaderComponent,
+        ThreeActionHostComponent,
+        FiveActionHostComponent,
+        ZeroActionHostComponent,
+        StaticTitleAttributeHostComponent,
+      ],
     }).compileComponents();
   });
 
-  // =========================================================================
-  //  1. THE LANDMARK PROHIBITION — the single most important guarantee here.
-  // =========================================================================
   describe('landmark prohibition', () => {
     let fixture: ComponentFixture<PageHeaderComponent>;
 
@@ -283,15 +186,6 @@ describe('PageHeaderComponent', () => {
       fixture = TestBed.createComponent(PageHeaderComponent);
     });
 
-    // THIS IS THE ENFORCEMENT POINT for a workspace-wide invariant: no
-    // component in the shared library emits a semantic landmark. Landmarks are
-    // owned solely by `frontend/src/app/layout/**`, where the application shell
-    // declares them alongside the routed outlet, and this component always
-    // renders inside the main region. A second banner landmark here would be an
-    // accessibility defect, not an enhancement. The same rule is stated
-    // independently for the root application template, which corroborates it
-    // for a different file; this spec is what makes it non-regressible for
-    // this one.
     it('emits no semantic landmark element of any kind', () => {
       fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.componentRef.setInput('subtitle', SUBTITLE_BASIC_SETTINGS);
@@ -305,9 +199,6 @@ describe('PageHeaderComponent', () => {
     });
 
     it('emits no landmark even when actions are projected into the slot', () => {
-      // Projected content is authored by the consumer, so the guarantee is
-      // re-checked through a host to prove projection cannot smuggle a landmark
-      // wrapper in around the slot.
       const hostFixture = TestBed.createComponent(FiveActionHostComponent);
       hostFixture.detectChanges();
 
@@ -324,16 +215,10 @@ describe('PageHeaderComponent', () => {
 
       const root: HTMLElement = fixture.nativeElement;
 
-      // The host is a presentational wrapper. Nothing is bound to it beyond the
-      // defensive strip of the colliding global `title` attribute, so it must
-      // carry no role at all — which keeps it out of the accessibility tree.
       expect(root.getAttribute('role')).toBeNull();
     });
   });
 
-  // =========================================================================
-  //  2. THE TITLE RENDERS IN A REAL HEADING ELEMENT.
-  // =========================================================================
   describe('title rendering', () => {
     let fixture: ComponentFixture<PageHeaderComponent>;
 
@@ -341,19 +226,11 @@ describe('PageHeaderComponent', () => {
       fixture = TestBed.createComponent(PageHeaderComponent);
     });
 
-    // MIGRATION: the promotion asserted here is a deliberate divergence. The
-    // legacy title was a plain `<asp:label id="lblTitle">`
-    // (`Website/controls/sectionheadcontrol.ascx` L4) inside a plain `<div>`,
-    // and the measured baseline across the 39 in-scope admin `.ascx` files is
-    // ZERO heading elements and ZERO ARIA attributes. The target emits a real
-    // `<h1>`, which is what gives the page an addressable outline entry.
+    // Every direct-fixture input change in this file goes through
+    // `componentRef.setInput`, never a property assignment: assigning a property
+    // does not mark an OnPush component for check, so the rendered DOM can stay
+    // stale and an assertion would silently pass against the previous render.
     it('renders the title inside a real h1 element', () => {
-      // OnPush PITFALL — do NOT "simplify" this into a direct property
-      // assignment. Writing `fixture.componentInstance.title = …` does not mark
-      // an OnPush component for check, so the rendered DOM can stay stale and
-      // the assertion below would silently pass against the previous render.
-      // `componentRef.setInput` marks the component dirty, so it is used for
-      // every direct-fixture input change in this file.
       fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.detectChanges();
 
@@ -378,11 +255,6 @@ describe('PageHeaderComponent', () => {
     });
 
     it('is mode-agnostic and renders whatever pre-resolved title it is given', () => {
-      // A second measured title from a different screen and a different legacy
-      // mode key. Mode resolution stays in the feature: 22 distinct
-      // `ControlTitle_*` keys exist across the 37 in-scope resource files, one
-      // of them without a `.Text` suffix and one with a space in the mode name,
-      // so this component maps no keys and models no modes.
       fixture.componentRef.setInput('title', TITLE_EDIT_SECURITY_ROLES);
       fixture.detectChanges();
 
@@ -398,9 +270,6 @@ describe('PageHeaderComponent', () => {
     });
   });
 
-  // =========================================================================
-  //  3. THE SUBTITLE IS OPTIONAL AND IS NOT A HEADING.
-  // =========================================================================
   describe('subtitle rendering', () => {
     let fixture: ComponentFixture<PageHeaderComponent>;
 
@@ -414,10 +283,6 @@ describe('PageHeaderComponent', () => {
 
       const root: HTMLElement = fixture.nativeElement;
 
-      // The template guards the subtitle with a built-in control-flow block, so
-      // an unsupplied subtitle produces no element — not an empty one. An empty
-      // paragraph would still occupy layout and would still be announced as a
-      // node, so "absent" has to mean absent from the DOM.
       expect(root.querySelector('p')).toBeNull();
       expect(fixture.componentInstance.subtitle).toBeUndefined();
     });
@@ -445,7 +310,6 @@ describe('PageHeaderComponent', () => {
 
       const root: HTMLElement = fixture.nativeElement;
 
-      // No second heading is introduced anywhere by a subtitle.
       expect(root.querySelector('h2')).toBeNull();
 
       const supporting = root.querySelector('p');
@@ -454,23 +318,11 @@ describe('PageHeaderComponent', () => {
         return;
       }
 
-      // And the element that carries it is itself not a heading. The legacy
-      // precedent is a plain `CssClass="Normal"` label, so supporting text stays
-      // supporting text and the outline stays clean.
       expect(HEADING_TAG_NAMES.includes(supporting.tagName.toLowerCase())).toBe(false);
     });
   });
 
-  // =========================================================================
-  //  4. N PROJECTED ACTIONS ALL RENDER, THROUGH ONE UNNAMED SLOT.
-  // =========================================================================
   describe('projected actions', () => {
-    /**
-     * Collects the projected action labels in document order.
-     *
-     * `Array.from` yields a fully-typed `HTMLButtonElement[]`, which keeps the
-     * whole helper free of indexed-access null handling and of any cast.
-     */
     function actionLabelsOf(root: HTMLElement): readonly string[] {
       return Array.from(root.querySelectorAll('button')).map((action) =>
         (action.textContent ?? '').trim(),
@@ -496,9 +348,6 @@ describe('PageHeaderComponent', () => {
 
       const root: HTMLElement = hostFixture.nativeElement;
 
-      // Two labels carry an apostrophe. Asserting them verbatim proves the
-      // projected-content path preserves the character rather than escaping it
-      // into an entity or dropping it.
       expect(actionLabelsOf(root)).toEqual([
         'Manage Roles for this User',
         'Add New User',
@@ -508,17 +357,45 @@ describe('PageHeaderComponent', () => {
       ]);
     });
 
-    it('collapses to nothing in the action area when no action is projected', () => {
+    it('generates no box at all in the action area when no action is projected', () => {
       const hostFixture = TestBed.createComponent(ZeroActionHostComponent);
       hostFixture.detectChanges();
 
       const root: HTMLElement = hostFixture.nativeElement;
 
-      // Nothing spurious appears, and the header still renders its title
-      // correctly. Collapse itself is a stylesheet concern — an actions wrapper
-      // with no padding, border or background occupies no space — so DOM sanity
-      // is what is asserted here rather than computed geometry.
       expect(actionLabelsOf(root)).toEqual([]);
+
+      // Collapse is asserted as COMPUTED GEOMETRY, not merely as DOM sanity. An
+      // earlier revision of this spec asserted only the latter, on the stated
+      // reasoning that an actions wrapper carrying no padding, border or
+      // background occupies no space — which is true of the wrapper's own box and
+      // does not follow for the header, because the space-4 gap belongs to the
+      // flex CONTAINER and is generated between adjacent items regardless of
+      // their size. A zero-sized item is still an item, so the empty wrapper was
+      // emitting a full gap after the title on every one of the 29 measured
+      // screens that carry no action. Nothing short of a resolved `display`
+      // detects that, which is why it is checked here directly.
+      const actions = root.querySelector('.page-header__actions');
+      expect(actions).not.toBeNull();
+      if (actions === null) {
+        return;
+      }
+
+      // The wrapper is ALWAYS emitted, so its emptiness is the precondition the
+      // stylesheet rule keys on. Asserting an absence of buttons alone would pass
+      // with the full gap still intact, which is exactly the false confidence
+      // being removed here.
+      expect(actions.matches(':empty')).toBeTrue();
+
+      // The mechanism: the stylesheet suppresses the empty wrapper outright, so
+      // it leaves the flex formatting context and contributes no gap. Asserted as
+      // "generates no box" rather than as a measured dimension, because the box
+      // count is what determines whether the parent counts it as an item — and
+      // because `display: none` is a literal keyword in the rule rather than a
+      // design token, this assertion is independent of the global token
+      // stylesheet, which is not this component's contract to uphold.
+      expect(actions.getClientRects().length).toBe(0);
+      expect(getComputedStyle(actions).display).toBe('none');
 
       const heading = root.querySelector('h1');
       expect(heading).not.toBeNull();
@@ -527,6 +404,130 @@ describe('PageHeaderComponent', () => {
       }
 
       expect((heading.textContent ?? '').trim()).toBe(TITLE_PORTALS);
+    });
+
+    it('keeps the action area laid out whenever any action is projected', () => {
+      // POSITIVE CONTROL for the suppression above, and the reason it is not
+      // vacuous. Without this, the previous test would pass just as happily
+      // against a stylesheet that suppressed the wrapper UNCONDITIONALLY — which
+      // would hide every action on every screen while looking, in that one test,
+      // like a clean collapse.
+      // Typed as the framework's own component type rather than inferred: the
+      // two hosts declare different string-literal title types, so an inferred
+      // union is not assignable to a single component type. Widening here is
+      // honest — the loop needs nothing from either instance.
+      const actionCarryingHosts: readonly Type<unknown>[] = [
+        ThreeActionHostComponent,
+        FiveActionHostComponent,
+      ];
+
+      for (const host of actionCarryingHosts) {
+        const hostFixture = TestBed.createComponent(host);
+        hostFixture.detectChanges();
+
+        const root: HTMLElement = hostFixture.nativeElement;
+        const actions = root.querySelector('.page-header__actions');
+
+        expect(actions).not.toBeNull();
+        if (actions === null) {
+          return;
+        }
+
+        expect(actions.matches(':empty'))
+          .withContext(`${host.name} projects actions, so the wrapper is not empty`)
+          .toBeFalse();
+        expect(getComputedStyle(actions).display)
+          .withContext(`${host.name} must keep the wrapper laid out as a flex row`)
+          .toBe('flex');
+        expect(actions.getClientRects().length).toBeGreaterThan(0);
+
+        hostFixture.destroy();
+      }
+    });
+
+    it('removes the action wrapper from layout when no action is projected', () => {
+      // The regression this guards against is specific and was measured, not
+      // imagined: the wrapper is a flex ITEM of `.page-header`, and a flex
+      // container allocates its `gap` between adjacent items whether or not
+      // either item holds any content. An empty-but-present wrapper therefore
+      // still pushed a full `--space-4` of dead space beneath the title on the 29
+      // in-scope screens that project no action.
+      //
+      // Sizing to zero cannot fix that, because the gap is allocated for the
+      // item's existence rather than for its size. Only removing the box from
+      // layout removes the gap, which is what the stylesheet's `:empty` rule
+      // does — and computed geometry is the only honest way to assert it.
+      const hostFixture = TestBed.createComponent(ZeroActionHostComponent);
+      hostFixture.detectChanges();
+
+      const root: HTMLElement = hostFixture.nativeElement;
+      const actions = root.querySelector<HTMLElement>('.page-header__actions');
+
+      expect(actions).not.toBeNull();
+      if (actions === null) {
+        return;
+      }
+
+      expect(window.getComputedStyle(actions).display)
+        .withContext('an action wrapper with nothing projected must not occupy a flex slot')
+        .toBe('none');
+    });
+
+    it('keeps the action wrapper in layout when an action is projected', () => {
+      // The other half of the contract. A collapse rule that also hid populated
+      // wrappers would be a far worse defect than the gap it set out to remove,
+      // so the positive case is asserted alongside the negative one.
+      const hostFixture = TestBed.createComponent(ThreeActionHostComponent);
+      hostFixture.detectChanges();
+
+      const root: HTMLElement = hostFixture.nativeElement;
+      const actions = root.querySelector<HTMLElement>('.page-header__actions');
+
+      expect(actions).not.toBeNull();
+      if (actions === null) {
+        return;
+      }
+
+      expect(window.getComputedStyle(actions).display)
+        .withContext('a populated action wrapper must still lay its actions out as a flex row')
+        .toBe('flex');
+    });
+
+    it('leaves no residual gap beneath the title when no action is projected', () => {
+      // This is the measured symptom the collapse rule exists to remove, asserted
+      // as real geometry: an empty-but-present wrapper made the header one whole
+      // spacing step taller than the content it actually rendered.
+      //
+      // The spacing token is supplied on the host here rather than relied upon.
+      // The component's gap is declared as `gap: var(--space-4)`, and the custom
+      // property that resolves it lives in the GLOBAL token stylesheet, which a
+      // component-level test does not load. Without the token the gap would
+      // compute to `normal` — that is, to zero — and this expectation would pass
+      // whether or not the wrapper occupied a slot, which would make it decorative
+      // rather than load-bearing. Declaring the token locally reproduces the
+      // runtime cascade for the one property under measurement, and nothing else.
+      const hostFixture = TestBed.createComponent(ZeroActionHostComponent);
+      hostFixture.detectChanges();
+
+      const root: HTMLElement = hostFixture.nativeElement;
+      const header = root.querySelector<HTMLElement>('.page-header');
+      const heading = root.querySelector<HTMLElement>('h1');
+
+      expect(header).not.toBeNull();
+      expect(heading).not.toBeNull();
+      if (header === null || heading === null) {
+        return;
+      }
+
+      header.style.setProperty('--space-4', `${MEASURED_GAP_PX}px`);
+      header.style.setProperty('margin-block-end', '0');
+
+      // Compared against the rendered title rather than against an absolute pixel
+      // figure, so the expectation survives a change to the token's value while
+      // still failing the moment the wrapper starts consuming a flex slot again.
+      expect(header.getBoundingClientRect().height)
+        .withContext('a collapsed action wrapper must add no height to the header')
+        .toBeCloseTo(heading.getBoundingClientRect().height, 0);
     });
 
     it('projects every action through a single unnamed content slot', () => {
@@ -538,11 +539,6 @@ describe('PageHeaderComponent', () => {
 
       expect(actions.length).toBe(5);
 
-      // Taken through `querySelector` rather than through an index, so the
-      // result carries a genuine null union and is narrowed the same way as
-      // every other lookup in this file. An indexed read would be typed
-      // non-nullable here, which would make a null guard a compile error and
-      // would quietly couple this spec to one particular strictness setting.
       const firstAction = root.querySelector('button');
       expect(firstAction).not.toBeNull();
       if (firstAction === null) {
@@ -555,30 +551,15 @@ describe('PageHeaderComponent', () => {
         return;
       }
 
-      // Every projected action shares ONE parent element, which is the single
-      // slot's wrapper. This is asserted structurally rather than by class name,
-      // so the guarantee survives any styling decision in the sibling
-      // stylesheet — and it is precisely the check that would fail if the API
-      // ever grew into a selector-based multi-slot arrangement, because the
-      // actions would then be distributed across more than one wrapper.
       for (const action of actions) {
         expect(action.parentElement).toBe(slotWrapper);
       }
 
-      // The wrapper is neither the heading nor the supporting-text paragraph, so
-      // the actions genuinely live in the action area rather than inside the
-      // title or its supporting line. The wrapper's own tag and class are
-      // deliberately NOT asserted: those are the sibling template's and
-      // stylesheet's business, and pinning them here would couple this spec to a
-      // styling decision instead of to the component's contract.
       expect(HEADING_TAG_NAMES.includes(slotWrapper.tagName.toLowerCase())).toBe(false);
       expect(slotWrapper.tagName.toLowerCase()).not.toBe('p');
     });
   });
 
-  // =========================================================================
-  //  5. TITLE AND SUBTITLE RENDER AS ESCAPED PLAIN TEXT.
-  // =========================================================================
   describe('plain-text rendering', () => {
     let fixture: ComponentFixture<PageHeaderComponent>;
 
@@ -586,37 +567,15 @@ describe('PageHeaderComponent', () => {
       fixture = TestBed.createComponent(PageHeaderComponent);
     });
 
-    // WHY THIS GROUP EXISTS, with the measurement behind it.
-    //
-    // The legacy wording source cannot be trusted as markup. Across the 37
-    // in-scope resource files, 76 values contain an HTML tag and 29 begin with a
-    // leading `<br>`. The per-value tag histogram is: br 39, p 24, h1 21, b 10,
-    // a 5, li 3, span 2, ul 2, script 1, h3 1, h4 1, strong 1. The decisive case
-    // is a single value carrying a LIVE Google syndication `<script>` block whose
-    // source is the remote host pagead2.googlesyndication.com —
-    // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` ->
-    // `Advertising.Text`, 344 characters, invisible to a naive search because the
-    // tags are stored HTML-escaped. A nearby, more ordinary example is
-    // `Portals.ascx.resx` -> `ModuleHelp.Text`, which opens
-    // '<h1>About Portals</h1><p>The Super User can manage…'.
-    //
-    // DENOMINATOR HONESTY, since the figures circulate in three forms and only
-    // one of them is right: the 37 files yield 1211 raw `<data name=`
-    // occurrences against 1111 parsed `<data>` elements, the gap of 100 being
-    // entries that sit inside XML comments; the circulating figure of 1182 is a
-    // partial parse. The 76 HTML-bearing count is unanimous across all three
-    // readings — the numerator is settled, the denominator is not.
-    //
-    // Consequence: these two inputs are interpolated and therefore escaped by
-    // the framework, and they must never reach a raw-markup sink or a sanitiser
-    // bypass. The assertions below are what keep that true.
+    // Wording carried over from the legacy portal can arrive already carrying
+    // markup, up to and including an HTML-escaped remote script element, so these
+    // two inputs must never reach a raw-markup sink or a sanitiser bypass.
     it('renders a markup-bearing title as literal text and creates no element', () => {
       fixture.componentRef.setInput('title', MARKUP_PROBE);
       fixture.detectChanges();
 
       const root: HTMLElement = fixture.nativeElement;
 
-      // No element is created from the markup.
       expect(root.querySelector('h1 b')).toBeNull();
 
       const heading = root.querySelector('h1');
@@ -625,7 +584,6 @@ describe('PageHeaderComponent', () => {
         return;
       }
 
-      // And the tags survive as visible characters.
       expect(heading.textContent ?? '').toContain(MARKUP_PROBE);
     });
 
@@ -648,11 +606,6 @@ describe('PageHeaderComponent', () => {
     });
 
     it('renders a real shipped leading-break value literally', () => {
-      // A genuine measured value rather than a synthetic probe. All nine
-      // validator messages on the role-editing screen open with a literal
-      // `<br>`, and their keys carry the `.Text` suffix rather than an
-      // error-message suffix. Rendering one as a line break would silently
-      // change the shipped wording.
       fixture.componentRef.setInput('title', TITLE_EDIT_SECURITY_ROLES);
       fixture.componentRef.setInput('subtitle', SUBTITLE_LEADING_BREAK);
       fixture.detectChanges();
@@ -671,9 +624,6 @@ describe('PageHeaderComponent', () => {
     });
   });
 
-  // =========================================================================
-  //  6. COMPONENT CONTRACT SANITY.
-  // =========================================================================
   describe('component contract', () => {
     let fixture: ComponentFixture<PageHeaderComponent>;
 
@@ -681,29 +631,88 @@ describe('PageHeaderComponent', () => {
       fixture = TestBed.createComponent(PageHeaderComponent);
     });
 
-    it('instantiates and creates its fixture without error', () => {
+    // REPLACES a bare fixture-construction truthiness assertion. That assertion
+    // proved only that the harness could instantiate the class — a fact every
+    // other test in this file already depends on, and one that cannot fail on its
+    // own without failing everything else first. The two tests below assert the
+    // closed contracts the paired template and stylesheet state verbatim and
+    // that nothing else here covers: the exact class vocabulary, and the promise
+    // that this template contributes no styling of its own.
+    it('emits only the five class names its stylesheet declares, and no modifier', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.componentRef.setInput('subtitle', SUBTITLE_BASIC_SETTINGS);
       fixture.detectChanges();
 
-      expect(fixture.componentInstance).toBeTruthy();
+      const root: HTMLElement = fixture.nativeElement;
+      const rendered = new Set<string>();
+      root.querySelectorAll('[class]').forEach((element: Element): void => {
+        element.classList.forEach((token: string): void => {
+          rendered.add(token);
+        });
+      });
+
+      // The class-name contract is stated verbatim and identically in both the
+      // template header and the stylesheet header: the block plus exactly four
+      // elements, "nothing else is emitted and no modifier class exists, because
+      // the component declares no variants". Restated here as an independent
+      // literal set so that adding a sixth class — or a `--modifier` the
+      // stylesheet has no rule for — fails rather than passing unnoticed.
+      expect(Array.from(rendered).sort()).toEqual([
+        'page-header',
+        'page-header__actions',
+        'page-header__subtitle',
+        'page-header__text',
+        'page-header__title',
+      ]);
+
+      // A modifier would mean a variant, and this component declares none.
+      for (const token of rendered) {
+        expect(token.includes('--'))
+          .withContext(`"${token}" is a modifier, and this component declares no variants`)
+          .toBeFalse();
+      }
+    });
+
+    it('contributes no styling of its own and no presentational attribute', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.componentRef.setInput('subtitle', SUBTITLE_BASIC_SETTINGS);
+      fixture.detectChanges();
+
+      const root: HTMLElement = fixture.nativeElement;
+
+      // Every value the selectors resolve to must be a design token, which is
+      // only enforceable if the markup cannot smuggle a literal past the
+      // stylesheet. An inline style attribute would do exactly that, and an
+      // identifier would give a consumer a scope-piercing hook that bypasses the
+      // component's own encapsulation.
+      expect(root.querySelectorAll('[style]').length).toBe(0);
+      expect(root.querySelectorAll('[id]').length).toBe(0);
+
+      // The legacy admin markup carried its layout in table attributes of exactly
+      // this kind — measured across the in-scope screens — so their absence is a
+      // migration guarantee rather than a stylistic preference.
+      for (const attribute of [
+        'align',
+        'valign',
+        'bgcolor',
+        'width',
+        'height',
+        'border',
+        'cellpadding',
+        'cellspacing',
+        'nowrap',
+      ]) {
+        expect(root.querySelectorAll(`[${attribute}]`).length)
+          .withContext(`presentational attribute "${attribute}" must not survive the migration`)
+          .toBe(0);
+      }
+
+      // And no table element either: the title block is a flex layout, not the
+      // legacy nested-table arrangement it replaces.
+      expect(root.querySelectorAll('table').length).toBe(0);
     });
 
     it('renders on the app-page-header host tag at a consumer call site', () => {
-      // MEASURED HARNESS BEHAVIOUR, not an assumption: a directly-created
-      // fixture does NOT render on the component's own selector. The testing
-      // harness appends its own synthetic root element and hands that element to
-      // the component as its host, so `fixture.nativeElement.tagName` reports
-      // that synthetic tag and says nothing whatsoever about the selector. An
-      // earlier draft of this spec asserted the selector there and failed with
-      // "Expected 'div' to be 'app-page-header'" — the assertion was wrong, not
-      // the component.
-      //
-      // Selector conformance is therefore asserted where it is genuinely
-      // observable: in a consumer's rendered template. This is also the stricter
-      // check, because the host template's `<app-page-header [title]="…">` tag
-      // would not have compiled at all under `strictTemplates` had the selector
-      // differed, so compilation and this assertion together pin the name from
-      // both ends. The workspace declares the `app` selector prefix and this
-      // component follows it.
       const hostFixture = TestBed.createComponent(ThreeActionHostComponent);
       hostFixture.detectChanges();
 
@@ -718,7 +727,8 @@ describe('PageHeaderComponent', () => {
       expect(element.tagName.toLowerCase()).toBe('app-page-header');
     });
 
-    it('exposes title and subtitle as public inputs with usable defaults', () => {
+    it('exposes title and subtitle as public inputs', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.detectChanges();
 
       // Reading both members from a spec is itself part of the proof that they
@@ -726,22 +736,45 @@ describe('PageHeaderComponent', () => {
       // component above, which binds `[title]` AND `[subtitle]` from a template:
       // `strictInputAccessModifiers` is enabled, so a `private` or `protected`
       // input would break this file's own compilation.
-      expect(fixture.componentInstance.title).toBe('');
+      //
+      // `title` is asserted here as a SUPPLIED value rather than as a default.
+      // An earlier revision of this spec asserted that it defaulted to the empty
+      // string, which documented the very defect the component now forbids: the
+      // heading is emitted unconditionally, so an empty default meant an unnamed
+      // <h1> was a legal, silent state. There is no default to assert now.
+      // `subtitle` genuinely is optional — it renders nothing when absent — so
+      // its undefined default is still the correct expectation.
+      expect(fixture.componentInstance.title).toBe(TITLE_PORTALS);
       expect(fixture.componentInstance.subtitle).toBeUndefined();
     });
 
+    it('normalises surrounding white space out of a supplied title', () => {
+      // Normalisation, not validation: HTML collapses leading and trailing white
+      // space, so a padded title always rendered identically. Trimming makes a
+      // whitespace-only title indistinguishable from an empty one so that both
+      // hit the rejection below — without it, `' '` would satisfy a length
+      // check and still produce an unnamed heading.
+      fixture.componentRef.setInput('title', `  ${TITLE_PORTALS}\n`);
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.title).toBe(TITLE_PORTALS);
+    });
+
+    it('rejects a blank title rather than rendering an unnamed heading', () => {
+      // The component emits the page's single <h1> unconditionally, so a blank
+      // title yields a heading with no accessible name — announced as a heading
+      // and then silent, and an unlabelled top-level entry in the document
+      // outline. Omission is already a compile-time error because the input is
+      // required; this covers the case the compiler cannot see, a bound value
+      // that is present but empty at runtime.
+      for (const blank of ['', ' ', '\t', '\n', '   \n  ']) {
+        expect(() =>
+          fixture.componentRef.setInput('title', blank),
+        ).toThrowError(/must be a non-blank string/);
+      }
+    });
+
     it('strips the colliding global title attribute from its host element', () => {
-      // The input name collides with the global HTML `title` attribute, whose
-      // presence would supply advisory text for the host and every descendant —
-      // the native-tooltip condition — and would promote an otherwise ignored
-      // presentational wrapper into a named node in the accessibility tree. The
-      // component strips it in its own host metadata, and the legacy portal
-      // never offered such a tooltip: across the 39 in-scope admin screens the
-      // title is a plain label carrying no tooltip attribute anywhere.
-      //
-      // The harness-supplied root element IS the component's host here, so the
-      // component's host bindings apply to it and this assertion reads the real
-      // binding rather than a synthetic stand-in.
       fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.detectChanges();
 
@@ -751,12 +784,6 @@ describe('PageHeaderComponent', () => {
     });
 
     it('strips the title attribute at a static-attribute consumer call site', () => {
-      // The scenario above, re-run through the call site a feature screen would
-      // actually write. Without the component's defensive host strip this is the
-      // shape that leaves a live `title` attribute on the rendered element, so
-      // this assertion — not the one above — is what proves the guarantee is
-      // unconditional rather than a convention every future consumer has to
-      // remember.
       const hostFixture = TestBed.createComponent(StaticTitleAttributeHostComponent);
       hostFixture.detectChanges();
 
@@ -770,8 +797,6 @@ describe('PageHeaderComponent', () => {
 
       expect(element.getAttribute('title')).toBeNull();
 
-      // The value still reaches the heading, so the strip removes the attribute
-      // without costing the feature its title.
       const heading = element.querySelector('h1');
       expect(heading).not.toBeNull();
       if (heading === null) {

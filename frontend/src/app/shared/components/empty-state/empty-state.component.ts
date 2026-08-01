@@ -1,38 +1,116 @@
-//
-// EmptyStateComponent - the shared "zero-result state" of the dnn-migration
-// administration front end, an Angular 19 single-page application.
-//
-// This component is member 9 of the ten-member in-repository shared component
-// library defined by the project plan (data-table, page-header, confirm-dialog,
-// pagination, form-field, search-input, loading-spinner, error-banner,
-// empty-state, plus the hasPermission structural directive). That inventory is
-// deliberately CLOSED, so this file adds no sibling component and no variant.
-//
-// Deliberate divergences from the legacy DotNetNuke 4.9.0 VB.NET Web Forms
-// behaviour are annotated inline below, as the Minimal Change Clause (item 6)
-// and transformation Rule T5 require. Nothing is silently absorbed.
-//
-
 import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
 
-// MIGRATION: localisation is deliberately not ported. Legacy screens resolved
-// every caption through `Services.Localization.Localization.GetString(key,
-// LocalResourceFile)` against 37 in-scope `App_LocalResources/*.resx` files. The
-// Angular localisation package sits outside this workspace's pinned dependency
-// set, so default wording is authored directly in TypeScript and in the sibling
-// template. The legacy resource files were read for wording only, and they hold
-// no in-scope zero-result caption at all: the single such caption anywhere in the
-// repository is `SQL.ascx.resx -> NoDataReturned.Text` ("The query did not return
-// any data") on the out-of-scope host-level SQL admin page. This wording is
-// therefore authored, not ported.
-/**
- * Wording rendered when the caller supplies no usable message.
- *
- * Kept module-private on purpose: this module's documented public surface is the
- * single exported component class, whose only public member is `message`.
- * Exporting this constant would widen that surface beyond the specification.
- */
+// MIGRATION: the wording is authored here rather than resolved through a resource
+// lookup, so it is not per-locale. Module-private on purpose: the documented
+// public surface of this module is the component class and its one `message`
+// member.
 const DEFAULT_EMPTY_STATE_MESSAGE = 'No records found.';
+
+/**
+ * Separator used to fold a repeated route parameter back into one sentence.
+ *
+ * A bare comma with no trailing space is deliberate rather than stylistic. The
+ * legacy analogue reads `Request.QueryString("message")`, and `HttpRequest`'s
+ * `QueryString` is a `NameValueCollection` whose `Get` folds duplicate values
+ * into one comma-delimited string with no padding. Joining with a comma and a
+ * space would render wording the legacy page never produced, which would be an
+ * invented divergence rather than behavioural equivalence.
+ *
+ * Angular's own first-value-wins policy - `ParamMap.get` returns `v[0]` for an
+ * array - is deliberately NOT adopted here, because it discards data the legacy
+ * page displayed.
+ *
+ * The fold is total, which means blank duplicates are joined too: two blank values
+ * yield a lone separator and one blank among real wording keeps its trailing
+ * separator. That is untidy but it is precisely what the legacy page rendered, and
+ * it is pinned by its own expectation. Filtering blank elements out first would
+ * read as tidier while being a behavioural divergence, so it is not done.
+ */
+const DUPLICATE_VALUE_SEPARATOR = ',';
+
+/**
+ * Largest number of UTF-16 code units retained from a supplied message.
+ *
+ * This is a memory and layout bound, NOT the overflow remedy. Long-word overflow
+ * is owned by the sibling stylesheet, which breaks anywhere and caps the measure
+ * at `min(42rem, 100%)`; the sibling template records that a caller's sentence
+ * must reflow rather than be clipped, and that remains true of every message
+ * within this bound. The bound exists only so that an unbounded external payload
+ * cannot be retained and laid out verbatim.
+ *
+ * 1024 is measured, not chosen. Across the 37 in-scope resource files under
+ * `Website/admin/{Portal,Users,Security,Modules,Tabs}/App_LocalResources`, 1107
+ * `<data>` values give a median length of 21, p90 of 89, p95 of 140 and p99 of
+ * 318, so the bound sits at roughly 3.2 times p99. Exactly three values exceed
+ * it - 4774, 1908 and 1585 code units - and all three are long-form release-note
+ * or help-page bodies rather than the single explanatory sentence this component
+ * renders. The longest value that is genuinely one sentence is 659, leaving 1.55
+ * times headroom.
+ */
+const MAX_MESSAGE_LENGTH = 1024;
+
+/**
+ * Folds an arbitrary runtime payload into a bounded candidate string.
+ *
+ * Pure and module-private: it depends on no component state, which keeps the
+ * setter body a readable mirror of the legacy branch it reproduces instead of
+ * burying that branch under normalisation.
+ *
+ * The parameter is declared `unknown` rather than the setter's own union because
+ * `ComponentRef.setInput` performs no runtime type check, so this function has to
+ * stay total over every shape the router can hand it. The setter documents the
+ * measured evidence for which shapes those are.
+ *
+ * @param value Caller-supplied payload of any runtime shape.
+ * @returns A string of at most {@link MAX_MESSAGE_LENGTH} code units. Returns the
+ * empty string for every payload carrying no usable wording, which lets the
+ * caller's single blank test fail closed to the documented default.
+ */
+function candidateFrom(value: unknown): string {
+  let normalised: string;
+
+  if (typeof value === 'string') {
+    normalised = value;
+  } else if (Array.isArray(value)) {
+    // `Array.isArray` narrows to `any[]`, which would make the loop variable
+    // implicitly `any` and silently disable every check below. Rebinding through
+    // `readonly unknown[]` restores an honest element type with no assertion,
+    // because `any` is assignable to it.
+    const elements: readonly unknown[] = value;
+    const stringElements: string[] = [];
+
+    for (const element of elements) {
+      // Filtering before joining is what makes this total. `Array.prototype.join`
+      // coerces its elements, and coercion throws on a symbol and on any object
+      // whose `toString` throws. For the router's own duplicate-key arrays every
+      // element is already a string, so the filter is a no-op in the real case.
+      if (typeof element === 'string') {
+        stringElements.push(element);
+      }
+    }
+
+    normalised = stringElements.join(DUPLICATE_VALUE_SEPARATOR);
+  } else {
+    // Fail closed. `String(value)` is deliberately not used: it throws on a
+    // symbol and otherwise yields diagnostic noise such as an object tag, which
+    // is worse wording than the documented default. `null` and `undefined` land
+    // here too, which preserves the pre-existing blank-to-default behaviour
+    // exactly.
+    normalised = '';
+  }
+
+  if (normalised.length <= MAX_MESSAGE_LENGTH) {
+    return normalised;
+  }
+
+  const truncated = normalised.slice(0, MAX_MESSAGE_LENGTH);
+  const lastUnit = truncated.charCodeAt(truncated.length - 1);
+  // Step back off a lone high surrogate so the retained text never ends in half a
+  // code point, which a renderer shows as the U+FFFD replacement character.
+  const endsOnHighSurrogate = lastUnit >= 0xd800 && lastUnit <= 0xdbff;
+
+  return endsOnHighSurrogate ? truncated.slice(0, truncated.length - 1) : truncated;
+}
 
 // MIGRATION: this component is effectively a NET ADDITION. The project plan cites
 // it as replacing the legacy `.DNNEmptyPane` affordance, but that citation
@@ -63,153 +141,65 @@ const DEFAULT_EMPTY_STATE_MESSAGE = 'No records found.';
  * Presentational component that explains the absence of content, then optionally
  * offers one projected call to action.
  *
- * ## Two readings, one component
+ * It serves two readings. As an in-page zero-result state it stands in for a
+ * populated table or list, and callers typically project an "Add New …"
+ * affordance into the content slot. As a not-found view it is the body of the
+ * catch-all route, which supplies its own wording and projects nothing. Serving
+ * both is why it injects nothing, needs no navigation awareness and assumes no
+ * surrounding table, grid or list context — it renders correctly as a full-page
+ * view and inside a card alike.
  *
- * 1. **In-page zero-result state** - rendered in place of a populated data table
- *    or list when a query returns no rows. Callers typically project an
- *    "Add New ..." affordance into the content slot.
- * 2. **Not-found view** - used as the body of the application's catch-all route,
- *    which supplies its own wording through route `data` and projects nothing.
- *
- * ## How the catch-all route reaches `message`
- *
- * The application configures the router with `withComponentInputBinding()`. On
- * every navigation the router's component-input binder merges query parameters,
- * path parameters and static route `data` into one object, reflects the routed
- * component's declared inputs, and calls
- * `ComponentRef.setInput(name, merged[name])` for **each** of them. Three
- * properties of that mechanism shape this file:
- *
- * - The member must be declared with `@Input()`. A plain public field is not
- *   enough: `setInput` reports an unknown-property error for anything that is not
- *   a declared input, and the route binding then silently does nothing.
- * - The member must be **public**. `strictInputAccessModifiers` is enabled in
- *   this workspace, so a `private` or `protected` input is a compile error at the
- *   consumer.
- * - Because the binder assigns `merged[name]` unconditionally, an input absent
- *   from the merged object is explicitly set to `undefined`. The setter below
- *   absorbs exactly that case, so reusing this component on a route that supplies
- *   no wording degrades to the default rather than to a blank screen.
- *
- * `setInput` also marks the view dirty, so `OnPush` change detection refreshes
- * without any manual `markForCheck` call.
- *
- * ## Rendering contract with the sibling template
- *
- * The sibling `empty-state.component.html` interpolates `{{ message }}` and
- * declares one `<ng-content>` slot for the optional action, which collapses to
- * nothing when the caller projects nothing. The getter below guarantees a
- * non-blank string on every read, which is what makes it impossible for the
- * rendered output to read "undefined" or "null", and impossible for a truthiness
- * guard in the template to collapse the view.
- *
- * Semantic markup, ARIA and styling belong to the sibling template and stylesheet
- * respectively; this class deliberately declares no host bindings, so it cannot
- * conflict with the semantics those files establish.
- *
- * @example Zero-result state with a projected primary action
- * ```html
- * <app-empty-state [message]="'No roles match the current filter.'">
- *   <button type="button" (click)="createRole()">Add New Role</button>
- * </app-empty-state>
- * ```
- *
- * @example Zero-result state relying on the default wording
- * ```html
- * <app-empty-state />
- * ```
+ * Wording can arrive from the router rather than from a template binding, which
+ * constrains how `message` is declared. The router's component-input binder
+ * merges route data with the route's parameters and writes `merged[name]` for
+ * every declared input, so three things follow: the member must carry `@Input()`,
+ * because the binder reports an unknown property for anything else and then
+ * silently does nothing; it must be public, or it will not compile at the
+ * consumer; and an input the route does not populate is written as `undefined`
+ * rather than skipped, which is the case the setter below absorbs.
  */
 @Component({
   selector: 'app-empty-state',
   standalone: true,
-  // The sibling template uses only interpolation and a content slot, so it
-  // depends on no external selector, directive or pipe. Under `strictTemplates`
-  // an unimported selector is a compile error, so this list stays empty and
-  // explicit rather than being speculatively populated.
   imports: [],
   templateUrl: './empty-state.component.html',
-  // Singular `styleUrl` (Angular 17 and later). The plural form appears nowhere
-  // in this workspace, and neither does an inline stylesheet: the sibling
-  // stylesheet consumes the shared design tokens.
   styleUrl: './empty-state.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class EmptyStateComponent {
-  // MIGRATION: ViewState is eliminated. The legacy Web Forms lifecycle
-  // round-tripped control state to the browser and back through ViewState plus
-  // the hidden `ScrollTop` and `__dnnVariable` fields declared at
-  // `Website/Default.aspx:26-27`. Client state in the target lives in
-  // feature-scoped Signal stores, and this component holds no state of any kind:
-  // no signal, no stream, no lifecycle hook and no output. It renders exactly
-  // what it is given, which is what makes it safe to reuse in both readings above
-  // and trivial to test.
-  /**
-   * Backing store for {@link EmptyStateComponent.message}.
-   *
-   * Seeded with the default so that an instance created with no binding at all -
-   * the `<app-empty-state />` case - still renders meaningful wording. Private
-   * because it is an implementation detail; the accessor pair is the public
-   * member, and `strictInputAccessModifiers` constrains only that accessor pair.
-   */
   private resolvedMessage: string = DEFAULT_EMPTY_STATE_MESSAGE;
 
-  // MIGRATION: substituting the default whenever the supplied value is blank
-  // reproduces `Website/admin/Security/AccessDenied.ascx.vb:41-47`, which tests
-  // `If Request.QueryString("message") <> "" Then` and otherwise falls back to a
-  // localised default. That legacy fallback is precisely why `message` is an
-  // accessor rather than a plain field: a plain field would let an explicitly
-  // bound empty value blank the view, losing behavioural equivalence. Treating a
-  // whitespace-only value as blank is a narrow, deliberate widening of the legacy
-  // `<> ""` test, because whitespace collapses in HTML and would render a
-  // visually blank state. An accepted value is otherwise stored exactly as
-  // supplied, so no trimming or reformatting alters what the caller asked to
-  // display.
-  //
-  // MIGRATION: `message` is UNTRUSTED and reaches the DOM as plain text only, via
-  // template interpolation. It is never bound to a raw-markup sink, and this
-  // component intentionally exposes no sanitiser-backed companion member. The
-  // legacy corpus justifies the policy rather than contradicting it: of 1182
-  // `<data>` values across the 37 in-scope resource files, 76 embed an HTML tag
-  // (per-value histogram br 39, p 24, h1 21, b 10, a 5, li 3, span 2, ul 2, h3 1,
-  // h4 1, script 1, strong 1), 29 open with a leading line break, and
-  // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx ->
-  // Advertising.Text` stores a live advertising script block with a remote source.
-  // Escaping is legacy CONTINUITY, not invention: the closest legacy analogue,
-  // `Website/admin/Security/AccessDenied.ascx.vb:43`, wraps its externally
-  // supplied message in `HttpUtility.HtmlEncode(HttpUtility.UrlDecode(...))`, and
-  // `Website/Default.aspx.vb:232` likewise uses `Server.HtmlEncode`. Defensive
-  // stripping of a leading line break belongs to the shared form-error utility
-  // under `core/utils`, deliberately not here, so this component stays a pure sink.
   /**
    * Sets the sentence explaining why no content is shown.
    *
-   * The write type is intentionally wider than the read type. It admits `null`
-   * and `undefined` because those are values the router's component-input binder
-   * can genuinely pass - it assigns `merged[name]` for every declared input,
-   * including inputs a given route does not populate - and because template
-   * expressions over optional model fields are routinely nullable. Widening the
-   * setter keeps those call sites honest instead of pushing a non-null assertion
-   * onto the caller.
+   * The write type is deliberately wider than the read type, because `null` and
+   * `undefined` are values the router's binder genuinely passes and template
+   * expressions over optional model fields are routinely nullable. Widening here
+   * keeps those call sites honest instead of pushing a non-null assertion onto
+   * the caller.
    *
-   * A blank value - empty, `null`, `undefined`, or whitespace only - selects the
-   * default wording. Any other value is stored verbatim.
+   * A blank value selects the default, and this is an accessor rather than a
+   * plain field precisely so that it can: a plain field would let an explicitly
+   * bound empty value blank the view. Whitespace-only counts as blank because
+   * whitespace collapses in HTML. Any other value is stored exactly as supplied,
+   * so a caller that deliberately indents its wording gets what it asked for.
    *
-   * @param value Caller-supplied wording, or a blank value to request the
-   * default.
+   * The value is untrusted: it must never be bound to a raw-markup sink, and no
+   * sanitiser-backed companion member may be added.
+   *
+   * @param value Caller-supplied wording, the values of a repeated route
+   * parameter, or a blank value to request the default.
    */
   @Input()
-  public set message(value: string | null | undefined) {
-    const candidate = value ?? '';
+  public set message(value: string | readonly string[] | null | undefined) {
+    // Normalising and bounding BEFORE the blank test is load-bearing: a payload of
+    // 2000 spaces must bound to 1024 spaces and then still be recognised as blank,
+    // and an array of empty strings must fold to an empty string and then select
+    // the default. Testing first would let either case store unusable wording.
+    const candidate = candidateFrom(value);
     this.resolvedMessage = candidate.trim().length > 0 ? candidate : DEFAULT_EMPTY_STATE_MESSAGE;
   }
 
-  /**
-   * The sentence to display. Never blank, never `null`, never `undefined`.
-   *
-   * The sibling template interpolates this member directly, so the guarantee is
-   * what keeps "undefined" out of the rendered output and keeps a truthiness
-   * guard in the template from collapsing the view.
-   */
   public get message(): string {
     return this.resolvedMessage;
   }

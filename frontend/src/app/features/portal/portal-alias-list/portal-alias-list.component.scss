@@ -1,82 +1,19 @@
-// =============================================================================
-//  portal-alias-list.component.scss
-//  Portal HTTP-alias list, with the inline create / edit form on the same screen
-// =============================================================================
-//
-//  WHAT THIS FILE STYLES
-//  ---------------------
-//  One screen that carries TWO legacy surfaces into a single component:
-//
-//    Website/admin/Portal/portalalias.ascx      L2-L19   the two-column list
-//    Website/admin/Portal/editportalalias.ascx  L3-L14   the inline edit form
-//
-//  Angular emulated view encapsulation already scopes every selector here to
-//  this component, so the surface below is deliberately flat: one block class
-//  plus element classes, no deep descendant chains and no piercing selector.
-//  The shared page-header, loading-spinner, empty-state, error-banner and
-//  form-field components own their own appearance; this file only places them.
-//  Reaching into a shared component's internals is forbidden, and nothing here
-//  does.
-//
-//  DESIGN SOURCE
-//  -------------
-//  No design file, frame or URL was supplied with this engagement, so the sole
-//  visual reference is the measured legacy portal stylesheet
-//  Website/Portals/_default/default.css. Its sibling
-//  Website/Portals/_default/portal.css contributes nothing measurable: its 275
-//  lines resolve to 80 rule bodies and zero declarations. Both are read-only
-//  reference inputs — this migration is purely additive and edits no legacy
-//  file.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every value below resolves to a token declared in src/styles/_tokens.scss,
-//  or to the compile-time step width returned by the breakpoint helper in
-//  src/styles/_mixins.scss. The only literals are the six permitted ones plus
-//  CSS structural keywords, which name a layout mechanism rather than a design
-//  decision and have no token to resolve to.
-//
-//  The token vocabulary declares no width, size or measure token, so the three
-//  legacy widths this screen carries are DERIVED from declared values; each
-//  derivation is justified at its call site below.
-//
-//  Legacy pixel metrics are consequently cited IN WORDS in the annotations that
-//  follow, never as numerals, so that not one bare length appears anywhere in
-//  this file — comments included. The same restraint applies to legacy colour
-//  literals and font-family names: they are described, never written.
-// =============================================================================
+// Portal HTTP-alias list with the create / edit form on the same screen. View
+// encapsulation already scopes every selector, so the surface is deliberately
+// flat — one block class plus element classes, no deep descendant chains and no
+// piercing selector. Shared components own their own appearance; this file only
+// places them.
 
-// Four directory levels from src/app/features/portal/portal-alias-list/ up to
-// src/. Verified by compiling this exact line at this exact depth: the
-// three-level form resolves to a non-existent src/app/styles/ and fails the
-// build outright. The workspace configures no style-preprocessor include path,
-// so every load must be relative and COUNTED rather than copied from a
-// shallower neighbour — a layout or directive stylesheet sits three levels
-// down, a feature screen four.
 @use '../../../../styles/mixins' as mx;
 
 // -----------------------------------------------------------------------------
 //  ROOT
 // -----------------------------------------------------------------------------
-// MIGRATION: the legacy screen was a sequence of sibling blocks in document
-// order — the grid, then a presentational break, then the command paragraph
-// (editportalalias.ascx L3, L10-L14). A single-column grid reproduces that
-// stacking while replacing the break element with a spacing token, because
-// presentational markup is not content.
-//
-// Body type is set ONCE here and inherited by every region below, rather than
-// restated per rule. The size is the dominant legacy body size, which every
-// in-scope class on this screen resolved to; only the text control departs from
-// it, and it says so at its own call site. The legacy stylesheet declared no
-// line height at all, so the tightest declared step is used as the closest
-// equivalent to what the legacy screen actually rendered.
-// MIGRATION: the legacy sheet declared the font stack separately on every text class it
-// used here - the field label class, the grid item class and the grid header class each
-// repeated a near-identical stack. Those three stacks are consolidated into the one base
-// stack token and declared ONCE on the component root, from which all text descends.
-// Declaring it here rather than relying on a global base rule also keeps the component
-// self-sufficient: runtime measurement proved that without it the browser falls back to
-// its own serif default for every heading, cell, label and help string.
+// Body type is set once here and inherited by every region below rather than
+// restated per rule. The family is declared on the component root rather than
+// left to a global base rule, which keeps the component self-sufficient: without
+// it the browser falls back to its own serif default for every heading, cell,
+// label and help string.
 .portal-alias-list {
   display: grid;
   gap: var(--space-4);
@@ -85,11 +22,6 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  HEADER AND STATUS REGIONS — PLACEMENT ONLY
-// -----------------------------------------------------------------------------
-// The shared page-header owns its own type, colour AND its trailing action
-// slot, so this rule only places the header band and lets it wrap.
 .portal-alias-list__header {
   display: flex;
   flex-wrap: wrap;
@@ -98,315 +30,30 @@
   justify-content: space-between;
 }
 
-// The shared loading-spinner, empty-state and error-banner own their own
-// appearance, including the banner's polite live region. Only their stacking is
-// set here, so a screen showing more than one at once stays evenly spaced.
 .portal-alias-list__status {
   display: grid;
   gap: var(--space-2);
 }
 
 // -----------------------------------------------------------------------------
-//  LIST REGION
-// -----------------------------------------------------------------------------
-// MIGRATION: the legacy grid width (portalalias.ascx L2) is expressed as the
-// small breakpoint step rather than as a literal, because the vocabulary
-// declares no width token at all. The helper is exported for exactly this use —
-// the shared mixin partial names a grid max inline size as its own example. The
-// step is a shade narrower than the legacy attribute, so this is a deliberate
-// SNAP to the declared scale rather than a pixel match.
-//
-// MIGRATION: GridLines="None" and a zero BorderWidth (portalalias.ascx L2-L3 —
-// the width value is given in words, like every other legacy metric here, so
-// that no bare length appears anywhere in this file) are preserved exactly: the
-// list renders with NO cell borders and no outer frame. Collapsing the borders
-// additionally removes the separation a browser applies to a table by default,
-// which the legacy grid did not render either.
-// The legacy container rule (default.css L139-L142) painted no background, so
-// none is set here.
-.portal-alias-list__list {
-  max-inline-size: mx.breakpoint('sm');
-  border: 0;
-  border-collapse: collapse;
-}
-
-// A caption names the region for assistive technology but duplicates the
-// visible page heading, so it is taken out of view while kept in the
-// accessibility tree. Deliberately not hidden outright, which would silence the
-// very text it exists to announce.
-//
-// MIGRATION: the legacy edit column carried NO header text at all
-// (portalalias.ascx L5-L13 declares a template column with no HeaderText), so
-// its header cell rendered empty. An empty column header is unusable with a
-// screen reader, so the target names the column and takes that name out of
-// view — the same treatment, hence the same rule. Runtime measurement proved
-// this hook is load-bearing: with the name left unstyled it rendered visibly
-// AND its own width set the action column, pushing that column past the
-// declared spacing step. Grouped with the caption rather than given a rule of
-// its own so the shared treatment costs one selector, not two.
-.portal-alias-list__list caption,
-.portal-alias-list__sr-only {
-  @include mx.visually-hidden;
-}
-
-// MIGRATION: the legacy alternating-row rule (default.css L131-L137) painted a
-// pale row background AND recoloured the body text of every other row.
-// Recolouring body text by row parity is a legacy DEFECT — it conveys nothing,
-// and it collides with the colour this vocabulary reserves for danger — so it
-// is deliberately NOT reproduced. Emitting no alternating rule is also faithful:
-// this particular grid declares no AlternatingItemStyle. The legacy
-// selected-row rule (default.css L164) is dead CSS for the same reason, this
-// grid declaring no SelectedItemStyle, so no selected row is styled either.
-.portal-alias-list__row {
-  border: 0;
-}
-
-// Defensive: the two-column arrangement holds whether the template renders a
-// semantic table — the accessible choice, with a caption and scoped header
-// cells — or plain elements. On a table row the leading cell width below does
-// the work and this rule never matches; on anything else the grid template
-// does, with the same value as a floor.
-.portal-alias-list__row:not(tr) {
-  display: grid;
-  grid-template-columns: minmax(var(--space-4), max-content) 1fr;
-  gap: var(--space-2);
-  align-items: baseline;
-}
-
-// MIGRATION: the header row's EFFECTIVE legacy rendering is the emphasis class
-// wired at portalalias.ascx L15 — bold at body size — and not the grid's own
-// header rule (default.css L147-L155), which the legacy markup overrides and
-// whose centring therefore never rendered on this screen.
-//
-// Emphasis is stated on the row so it reaches whichever element the template
-// uses for a header cell. Alignment deliberately is NOT stated here: runtime
-// measurement proved that a browser's own rule for a semantic header cell beats
-// anything a header cell merely inherits, so the logical alignment has to be
-// declared on the cells themselves, which is where it now lives.
-.portal-alias-list__row--head {
-  font-weight: var(--font-weight-bold);
-}
-
-// MIGRATION: the leading action column reproduces the edit column's item width
-// (portalalias.ascx L6 — fifteen pixels, spelled out so no bare length appears
-// in this file) with the nearest declared spacing step, which is one pixel
-// wider. In a table a width is a suggestion and never a clip, and the grid
-// fallback above uses the same value only as a floor, so the affordance cannot
-// be cut off either way.
-//
-// BLITZY [A11Y]: that column is far narrower than the generally recommended
-// minimum touch target. The measured legacy design is implemented EXACTLY
-// rather than silently enlarged, because the design source outranks a generic
-// accessibility default; flagged here for designer review. The affordance
-// itself stays keyboard reachable and carries a visible focus ring below.
-.portal-alias-list__cell--action {
-  inline-size: var(--space-4);
-  padding-block: var(--space-1);
-  padding-inline: 0;
-  border: 0;
-  text-align: start;
-}
-
-// A host name is long and has no spaces to break on, so it is allowed to break
-// rather than widen the row or escape the region.
-//
-// MIGRATION: logical start alignment reproduces the legacy rendering, where the
-// grid emitted plain cells and both the header and the values sat flush left
-// (portalalias.ascx L15-L16 wire the emphasis and body classes, neither of
-// which sets alignment). It is stated on the cell, not inherited from the row,
-// because a browser's own rule for a semantic header cell centres it and beats
-// inheritance — proven by runtime measurement.
-//
-// Emphasis is deliberately NOT reset to normal here. An earlier revision did,
-// and runtime measurement proved it silently un-emphasised the header cell too,
-// since this class is shared by the header and the body cells of the column.
-// Body cells are unemphasised by default, so the reset bought nothing and cost
-// the header the bold weight the legacy screen actually rendered.
-.portal-alias-list__cell--alias {
-  padding-block: var(--space-1);
-  padding-inline: 0;
-  border: 0;
-  text-align: start;
-  overflow-wrap: break-word;
-}
-
-// MIGRATION: the legacy edit affordance was an image inside a hyperlink
-// (portalalias.ascx L8-L10), shown only for an alias other than the current
-// one. Its measured resting state (default.css L552-L556) carried the brand
-// colour and no underline; its hover (default.css L564-L568) added an underline
-// and switched to the danger colour. Both are reproduced from tokens, and the
-// colour change is always accompanied by the underline so colour is never the
-// sole signal. No hover-capability guard mixin is declared in the shared
-// abstractions and a component may not write a raw media query, so a plain
-// hover selector is used — which is exactly what the legacy stylesheet did.
-.portal-alias-list__edit-link {
-  display: inline-flex;
-  align-items: center;
-  color: var(--color-primary);
-  text-decoration: none;
-
-  &:hover {
-    color: var(--color-danger);
-    text-decoration: underline;
-  }
-}
-
-// -----------------------------------------------------------------------------
 //  INLINE CREATE / EDIT FORM
 // -----------------------------------------------------------------------------
-// MIGRATION: the legacy form was a LAYOUT table (editportalalias.ascx L4) — one
-// row, two cells, no summary attribute and never tabular data. It becomes CSS
-// Grid here: a layout table has no place in the target markup, and the label is
-// associated with its control programmatically rather than by cell adjacency.
 .portal-alias-list__edit {
   display: grid;
   gap: var(--space-3);
   max-inline-size: mx.breakpoint('sm');
 }
 
-// Mobile first: the label sits above its control. At the middle step it moves
-// beside the control, which is the arrangement the legacy two-cell row
-// rendered. The step comes from the shared breakpoint mixin — a component may
-// not restate a breakpoint, and none is restated here.
-.portal-alias-list__field {
-  display: grid;
-  grid-template-columns: 1fr;
-  row-gap: var(--space-1);
-  align-items: start;
-
-  @include mx.respond-above('md') {
-    grid-template-columns: max-content 1fr;
-    column-gap: var(--space-2);
-  }
-}
-
-// MIGRATION: the field label reproduces the legacy sub-heading class wired at
-// editportalalias.ascx L6 (default.css L74-L80) — body size, bold, brand
-// colour.
-.portal-alias-list__label {
-  color: var(--color-primary);
-  font-weight: var(--font-weight-bold);
-}
-
-// The control column stacks the input and, beneath it, the help block.
-.portal-alias-list__control {
-  display: grid;
-  row-gap: var(--space-1);
-  min-inline-size: 0;
-}
-
-// MIGRATION: the alias input width (editportalalias.ascx L7) is derived from
-// the largest spacing step rather than written as a literal, since the
-// vocabulary declares no width token; the product matches the legacy attribute
-// exactly. A unitless multiplier over a token follows the precedent the shared
-// mixin partial sets for its negative hairline offset. The control still shrinks
-// below that cap on a narrow viewport instead of overflowing.
-//
-// Its type size is the legacy control size (default.css L123-L128), one step
-// above the surrounding body text — a deliberate legacy contrast that is
-// preserved rather than flattened. A control does not inherit the page family,
-// so the family token is restated here.
-.portal-alias-list__input {
-  min-inline-size: 0;
-  max-inline-size: calc(var(--space-8) * 7.5);
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-lg);
-}
-
-// MIGRATION: the help panel (default.css L424-L439) is reproduced through
-// tokens as a block BELOW the label — matching the legacy control's own
-// structure, a break followed by a panel (labelcontrol.ascx L8-L11) — and NOT
-// as a tooltip. Its measured legacy treatment was a solid hairline on all four
-// sides, uniform padding on all four sides, body type size, dark text and a
-// pale-yellow background; each resolves to a declared token, the background and
-// the text colour exactly.
-.portal-alias-list__help {
-  padding: var(--space-1);
-  border: var(--border-width) var(--border-style) var(--color-text);
-  background-color: var(--color-surface-hint);
-  color: var(--color-text);
-}
-
 // -----------------------------------------------------------------------------
 //  COMMAND ROW
 // -----------------------------------------------------------------------------
-// MIGRATION: the legacy commands sat in a paragraph separated by pairs of
-// literal non-breaking spaces (editportalalias.ascx L11-L12). Those separators
-// become a real gap token: presentational whitespace is not content, and a flex
-// row also wraps cleanly on a narrow viewport where the legacy paragraph would
-// have run off the edge.
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing, and the row wraps cleanly on a narrow viewport.
 .portal-alias-list__commands {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
-}
-
-// MIGRATION: all three legacy commands — update, cancel and delete
-// (editportalalias.ascx L11-L13) — shared a single class, so all three are
-// styled identically here. No danger variant is invented for delete: the legacy
-// screen did not distinguish it, and confirming a destructive action is the
-// shared dialog's concern. The measured resting state (default.css L442-L447
-// with L450-L454) is body size, normal weight, brand colour and an underline;
-// hover switches to the danger colour (default.css L462-L466) while keeping the
-// underline.
-//
-// BLITZY [A11Y]: the danger colour measures fractionally below the contrast
-// minimum for normal text on the page background, as its own token annotation
-// records. It is implemented exactly as measured rather than darkened, because
-// the design source outranks a generic accessibility default; flagged here for
-// designer review. The persistent underline is the required non-colour cue, so
-// the hover state is never signalled by colour alone.
-//
-// MIGRATION: the legacy commands were link buttons (editportalalias.ascx
-// L11-L13), so they rendered as underlined text with no chrome of any kind. The
-// target uses a real button element instead, because these are actions rather
-// than navigation and a button is the keyboard-operable, correctly announced
-// element for that. A button carries a browser-supplied widget appearance
-// though, and runtime measurement proved it survives and renders three bevelled
-// grey boxes where the legacy screen showed bare underlined text. The native
-// appearance is therefore switched off explicitly and its chrome zeroed, so the
-// measured legacy affordance is what actually renders. The pointer cue replaces
-// the one the browser gave the legacy anchor for free.
-.portal-alias-list__command {
-  appearance: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--color-primary);
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-normal);
-  text-decoration: underline;
-  cursor: pointer;
-
-  &:hover {
-    color: var(--color-danger);
-  }
-}
-
-// -----------------------------------------------------------------------------
-//  SHARED INTERACTIVE TREATMENT
-// -----------------------------------------------------------------------------
-// The focus ring and the colour transition are identical on all three
-// interactive affordances this screen owns, so they are applied ONCE to a
-// grouped selector instead of being repeated per rule. Three copies of the same
-// declaration block is bundle weight for no behavioural gain, and the
-// per-component style budget is a hard gate — the alternative would be raising
-// that budget, which is not this file's to raise.
-//
-// MIGRATION: net-new, both treatments. The legacy stylesheet declares no focus
-// styling and no motion anywhere, so neither alters anything the legacy screen
-// rendered at rest. The ring is drawn as an outline, which is painted outside the
-// box and so can never shift or reflow the affordance it marks, and it survives
-// forced-colours modes where a shadow would be discarded. The transition mixin
-// supplies the reduced-motion guard, and the property is named explicitly rather
-// than transitioning everything.
-.portal-alias-list__edit-link,
-.portal-alias-list__input,
-.portal-alias-list__command {
-  @include mx.focus-ring;
-  @include mx.transition(color);
 }
 
 // =============================================================================
@@ -424,8 +71,20 @@
 // the single base family token. The families themselves are named only in the
 // token declaration; this file references the token and never a family name.
 //
-// MIGRATION: the focus rings, the reduced-motion-guarded colour transition and
-// the responsive collapse are all net additions too. The legacy stylesheet
-// declares no focus styling, no motion and no responsive behaviour anywhere, so
-// none of the three alters anything the legacy screen rendered at rest.
+// MIGRATION: focus indication, motion and responsive behaviour are all net
+// additions too — the legacy stylesheet declares none of the three anywhere — but
+// none of them is declared HERE any longer. Focus rings now come from the global
+// anchor and button treatment, the reduced-motion-guarded colour transition came
+// out with the command rules that carried it, and the one responsive collapse this
+// file declared belonged to the labelled-control layout that the shared form field
+// now owns. What survives above is layout alone, and it alters nothing the legacy
+// screen rendered at rest.
+//
+// MIGRATION: the one remaining width constraint — the form's measure — is expressed
+// as the small breakpoint step rather than as a literal, because the token vocabulary
+// declares no width or measure token at all. The breakpoint helper is exported for
+// exactly this purpose. The step is a shade narrower than the legacy table width it
+// stands in for (editportalalias.ascx L4), so it is a deliberate SNAP to the declared
+// scale rather than a pixel match. The list region's own width constraint came out
+// with the table rules: sizing the list is the shared data table's concern.
 // =============================================================================
