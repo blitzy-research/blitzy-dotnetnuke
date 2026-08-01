@@ -1,0 +1,45 @@
+<!--
+  Async progress indicator. A leaf presentational primitive: one decorative
+  glyph, one text label, nothing else.
+
+  Deliberately NOT declared here. The polite live region, the busy state and
+  the size attribute all sit on the HOST element, supplied by the `host`
+  metadata in loading-spinner.component.ts; repeating any of them would nest a
+  second live region inside the host's own and leave the two competing to
+  announce the same thing. Every dimension, colour and the spin animation
+  likewise live in loading-spinner.component.scss as design tokens, so this
+  template carries no inline styling and no branching on size.
+
+  MIGRATION: net-new affordance with no legacy ancestor. The five in-scope
+  DotNetNuke admin trees are pure full-page-postback Web Forms, with measured
+  zero occurrences of UpdatePanel, UpdateProgress, ScriptManager and
+  AsyncPostBack across admin/{Portal,Users,Security,Modules,Tabs}, so the
+  browser's own page-load indicator was the legacy application's only progress
+  affordance. Neither legacy stylesheet declares a spinner, progress, loading,
+  throbber or busy selector: zero matches across default.css (1030 lines) and
+  portal.css (275 lines). Nothing is ported, so no legacy class name and no
+  legacy raster icon is referenced.
+
+  MIGRATION: the accessibility treatment is net-new. The legacy admin markup
+  and both legacy stylesheets carry no ARIA and no focus styling whatsoever.
+  The glyph below is hidden from assistive technology because it conveys
+  nothing a screen-reader user needs, while the label stays real text so it
+  becomes the announced content of the host's live region instead of a
+  competing accessible name. Both are invisible, so both cost nothing visually.
+
+  MIGRATION: the label is interpolated as plain text on purpose. Legacy .resx
+  values are untrusted markup, 76 of roughly 1,111 in-scope entries carry a
+  tag and four carry script blocks, and the legacy application encoded on
+  output rather than trusting the stored value. Interpolation escapes markup,
+  which is exactly the behaviour required, so no raw-markup binding and no
+  sanitiser bypass appears anywhere here.
+
+  MIGRATION: wording is authored directly in English. Localisation is not
+  carried forward and no legacy progress wording exists to inherit; the only
+  "please wait" text in the in-scope trees is an account-lockout duration
+  message, not a progress affordance.
+-->
+<span class="indicator" aria-hidden="true"></span>
+@if (label) {
+  <span class="label">{{ label }}</span>
+}

@@ -1,0 +1,502 @@
+// =============================================================================
+//  _mixins.scss — breakpoints, focus ring, visually-hidden
+// =============================================================================
+//
+//  ROLE — A PURE-ABSTRACTION PARTIAL THAT EMITS ZERO CSS
+//  ----------------------------------------------------
+//  This file declares `@mixin` and `@function` members and nothing else. It
+//  contains no selector, no document-root block, no custom property and no
+//  top-level declaration, so compiling it in isolation produces an empty
+//  stylesheet and loading it from another file adds not one byte to the bundle.
+//  Every rule below is emitted only where a consumer chooses to `@include` it.
+//
+//  It is the companion to _tokens.scss. That file owns the design VALUES; this
+//  file owns the design BEHAVIOURS that cannot be expressed as a value:
+//
+//    * a media query, because CSS custom properties are not evaluated inside
+//      media feature queries (see THE ONE DOCUMENTED EXCEPTION below);
+//    * a pseudo-class rule, because `:focus-visible` is a selector, not a value;
+//    * an at-rule guard, because `prefers-reduced-motion` is a query.
+//
+//  _tokens.scss delegates all three to this file explicitly, and those three
+//  delegations are the reason the members below exist rather than being a
+//  speculative utility library:
+//    _tokens.scss L44      "the breakpoint set is declared once, in
+//                           _mixins.scss, and consumed by mixin so that no
+//                           component ever restates one"
+//    _tokens.scss L565-569 "the guard lives in the shared mixin in _mixins.scss,
+//                           and every component applies transitions through that
+//                           mixin rather than declaring the query itself"
+//    _tokens.scss L594-601 "applied through the focus-ring mixin in _mixins.scss
+//                           on `:focus-visible`"
+//
+//  It is NOT a build entry point. The workspace declares exactly one global
+//  stylesheet (src/styles.scss) and Sass partials are never listed alongside it.
+//
+//  THIS IS THE ONLY FILE IN THE WORKSPACE PERMITTED A RAW `@media`
+//  ---------------------------------------------------------------
+//  No sibling partial and no *.component.scss may write `@media` directly.
+//  Responsive behaviour and motion guards are obtained by `@use`-ing this file
+//  and `@include`-ing a mixin. A breakpoint restated in a component is a real
+//  defect: it drifts silently from every other declaration of the same value.
+//
+//  EXPORTED SURFACE — the contract downstream stylesheets consume
+//  -------------------------------------------------------------
+//  Responsive  (mobile-first: `min-width` is the default direction)
+//    breakpoint($name)              -> length   Width of a named step; build
+//                                               error on an unknown name.
+//    respond-above($name)  { ... }            Applies at and above the step.
+//    respond-below($name)  { ... }            Applies strictly below the step.
+//  Motion
+//    motion-safe           { ... }            Wraps content in a
+//                                             prefers-reduced-motion guard.
+//    transition($props...)                    Guarded transition on the listed
+//                                             properties, using the motion
+//                                             tokens. Build error if no
+//                                             property is passed.
+//  Accessibility
+//    focus-ring                               Visible `:focus-visible` outline
+//                                             on the current selector.
+//    visually-hidden                          Hides from sight, keeps in the
+//                                             accessibility tree.
+//    visually-hidden-focusable                As above while NOT focus-visible,
+//                                             so it reveals itself on keyboard
+//                                             focus (skip links). Declare the
+//                                             revealed appearance flatly beside
+//                                             the include; it cannot clobber the
+//                                             hidden state.
+//
+//  Names and signatures are stable and are not to be renamed: the shared
+//  component set, the layout shell and the sibling partials are written against
+//  them.
+//
+//  HOW TO LOAD THIS FILE — VERIFIED PATHS, NOT ESTIMATES
+//  ----------------------------------------------------
+//  The workspace configures no Sass load path: angular.json declares no
+//  stylePreprocessorOptions.includePaths and tsconfig.json declares no
+//  baseUrl/paths. Every `@use` must therefore be RELATIVE, and a path that is
+//  off by a single directory fails the build with "Can't find stylesheet to
+//  import." Each row below was verified by compiling a probe stylesheet at that
+//  exact location — none is inferred:
+//
+//    src/styles/_<sibling>.scss            @use 'mixins' as mx;
+//    src/styles.scss                       @use './styles/mixins' as mx;
+//    src/app/app.component.scss            @use '../styles/mixins' as mx;
+//    src/app/layout/<x>/                   @use '../../../styles/mixins' as mx;
+//    src/app/shared/directives/            @use '../../../styles/mixins' as mx;
+//    src/app/shared/components/<x>/        @use '../../../../styles/mixins' as mx;
+//    src/app/features/<f>/<screen>/        @use '../../../../styles/mixins' as mx;
+//
+//  Note the two different depths: a layout or directive stylesheet is three
+//  levels below src/, whereas a shared component and a feature screen are four.
+//  Count the directories from the stylesheet to src/ rather than copying a
+//  neighbour's line from a different depth.
+//
+//  Sass modules are per-file and are NOT ambient. A `@use` in src/styles.scss
+//  does not make these members visible to a component stylesheet; every
+//  consumer must `@use` this file itself. There is deliberately no barrel or
+//  index partial to forward them from — imports are explicitly pathed.
+//
+//  This file loads nothing but built-in `sass:*` modules, so it can never take
+//  part in a load cycle. It does NOT load _tokens.scss: it emits no CSS and so
+//  never needs a token's value at compile time. It only names custom properties
+//  inside mixin bodies, which the browser resolves at run time from the single
+//  document-root block that _tokens.scss owns.
+//
+//  ZERO HARDCODED VALUES, AND THE ONE DOCUMENTED EXCEPTION
+//  ------------------------------------------------------
+//  Every value these mixins emit resolves to a `var(--token)` from _tokens.scss.
+//  The only literals are the six the migration plan permits — `0`, `none`,
+//  `auto`, `inherit`, `currentColor`, `transparent` — plus CSS structural
+//  keywords such as `absolute`, `hidden` and `nowrap`, which name a layout
+//  mechanism rather than a design decision and have no token to resolve to.
+//
+// MIGRATION: the breakpoint widths below are the single exception, and it is a
+//  bounded and unavoidable one rather than a lapse. A CSS custom property is not
+//  evaluated inside a media feature query — `@media (min-width: var(--bp-md))`
+//  is inert in every browser, because custom properties resolve per element at
+//  computed-value time whereas a media query is evaluated against the viewport
+//  before any element exists. The widths are therefore compile-time Sass values,
+//  substituted into the query text by the compiler. They are confined to the
+//  private map in this one file, which is exactly what "declared once" requires:
+//  because the map name begins with an underscore it is module-private, so no
+//  other stylesheet can read it even by accident, and every consumer is forced
+//  through the mixins.
+//
+//  PROVENANCE — MEASURED, NOT ASSUMED
+//  ----------------------------------
+//  The only visual design source for this migration is the legacy DotNetNuke
+//  portal CSS; no Figma frame, design URL or attachment was supplied. Both
+//  reference stylesheets were measured, and every member here is a net addition
+//  because the legacy portal simply has no equivalent to carry forward:
+//
+//    Website/Portals/_default/default.css   1030 lines, 136 rules
+//    Website/Portals/_default/portal.css     275 lines, every rule body empty
+//
+//    @media                     0 in default.css, 0 in portal.css,
+//                               and 0 across every *.css file under Website/
+//    :focus / outline           0 and 0 in both stylesheets
+//    transition / animation /
+//      @keyframes / transform   0 in both stylesheets
+//    display:none /
+//      visibility:hidden        0 in both stylesheets
+//    em or rem units            0 in both stylesheets (195 px, 15 pt, 6 %)
+//
+//  Both legacy stylesheets are read-only reference inputs. This migration is
+//  purely additive: no legacy file is modified or removed.
+//
+//  DIVERGENCE POLICY
+//  -----------------
+//  Where this file departs from what the legacy portal did, the departure is
+//  annotated inline with a `// MIGRATION:` comment rather than silently
+//  absorbed. Because the legacy rest state carries no focus treatment, no
+//  motion and no responsive behaviour at all, adding them changes nothing the
+//  legacy portal rendered at rest — the accessibility improvements below have
+//  zero visual cost to the resting state.
+// =============================================================================
+
+// Built-in Sass modules only. These ship inside the compiler itself rather than
+// being installed packages, so loading them adds no dependency to the workspace —
+// zero design-system and zero third-party style dependencies are used anywhere.
+// The modern module API is used throughout: the global `map-get` and friends are
+// deprecated in Dart Sass and would emit build deprecation warnings.
+@use 'sass:list';
+@use 'sass:map';
+
+// =============================================================================
+//  BREAKPOINT SCALE — declared exactly once for the entire workspace
+// =============================================================================
+
+// MIGRATION: net-new, in full. The legacy portal has no responsive design
+// whatsoever — `@media` occurs zero times in default.css, zero times in
+// portal.css and zero times across every stylesheet under Website/ — so there is
+// no legacy breakpoint to preserve and no legacy layout width that implies one.
+// The only widths the legacy stylesheet declares are fixed pixel sizes belonging
+// to excluded families (the 650px file-manager panel, the 180px wizard column,
+// the 15/21px menu icons) plus a single `width: 100%`. This scale is therefore
+// invented rather than translated, exactly as the spacing, radius and elevation
+// scales in _tokens.scss are.
+//
+// Four steps, deliberately few. A scale is only useful if every step earns a
+// distinct layout decision, and the planned consumers are the layout shell, the
+// shared data table and the layout/table/form partials. Nothing downstream may
+// invent a fifth step by writing its own query; add one here if it is genuinely
+// needed and the whole workspace picks it up at once.
+//
+// The widths are expressed in rem rather than px on purpose. Inside a media
+// query `rem` is resolved against the browser's default font size — the user's
+// own preference — and not against any root font size the page sets, so a reader
+// who enlarges their default text gets the simpler layout sooner. That is a real
+// accessibility gain and costs nothing.
+//
+// Private to this module: the leading underscore makes the name inaccessible to
+// any other stylesheet, so a breakpoint literally cannot be restated elsewhere.
+$_breakpoints: (
+  'sm': 30rem, // 480px — large handset; stacked content gains side padding
+  'md': 48rem, // 768px — tablet; the shell moves from stacked to side-by-side
+  'lg': 64rem, // 1024px — small desktop; the data table shows every column
+  'xl': 80rem, // 1280px — wide desktop; content stops growing and centres
+);
+
+// The amount subtracted from a step to build an exclusive upper bound, so that
+// `respond-below('md')` and `respond-above('md')` can never both match the same
+// viewport. 0.001rem is roughly a sixtieth of a pixel: small enough to be
+// invisible at any zoom level, large enough to survive the fractional viewport
+// widths that browser zoom produces.
+//
+// Classic `min-width`/`max-width` is used rather than the newer range syntax
+// (`@media (width < 48rem)`) because the classic form is understood by every
+// browser the production build targets, and the epsilon makes the two forms
+// behave identically.
+$_breakpoint-epsilon: 0.001rem;
+
+// -----------------------------------------------------------------------------
+//  breakpoint($name) -> length
+//
+//  Resolves a named step to its width. This is the lookup helper that backs the
+//  two responsive mixins; it is exported as well because a container query-free
+//  layout occasionally needs the raw width — a grid `max-inline-size`, say.
+//
+//  It is NOT an escape hatch for hand-rolling a query. Writing
+//  `@media (min-width: mx.breakpoint('md'))` in a component reintroduces exactly
+//  the duplication this file exists to prevent; use `respond-above` instead.
+//
+//  An unknown name is a BUILD FAILURE, never a silently dropped query. That
+//  distinction matters more than it first appears: a mistyped name in a bare
+//  media query yields a stylesheet that compiles cleanly and lays out wrongly,
+//  with no diagnostic anywhere. `@error` converts a typo into a message that
+//  names the offending value and lists the legal ones.
+// -----------------------------------------------------------------------------
+@function breakpoint($name) {
+  @if not map.has-key($_breakpoints, $name) {
+    @error 'Unknown breakpoint #{$name}. Valid steps are: #{map.keys($_breakpoints)}. '
+      + 'Breakpoints are declared once, in src/styles/_mixins.scss; add a step to '
+      + '$_breakpoints there if one is genuinely needed, and never write a bare '
+      + '@media query in a component stylesheet.';
+  }
+
+  @return map.get($_breakpoints, $name);
+}
+
+// -----------------------------------------------------------------------------
+//  respond-above($name) { ... }
+//
+//  Applies the wrapped declarations at and above a step. This is the DEFAULT
+//  direction: author the small-viewport layout unconditionally, then layer the
+//  wider layout on top of it. Mixing directions across a codebase produces
+//  overlapping queries whose winner depends on source order, so prefer this
+//  mixin and reach for `respond-below` only when a rule genuinely has to be
+//  unwound rather than added.
+//
+//    .shell { display: grid; grid-template-columns: 1fr;
+//      @include mx.respond-above('md') { grid-template-columns: auto 1fr; } }
+// -----------------------------------------------------------------------------
+@mixin respond-above($name) {
+  @media (min-width: breakpoint($name)) {
+    @content;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  respond-below($name) { ... }
+//
+//  Applies the wrapped declarations strictly below a step, for the cases where a
+//  rule has to be withdrawn rather than added — collapsing a table into cards,
+//  for instance. The upper bound is exclusive, so pairing
+//  `respond-below('md')` with `respond-above('md')` covers every viewport
+//  exactly once with no overlap and no gap.
+// -----------------------------------------------------------------------------
+@mixin respond-below($name) {
+  @media (max-width: breakpoint($name) - $_breakpoint-epsilon) {
+    @content;
+  }
+}
+
+// =============================================================================
+//  MOTION
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//  motion-safe { ... }
+//
+//  Wraps the content in a reduced-motion guard, so animation and transition are
+//  applied only for readers who have not asked their operating system to
+//  minimise movement. Motion is opt-in rather than opt-out: the guard tests for
+//  `no-preference`, so a reader who has expressed no preference gets the motion
+//  and a reader who has asked for less simply never receives the declarations.
+//
+// MIGRATION: net-new. The legacy portal declares `transition`, `animation`,
+//  `@keyframes` and `transform` zero times each, so no legacy motion is being
+//  altered — this guard governs motion that is itself an addition.
+//
+//  This exists because _tokens.scss cannot provide it: a guard is an at-rule,
+//  and that file holds values only. Any component with a keyframe animation —
+//  the shared loading spinner's rotation, for one — must route it through here,
+//  since a component may not write the query itself.
+//
+//    .spinner__disc { @include mx.motion-safe { animation: spin 1s linear infinite; } }
+// -----------------------------------------------------------------------------
+@mixin motion-safe {
+  @media (prefers-reduced-motion: no-preference) {
+    @content;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  transition($properties...)
+//
+//  A reduced-motion-guarded transition over the named properties, timed by the
+//  motion tokens. Pass the properties explicitly and variadically:
+//
+//    @include mx.transition(background-color, color);
+//
+//  Properties are always named rather than defaulting to `all`. `all` forces the
+//  browser to watch every animatable property, transitions layout properties
+//  that were never meant to move, and makes a rule's cost invisible at the call
+//  site — so omitting the argument is a build failure rather than a shortcut.
+//
+//  The longhand properties are used instead of the `transition` shorthand
+//  because the shorthand resets `transition-delay` and `transition-behavior`,
+//  which a consumer may legitimately have set on the same element.
+// -----------------------------------------------------------------------------
+@mixin transition($properties...) {
+  @if list.length($properties) == 0 {
+    @error 'transition() requires at least one property, for example '
+      + '`@include mx.transition(background-color, color)`. Name the properties '
+      + 'that actually change rather than transitioning `all`.';
+  }
+
+  @include motion-safe {
+    transition-property: $properties;
+    transition-duration: var(--transition-duration);
+    transition-timing-function: var(--transition-easing);
+  }
+}
+
+
+// =============================================================================
+//  ACCESSIBILITY
+//  Every member below is invisible to a sighted mouse user at rest and therefore
+//  carries no visual cost. This is how the design system's accessibility rank is
+//  satisfied without disturbing visual continuity with the legacy portal.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//  focus-ring
+//
+//  Draws a visible focus indicator on the current selector. Include it inside a
+//  selector — it attaches `:focus-visible` to the parent, so a top-level
+//  `@include` is a compile error rather than a silent no-op.
+//
+//    .data-table__sort-button { @include mx.focus-ring; }
+//
+//  `:focus-visible` rather than `:focus`, so the ring appears for keyboard and
+//  assistive-technology navigation but not on a mouse press. A mouse user
+//  therefore sees no change at all, which is precisely what makes this a
+//  zero-visual-cost improvement rather than a restyling.
+//
+//  `outline` rather than `border` or `box-shadow`: an outline is painted outside
+//  the box without participating in layout, so the ring cannot shift, resize or
+//  reflow the element it marks — and unlike `box-shadow` it survives forced-
+//  colours and high-contrast modes, where a shadow is discarded outright.
+//
+//  Safe to apply broadly. A global reset may attach it to every interactive
+//  element at once, and it is idempotent on an element that also includes it
+//  directly:
+//
+//    :where(a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])) {
+//      @include mx.focus-ring;
+//    }
+//
+// MIGRATION: net-new. Both legacy stylesheets declare zero `outline` rules and
+//  zero `:focus` selectors across all 1030 and 275 lines, so keyboard users had
+//  nothing but the browser default. Two legacy controls went further and removed
+//  keyboard access outright — Website/controls/labelcontrol.ascx puts
+//  tabindex="-1" on both its help link button (L3) and its help image (L4), and
+//  Website/controls/sectionheadcontrol.ascx puts tabIndex="-1" on its collapse
+//  toggle (L3). Restoring focusability to those affordances and marking it
+//  visibly is a deliberate accessibility improvement; because the legacy rest
+//  state carried no focus treatment, adding one alters nothing the legacy portal
+//  rendered at rest.
+//
+//  The ring colour resolves to the brand colour through --focus-ring-color and
+//  measures 12.61:1 against the page background, far above the 3:1 WCAG AA
+//  threshold for a non-text indicator. `--border-style` supplies the `solid`
+//  keyword so it is never written as a literal here.
+// -----------------------------------------------------------------------------
+@mixin focus-ring {
+  &:focus-visible {
+    outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
+    outline-offset: var(--focus-ring-offset);
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  visually-hidden
+//
+//  Removes an element from view while keeping it in the accessibility tree, for
+//  text that a screen reader must announce but the layout must not show: a table
+//  `<caption>` that duplicates a visible page heading, the accessible name of an
+//  icon-only control, or the polite live region that announces a result count.
+//
+//    .data-table caption { @include mx.visually-hidden; }
+//
+//  Deliberately NOT `display: none` and NOT `visibility: hidden`. Both remove the
+//  element from the accessibility tree as well as from the page, which silences
+//  the very text this mixin exists to announce. The element is instead clipped to
+//  a hairline and taken out of flow, so it keeps a box, keeps its text and keeps
+//  its place in the reading order.
+//
+//  `clip-path: inset(50%)` rather than the long-deprecated `clip: rect(...)`.
+//  The 50% is geometric — it collapses the box to its own centre — and is not a
+//  design value with a token to resolve to.
+//
+//  `white-space: nowrap` stops a long string from wrapping inside the hairline
+//  box, which in some engines expands the element's block size and reintroduces a
+//  scrollbar on an ancestor.
+//
+//  Every length here is either `0` or the hairline `--border-width`, the same 1px
+//  token the legacy portal's uniform `1px solid` border resolves to; the
+//  technique needs a non-zero box, and this is the token that expresses one.
+//  Logical properties are used so the rule behaves correctly under a
+//  right-to-left or vertical writing mode.
+//
+// MIGRATION: net-new. The legacy markup has no screen-reader-only mechanism at
+//  all, and both stylesheets declare `display: none` and `visibility: hidden`
+//  zero times. The nearest legacy precedent is the deprecated table `summary`
+//  attribute — summary="Security Roles Design Table" appears at
+//  Website/admin/Security/securityroles.ascx L4, L8 and L56 — which HTML5 removed
+//  and whose modern replacement is a `<caption>` hidden with this mixin.
+// -----------------------------------------------------------------------------
+@mixin visually-hidden {
+  position: absolute;
+  inline-size: var(--border-width);
+  block-size: var(--border-width);
+  margin-inline: calc(-1 * var(--border-width));
+  margin-block: calc(-1 * var(--border-width));
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  visually-hidden-focusable
+//
+//  Hidden as above, but restores itself to the flow when it receives keyboard
+//  focus. This is the skip-navigation pattern: the application shell's "skip to
+//  main content" link must be the first thing in the tab order and invisible
+//  until tabbed to, and a skip link that never becomes visible is useless to the
+//  sighted keyboard user it is meant to serve.
+//
+//    .shell__skip-link {
+//      @include mx.visually-hidden-focusable;
+//      @include mx.focus-ring;
+//
+//      // The revealed appearance, declared flatly. Safe to write here: the
+//      // hidden state is scoped to :not(:focus-visible) and outranks these.
+//      padding: var(--space-2) var(--space-3);
+//      background-color: var(--color-primary);
+//      color: var(--color-background);
+//    }
+//
+//  Consumers supply their own padding, colours and placement from tokens; this
+//  mixin governs only the hide/reveal geometry.
+//
+//  Note the shape: it hides the element while it is NOT focus-visible, rather
+//  than hiding it unconditionally and then reversing each declaration on focus.
+//  That choice is deliberate and matters for three reasons.
+//
+//  First, ROBUSTNESS AGAINST THE OBVIOUS CONSUMER MISTAKE. A skip link needs
+//  padding, a background and a colour for the state in which it is actually
+//  seen, and the natural way to write that is a flat declaration in the same
+//  rule as the `@include`. Under the reversing form those declarations sit at
+//  equal specificity and later in source order, so a flat `padding` silently
+//  defeats the hidden state's `padding: 0` and inflates the "hidden" box.
+//  Wrapping the hidden state in `:not(:focus-visible)` raises it to a compound
+//  selector, so the geometry that does the hiding outranks anything the consumer
+//  declares flatly for the revealed state and cannot be clobbered by accident.
+//
+//  Second, IT FAILS IN THE SAFE DIRECTION. If `:focus-visible` is unsupported,
+//  this whole rule is invalid and dropped, leaving the link permanently visible
+//  — untidy, but fully usable. The reversing form fails the other way: the
+//  unconditional hide still applies while the reveal is dropped, stranding the
+//  link permanently hidden and impossible to reach. A visible skip link is a
+//  cosmetic problem; an unreachable one is a broken accessibility feature.
+//
+//  Third, it is simply less code: the revealed state is the element's own
+//  natural state, so there is nothing to enumerate and nothing to keep in sync
+//  with `visually-hidden`.
+//
+//  Revealing returns the element to normal flow, so following content shifts
+//  down by the height of the link while it holds focus. That is the conventional
+//  skip-link behaviour and is preferred to overlaying, because it obscures
+//  nothing; a consumer that wants the overlay instead can position it on focus.
+// -----------------------------------------------------------------------------
+@mixin visually-hidden-focusable {
+  &:not(:focus-visible) {
+    @include visually-hidden;
+  }
+}
+

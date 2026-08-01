@@ -1,0 +1,205 @@
+<!--
+  Shared `search-input` template — the free-text filter control behind every paged
+  `GET .../?query=` administration screen.
+
+  Structure is deliberately flat: the label and the row are DIRECT children of the
+  component host, which the stylesheet targets as `:host` and lays out as a block. No
+  intermediate wrapper is introduced, because one would sit between `:host` and the two
+  named children and break any direct-child selector the stylesheet relies on.
+
+  Class vocabulary is fixed and shared with `search-input.component.scss`:
+  `.search-input__label`, `.search-input__row`, `.search-input__field`,
+  `.search-input__submit`, `.search-input__submit-icon`. The host itself carries no
+  class. Nothing here declares an inline style — every value resolves to a design token
+  in the stylesheet.
+
+  Every string is authored inline in English. Every interpolation and property binding is
+  escaped by the framework's default sanitisation; no markup is ever interpreted from a
+  caller-supplied value.
+-->
+
+<!--
+  MIGRATION: 1 of 10 — A PROGRAMMATIC LABEL IS ADDED.
+  The legacy screen put its caption in an adjacent table cell — `Website/admin/Users/users.ascx`
+  L5, a server-side label carrying the legacy bold sub-heading text class, inside a
+  75-pixel-wide cell — and relied on visual adjacency alone; the text box at L7 was never
+  programmatically associated with it. Here the caption is a real `<label>` bound to the
+  control through `for`/`id`, so assistive technology resolves the control's accessible
+  name. Native association follows the legacy precedent set by
+  `Website/controls/labelcontrol.ascx` L2-L7, where a genuine `<label>` element wrapped its
+  own content.
+
+  Wording authority is the resource VALUE, never the stale markup attribute:
+  `Website/admin/Users/App_LocalResources/Users.ascx.resx` defines `Search.Text` as
+  `Search:`, reproduced here exactly, colon included.
+
+  `for` is bound through `attr.` because `for` is not a DOM property of a label element
+  (the property is `htmlFor`), so a plain property binding would not compile under strict
+  template checking. The id itself comes from the component's per-instance counter rather
+  than a literal, so two search inputs on one screen cannot collide and silently steal
+  each other's label.
+-->
+<label class="search-input__label" [attr.for]="fieldId">Search:</label>
+
+<!--
+  MIGRATION: 7 of 10 — THE LEGACY PIXEL AND MARKUP LAYOUT HACKS ARE DROPPED.
+  The legacy affordance was positioned by a fixed-width table and spacer markup:
+  `<table width="475">` (`users.ascx` L3), a `width="75"` caption column and a `width="*"`
+  filler column (L5, L6), a `<tr><td colSpan=3 height=15></td></tr>` spacer row (L12),
+  and `&nbsp;&nbsp;` text separators between the letter-strip links (L17). None of that
+  survives. This element is a single flow row whose direction, gap and wrapping are
+  expressed in the stylesheet against the spacing tokens, so the control reflows instead
+  of being pinned to 475px.
+
+  MIGRATION: 9 of 10 — THERE IS NO `form` ELEMENT.
+  A consuming feature screen may legitimately render this component inside a form it
+  already owns, and nesting one form inside another is invalid HTML. Submission is
+  therefore never delegated to a native form: pressing Enter is handled by the keyboard
+  binding on the control below, and the button is an explicit `type="button"` so it can
+  never implicitly submit an ancestor form it happens to be nested inside.
+-->
+<div class="search-input__row">
+  <!--
+    A native `<input type="search">` is the correct control here. This component IS the
+    shared wrapper that feature screens are required to use instead of a bare input, so
+    the native element belongs at this level. `type="search"` also supplies the implicit
+    search-box role, which is why no explicit `role` attribute is added — a redundant one
+    would override the more specific native semantic for no gain.
+
+    The value is held by the component's typed, non-nullable reactive control, so its
+    value is always a plain string and resetting it returns to the empty string rather
+    than to null. That matters: an empty term is a meaningful value here, and it means
+    "omit the query parameter and request the unfiltered page" rather than "search for
+    nothing". Emptiness is never inferred from truthiness anywhere in this component.
+
+    `placeholder` is a property binding, not an attribute interpolation, so an explicitly
+    supplied empty string is honoured exactly as given instead of being replaced by a
+    fallback. A placeholder is a hint and never an accessible name, which is precisely why
+    the visible label above is mandatory rather than optional.
+
+    Enter emits immediately, so a keyboard user who has just pressed Enter is not made to
+    wait out the debounce they were trying to skip. The immediate path and the debounced
+    path funnel through one guard inside the component, so the trailing debounced emission
+    carrying the same term is discarded rather than firing a duplicate query.
+
+    `autocomplete="off"` suppresses browser form-history suggestions, which are noise over
+    a filter field whose terms are transient rather than remembered profile data.
+  -->
+  <input
+    class="search-input__field"
+    type="search"
+    [id]="fieldId"
+    [formControl]="term"
+    [placeholder]="placeholder"
+    (keydown.enter)="submit()"
+    autocomplete="off"
+  />
+
+  <!--
+    MIGRATION: 2 of 10 — THE SUBMIT AFFORDANCE IS GIVEN A DISCERNIBLE NAME.
+    The legacy control was `<asp:imagebutton id=btnSearch ImageUrl="..."/>`
+    (`users.ascx` L9), which renders an image input carrying no alternate text at all. No
+    wording entry exists to have supplied one either: there is no `btnSearch.Text`,
+    `btnSearch.ToolTip` or `btnSearch.AlternateText` key in any resource file in the
+    in-scope set. The control was therefore unnameable to a screen reader — a real defect,
+    reversed here rather than reproduced.
+
+    The name is carried by visible text, not by a tool tip and not by an attribute alone.
+    Visible text is self-evidently discernible, and it needs no additional element or
+    class, so it neither widens the fixed class vocabulary nor depends on a
+    visually-hidden helper. The wording is authored here because no resource entry exists
+    to defer to.
+
+    A real `<button>` keeps the control keyboard-reachable and activatable by both Enter
+    and Space natively, with no scripting. `type="button"` is explicit so the element can
+    never implicitly submit an ancestor form.
+
+    MIGRATION: 8 of 10 — THE LEGACY NEGATIVE TAB INDEX IS NOT REPRODUCED.
+    `Website/controls/labelcontrol.ascx` L3 and L4 both set a tab index of minus one — on
+    its help link and again on the image nested inside that link — removing the control
+    from the tab order entirely and leaving it operable only by pointer. That is a legacy
+    accessibility defect. Nothing interactive in this template is withdrawn from the tab
+    order by any means, so the field and the button are both reachable in ordinary
+    document order.
+
+    MIGRATION: 3 of 10 — THE RASTER ICON IS REPLACED.
+    The legacy button at `users.ascx` L9 drew a 16-pixel raster GIF served from the legacy
+    site's shared images directory. No legacy raster asset is carried across — exactly one
+    static binary is in scope for this application, and it is the favicon — so the glyph is
+    an inline vector authored here instead. Its viewBox is 16 by 16, matching the legacy
+    icon's own dimensions, and it is sized entirely by the stylesheet: the element declares
+    no width or height, so it scales with the button's typography rather than being pinned
+    to a fixed pixel box. It is stroked in `currentColor`, so its colour resolves from the
+    button's own token-driven colour and no colour value is hardcoded in markup.
+
+    The glyph is hidden from the accessibility tree so it cannot compete with, or
+    duplicate, the adjacent text as a naming source, and it is marked unfocusable so it
+    never becomes a stray tab stop in engines that treat embedded vectors as focusable.
+  -->
+  <button class="search-input__submit" type="button" (click)="submit()">
+    <svg
+      class="search-input__submit-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.75"
+      stroke-linecap="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="6.75" cy="6.75" r="4.25" />
+      <path d="M10.1 10.1 14.25 14.25" />
+    </svg>
+    Search
+  </button>
+</div>
+
+<!--
+  ===========================================================================================
+  Remaining migration annotations. These record decisions about what this template
+  deliberately does NOT render, so none of them is silently absorbed.
+  ===========================================================================================
+
+  MIGRATION: 4 of 10 — MATCH SEMANTICS ARE STARTS-WITH, NOT "CONTAINS".
+  The emitted term feeds a SQL `LIKE` predicate carrying a single TRAILING wildcard, which
+  makes the match starts-with. The legacy screens concatenated that wildcard onto the term
+  at the call site, immediately before handing the value to the data layer:
+  `Website/admin/Users/Users.ascx.vb` L269 (by email), L271 (by user name) and L274 (by
+  profile property), and `Website/admin/Portal/Portals.ascx.vb` L142 (portals by name).
+  Composing that predicate now belongs to the repository that owns it, because all data
+  access goes through repository interfaces. This template therefore appends no wildcard
+  and contains no wildcard character anywhere. The visible wording is kept neutral for the
+  same reason: calling this "contains", "anywhere" or "fuzzy" would misdescribe which rows
+  actually match. The legacy code also tested the term for emptiness explicitly
+  (`Users.ascx.vb` L254 compares against the empty string) rather than relying on
+  truthiness, and that discipline is preserved — the empty term is a value, not an absence.
+
+  MIGRATION: 5 of 10 — THE SEARCH-TYPE DROPDOWN IS NOT PART OF THIS COMPONENT.
+  The legacy affordance was a three-part composite: a free-text box (`users.ascx` L7), an
+  adjacent field-chooser dropdown (`ddlSearchType`, L8) and the submit button (L9). Only
+  the free-text part is shared. The field chooser was populated from each portal's own
+  profile-property definitions, so its option set was unbounded and screen-specific;
+  rendering it here would widen a deliberately fixed component contract to serve a single
+  consumer. The consuming feature owns its own field selector, so no select element,
+  option list or field chooser appears in this template.
+
+  MIGRATION: 6 of 10 — THE ALPHABET FILTER STRIP IS A FEATURE CONCERN.
+  The legacy letter strip (`plLetterSearch` with `rptLetterSearch`, `users.ascx` L14-L20
+  and `Website/admin/Portal/portals.ascx` L4-L11) is not rendered here, and it could not
+  be shared even in principle. Its 26 letters and its extra pseudo-filters are the same
+  repeater: the users screen appends three extra entries and the portals screen appends
+  two different ones, so the strip and its screen-specific branch keys are one control
+  whose contents differ per screen. It therefore belongs to each consuming feature.
+  Relatedly, no bespoke clear affordance is added either — the native search control
+  already provides one where the browser supports it.
+
+  MIGRATION: 10 of 10 — LOCALISATION IS NOT PORTED.
+  The legacy screens resolved every caption at runtime from per-control resource files.
+  That mechanism is specific to the framework being replaced and is not carried across, so
+  the two strings here are authored inline in English. The legacy resource files remain the
+  authority for wording and were read for exactly that purpose: `Search.Text` supplied the
+  label text verbatim, while the button text is authored fresh because no corresponding
+  entry has ever existed. Those resource files are also the reason no caller-supplied
+  string is ever treated as markup in this template — comparable entries in the same set
+  carry live script blocks, so plain-text rendering is the only safe default.
+-->

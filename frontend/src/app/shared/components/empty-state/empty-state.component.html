@@ -1,0 +1,269 @@
+<!--
+  EmptyStateComponent template - the shared "zero-result state" of the
+  dnn-migration administration front end, an Angular 19 single-page application.
+
+  This markup serves TWO readings from one component, which is why the shared
+  component library stays closed at ten members and no separate not-found
+  component exists anywhere in this workspace:
+
+    1. In-page zero-result state - rendered in place of a populated data table or
+       list when a query returns no rows. Callers project an "Add New ..."
+       affordance into the content slot at the foot of this template.
+    2. Not-found view - used as the body of the application's catch-all route,
+       which supplies its own wording through route data and projects nothing.
+
+  The component class exposes exactly one public member, `message`, and its getter
+  guarantees a non-blank string on every read. That guarantee is what lets this
+  template be entirely declarative: it needs no conditional block, no repeater,
+  no imported selector, no pipe and no directive. The component declares an empty
+  `imports` array on purpose, and under `strictTemplates` any selector used here
+  without being imported there would be a compile error rather than a silent
+  no-op, so nothing may be added to this template that is not plain markup,
+  one interpolation and one content slot.
+
+  Deliberate divergences from the legacy DotNetNuke 4.9.0 VB.NET Web Forms
+  behaviour are annotated inline below, as the Minimal Change Clause (item 6) and
+  transformation Rule T5 require. Nothing is silently absorbed.
+-->
+
+<!--
+  MIGRATION: this component is effectively a NET ADDITION, and the honest report
+  of that matters more than a tidy provenance story. The project plan cites it as
+  replacing a legacy "empty pane" affordance, but that citation supplies a name
+  and no design. The cited declaration lives at
+  `Website/Portals/_default/default.css:957-962`, is introduced by the comment
+  "used to collapse panes without any content in them", and carries exactly one
+  property: a zero width. No background, no border, no typography, no spacing and
+  no messaging of any kind. It is also unreachable from in-scope code: a
+  case-insensitive search for that class identifier across `Website` and
+  `Library` returns exactly two files, the stylesheet above and
+  `Library/Components/Skins/Skin.vb:103-112`, whose private `CollapsePane`
+  routine appends the identifier to a layout pane holding no modules. The skins
+  subsystem is explicitly excluded from this migration, so the identifier is
+  referenced from zero in-scope markup and zero in-scope code-behind, and it is
+  semantically a layout-collapse utility rather than a user-facing zero-result
+  state. The legacy admin grids confirm the gap: `Website/admin/Portal/portals.ascx`
+  lines 13-19 declare the complete legacy grid style vocabulary - container,
+  header, item, alternating item, footer and pager - and declare no empty-data
+  template, so a query returning zero rows rendered SILENTLY. All eight in-scope
+  grid screens behave that way. Explaining the absence instead is therefore a
+  deliberate, documented improvement rather than a port, and no legacy class
+  identifier is carried over into the class vocabulary used below.
+-->
+
+<!--
+  MIGRATION: the dual role above is itself a divergence worth stating, because it
+  dictates two structural choices that must not be "tidied up" later.
+
+  First, this template emits NO landmark element. The banner, primary-content,
+  navigation and contentinfo landmarks belong exclusively to the application
+  shell under `src/app/layout`, which owns them together with the routed outlet.
+  Emitting one here would duplicate a landmark on every list screen that renders
+  this component inside the shell - two primary-content regions, or two banners -
+  which is an accessibility defect rather than a nicety. A plain container is
+  used instead. A section element was considered and rejected: it maps to a
+  region landmark once it carries an accessible name, and to a nameless region
+  otherwise, so both spellings reintroduce exactly the landmark being avoided.
+
+  Second, this template assumes NO surrounding table, grid or list context. In
+  the catch-all-route reading it is the page's entire content, standing alone, so
+  it may not depend on being a row, a cell or a list item. That is also why it
+  cannot rely on an ancestor supplying a heading: it emits its own.
+-->
+<div class="empty-state">
+
+  <!--
+    Decorative glyph. Hidden from assistive technology because it carries no
+    information the heading and message below do not already state in text, and
+    the whole subtree is hidden by the attribute on this wrapper.
+
+    It is drawn as inline vector markup - never a referenced image file, and
+    never a background image - for three reasons: the workspace ships no icon
+    asset of any kind, the stylesheet is forbidden from referencing external
+    resources, and inline markup inherits its colour from the surrounding text
+    so it cannot drift from the token palette.
+
+    Sizing and colour are deliberately left to the stylesheet: no width or height
+    attribute is set, the view box is preserved so the drawing scales cleanly,
+    and the presentation attributes below resolve to the current text colour.
+    Presentation attributes lose to any stylesheet rule, so they act as safe
+    defaults the sibling stylesheet may override rather than as hardcoded values.
+    The drawing is an open tray with one blank shelf line, which reads as
+    "container present, contents absent" in both readings of this component.
+  -->
+  <span class="empty-state__glyph" aria-hidden="true">
+    <svg viewBox="0 0 24 24"
+         fill="none"
+         stroke="currentColor"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round">
+      <path d="M3 7h18v12H3z" />
+      <path d="M3 7l2-3h14l2 3" />
+      <path d="M9 13h6" />
+    </svg>
+  </span>
+
+  <!--
+    MIGRATION: the wording below is authored fresh, not ported, because there is
+    nothing to port. None of the 37 in-scope resource files under
+    `Website/admin/{Portal,Users,Security,Modules,Tabs}/App_LocalResources`
+    contains a zero-result caption. The single such caption anywhere in the
+    repository is `Website/admin/Portal/App_LocalResources/SQL.ascx.resx` ->
+    `NoDataReturned.Text` ("The query did not return any data"), reached from the
+    only empty-data template in the tree at `Website/admin/Portal/sql.ascx:34-36`.
+    It is not reusable on two independent grounds: the host-level SQL
+    administration page is out of scope, and the wording is specific to running a
+    query rather than to an absent record set. The nearest in-scope near-misses,
+    `SendPassword.ascx.resx -> UsernameError.Text` and
+    `MemberServices.ascx.resx -> RSVPFailure.Text`, are failure notices rather
+    than empty states, and the sole case-insensitive "no records" hit across the
+    five admin domains is a VB local variable at
+    `Website/admin/Security/SendPassword.ascx.vb:80`, not user-facing text.
+
+    The register is matched to the measured legacy voice rather than invented:
+    legacy headings were short Title-Case phrases ("Portals", "Security Roles",
+    "User Accounts", "Page Management", "Edit Page", "Access Denied") and legacy
+    body copy was a single plain sentence ("Either you are not currently logged
+    in, or you do not have access to this content."). Hence a short Title-Case
+    heading here and exactly one sentence of supporting text, with no marketing
+    prose, no product voice and no pictographic characters.
+
+    MIGRATION: localisation is deliberately not ported. Every legacy caption was
+    resolved at run time through the Web Forms localisation service against those
+    resource files; the Angular localisation package sits outside this
+    workspace's pinned dependency set, so no translation runtime, no translation
+    macro and no translation attribute appears anywhere in this template. The
+    resource files were read for WORDING ONLY and are never wired up. Any
+    reintroduction of translation is a separate, explicit decision.
+  -->
+  <!--
+    Heading level is h2, not h1, and the choice is evidence-based rather than
+    stylistic. The page-header component owns the single page-level h1 and
+    documents that consumers must compose the rest of the outline beneath it, so
+    an h1 here would yield two page-level headings on every list screen that
+    pairs a page header with this component - the common case. On the catch-all
+    route this component may stand without a page header, leaving an h2 with no
+    h1 above it; that is a heading-order nicety rather than a conformance
+    failure, and it is strictly the lesser of the two defects. The heading also
+    guarantees the view has a discernible topic when it is the whole page.
+  -->
+  <h2 class="empty-state__title">Nothing to Display</h2>
+
+  <!--
+    MIGRATION: `message` is UNTRUSTED and reaches the DOM as PLAIN TEXT ONLY, via
+    ordinary interpolation, which escapes markup by default. It is never bound to
+    a raw-markup sink, no sanitiser-backed companion member exists, and none may
+    be introduced.
+
+    The legacy corpus justifies the policy rather than contradicting it. Across
+    the 37 in-scope resource files, 76 caption values embed an HTML tag. The most
+    serious is
+    `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` ->
+    `Advertising.Text`, which stores two live advertising script blocks, the
+    second pointing at a remote third-party source. Two further examples sit in
+    files a caller might plausibly draw wording from: `Portals.ascx.resx` ->
+    `ModuleHelp.Text` opens with a level-one heading followed by a paragraph, and
+    `EditRoles.ascx.resx` -> `ProcessorWarning.Text` opens with bold text. A
+    naive search hides all of this, because the tags are stored escaped inside
+    the resource XML: searching that settings file for an unescaped opening
+    script tag matches nothing, while searching for the escaped form matches
+    twice. A clean search result is therefore no evidence that the risk is
+    absent.
+
+    Escaping is legacy CONTINUITY, not invention. The closest legacy analogue,
+    `Website/admin/Security/AccessDenied.ascx.vb:41-47`, reads an
+    externally-supplied message from the query string, wraps it in an
+    HTML-encoding call before display, and falls back to a localised default when
+    none is supplied - the same three behaviours this component pair implements,
+    with the route now supplying what the query string once did. A second
+    precedent sits at `Website/Default.aspx.vb:232`, where the skin-load error
+    path HTML-encodes the exception message before rendering it.
+
+    Leading line-break tags are the other legacy artefact: 29 of those 76 values
+    open with one. Stripping them is deliberately NOT done here. Templates hold
+    no logic, and the shared form-error utility under `src/app/core/utils` owns
+    that normalisation for the whole application, so this element stays a pure
+    sink and cannot disagree with the utility later.
+
+    This is the ONLY interpolation in this template, and it sits in a real text
+    element so the sentence is exposed to assistive technology as content rather
+    than as decoration. The element carries no live-region or alert semantics: an
+    empty state is not an announcement, the error-banner component owns
+    announcement duties in this library, and adding them here would interrupt
+    screen-reader users on every navigation to a list that happens to be empty.
+
+    REQUIREMENT ON THE SIBLING STYLESHEET, MEASURED IN A REAL BROWSER RATHER THAN
+    ASSUMED. This sentence arrives from outside and can contain a very long
+    unbroken run of characters, because the legacy captions the wording is drawn
+    from embed absolute web addresses. Permissive breaking of the break-word kind
+    is NOT sufficient on its own: it permits a break once a line box is already
+    narrow, but it does not lower this element's intrinsic minimum-content width,
+    and because the parent centres its children on the cross axis every child is
+    sized to fit its own content and can never be narrower than that minimum.
+    Measured at a 320px viewport against the shared tokens, a 75-character
+    unbroken run sized this element to 323.969px inside a 238px content box, so it
+    hung 42.984px past the parent on BOTH sides, produced 19px of container
+    overflow and 2px of document overflow, and rendered visibly outside its card.
+    Two declarations together resolve it and BOTH are required: break anywhere,
+    which lowers the minimum-content width, and a maximum inline size of
+    min(42rem, 100%), whose second arm clamps the box to the parent. Re-measured
+    with both applied, across 320, 360, 375, 406, 500, 768, 1024, 1280 and 1920,
+    the worst case at every width was 0.000px of escape, 0px of container overflow
+    and 0px of document overflow; the text reflowed to four fully legible lines
+    instead of overflowing; and the 42rem cap still bound at exactly 672px from
+    768px upward, so the narrow-width floor costs the wide-width cap nothing.
+    Withdrawing either declaration reproduced 323.969px, 42.984px, 19px and 2px
+    exactly. Truncation is deliberately NOT the remedy: this sentence is the only
+    explanation the reader is given, so it must reflow rather than be clipped.
+  -->
+  <p class="empty-state__message">{{ message }}</p>
+
+  <!--
+    Projected action slot. Callers of the in-page reading project a single primary
+    affordance here; the catch-all-route reading projects nothing at all, and
+    must leave no visible artefact.
+
+    Collapse strategy: the STYLESHEET owns it, and this wrapper is deliberately
+    unconditional. It carries no control-flow block, no content-presence query and
+    no visibility attribute, because the only two alternatives are unavailable
+    here. A control-flow guard would need a content query on the component class,
+    whose public surface is the single `message` member and is closed, so the
+    guard would have to be added to a file this one may not touch. Putting the
+    decision in markup instead would duplicate something the stylesheet already
+    decides, and it would go stale the first time the layout changed. Nothing in
+    this template can drift, because there is nothing here to keep in step.
+
+    REQUIREMENT ON THE SIBLING STYLESHEET, MEASURED IN A REAL BROWSER RATHER THAN
+    ASSUMED. This wrapper must contribute NO visible space when nothing is
+    projected, and column spacing on the parent does NOT achieve that on its own.
+    A childless wrapper does collapse to a zero-sized box, but a zero-sized box is
+    still a flex item, and column spacing is inserted BETWEEN ADJACENT ITEMS with
+    no skip-the-empty-one behaviour. Rendered at 1280x900 against the shared
+    tokens, the wrapper measured 0 x 0 with no padding, margin or border, and the
+    container still opened one full spacing slot in front of it: 16px of dead
+    space below the message, so 56px underneath the last visible line against 40px
+    above the first, from symmetric block padding. Removing the wrapper from the
+    tree shortened the container from 209.5px to 193.5px, which attributes the
+    16px to the spacing slot exactly. The stylesheet must therefore suppress that
+    slot for the childless case, for example by taking the wrapper out of flow
+    when it has no children via the emptiness pseudo-class, since an element that
+    generates no box is not a flex item and no spacing slot is created for it.
+    That rule was then applied in a probe stylesheet and re-measured in the same
+    browser: dead space fell to 0.000px in every reading that projects nothing,
+    perceived whitespace became 40px above and 40px below, and the
+    projected-action reading stayed at its original 239.5px with a zero-residual
+    height reconstruction. Withdrawing the rule again reproduced 16.000px and
+    209.5px exactly. The remedy is verified in both directions and belongs in the
+    stylesheet, not in this template.
+
+    No control is rendered in this template. The action is the caller's to supply,
+    which is what keeps this component free of any assumption about what the
+    action does, where it navigates, or whether the current user is permitted to
+    perform it at all.
+  -->
+  <div class="empty-state__actions">
+    <ng-content />
+  </div>
+
+</div>

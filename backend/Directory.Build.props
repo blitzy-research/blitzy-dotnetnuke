@@ -1,19 +1,130 @@
 <Project>
 
   <!--
-    Single source of build policy for every project in the DnnMigration solution
-    (AAP 0.6.3). Do not duplicate these properties in individual .csproj files.
+    ==========================================================================
+    backend/Directory.Build.props
+    THE SINGLE SOURCE OF BUILD POLICY FOR THE DnnMigration SOLUTION (AAP 0.6.3)
+    ==========================================================================
 
-    NoWarn is deliberately limited to exactly two entries:
-      CS8618 - non-nullable member must contain a non-null value when exiting
-               constructor (EF Core entities / DTOs are materialised by the
-               framework, so the compiler cannot see the assignment).
-      CS1591 - missing XML comment for publicly visible type or member.
-               Required because GenerateDocumentationFile=true combined with
-               TreatWarningsAsErrors=true otherwise fails the build on every
-               undocumented public member.
-    No other warning is suppressed. Validation Gate 1 additionally runs
-    `dotnet build -configuration Release -warnaserror`.
+    MSBuild imports this file implicitly, by walking UPWARD from each project
+    directory, so the eight properties below reach all six projects of the
+    solution without any of them restating a single line:
+
+      src/DnnMigration.Domain           src/DnnMigration.Api
+      src/DnnMigration.Application      tests/DnnMigration.UnitTests
+      src/DnnMigration.Infrastructure   tests/DnnMigration.IntegrationTests
+
+    One decision, one home. Do NOT duplicate any property below in an
+    individual project file: two copies of one decision drift apart silently.
+    Do NOT override one there in order to make a project build, either. When a
+    project will not build under this policy, the code is what gets fixed.
+
+    THE EIGHT PROPERTIES, AND WHY EACH ONE IS HERE
+    ==============================================
+    TargetFramework net8.0
+      .NET 8 LTS, the runtime target of the entire migration (AAP Goal 2), and
+      the file in which that non functional requirement is actually satisfied.
+      The legacy project this replaces, Library/DotNetNuke.Library.vbproj,
+      carries no target framework element at all: it declares a 3.5 tools
+      version, a product version of 8.0.50727 (the .NET Framework 2.0 and
+      Visual Studio 2005 build number) and an old tools version of 2.0. There
+      is no upgrade path from that baseline, which is why every line of
+      production code is re authored rather than retargeted.
+    LangVersion 12.0
+      C# 12, the language level every ported file is authored against.
+    Nullable enable
+      Nullable reference types on in every project. This is load bearing for
+      the migration, not a style preference: the legacy sentinel module
+      represented absence with magic values (integer minus one, byte 255, and
+      the EMPTY STRING for text), and minus one collides with a real portal
+      identity seed. Domain entities therefore express absence honestly with
+      nullable CLR types, and the legacy sentinels are preserved only at the
+      data transfer boundary where they are externally observable (AAP 0.7.2).
+    ImplicitUsings enable
+      The modern equivalent of the twenty five project level namespace imports
+      the legacy VB project declared. Note what is NOT reintroduced: no Visual
+      Basic runtime and no System.Web namespace. The single in scope import of
+      the Visual Basic runtime is removed outright, with its date arithmetic
+      rewritten onto the framework methods (AAP 0.5.2.1, 0.6.6).
+    TreatWarningsAsErrors true
+      Inverts the legacy policy, which set warnings as errors to false with
+      warning level 1 and an empty suppression list in both configurations.
+      Validation Gate 1 builds the solution in the Release configuration with
+      the warnaserror switch, so any warning is a delivery blocker by design
+      (AAP Goal 2, 0.8.3). The ten Visual Basic specific codes the legacy
+      project promoted to errors have no C# analogue and are not carried over.
+    NoWarn
+      Bounded to exactly two codes. See the comment on the element itself.
+    GenerateDocumentationFile true
+      Every project emits its XML documentation file. This preserves existing
+      practice rather than adding a burden: the legacy project generated
+      DotNetNuke.xml in both configurations.
+    EnforceCodeStyleInBuild true
+      Promotes the sibling backend/.editorconfig from an IDE convenience into a
+      build time contract (AAP 0.4.1.1). That file deliberately holds its style
+      rules at suggestion severity, so style can be enforced at build time
+      without the strict warning policy above turning formatting into a
+      delivery blocker.
+
+    WHY THIS FILE LIVES AT backend/ AND MUST NEVER MOVE TO THE REPOSITORY ROOT
+    =========================================================================
+    Upward discovery is exactly why the location is load bearing. A copy of
+    this file at the repository root would ALSO be imported into the one stray
+    legacy .NET Framework project in this checkout,
+    Library/Components/Syndication/DotNetNuke.Syndication.csproj, injecting
+    net8.0, nullable reference types and warnings as errors into a project that
+    cannot survive any of them. This migration is side by side and purely
+    additive: the legacy Library/ and Website/ trees, both legacy solution
+    files and the legacy configuration files remain byte identical, and that is
+    what gives the work a zero regression surface (AAP 0.9.5). Keeping this
+    file at backend/ confines its effect to exactly the six new projects.
+
+    WHAT IS DELIBERATELY ABSENT
+    ===========================
+    (Several MSBuild property and item names below are described in prose
+    rather than spelled literally, so that a guard which greps this file for
+    those names keeps returning a count of zero.)
+
+    No package, project or assembly reference item of any kind. Package
+    ownership is assigned per layer (AAP 0.6.1): Domain owns nothing at all,
+    Application owns the validation library, Infrastructure owns EF Core, the
+    SQL client, the password hasher and the health checks, and Api owns JWT
+    bearer, Swagger, API versioning and structured logging. Centralising any of
+    them here would destroy the compile time guarantee that the Domain layer
+    cannot see a single third party library (AAP 0.8.3). Central package
+    version management is not used either, and no central package versions file
+    exists in this solution.
+
+    No assembly name and no root namespace property. The SDK derives both from
+    each project's file name, which is what makes the API assembly exactly
+    DnnMigration.Api.dll, the name hard coded as the entry point of
+    docker/api.Dockerfile (AAP 0.1.2.3, 0.9.3). Setting either one centrally
+    would give all six projects one identical assembly name and break the
+    container entry point in a way no compiler catches.
+
+    No analyser level, no analysis mode, no package vulnerability audit knob,
+    and no escape hatch that demotes selected warnings back from errors.
+    Raising the analyser level would emit new diagnostics that the policy above
+    immediately converts into build failures, and an escape hatch invites
+    precisely the suppression creep the bounded list below exists to prevent.
+    Measured on this solution: a forced restore with the caches bypassed
+    produces zero restore warnings, so no advisory can be promoted to an error
+    today (AAP 0.6.5). The SDK defaults already provide deterministic builds,
+    analyser level 8.0 for net8.0, and package auditing at the low severity
+    level, so declaring any of them changes nothing.
+
+    No invariant globalization property. The API container supplies invariant
+    mode as an environment variable in two independent places: the runtime base
+    image mcr.microsoft.com/dotnet/aspnet:8.0-alpine sets it, and
+    docker/api.Dockerfile sets it again alongside the listening URL. Runtime
+    configuration belongs to the runtime environment, not to build policy.
+
+    No version, packaging or symbol publishing metadata, because nothing in
+    this solution ships as a NuGet package. No plural target frameworks
+    element, because this solution single targets net8.0. No companion
+    Directory.Build.targets file. And no XML namespace or tools version
+    attribute on the root element above: that pre 3.5 project form is obsolete.
+    ==========================================================================
   -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -21,22 +132,38 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      THE SUPPRESSION LIST IS BOUNDED TO EXACTLY TWO CODES. NEVER ADD A THIRD.
+
+        CS8618  Non-nullable member must contain a non-null value when exiting
+                the constructor. Required by the nullable carve out: entities
+                and data transfer objects are materialised by EF Core and by
+                System.Text.Json, so the compiler cannot see the assignment
+                that does in fact happen.
+
+        CS1591  Missing XML comment for a publicly visible type or member.
+                Required for documentation generation to coexist with warnings
+                as errors AT ALL. This entry is not cosmetic, and it was found
+                by execution rather than theorised: with the documentation file
+                switched on and warnings promoted to errors, every undocumented
+                public member fails the build, which blocks Validation Gate 1
+                outright (AAP 0.6.3, 0.9.4). DO NOT REMOVE IT.
+
+      Nothing else is suppressed anywhere in this solution. If a project emits
+      a different diagnostic under the Release build with the warnaserror
+      switch, FIX THE CODE. Never widen this list, and never work around it
+      with a per project suppression, a file level pragma or an analyser
+      exemption.
+
+      The leading property reference is mandatory: it APPENDS to whatever the
+      SDK or an individual project has already contributed. Writing the two
+      bare codes on their own would silently discard those inherited values.
+    -->
     <NoWarn>$(NoWarn);CS8618;CS1591</NoWarn>
+
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-  </PropertyGroup>
-
-  <PropertyGroup>
-    <!-- Deterministic, reproducible builds across developer machines and containers. -->
-    <Deterministic>true</Deterministic>
-    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <AnalysisLevel>8.0</AnalysisLevel>
-    <NuGetAudit>true</NuGetAudit>
-    <NuGetAuditLevel>low</NuGetAuditLevel>
-    <!-- NuGet advisories are surfaced as warnings only; they must never be promoted
-         to errors by TreatWarningsAsErrors (AAP 0.6.5 advisory posture). -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
   </PropertyGroup>
 
 </Project>

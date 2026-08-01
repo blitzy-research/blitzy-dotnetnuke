@@ -1,0 +1,133 @@
+<!--
+  Application footer - the administration shell's single contentinfo band.
+
+  Renders one line of static, plain-text copyright and nothing else. That restraint
+  is deliberate: it mirrors the legacy skin object being replaced, since
+  Website/admin/Skins/copyright.ascx is two content lines - a control directive plus
+  a single label that had even opted out of view state.
+
+  LANDMARK OWNERSHIP - the contentinfo element below is the ONLY landmark emitted
+  here, and it is this template's root element so that the shell can treat the
+  component host as one grid region with no intervening wrapper. The banner landmark
+  belongs to layout/header, the one and only navigation landmark to layout/sidebar,
+  and the shell's main region to layout/shell (AAP 0.4.4). No landmark attribute is
+  declared, because a top-level contentinfo element already conveys that semantic:
+  restating it would add noise for assistive technology and change nothing visually.
+  Nothing here is focusable, so this band cannot trap focus and it contributes no
+  entry to the tab order.
+
+  STYLING CONTRACT - no class attribute and no inline declaration appears here.
+  Every visual value is resolved by footer.component.scss from the global design
+  tokens in src/styles/_tokens.scss (AAP 0.3.3, zero hardcoded values). The two
+  elements below are addressed by type, which the component's emulated view
+  encapsulation scopes to this component alone.
+
+  DATA CONTRACT - currentYear is a public readonly number on FooterComponent
+  (footer.component.ts L130), read once from the platform clock when the component
+  is created and immutable thereafter, which suits its OnPush change detection. The
+  year is deliberately NOT derived in this template: a template-side clock read
+  would be re-evaluated on every change-detection pass and could not be asserted
+  against. Interpolation is the only binding mechanism used anywhere in this file,
+  so the framework escapes whatever it renders and no path here can emit markup.
+-->
+
+<!-- MIGRATION: The copyright line is STATIC. Legacy resolved it per request and per
+     portal - Website/admin/Skins/Copyright.ascx.vb L85-L86 preferred
+     PortalSettings.FooterText whenever it was non-empty, and L88 otherwise formatted
+     the two-placeholder resource value at
+     Website/admin/Skins/App_LocalResources/Copyright.ascx.resx L42-L44 with
+     Year(Now()) and PortalSettings.PortalName. Website/Default.aspx.vb L196-L200
+     corroborates the same two substitutions on the code path that fed the copyright
+     meta tag. Neither the admin-editable override nor the per-portal name is carried
+     forward: the closed API surface exposes no ambient current-portal resource. GET
+     /api/v1/auth/me yields a portal identifier only, and GET /api/v1/portals/{id} is
+     an administrative read that an unauthenticated visitor on the login route
+     definitionally cannot perform, so calling either from shell chrome would add
+     speculative surface, contrary to Minimal Change Clause item 5. -->
+
+<!-- MIGRATION: The second substitution resolves to the fixed product designation
+     DotNetNuke, replacing PortalSettings.PortalName. That designation is taken from
+     the repository's own committed catalog-info.yaml and docs/ rather than invented,
+     as AAP 0.1.2.3 requires. -->
+
+<!-- MIGRATION: The parenthesised letter c is retained as literal ASCII, byte-exact
+     with the measured resource value at Copyright.ascx.resx L43. The typographic
+     copyright glyph and its character entity are both deliberately avoided: altering
+     the rendered characters would be a silent divergence, which AAP Rule T5 forbids.
+     For the same reason the wording carries no "by" between the year and the product
+     name - the resource value has none, and it is the authoritative predecessor of
+     this band, whereas the meta-tag path at Default.aspx.vb L199 inserted one. -->
+
+<!-- MIGRATION: PortalSettings.FooterText was admin-authored free text
+     (Library/Components/Portal/PortalInfo.vb L36 and L109, edited through the
+     "Copyright:" field at Website/admin/Portal/sitesettings.ascx L60-L64, a
+     single-line box capped at 100 characters) that legacy emitted through Label.Text
+     as live markup. It is not carried forward, and no value in this band is ever
+     bound as markup: the line below is interpolated plain text, which the framework
+     escapes. Legacy precedent for encoding untrusted text is Website/Default.aspx.vb
+     L232, Server.HtmlEncode(exc.Message). -->
+
+<!-- MIGRATION: The footer root-links strip is not reproduced. The only real skin in
+     the checkout emitted a dnn:LINKS object at Level="Root", separated by a pipe
+     padded with non-breaking spaces, at
+     Website/Portals/_default/Skins/MinimalExtropy/index.ascx L109 (registered L10),
+     which merely repeated the root navigation. That navigation now lives exactly
+     once, in layout/sidebar, the shell's sole navigation landmark; a second
+     navigation landmark in this band would add screen-reader noise for no benefit. -->
+
+<!-- MIGRATION: The two legal-notice skin objects are not reproduced either. They are
+     registered at index.ascx L11-L12 and were emitted in the legacy footer band at
+     L115-L116, side by side and split by that same padded pipe, each rendering an
+     asp:hyperlink control declared on L2 of its own file under
+     Website/admin/Skins/. Their measured wording survives as reference only: the
+     target route table declares no route either one could address, so both links
+     would dangle, and inventing routes for them would exceed the defined scope. This
+     band therefore emits no hyperlink at all. -->
+
+<!-- MIGRATION: Runtime dynamic skin loading is replaced by this static, compile-time
+     component. Legacy resolved the band per request - LoadSkin
+     (Website/Default.aspx.vb L217-L243) called LoadControl("~" & SkinPath) at L224,
+     bound it with ctlSkin.DataBind() at L226, and the result was injected into the
+     server-side placeholder declared at Website/Default.aspx L25 by the
+     SkinPlaceHolder.Controls.Add call at L590. Skinning and containers are out of
+     scope (AAP 0.2.2.2, 0.2.2.4), so Website/Portals/_default/Skins is read here as
+     negative inventory and never as a porting target. -->
+
+<!-- MIGRATION: The cached, ordered runtime stylesheet cascade is replaced by one
+     build-time bundle. ManageStyleSheets (Website/Default.aspx.vb L355) ran twice, at
+     L587 and again at L593, straddling the skin injection at L590. Every value
+     styling this band is now resolved at build time from footer.component.scss and
+     the global tokens. -->
+
+<!-- MIGRATION: The float-clearing and sliding-doors wrapper elements are eliminated.
+     The legacy band nested bot_left, bot_right, bot_bg and bot_pad containers and
+     closed with an empty clear_float element (index.ascx L106-L123) - pre-Flexbox
+     float clearing plus rounded-corner image hacks. AAP Rule T8: delete the
+     workaround, adopt the primitive. The shell's Grid and this band's Flexbox
+     supersede all five, so none of them produces a target element. -->
+
+<!-- MIGRATION: View state, the multipart dnn:Form and the ScrollTop and
+     __dnnVariable hidden inputs are eliminated (Website/Default.aspx L23, L26, L27).
+     This band posts nothing back, so it contributes no round-tripped state, and
+     scroll restoration is handled once by the router's in-memory scrolling
+     configuration. The legacy label had already disabled view state, so for this
+     band specifically that is continuity rather than a change. -->
+
+<!-- MIGRATION: Localisation is not ported. The legacy value came from a resource
+     lookup - Services.Localization.Localization.GetString("Copyright", ...) at
+     Copyright.ascx.vb L88 - resolved against the in-scope resource files. Those files
+     are read for wording only; @angular/localize is absent from the closed dependency
+     surface, so the English wording is authored directly in this template and no
+     localisation attribute is emitted (AAP 0.7.5.4). -->
+
+<!-- MIGRATION: The remaining legacy chrome around this band produces nothing here.
+     The language selector, logo, search box, breadcrumb, signed-in user and login
+     objects are all registered alongside the copyright object at index.ascx L2-L14,
+     and they - together with the host name, current date, banner, fly-out menu,
+     edit-skins affordance, module message and control-panel slot - fall outside the
+     five preserved domains. The conditional stylesheet targeting Internet Explorer 6
+     at index.ascx L126 is dropped with the browser it served. -->
+
+<footer>
+  <p>Copyright (c) {{ currentYear }} DotNetNuke</p>
+</footer>
