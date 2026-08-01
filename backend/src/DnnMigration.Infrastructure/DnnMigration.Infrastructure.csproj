@@ -1,42 +1,225 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Infrastructure layer (AAP 0.4.3 / 0.6.1): references Application (and Domain
-    transitively) and owns every EF Core, SQL client, password-hashing and
-    health-check package. DnnDbContext never leaves this assembly.
+    ==========================================================================
+    DnnMigration.Infrastructure - the Infrastructure layer (AAP 0.4.3/0.5.1.3)
+    ==========================================================================
 
-    System.IdentityModel.Tokens.Jwt is pinned to the exact version that
-    Microsoft.AspNetCore.Authentication.JwtBearer 8.0.29 resolves in the API
-    layer, so JwtTokenService (AAP 0.5.1.3, Security/JwtTokenService.cs) can mint
-    tokens here without dragging an ASP.NET Core framework reference into a
-    class library.
+    A CLASS LIBRARY, deliberately built on Microsoft.NET.Sdk and never on the
+    web SDK. This layer persists and secures; it does not host HTTP.
+
+    WHAT IT REPLACES
+    The whole legacy data-access and security stack, none of which can be
+    ported, only replaced:
+
+      * Library/Components/Providers/Data/DataProvider.vb - a 397-line abstract
+        class exposing 269 MustOverride members behind a reflection-resolved
+        Shared singleton, DataProvider.Instance(). It becomes nine narrow,
+        aggregate-shaped repository contracts declared in Domain and resolved
+        by constructor injection.
+
+      * Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb -
+        1,410 lines invoking 245 distinct stored procedures built as the string
+        DatabaseOwner & ObjectQualifier & "<ProcName>" (ExecuteReader x123,
+        ExecuteNonQuery x95, ExecuteScalar x37, ExecuteDataset x3, plus four
+        raw text-command sites). The helper type behind every one of those
+        calls ships ONLY as the source-less binary under
+        Library/Components/DataAccessBlock/bin/, so there is literally nothing
+        to port - which is why EF Core is mandatory here rather than a shim
+        (AAP 0.7.7).
+
+      * Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb -
+        a second, independent provider stack: 343 lines contributing 40 further
+        procedures through a helper whose body is the identical concatenation.
+        The core stack contributes only 4 User and 0 Role procedures, so both
+        stacks are mandatory reading; the combined reachable surface is roughly
+        289 procedures.
+
+      * A reversibly-encrypted credential store. Website/release.config
+        registers the legacy membership provider with passwordFormat set to
+        Encrypted and password retrieval enabled, against a 3DES key committed
+        to source control in plain text. That is replaced by one-way hashing,
+        and password retrieval is deliberately not carried forward
+        (AAP 0.7.5.5).
+
+    POSITION IN THE REFERENCE GRAPH - Rule T1, "layer inward only" (AAP 0.1.2.2)
+
+        Domain          ->  references nothing at all
+        Application     ->  Domain
+        Infrastructure  ->  Domain AND Application        <== this project
+        Api             ->  Application + Infrastructure
+
+    The reference on Application is MANDATORY, not incidental. This project
+    IMPLEMENTS two interfaces that are declared in
+    DnnMigration.Application.Abstractions rather than in Domain:
+      - ITokenService is implemented by Security/JwtTokenService.cs, together
+        with Security/RefreshTokenStore.cs;
+      - IModuleBusinessControllerFactory is implemented by
+        Services/ModuleBusinessControllerFactory.cs;
+    and it consumes JwtOptions, PortalOptions, CachingOptions and
+    PasswordPolicyOptions from DnnMigration.Application.Options through
+    IOptions<T>. That is exactly the "(and Application for the interfaces it
+    implements)" clause of Rule T1. Because the direction is expressed as
+    project references, a layering violation is a build failure rather than a
+    review finding.
+
+    Never reference DnnMigration.Api from here - Api already references this
+    project, so it would invert the graph and create a cycle. Never reference
+    either test project: production code does not depend on tests. Never
+    reference a legacy project under Library/ or Website/: those trees are
+    read-only reference inputs and must stay byte-identical (AAP 0.9.5).
+
+    PACKAGE OWNERSHIP (AAP 0.6.1)
+    This project owns EVERY Entity Framework Core, SQL client,
+    password-hashing and health-check reference in the solution - and nothing
+    else. Deliberately owned elsewhere, so do not restate them here:
+      - JWT bearer authentication, OpenAPI/Swagger generation, API versioning
+        and structured logging belong to DnnMigration.Api;
+      - request validation belongs to DnnMigration.Application and reaches this
+        project transitively;
+      - the in-memory, file-based and container-backed test database providers
+        belong to DnnMigration.IntegrationTests - shipping one of them here
+        would put a test provider into production.
+    No convention-based object-mapping package is taken anywhere in the
+    solution: mappers are hand-written so mapping errors surface at compile
+    time (AAP 0.4.3). No ASP.NET Core MVC package appears here, and never a
+    framework reference to the ASP.NET Core shared framework - that would drag
+    the entire web stack into a class library.
+
+    DnnDbContext is internal to this assembly (Rule T3); Application services
+    see repository interfaces only. No assembly-visibility attribute is
+    declared here.
+
+    BUILD POLICY IS INHERITED - DO NOT DUPLICATE OR OVERRIDE IT
+    backend/Directory.Build.props is imported implicitly by MSBuild walking
+    upward from this directory and is the single source of TargetFramework
+    (net8.0), LangVersion (12.0), Nullable, ImplicitUsings,
+    TreatWarningsAsErrors, NoWarn, GenerateDocumentationFile and
+    EnforceCodeStyleInBuild, together with the solution-wide determinism,
+    analyser-level and package-audit settings (AAP 0.6.5). This project
+    therefore declares NO property group at all: restating an inherited
+    property creates two places to change one decision, and overriding one
+    would weaken Validation Gate 1, which builds the solution in the Release
+    configuration with warnings promoted to errors via the warnaserror switch.
+    (Flag literals are spelled out in prose throughout these comments because
+    XML forbids a double hyphen inside a comment.)
+
+    AssemblyName and RootNamespace are omitted on purpose - both default from
+    the file name to DnnMigration.Infrastructure. Contrast the legacy
+    Library/DotNetNuke.Library.vbproj, which pins an assembly name of
+    DotNetNuke (L13) alongside an EMPTY root namespace (L25-L26); that is
+    precisely the confusion being avoided. The legacy project also declared a
+    lax warning policy (warnings-as-errors off, warning level 1, empty
+    suppression list at L50-L53 and L71-L74), assembly references with hint
+    paths into committed bin folders (L78-L106), twenty-five project-level
+    namespace imports (L107-L134) and one compile item per source file (L136+).
+    Every one of those patterns is intentionally absent: the SDK globs **/*.cs,
+    and namespaces come from ImplicitUsings plus explicit using directives.
+
+    Suppression is bounded to exactly CS8618 and CS1591, and only in
+    Directory.Build.props. NO OTHER WARNING MAY EVER BE SUPPRESSED, here or
+    anywhere (AAP 0.6.3). If this project emits any other warning once warnings
+    are promoted to errors, FIX THE CODE - never add a suppression to this file.
+    ==========================================================================
   -->
-  <PropertyGroup>
-    <RootNamespace>DnnMigration.Infrastructure</RootNamespace>
-    <AssemblyName>DnnMigration.Infrastructure</AssemblyName>
-  </PropertyGroup>
 
   <ItemGroup>
+
+    <!--
+      The 8.0.29 band is not arbitrary. It matches the installed shared
+      framework exactly - Microsoft.NETCore.App 8.0.29 and
+      Microsoft.AspNetCore.App 8.0.29 on SDK 8.0.423 (AAP 0.1.2.4). Every
+      version below is exact-pinned: no floating range, no wildcard and no
+      moving tag anywhere in the solution (AAP 0.8.3).
+    -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.29" />
+
+    <!--
+      Relational primitives consumed by the 21 IEntityTypeConfiguration<T>
+      classes under Persistence/Configurations - ToTable("<LegacyTable>", "dbo"),
+      HasColumnName, HasKey, HasMaxLength, IsRequired, ValueGeneratedOnAdd.
+      Rule T4 keeps the legacy schema immutable, so table and column binding is
+      declared here instead of being generated as DDL.
+    -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.29" />
+
+    <!--
+      Provider for the existing, unaltered DotNetNuke SQL Server database. The
+      legacy provider registration observed in Website/release.config uses an
+      empty object qualifier and "dbo" as the database owner, and those are the
+      mapping defaults the configurations bind to.
+    -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.29" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <!-- Explicit pin: without it the SqlServer provider resolves 5.1.x transitively. -->
+
+    <!--
+      Design-time support for the intentionally EMPTY baseline migration
+      (Rule T4: __EFMigrationsHistory is seeded without altering any existing
+      table) and for Persistence/DnnDbContextFactory.cs.
+
+      KEEP THIS REFERENCE PLAIN - do not add PrivateAssets=all, which is the
+      shape the stock template uses for analyser-only packages. Measured from
+      the restore graph: with PrivateAssets=all a referencing project receives
+      NO Microsoft.EntityFrameworkCore.Design library at all, whereas the plain
+      form flows lib/net8.0/Microsoft.EntityFrameworkCore.Design.dll into that
+      project's compile closure. This matters because the CLI resolves
+      design-time services from the STARTUP project, and DnnMigration.Api does
+      not declare this package itself - it receives it only by transitive flow
+      from here. Severing that flow reproduces the familiar "your startup
+      project does not reference Microsoft.EntityFrameworkCore.Design" failure
+      and blocks creating the baseline migration.
+      (For the record, IDesignTimeDbContextFactory<T> and IDesignTimeServices
+      are themselves declared in Microsoft.EntityFrameworkCore.dll, so the
+      factory would still COMPILE either way; the asset flow above, not
+      compile-time visibility, is the reason for the plain form.)
+
+      The separate EF Core command-line tooling package is deliberately not
+      referenced: it is absent from AAP 0.6.1 and dotnet-ef is installed as a
+      global tool.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
+
+    <!--
+      EXPLICIT ANTI-DOWNGRADE PIN. Without this line the SQL Server provider
+      resolves Microsoft.Data.SqlClient 5.1.7 transitively. The pin was verified
+      to change the resolved graph and is deliberate hardening to the 5.2.x
+      line. DO NOT REMOVE IT BECAUSE IT LOOKS REDUNDANT.
+
+      The AAP 0.8.3 enterprise baseline names this pin directly, as "an explicit
+      client-library pin to prevent a proven transitive downgrade". Confirm the
+      effect by listing this project's package graph with transitive
+      dependencies included ("dotnet list package", with the
+      include-transitive switch) and searching the output for
+      Microsoft.Data.SqlClient: it must report 5.2.3 and never 5.1.7.
+    -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
+
+    <!--
+      One-way password hashing for Security/BcryptPasswordHasher.cs. A security
+      requirement, not a convenience: it replaces reversible 3DES storage whose
+      key is committed to the legacy configuration. Existing credentials cannot
+      be verified against a one-way hash, so the documented path is a re-hash on
+      first successful login with administrative reset as the fallback, and the
+      legacy password policy (minimum length 7, no required non-alphanumeric
+      character, non-unique email permitted) is preserved verbatim rather than
+      tightened during a migration (AAP 0.7.5.5).
+    -->
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+
+    <!--
+      Database probe behind the anonymous /health endpoint, surfaced by
+      HealthChecks/DatabaseHealthCheck.cs. Gate-critical: docker-compose.yml
+      gates the frontend service on "condition: service_healthy", so a /health
+      that is unreachable or requires authentication stops the frontend
+      container from ever starting even when both images build cleanly. The
+      Alpine runtime image probes it with wget in spider mode, not curl.
+    -->
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.3" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.1" />
+
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\DnnMigration.Application\DnnMigration.Application.csproj" />
     <ProjectReference Include="..\DnnMigration.Domain\DnnMigration.Domain.csproj" />
+    <ProjectReference Include="..\DnnMigration.Application\DnnMigration.Application.csproj" />
   </ItemGroup>
 
 </Project>

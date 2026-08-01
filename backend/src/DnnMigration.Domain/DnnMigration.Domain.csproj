@@ -1,14 +1,120 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Domain layer (AAP 0.4.3 / Rule T1).
-    ZERO project references and ZERO third-party package references, by design:
-    the absence of dependencies is what makes a layering violation a compile
-    error rather than a review finding. Do not add a PackageReference here.
+    DnnMigration.Domain, the innermost layer of the Clean Architecture and the
+    foundation of the DnnMigration backend.
+
+    Every other project in the solution depends on this one, directly or
+    transitively (Application to Domain; Infrastructure to Domain and
+    Application; Api to Application and Infrastructure; the test projects to
+    Application and Api), and this project depends on NOTHING. AAP 0.5.2.2
+    holds the full reference graph; every arrow points inward only.
+
+    This file is deliberately near-empty, and its emptiness IS the
+    specification. The commentary below is the only content it needs, and it
+    exists so that a future maintainer who opens an "empty" project file does
+    not conclude something is missing and helpfully add it back.
+
+    ===========================================================================
+    1. Rule T1: ZERO project references, ZERO package references. Deliberate.
+    ===========================================================================
+    This project declares no project references and no package references, and
+    no bare assembly or framework references either. That is deliberate, it is
+    load bearing, and none may ever be added.
+
+    (The MSBuild item types meant here are the project, package, assembly and
+    framework reference items. They are named in prose rather than spelled
+    literally so that the repository guard which greps this file for those item
+    names keeps returning a count of zero.)
+
+    This is a compile-time architectural guarantee, not a style preference
+    (AAP 0.4.3, 0.6.1, 0.8.3): because the Domain project cannot see any outer
+    layer and cannot see any third-party library, a layering violation is a
+    BUILD FAILURE rather than a review finding. Business logic cannot reach a
+    controller and data access cannot bypass a repository interface, because
+    either would fail to compile. Adding one single dependency here silently
+    destroys that guarantee for the entire solution.
+
+    Package ownership is assigned per layer (AAP 0.6.1): Domain owns nothing,
+    Application owns FluentValidation, Infrastructure owns EF Core, SqlClient,
+    BCrypt and the health checks, and Api owns JWT, Swagger, API versioning and
+    Serilog. That split is what keeps this layer free of infrastructure
+    concerns as a compile-time fact rather than a convention.
+
+    If a Domain type ever appears to need a package, the design is wrong: move
+    the concern outward to Application or Infrastructure. Three concrete
+    temptations have already been considered and rejected:
+
+      * Computed, non-persisted properties (for example the bit flag helpers
+        over the legacy SupportedFeatures column) are plain read-only C#
+        properties here, and are excluded with Ignore() in the Infrastructure
+        Fluent configuration. Do NOT reach for [NotMapped]: it would drag in
+        EF Core or System.ComponentModel.DataAnnotations.Schema.
+
+      * Validation attributes such as Required or MaxLength do NOT belong here.
+        Request validation is FluentValidation, in the Application layer
+        (AAP 0.4.1.1).
+
+      * Serialisation attributes such as XmlRoot, XmlElement and their JSON
+        equivalents do NOT belong here. The legacy Info classes carried them;
+        the migration drops them from the domain on purpose (AAP 0.1.2.1).
+        DTOs own the wire contract and no entity ever crosses the API boundary
+        (AAP 0.8.3).
+
+    ===========================================================================
+    2. Build policy is INHERITED. Do not duplicate it here.
+    ===========================================================================
+    backend/Directory.Build.props is imported implicitly by MSBuild, which walks
+    upward from this directory, and it is the single source of build policy for
+    all six projects (AAP 0.6.3). It already supplies:
+
+      TargetFramework            net8.0
+      LangVersion                12.0
+      Nullable                   enable
+      ImplicitUsings             enable
+      TreatWarningsAsErrors      true
+      NoWarn                     $(NoWarn);CS8618;CS1591
+      GenerateDocumentationFile  true
+      EnforceCodeStyleInBuild    true
+
+    None of those is redeclared here, on purpose: one policy must have exactly
+    one home, or the two copies drift apart silently.
+
+    AssemblyName and RootNamespace are absent for the same reason. The SDK
+    derives both from the project filename, giving DnnMigration.Domain for
+    each, which is already exactly right, and OutputType already defaults to
+    Library. Verified with:
+      dotnet msbuild -getProperty:AssemblyName -getProperty:RootNamespace
+    Source files need no Compile items either, because the SDK globs all .cs
+    files automatically; the legacy DotNetNuke.Library.vbproj enumerated every
+    file by hand and that mechanism is obsolete.
+
+    ===========================================================================
+    3. Only CS8618 and CS1591 may EVER be suppressed.
+    ===========================================================================
+    Both are already suppressed centrally in Directory.Build.props, with the
+    justification recorded alongside them: CS8618 because entities and DTOs are
+    materialised by the framework, so the compiler cannot see the assignment,
+    and CS1591 because generating the documentation file while treating
+    warnings as errors would otherwise fail the build on every undocumented
+    public member. No other warning is suppressed anywhere in this solution
+    (AAP 0.6.3, 0.8.3).
+
+    Do NOT add a NoWarn element to this file. If this project ever emits a
+    warning under Validation Gate 1
+
+      dotnet build -configuration Release -warnaserror
+
+    then FIX THE CODE. Never suppress it here. For the same reason, do not add
+    NuGetAudit, NuGetAuditLevel, WarningsNotAsErrors, AnalysisLevel or any
+    other analyser knob: those are owned centrally too, and changing them here
+    can turn an advisory into a build-breaking error.
+
+    This project inverts the legacy baseline it replaces. The pre 3.5 format
+    Library/DotNetNuke.Library.vbproj set TreatWarningsAsErrors to false with
+    WarningLevel 1 and an empty NoWarn, and carried no TargetFrameworkVersion
+    element at all. It is retained untouched as a read-only reference input
+    under the side by side strangler arrangement (AAP 0.1.1, 0.9.5).
   -->
-  <PropertyGroup>
-    <RootNamespace>DnnMigration.Domain</RootNamespace>
-    <AssemblyName>DnnMigration.Domain</AssemblyName>
-  </PropertyGroup>
 
 </Project>
