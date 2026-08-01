@@ -1,0 +1,3 @@
+# Static assets served by nginx are authored by the implementation agents
+# (AAP 0.5.1.8: frontend/public/favicon.ico). This placeholder keeps the
+# angular.json assets glob valid before those files land.

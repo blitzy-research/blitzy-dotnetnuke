@@ -1,0 +1,14 @@
+# Keep the Angular build context small and deterministic (docker/frontend.Dockerfile
+# runs `npm ci`, so node_modules must never be copied in).
+node_modules
+dist
+coverage
+.angular
+.git
+.gitignore
+.vscode
+.idea
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
