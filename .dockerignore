@@ -1,0 +1,46 @@
+# Root build context ignore list (AAP 0.2.1.3).
+# docker/api.Dockerfile and docker/frontend.Dockerfile are built from the
+# repository root, so everything the images do not need is excluded here to keep
+# the context small and the builds reproducible.
+
+# --- build output / dependencies ---
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/coverage/
+**/.angular/
+**/TestResults/
+
+# --- legacy VB.NET trees (reference only, never shipped in a container) ---
+Library/
+Website/
+DotNetNuke.sln
+DotNetNuke_VS2008.sln
+
+# --- documentation and repository metadata ---
+docs/
+blitzy/
+mkdocs.yml
+catalog-info.yaml
+*.md
+!README.md
+
+# --- vcs / editors / os ---
+.git/
+.gitignore
+.github/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# --- secrets and local environment ---
+**/.env
+**/.env.local
+**/*.pfx
+**/*.key
+**/appsettings.Development.json

@@ -1,0 +1,55 @@
+## ---------------------------------------------------------------------------
+## DotNetNuke migration repository
+##
+## The legacy VB.NET trees (Library/, Website/) are read-only reference inputs and
+## keep their pre-built bin/ assemblies under source control, so the .NET ignore
+## rules below are scoped to the new backend/ tree only.
+## ---------------------------------------------------------------------------
+
+## --- .NET 8 backend ---
+backend/**/bin/
+backend/**/obj/
+backend/**/[Dd]ebug/
+backend/**/[Rr]elease/
+backend/**/x64/
+backend/**/x86/
+backend/**/TestResults/
+backend/**/*.user
+backend/**/*.userosscache
+backend/**/*.suo
+backend/**/*.userprefs
+backend/**/.vs/
+backend/**/*.received.*
+backend/coverage/
+backend/**/coverage.*.json
+backend/**/coverage.*.xml
+backend/**/coverage.*.info
+
+## --- Angular 19 frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.angular/
+frontend/npm-debug.log*
+frontend/yarn-error.log*
+frontend/.eslintcache
+
+## --- Containers / local environment ---
+docker/.env
+.env
+.env.local
+.env.*.local
+
+## --- Editors and OS noise ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+## --- Logs ---
+*.log
+logs/
