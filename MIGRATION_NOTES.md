@@ -614,3 +614,246 @@ fake `IClock`: a future effective date yields `Pending`, both dates null yields
 `Active`, a past expiry date yields `Expired`, a past expiry date together with a
 future effective date yields `Expired`, and `DateTime.MinValue` is treated as
 "no date set" on either date.
+
+## Application layer
+
+### `backend/src/DnnMigration.Application/Dtos/Role/RoleListItemDto.cs` — one row of the security-roles grid
+
+**Legacy source:** `Website/admin/Security/roles.ascx` (note the lower-case file name; its
+code-behind `Roles.ascx.vb` is capitalised) declares `<asp:datagrid id="grdRoles">` at lines
+22-25 and renders ten columns plus a row key. `Library/Components/Security/Roles/RoleInfo.vb`
+supplies the legacy CLR types, and the terminal feeding procedure is
+`{objectQualifier}GetRolesByGroup`, last defined by
+`Website/Providers/DataProviders/SqlDataProvider/04.05.05.SqlDataProvider` (line 15).
+
+**Target:** `public sealed class RoleListItemDto` with exactly eleven properties, returned
+wrapped in `PagedResponse<T>` from `GET /api/v1/roles`.
+
+**Eleven properties, not fifteen.** The DTO projects what the grid actually rendered rather
+than the fifteen-property `RoleInfo` surface. Four real columns are deliberately absent:
+
+- **`PortalID`** — every row in a response is already portal-scoped by the request's portal
+  context, and the grid never rendered it.
+- **`RoleGroupID`** — a *filter*, not a column. `roles.ascx` line 9 declares the
+  `cboRoleGroups` drop-down and `Roles.ascx.vb` line 75 filters with
+  `GetRolesByGroup(PortalId, RoleGroupId)`. The filter belongs to the query contract, not
+  to the row.
+- **`RSVPCode` and `IconFile`** — real columns, added by
+  `03.02.03.SqlDataProvider` (lines 44-45) as `nvarchar(50) NULL` and `nvarchar(100) NULL`,
+  but not rendered by this grid. They belong to the role *detail* contract.
+
+Two further members that might be expected are absent by design. `RSVPLink` exists on no
+DTO at all: `editroles.ascx` line 161 declares a `txtRSVPLink` textbox, but
+`EditRoles.ascx.vb` lines 165-167 *compute* it from the request's domain name and the save
+path at line 247 persists only `RSVPCode`. There is no `RSVPLink` column, and computing one
+would require `System.Web`-coupled HTTP state that the Application layer must not touch, so
+the client composes the link from the code and its own origin. `RoleStatus` is also absent:
+that classification describes a *user's assignment*, derived from `UserRoles.EffectiveDate`
+and `ExpiryDate`, so a role *definition* has no status.
+
+**`ServiceFee` and `TrialFee`: legacy `Single` becomes `decimal?`.** This is the clearest
+demonstration in the codebase of why only the *terminal* schema state may be trusted.
+`RoleInfo.vb` declares both properties `As Single` (lines 164 and 233), and the baseline DDL
+at `01.00.00.SqlDataProvider` line 119 declares `[ServiceFee] [decimal](5, 2) NULL` — a
+declaration that would cap every fee at 999.99. Both are superseded. The table is recreated
+with `ServiceFee money NULL` by `01.00.04.SqlDataProvider` (line 1326) and again by
+`01.00.05.SqlDataProvider` (line 2752), and the terminal statement is
+`ALTER TABLE ...Roles ALTER COLUMN [ServiceFee] [money] NULL` at
+`03.01.01.SqlDataProvider` line 1173, whose line 1177 adds a `DEFAULT (0)` constraint. That
+is the *only* `ALTER COLUMN` against the roles table anywhere in the eighty-eight-script
+chain, so nothing supersedes it. `TrialFee` is `money` from birth
+(`01.00.08.SqlDataProvider` line 6830) and is never altered. SQL `money` is a fixed-point
+type, so the faithful CLR mapping is `decimal`; binary floating-point is not used for a
+monetary amount. The legacy UI agrees independently — `editroles.ascx` validates both
+fields with a comparison validator of currency type.
+
+**`BillingPeriod` and `TrialPeriod`: resolved to `int?` on four-against-one evidence.** The
+legacy provider signature suggested a string, but four sources outweigh it: the schema
+declares `BillingPeriod int NULL` (`01.00.08.SqlDataProvider` line 6829) and
+`[TrialPeriod] [int] NULL` (`01.00.00.SqlDataProvider` line 121); `RoleInfo.vb` declares
+both `As Integer` (lines 218 and 203); the legacy UI validates both with a comparison
+validator of integer type; and decisively the stored procedure itself emits a SQL null,
+projecting
+`case when convert(int,Roles.ServiceFee) <> 0 then Roles.BillingPeriod else null end`
+(`01.00.08.SqlDataProvider` lines 7024 and 7054, and again at `02.00.00.SqlDataProvider`
+line 2220). A free role therefore had its billing period projected as null *by the legacy
+data layer itself*, whatever was stored, so `int?` reproduces the literal legacy wire value
+rather than modernising it.
+
+**`BillingFrequency` and `TrialFrequency`: legacy `String` becomes the shared Domain enum.**
+Both were declared `As String` (`RoleInfo.vb` lines 149 and 188) over a `char(1)` column
+(`01.00.05.SqlDataProvider` lines 2753 and 2755). Both now use the *same*
+`DnnMigration.Domain.Enums.BillingFrequency`, and **no second enum and no local copy was
+created.** One shared type is correct because the legacy queries resolve both columns
+against one lookup, joined twice: the early era used
+`join CodeFrequency C1 on Roles.BillingFrequency = C1.Code` alongside
+`left outer join CodeFrequency C2 on Roles.TrialFrequency = C2.Code`
+(`01.00.04.SqlDataProvider` lines 1524-1525), and the terminal era joins the `Lists` table
+twice with `ListName = 'Frequency'`. The single-character codes are load-bearing data and
+are never renamed. The measured switch at
+`Library/Components/Security/Roles/RoleController.vb` lines 540-547 handles **six** codes,
+not the four most often cited — `N`, `O`, `D`, `W`, `M`, `Y` — and the Domain enum already
+declares all six, so no gap exists.
+
+**The wire value changes from a display string to a stable code.** The terminal procedure
+did not project the stored code at all: it projected the lookup's `Text` column
+(`L1.Text` / `L2.Text`), blanked to an empty string for a free role or an unused trial. That
+made the grid's contents presentation wording resolved server-side. The DTO carries the
+*code* instead, because a stable machine value is what an API contract should expose and
+because the client owns display formatting. Consumers that need the old wording must
+localise the code themselves.
+
+**The boolean columns change from text to real booleans, and a latent defect is annotated
+rather than fixed.** `IsPublic` and `AutoAssignment` are `bit NOT NULL` with a default of 0
+(`01.00.08.SqlDataProvider` lines 6831-6832, re-asserted under qualifier templating at
+`03.01.01.SqlDataProvider` lines 1174-1175 and 1179-1181), but the procedure projected them
+as the strings `'True'` and `'False'`, which the grid then compared against a *lower-case*
+literal to choose a tick or a cross (`roles.ascx` lines 68-69 and 74-75). That comparison
+was case-sensitive against a value the procedure controlled, which is a latent defect rather
+than a feature. Per the minimal-change discipline the defect is annotated in place and *not*
+fixed in the legacy code; adopting the `bool` primitive removes the comparison entirely.
+
+**Sentinel mapping to null is behaviourally faithful, not a modernisation.**
+`Library/Components/Shared/Null.vb` makes the absent integer -1 (lines 41-45), the absent
+single `Single.MinValue`, and — importantly — the absent string the *empty string* rather
+than null (lines 70-74), and `Null.SetNull` applies these on every read. Mapping them to
+null preserves what the user saw, because the grid's own display helpers in
+`Roles.ascx.vb` already rendered them blank: `FormatPeriod` returns an empty string when
+the period equals the integer sentinel, and `FormatPrice` returns an empty string when the
+price equals the single sentinel. `RoleController.vb` line 537 reinforces this by treating
+the sentinel period as "no expiry". One distinction is preserved explicitly: the frequency
+code `N` is a *real stored code* meaning "no expiry", and it is never conflated with a null
+frequency meaning "no code stored". For `Description`, the legacy absent value is the empty
+string, so a mapper — not this DTO — owns any empty-string-to-null decision.
+
+**`RoleId` is a plain non-nullable integer, and `0` is a legitimate value.**
+`01.00.00.SqlDataProvider` lines 114-115 declare `[RoleID] [int] IDENTITY (0, 1) NOT NULL`,
+so the first real role has identifier 0. Separately, -1 is simultaneously the integer
+absence sentinel and, elsewhere in this schema, a live identity seed, and the legacy edit
+screen used -1 as its own add-marker (`EditRoles.ascx.vb` lines 131 and 251). Consequently
+no absence test may be written against this property — not `<= 0`, not `== 0`, not
+`== default`, and not `== -1`. The DTO contains no such test.
+
+**Paging is a net addition, not a translation.** The legacy grid was unpaged and unsorted:
+the `grdRoles` declaration carries no paging or sorting attribute of any kind, and the query
+behind it returned an untyped, pre-generic collection (`RoleController.vb` line 208).
+Serving this row type inside `PagedResponse<T>` is therefore a deliberate enhancement. The
+envelope lives in the shared response type and the sort and filter arguments live in the
+request contract; this row type declares neither.
+
+## API layer
+
+### `backend/src/DnnMigration.Api/ErrorHandling/GlobalExceptionHandler.cs` — global exception handling is net-new, with no in-scope predecessor
+
+**What it is.** The single, framework-native `IExceptionHandler` for the API host.
+Every exception that escapes the request pipeline is translated into one RFC 7807
+`application/problem+json` response carrying `type`, `title`, `status` and
+`detail`, plus the framework-native `traceId` extension.
+
+**Why this is a divergence.** It preserves no legacy behaviour, because there was
+no centralised exception-to-response translator to preserve. The five in-scope
+trees under `Library/Components/{Portal,Modules,Users,Security,Tabs}` report
+failure per call site, inside a `Catch` block that logs and swallows; nothing
+anywhere converts an exception into a response contract. The two centralised
+analogues that do exist in the checkout are both out of scope and neither was
+ported:
+
+- `Library/HttpModules/Exception/ExceptionModule.vb` — an `IHttpModule` hooked to
+  `HttpApplication.Error`, part of the excluded 24-file `Library/HttpModules/`
+  tree and registered as the fifth of the eight HTTP modules in
+  `Website/release.config:L67-L74`. `IHttpModule` has no ASP.NET Core
+  counterpart, so there was nothing to port to even had it been in scope.
+- `Website/ErrorPage.aspx` and `Website/ErrorPage.aspx.vb` — the client-facing
+  half, a server-rendered `System.Web.UI.Page`, excluded with the rest of the Web
+  Forms surface. Its wording came from `App_GlobalResources` keys, and
+  localisation is not ported, so the `title` and `detail` text is authored
+  directly in English.
+
+**Three legacy behaviours deliberately inverted rather than reproduced.** Each
+was measured in `ExceptionModule.vb` before being rejected:
+
+| Legacy behaviour | Target behaviour |
+| --- | --- |
+| Filtered by file extension and skipped named installer pages, so most requests were never handled at all. | Every unhandled exception on every route is handled. There is no path- or extension-based special-casing, which is also what keeps the anonymous `/health` endpoint that `docker-compose.yml` waits on unaffected. |
+| Discarded failures in two nested empty `catch` blocks. | Nothing is swallowed. Where a response cannot be produced the handler returns `false` so the framework's own default handling takes over, and the exception has always been logged before that happens. |
+| Wrote no response body; the caller was redirected to a rendered page. | A well-formed problem-details payload is always written when the handler reports that it handled the exception. |
+
+**One legacy habit deliberately kept.** `ErrorPage.aspx.vb:L32` and `:L51` ran
+every echoed query-string value through `PortalSecurity.InputFilter` with
+`NoScripting Or NoMarkup` before rendering it — legacy DotNetNuke already refused
+to reflect unsanitised input into an error surface. The target goes further and
+reflects no request content into a payload at all: `title` and `detail` are fixed
+authored text, and the `instance` member is left unset rather than derived from
+the request URL.
+
+**One legacy disclosure deliberately dropped.** `ErrorPage.aspx:L17` rendered
+`DotNetNuke Error: - Version <%=glbAppVersion %>`, publishing the product version
+to any caller. No payload produced by this handler contains a product or
+framework version, an assembly name, a host name, a file path, a line number, a
+stack trace or an inner-exception chain.
+
+**The response surface does not vary by environment — neither its shape nor its
+text.** This is stricter than the minimum the migration plan asks for, which
+permits the `detail` *text* to differ between deployments. The general 500 case
+publishes fixed authored text everywhere and never the exception's own message,
+for a reason that is specific to this codebase rather than general caution: an
+Entity Framework Core or `Microsoft.Data.SqlClient` message routinely carries the
+connection string, the server and database names and the values bound to a
+statement, and an argument or key-lookup message routinely carries the value that
+failed. None of that is recognisable from the base type, so the only safe rule is
+to publish none of it. The legacy application set the precedent for holding one
+error surface everywhere: `Website/release.config:L144` and
+`Website/development.config:L142` declare the identical
+`<customErrors mode="RemoteOnly"/>`, varying the richness of a message by caller
+locality and never the error surface itself. Environment-conditional enrichment
+was therefore considered and rejected, and no `IHostEnvironment` is injected.
+
+**The one exception message that is published.** `DomainException.Message` is
+passed through to `detail` exactly as authored, including an empty one, because
+that text is written by our own domain code for a reader. `DomainException` maps
+to 400, `UnauthorizedAccessException` to 403, and everything else to 500. No new
+exception type was introduced: the four types named in
+`docs/technical-specifications.md:L1402-L1410` — `ValidationException`,
+`NotFoundException`, `UnauthorizedException` and `ForbiddenException` — do not
+exist in this solution and were not created, because an expected, enumerated
+failure travels as a failed `Result` and is translated by the controller that
+received it.
+
+**A cancelled request is not an error.** An `OperationCanceledException` raised
+while the request's own abort signal is set means the caller disconnected. It is
+recorded at information level and no response is written, so a client hanging up
+cannot fill an error dashboard. An `OperationCanceledException` raised *without*
+that signal — an internal timeout — remains a genuine server-side failure and
+resolves to 500.
+
+**The correlation identifier travels in the response header only.** It is not
+added to the payload body. `Api/Filters/ValidationProblemDetailsFactory.cs`
+already established that single source of truth for the same identifier, and a
+second copy in the body would let the two disagree. The value is resolved from
+`HttpContext.Items`, where `Api/Middleware/CorrelationIdMiddleware.cs` publishes
+the validated identifier, and falls back to `HttpContext.TraceIdentifier`. The
+raw inbound request header is deliberately never read: it is caller-controlled
+and unvalidated, and that middleware substitutes a generated identifier when it
+cannot be trusted, so reading the raw value here would reintroduce exactly the
+response-splitting and log-forging the substitution prevents.
+
+**Structured logging replaces nothing and is the only place detail appears.** The
+19 in-scope `AddLog(` audit sites are *not* absorbed here; per the migration plan
+they become Serilog events at the application-service layer. This handler records
+the failure and nothing else: no audit semantics, no event-type mapping, no
+persistence call, and no external error-tracking SDK — Sentry and Application
+Insights are a later milestone in `docs/project-guide.md:L293` and are not in
+scope. Each entry carries the exception object itself, so the message, the
+inner-exception chain and the stack trace reach the log and only the log. The
+request method, path, status code and correlation identifier are recorded; the
+query string, the request body, the `Authorization` header and cookies are
+deliberately omitted because any of them can carry a credential.
+
+**Superseded guidance identified and rejected.** `docs/` is a prior-run artefact
+and, on this file, actively misleading: it places global error handling in
+`Middleware/ExceptionHandlingMiddleware.cs`
+(`docs/technical-specifications.md:L408-L409` and `:L795`, and
+`docs/project-guide.md:L381`). The migration plan supersedes all three. The file
+is `ErrorHandling/GlobalExceptionHandler.cs`, it is the framework-native
+`IExceptionHandler` rather than a hand-rolled middleware, and `Middleware/`
+carries exactly three files, none of them an exception middleware.
