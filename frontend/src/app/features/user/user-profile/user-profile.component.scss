@@ -1,0 +1,350 @@
+// =============================================================================
+//  user-profile.component.scss — the dynamic profile editor, both of its modes
+// =============================================================================
+//
+//  WHAT THIS STYLESHEET OWNS
+//  -------------------------
+//  * The component root and the vertical rhythm of the screen's regions.
+//  * The editor region's grid stack and its MEASURE — the one width constraint
+//    this screen carries.
+//  * The per-category group's INNER track: how the fields inside a `<fieldset>`
+//    stack, not what the fieldset itself looks like.
+//  * The collapse toggle that sits in each group's `<legend>`: its row layout,
+//    its expanded/collapsed affordance and its focus indication.
+//  * The per-property visibility row.
+//  * The VIEW-mode name/value list, which is where the measured legacy
+//    label-to-control proportion legitimately lives.
+//  * The action row's layout.
+//
+//  WHAT IT DELIBERATELY DOES NOT OWN — do not restate any of this here
+//  ------------------------------------------------------------------
+//  * `fieldset` and `legend` chrome — _forms.scss sections 1.
+//  * Label, text-control, choice-control and button chrome, the invalid state,
+//    the validation message and the read-only surface — _forms.scss 2-9.
+//  * The help panel — _forms.scss `.form-help`. It reproduces the legacy help
+//    affordance in full, including all four of its borders.
+//  * The screen title and its action bar — the shared page-header component.
+//  * The horizontal rule and the between-sections separator — _reset.scss `hr`
+//    and _layout.scss `.content-region__section + .content-region__section`.
+//  * Every shared component's own appearance. This file only PLACES them, and
+//    reaches into none of them: there is no piercing selector below, and none
+//    anywhere else in the workspace either.
+//
+//  View encapsulation already scopes every selector, so the surface is flat —
+//  one block class plus element classes, no deep descendant chains.
+//
+//  LEGACY SOURCE: Website/admin/Users/Profile.ascx (34 lines) and its view-mode
+//  host Website/admin/Users/ViewProfile.ascx (5 lines), which supplies only
+//  `EditorMode="View"` and `ShowUpdate="False"` — hence one component and two
+//  modes rather than two screens. The visual contract is the twelve attributes
+//  of the `<dnn:ProfileEditorControl>` at Profile.ascx L13-L25, whose own
+//  implementation (Library/Controls/PropertyEditor) is out of scope, so there is
+//  no legacy field markup to port — only measured values to resolve to tokens.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Both selectors carry the same flow so the rhythm holds whether the regions sit
+// directly on the host or inside one wrapper element. The host needs a
+// box-generating display regardless: a custom element defaults to inline and
+// would not contain block-level children correctly.
+//
+// Body type is set once here and inherited by every region below rather than
+// restated per rule, which keeps the component self-sufficient — without it the
+// browser falls back to its own serif default for every term, value and legend.
+//
+// MIGRATION: the outer legacy element was a LAYOUT table —
+// `<table cellspacing="0" cellpadding="0" summary="Profile Design Table"
+// border="0">` at Profile.ascx L4 — and it becomes a CSS Grid stack. Reading it
+// closely, that table is a SINGLE-COLUMN vertical sequence with one `<td>` per
+// row: the title (L5-L7), a 10px spacer row (L8-L10), the editor (L11-L27) and a
+// second 10px spacer (L28-L30), with the update action following outside it in a
+// `<p>` (L32-L34). The two-column label-and-control arrangement was NOT this
+// table; it was produced inside the excluded editor control by its `labelwidth`
+// and `editcontrolwidth` attributes. No `<table>` element is emitted by this
+// screen in either mode, and the two spacer rows become a real `gap`.
+//
+// MIGRATION: that 10px spacer has no exact step on the shared 4px spacing scale
+// — `--space-2` is 8px and `--space-3` is 12px, equidistant at 2px either side.
+// The larger step is chosen so the regions of the screen read as distinct bands,
+// and the spacing scale is itself a net addition: the legacy stylesheet has no
+// spacing system at all.
+:host,
+.user-profile {
+  display: grid;
+  gap: var(--space-3);
+
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  THE EDITOR REGION — the stack of category groups, and the screen's measure
+// -----------------------------------------------------------------------------
+// A clamped track rather than a bare `1fr`: a profile value with no break
+// opportunity — a long URL or an IM handle — must not be able to widen the
+// column that contains it and drag the rest of the screen out of alignment.
+//
+// MIGRATION: the three measured metrics on the editor control become tokens, not
+// literals. `labelwidth="150px"`, `editcontrolwidth="525px"` and `width="675px"`
+// (Profile.ascx L22-L24) are exact: 150 + 525 = 675, so the design intent is the
+// PROPORTION 150:525, which reduces to 2:7 over nine parts. The shared token
+// vocabulary declares no width or measure token of any kind — the only inline
+// sizes in it are the hairline border width, the focus-ring width and the
+// dialog's viewport-relative caps — so the measure is read from the breakpoint
+// scale through the exported lookup function, which is documented as the
+// sanctioned use of that function. What is barred is hand-rolling a media query,
+// not reading a step. 675px is 42.1875rem and the `md` step is 48rem, the
+// nearest of the four (5.8125rem away, against 12.19 and 21.81 for its
+// neighbours), so this is a deliberate SNAP to the declared scale rather than a
+// pixel match, and the screen renders a little wider than the legacy form did. A
+// maximum rather than a fixed measure keeps the form fluid below the step and
+// capped above it.
+//
+// MIGRATION: the 2:7 proportion itself is NOT applied to the edit-mode fields
+// here. A field's internal layout — label above the control versus beside it,
+// one column versus two — belongs to the shared form-field component, which
+// _forms.scss names as its owner and which is why that partial emits no
+// breakpoint rule at all. Restating the proportion here would put two
+// competing definitions of the same layout in the codebase. It IS applied, once,
+// in the view-mode name/value list below, which this component owns outright.
+.user-profile__groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--space-4);
+
+  max-inline-size: mx.breakpoint('md');
+}
+
+// -----------------------------------------------------------------------------
+//  A CATEGORY GROUP
+// -----------------------------------------------------------------------------
+// The element is a `<fieldset>`, so its boundary, radius, inset and outer margin
+// all come from _forms.scss and are deliberately absent here. This rule adds
+// only the inner track the fields stack on.
+//
+// MIGRATION: `groupByMode="Section"` (Profile.ascx L25) groups profile
+// properties by their `PropertyCategory`, and the legacy renderer drew each
+// group's heading through a control that has no equivalent in the shared
+// library. That library is closed at ten members — nine components and one
+// directive — and none of them is a section or collapsible-panel component, so
+// rather than propose an eleventh member or hand-roll a heading, each category
+// is a semantic `<fieldset>` with a `<legend>`. The grouping is then conveyed to
+// assistive technology by the elements themselves rather than by appearance, and
+// every value below still resolves to a token.
+//
+// MIGRATION: `groupHeaderIncludeRule="True"` (Profile.ascx L18) drew a rule
+// beneath each category heading — the legacy section-head control emitted
+// `<hr noshade size="1">`, which rendered through the bare `HR` rule at
+// default.css L626-L631 as a left-aligned hairline in the muted grey. That rule
+// is SUPERSEDED rather than reproduced: the fieldset's own boundary already
+// delimits the group, and drawing a second hairline inside a bordered box would
+// be redundant decoration. The hairline itself is not this file's to declare in
+// any case — _reset.scss already gives the bare `hr` exactly that treatment
+// (muted, hairline width, left-aligned) and _layout.scss owns the
+// between-sections separator, which is deliberately an adjacent-sibling rule so
+// a lone section is never underlined for no reason.
+.user-profile__group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  THE GROUP'S COLLAPSE TOGGLE — rendered inside the `<legend>`
+// -----------------------------------------------------------------------------
+// Placing the control inside the legend keeps the group's accessible name and
+// its collapse affordance as one thing, so the name is never duplicated and the
+// fieldset never loses it.
+//
+// The global button treatment is a filled, bordered control, which is right for
+// a command and wrong for a group heading. It is neutralised here rather than
+// fought: a single class selector already outranks the bare element selector on
+// specificity, so no importance flag is needed anywhere in this file. `font:
+// inherit` takes the family, step, weight and line height from the legend, so
+// the toggle reads as the heading it is and carries no value of its own.
+//
+// MIGRATION: the legacy collapse control carried `tabIndex="-1"` — the
+// section-head control's icon button was explicitly removed from the tab order —
+// so a keyboard user could not expand or collapse a category at all. Rendering
+// it as a real button restores keyboard operability. That is a deliberate
+// accessibility improvement at zero visual cost, since the legacy heading was
+// plain text with an icon and this reproduces exactly that appearance.
+.user-profile__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+
+  color: inherit;
+  font: inherit;
+  text-align: start;
+
+  // Idempotent by design, so applying it again over the global treatment is
+  // safe. It is not merely belt-and-braces: the rules above strip this
+  // control's border and background, and this include guarantees the indicator
+  // survives that regardless of which element the template settles on.
+  @include mx.focus-ring;
+}
+
+// The indicator is an inline SVG supplied by the template, sized from the type
+// scale so it tracks the heading it sits beside, and held at its intrinsic size
+// so a long category name cannot squash it.
+.user-profile__toggle-icon {
+  flex-shrink: 0;
+  inline-size: var(--font-size-md);
+  block-size: var(--font-size-md);
+}
+
+// The state hook is `aria-expanded`, which is simultaneously what tells
+// assistive technology, so the affordance and the announcement can never
+// disagree. The quarter turn is geometric — it reorients the same glyph and is
+// not a design value with a token to resolve to, exactly as the shared
+// visually-hidden mixin's `inset(50%)` is geometric.
+//
+// MIGRATION: the turn is instantaneous. No motion member exists on the shared
+// mixin surface and a component may not author its own reduced-motion guard,
+// because raw media queries are barred outside _mixins.scss; the legacy portal
+// animated nothing, so the immediate change is the compliant behaviour and the
+// faithful one at once.
+.user-profile__toggle[aria-expanded='true'] .user-profile__toggle-icon {
+  transform: rotate(90deg);
+}
+
+// -----------------------------------------------------------------------------
+//  THE FIELD STACK — edit mode
+// -----------------------------------------------------------------------------
+// Each child is a shared form field, which owns its own label, control, help
+// text and validation message. This rule stacks them and clamps the track for
+// the same reason the editor region does.
+//
+// MIGRATION: control chrome is very largely a NET ADDITION rather than a port.
+// The measured `.NormalTextBox` (default.css L123-L128), the class named by
+// `editcontrolstyle-cssclass` and the highest-traffic class in the legacy
+// stylesheet, declares only a font family, a size and a weight — no border, no
+// padding, no background and no width — so the legacy text box rendered in the
+// browser's own default chrome. The target's bordered, inset control is
+// therefore new, and it is declared once in _forms.scss, not here.
+//
+// MIGRATION: the measured type relationship IS preserved exactly. Legacy body
+// text is 11px (`.Normal`, default.css L92-L97) while legacy controls are 12px
+// (`.NormalTextBox`) and legacy validation messages are 12px too (`.NormalRed`,
+// L114-L120) — controls and errors sit one step ABOVE body text. On the shared
+// ramp 11px is `--font-size-md`, which is also `--font-size-base`, and 12px is
+// `--font-size-lg`, the very next step, so the relationship survives with no
+// snap and no rounding. Those two rules live in _forms.scss; this file states
+// the mapping so the correspondence is recorded somewhere it can be checked.
+.user-profile__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  THE PER-PROPERTY VISIBILITY ROW
+// -----------------------------------------------------------------------------
+// A profile property carries its own visibility setting, which the legacy editor
+// styled with the plain body class named by `visibilitystyle-cssclass="Normal"`
+// (Profile.ascx L21). Reproduced as the body step at normal weight, so it reads
+// as a secondary control beside the bold property label rather than competing
+// with it. It wraps so a long setting name never forces a horizontal scrollbar.
+.user-profile__visibility {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+}
+
+// -----------------------------------------------------------------------------
+//  VIEW MODE — the name/value list
+// -----------------------------------------------------------------------------
+// A `<dl>` whose terms and values are its own grid items, so the association
+// between a property name and its value is structural and survives with no
+// styling at all.
+//
+// This is where the measured 150:525 proportion legitimately lives: in view mode
+// there are no controls, so nothing here belongs to the shared form field, and
+// the two-column name-beside-value arrangement is exactly what the legacy editor
+// rendered at those widths. Expressed as 2fr and 7fr, the reduced form of the
+// measured ratio, which reproduces 150 and 525 precisely at the capped measure
+// while remaining fluid below it. Both tracks are clamped so a long value cannot
+// widen its column.
+//
+// MIGRATION: the single-column-below, two-column-above behaviour is 100 per cent
+// NET NEW. The legacy portal declares no media query anywhere — both
+// Website/Portals/_default/default.css and portal.css contain zero — so it had
+// no responsive behaviour to preserve. The narrow layout is authored
+// unconditionally and the wider one layered over it through the shared
+// breakpoint mixin, which is the documented direction; no raw media query is
+// written here.
+.user-profile__values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+
+  @include mx.respond-above('sm') {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 7fr);
+    column-gap: var(--space-4);
+    align-items: baseline;
+  }
+}
+
+// The term's type — the body step at bold weight in the brand colour — already
+// reaches `<dt>` from the global element baseline, and it happens to reproduce
+// the legacy `.SubHead` (default.css L74-L80) named by
+// `labelstyle-cssclass="SubHead"` exactly. Nothing is restated here.
+//
+// MIGRATION: a read-only value is NOT a disabled one and must not look like one.
+// It holds real data and is selectable and copyable, so it keeps full inherited
+// contrast; the muted token that carries the disabled role is deliberately not
+// used. The value renders as text rather than as an inert input, which is the
+// genuinely read-only presentation rather than a control that merely looks
+// unavailable. `<dd>` carries a user-agent indent that would break the grid
+// column, so it is zeroed — the one thing this element needs.
+.user-profile__value {
+  margin-inline: 0;
+
+  // Profile values are arbitrary user-entered text — a biography, a postal
+  // address, a URL, an IM handle. The initial `overflow-wrap` forbids breaking
+  // inside a word, so an unbroken value would overrun its column; the keyword
+  // restores the break opportunity and costs nothing on text that already wraps.
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  THE ACTION ROW
+// -----------------------------------------------------------------------------
+// A real gap rather than literal spacing characters, so the separation survives
+// white-space collapsing and the row wraps cleanly on a narrow viewport. In view
+// mode the row is simply not rendered, which is what `ShowUpdate="False"`
+// (ViewProfile.ascx L5) asked for; nothing here needs to hide it.
+//
+// MIGRATION: the legacy update affordance was a TEXT LINK, not a filled button.
+// `.CommandButton` (default.css L442-L447) declares only a size and a weight,
+// and its four anchor states (L450-L472) render an underlined link in the brand
+// colour that turns the error red on hover. The target promotes it to a real
+// `<button>`, because an action that is not a navigation should not be announced
+// as a link, and the danger hue is not spent on a benign hover. Both of those
+// decisions are made and recorded in _forms.scss; this file contributes the
+// row's layout only.
+//
+// MIGRATION: no legacy raster asset is carried across. The update control
+// specified `imageurl="~/images/save.gif"` (Profile.ascx L33) and the legacy
+// label control specified `~/images/help.gif`; neither is in scope — the only
+// static asset this migration ships is the favicon — so the action is text-only
+// and no rule in this file references an external resource of any kind.
+.user-profile__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

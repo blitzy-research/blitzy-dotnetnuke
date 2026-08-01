@@ -1,0 +1,426 @@
+// =============================================================================
+//  module-settings.component.scss
+//  Per-instance module settings screen — route ':moduleId/settings', the
+//  loadComponent child of MODULE_ROUTES mounted at 'modules', guarded by
+//  permissionGuard with the ModuleEdit permission.
+// =============================================================================
+//
+//  WHAT THIS FILE OWNS, AND THE MUCH LARGER SET IT DOES NOT
+//  --------------------------------------------------------
+//  Angular view encapsulation already scopes every selector below, so the
+//  surface is deliberately flat: one block class, its element classes, two
+//  modifiers, and no descendant chain deeper than a single class. No selector
+//  pierces encapsulation, and none reaches into a shared component — the shared
+//  set owns its own appearance and this file only places it.
+//
+//  The global layer already supplies almost all of this screen's presentation,
+//  and every rule below was written only after confirming the global layer does
+//  NOT already provide it:
+//    _forms.scss    the section grouping box and its title, every label, every
+//                   text, choice and multi-line control, the buttons, and the
+//                   invalid / disabled / read-only / help states
+//    _reset.scss    the element baseline, the leading-hairline rule element, and
+//                   the focus ring on every natively focusable element
+//    _layout.scss   the page shell, the width-capped column, the content region
+//                   and the bordered panel
+//  What is left — and all that is left — is the arrangement BETWEEN those parts:
+//  the section nesting and its indent, the disclosure head, the field grid, the
+//  control rows and the command row. Nothing here restates a global rule.
+//
+//  LOADING THE SHARED ABSTRACTIONS — DEPTH DERIVED, NOT COPIED
+//  ----------------------------------------------------------
+//  The workspace configures no Sass load path: angular.json declares no
+//  stylePreprocessorOptions and tsconfig.json declares no baseUrl or path
+//  mapping, so every load is relative and a path off by one directory fails the
+//  build outright. Counted from this file:
+//        .            features/module/module-settings/
+//        ..           features/module/
+//        ../..        features/
+//        ../../..     app/
+//        ../../../..  src/            <- styles/ lives here
+//  Four levels, which the shared mixin partial's own verified path listing and
+//  the same-depth sibling screen in this feature folder both independently
+//  confirm.
+//
+//  Sass modules are per-file and never ambient: a load in the global stylesheet
+//  makes nothing visible here, so this file loads the mixin partial itself. The
+//  token partial is deliberately NOT loaded — tokens are custom properties that
+//  the global cascade already supplies, they are referenced through var() with
+//  no compile-time dependency, and loading that partial would emit a second
+//  document-root block into this component's scoped bundle. The four
+//  CSS-emitting partials are not loaded either, for the same reason: each would
+//  duplicate the entire global layer inside this one component and consume the
+//  four-kilobyte per-component style budget several times over.
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+//  Both selectors carry the same flow so the rhythm holds whether the sections
+//  sit directly on the host or inside one wrapper element. The host needs a
+//  box-generating display regardless: a custom element is inline by default and
+//  would not contain its block-level children correctly.
+//
+//  Type is set once here and inherited by every region below rather than
+//  restated per rule, which keeps the component self-sufficient — without it a
+//  heading or a control would fall back to the user agent's own serif default.
+//
+//  No colour is declared. The token vocabulary is closed at nine colours and
+//  deliberately contains no base-ink member; body text inherits the user agent
+//  default, which is exactly what the legacy body rule and its Normal text class
+//  did — both declared family, size and weight and no colour at all. Inheriting
+//  reproduces the measured legacy rendering without a palette entry that would
+//  merely restate a browser default.
+:host,
+.module-settings {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  SECTION DESCRIPTION
+// -----------------------------------------------------------------------------
+//  The three explanatory paragraphs that introduce the module, page and
+//  module-specific groups. Capped to a readable measure: the breakpoint helper
+//  read for a raw width is the sanctioned use of that function — what is barred
+//  is writing a media feature query by hand — and it is the only width source
+//  available, because the token vocabulary declares no measure token at all.
+//
+//  The looser line height is used here and only here. This is the one place on
+//  the screen that carries running prose rather than a label, a value or a
+//  command, and prose needs the extra leading to stay readable.
+.module-settings__intro {
+  margin-block: 0 var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  COLLAPSIBLE SECTION
+// -----------------------------------------------------------------------------
+//  Seven sections, nested two levels deep: three at the top level, each holding
+//  two children. Four of the seven open collapsed, so the disclosure is
+//  functional rather than decorative and the closed state must be the resting
+//  presentation, not an afterthought.
+//
+//  Only the block spacing is set. If the section element is a grouping box the
+//  global layer has already given it its boundary, corner and inset, and a
+//  second inset declared here would simply add to that one.
+.module-settings__section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// MIGRATION: the legacy screen indented each nested group with a dedicated empty
+// spacer cell of twenty-five units, one per top-level group. That spacer has no
+// target equivalent — an empty presentational cell exists only to push its
+// neighbour across — so the indent is expressed as a leading margin on the
+// nested group itself, resolved to the sixth spacing step as the nearest member
+// of the declared scale. A margin rather than an inset because the legacy spacer
+// sat OUTSIDE the group it displaced, so a margin indents the group together
+// with its boundary exactly as the spacer did.
+.module-settings__section--nested {
+  margin-inline-start: var(--space-6);
+}
+
+// -----------------------------------------------------------------------------
+//  DISCLOSURE HEAD
+// -----------------------------------------------------------------------------
+// MIGRATION: the seven heads carried cssclass="Head", the outer wrapper carried
+// class="Settings", the twenty-one label cells carried class="SubHead" and the
+// two horizontal choice groups carried cssclass="NormalTextBox". None of those
+// legacy class names is carried forward. The head is a semantic, keyboard
+// reachable element styled from tokens, and the legacy names appear nowhere in
+// this workspace.
+//
+// MIGRATION: this rule corrects a real legacy accessibility defect rather than
+// reproducing it. The legacy head rendered its toggle as an image button with an
+// explicitly negative tab index inside a plain division element, carrying no
+// expanded-state attribute — so the control that opened and closed four
+// initially-collapsed sections could not be reached by keyboard at all and
+// announced no state. The target head is natively focusable, carries the
+// expanded state, and takes a visible ring.
+//
+//  THERE IS DELIBERATELY NO DISPLAY DECLARATION HERE, and that omission is
+//  load-bearing. A disclosure summary is a list-item box, and its native
+//  triangle is the marker of that box: changing the display to flex or grid
+//  silently deletes the triangle in every engine that draws one. The triangle is
+//  the disclosure affordance, it is free, it inherits this rule's colour, and
+//  the only ways to replace it would be a referenced image — no raster asset is
+//  in scope and the referencing function is barred — or template markup this
+//  file does not own. So the native marker is kept and the display is left
+//  exactly as the element declares it.
+//
+//  The rule is written to hold whether the template renders the head as a
+//  disclosure summary or as a heading-wrapped button. A single class outweighs
+//  the global bare-element button rule, so the chrome that rule applies — a
+//  filled surface, a brand boundary and a horizontal inset — is neutralised back
+//  to a flat heading here. `transparent` and `0` are permitted literals and need
+//  no token.
+.module-settings__toggle {
+  inline-size: 100%;
+  text-align: start;
+
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  color: var(--color-primary);
+
+  background-color: transparent;
+  border: 0;
+  padding-inline: 0;
+  padding-block: var(--space-1);
+
+  cursor: pointer;
+
+  // MIGRATION: the colour change is INSTANTANEOUS, and that is the compliant and
+  // the faithful outcome at once. The legacy stylesheets declare transition,
+  // animation and keyframe rules zero times each, so there is no motion to carry
+  // forward; the shared mixin surface exports no motion member and no
+  // reduced-motion guard; and a component may not author that guard itself,
+  // because raw media feature queries belong to the mixin partial alone. An
+  // unguarded transition would impose movement on a reader who has asked their
+  // system for less. Reported as a gap in the shared surface, not worked around.
+  //
+  // MIGRATION: the hover-capability guard cannot be expressed here either, for
+  // the same reason — the shared surface exposes no such mixin. The global form
+  // layer records the identical gap on its own control and button rules, so this
+  // follows an established, documented pattern rather than inventing one. The
+  // exposure is bounded to a single inherited colour change that a real tap
+  // immediately supersedes with the focus ring, so the consequence is cosmetic
+  // and self-correcting.
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+
+  // The element baseline already rings every natively focusable element,
+  // including a disclosure summary and a button, so this include is a deliberate
+  // and idempotent reinforcement rather than an oversight: it keeps the ring
+  // attached at the same place this file restyles the head, so no future edit to
+  // the head's chrome can leave the indicator behind. The mixin scopes itself to
+  // the keyboard-focus pseudo-class, so a mouse press never draws it, and
+  // nothing in this file suppresses an outline.
+  @include mx.focus-ring;
+}
+
+// MIGRATION: the legacy head control emitted a separate no-shade rule element
+// beneath itself whenever its include-rule flag was set, and that flag was set
+// on exactly the three top-level heads. The rule is reproduced as a trailing
+// hairline on those three heads instead of as a separate element, from the
+// border tokens and in the same ink the element baseline gives a standalone
+// rule, so the two are indistinguishable. Carried by a modifier on the head
+// itself rather than by a descendant chain, so the template marks the three
+// heads that had the flag and no other selector has to know the nesting.
+.module-settings__toggle--ruled {
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  padding-block-end: var(--space-2);
+}
+
+// -----------------------------------------------------------------------------
+//  SECTION BODY
+// -----------------------------------------------------------------------------
+.module-settings__body {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD GRID
+// -----------------------------------------------------------------------------
+// MIGRATION: the nine legacy layout tables that arranged this screen produce no
+// rule of any kind here — this component emits none of that element family and
+// this file styles none of it. That they were layout scaffolding rather than data
+// is settled by their own summary attributes: eight carried one, and three of
+// those eight are wrong or copy-pasted, two pairs of unrelated groups sharing a
+// single description between them. Grid replaces them.
+.module-settings__fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// A field is a label and its control group. Below the medium step the two stack,
+// which is the only arrangement a narrow viewport can hold; at and above it they
+// sit side by side, reproducing the legacy label-cell-then-control-cell pairing.
+//
+// MIGRATION: the responsive behaviour is one hundred per cent net-new. Neither
+// legacy stylesheet contains a single media feature query, so the legacy screen
+// had no responsive behaviour whatsoever to preserve. It is obtained entirely
+// through the shared breakpoint mixin: the step is declared once, centrally, and
+// this file neither restates a width nor writes a query.
+//
+// MIGRATION: the legacy label cells pinned three DIFFERENT fixed widths for one
+// role — one hundred and fifty on five cells, two hundred on thirteen, two
+// hundred and twenty-five on three. None is reproduced. The token vocabulary
+// declares no width or measure token, and design-system compliance outranks
+// legacy fidelity, so the label track is sized intrinsically instead. The
+// visible consequence is recorded plainly: label columns align within a field
+// rather than across every field on the screen, where the legacy fixed widths
+// aligned them per group. The trade is deliberate — three inconsistent literals
+// replaced by one consistent intrinsic rule.
+//
+// `auto minmax(0, 1fr)` follows the shell precedent: the leading track is sized
+// by its content and the trailing one takes the remainder, with a zero floor
+// rather than a bare fraction so a long value can never force the control track
+// wider than its share. The intrinsic grid keywords express layout mechanics
+// rather than design values and so have no token to resolve to. Alignment to the
+// start keeps a tall control — a multi-line field, a permissions grid — from
+// dragging its label down to its own centre.
+.module-settings__field {
+  display: grid;
+  gap: var(--space-1);
+  grid-template-columns: minmax(0, 1fr);
+
+  @include mx.respond-above('md') {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-2) var(--space-4);
+    align-items: start;
+  }
+}
+
+// Fields that keep the stacked arrangement at every width, because side-by-side
+// wastes their measure: the two six-row multi-line entries, the permissions
+// region and the injected module-specific group. The declaration is repeated
+// inside the breakpoint because the wider rule above would otherwise re-establish
+// two tracks on it.
+.module-settings__field--stacked {
+  grid-template-columns: minmax(0, 1fr);
+
+  @include mx.respond-above('md') {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  CONTROL GROUP
+// -----------------------------------------------------------------------------
+//  A control and whatever sits beside it: the two date entries each carry an
+//  adjacent calendar link, and several carry a validation message. Wrapping is
+//  intrinsic and deliberate, so on a narrow viewport the adjunct drops to its own
+//  line instead of overflowing, and the gap then supplies the row spacing as well
+//  as the column spacing. Baseline alignment keeps a link's text sitting on the
+//  same line as the text inside the control rather than on the control's box edge.
+//
+//  No block size is declared for the two six-row multi-line entries. The global
+//  form layer leaves that to the rows attribute, which is the markup mechanism
+//  for it, so the legacy six-row height carries over natively and no height is
+//  invented here.
+.module-settings__control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+// MIGRATION: the two choice groups rendered horizontally in the legacy screen and
+// still do, but as a wrapping flex row rather than as a single non-wrapping line,
+// so four alignment choices cannot push the layout wider than the viewport. The
+// row gap is the tighter step and the column gap the looser one, which keeps the
+// options distinguishable from one another when the row wraps. The individual
+// option labels are styled by the global form layer and are not touched here.
+.module-settings__choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  INJECTED MODULE-SPECIFIC GROUP
+// -----------------------------------------------------------------------------
+//  The successor to the legacy panel that hosted each module's own settings
+//  control. Only flow and rhythm are declared: what is placed inside owns its own
+//  appearance, and this file must not presume it.
+.module-settings__slot {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+//  The three commands the legacy screen closed with. A real gap rather than the
+//  literal spacing characters the legacy markup used between them, so the
+//  separation survives the collapsing of repeated spaces and the row wraps
+//  cleanly instead of overflowing. The buttons themselves are styled by the
+//  global form layer.
+.module-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  HIDDEN-ATTRIBUTE GUARD
+// -----------------------------------------------------------------------------
+//  Every block above is given a grid or a flex display value, and an author
+//  display value defeats the user-agent rule that gives the hidden attribute its
+//  effect. A group the template marks hidden would therefore stay on screen. The
+//  two rules below restore the attribute's meaning for this component's own
+//  elements, and for the component's own element when a parent marks it hidden.
+//
+//  This hides nothing by itself; it only honours a decision the template has
+//  already stated. A collapsed group whose toggle reports itself not expanded
+//  must also leave the accessibility tree, or the reported state contradicts what
+//  assistive technology can actually reach — so removing it is the correct
+//  behaviour here rather than a lapse of the rule against hiding announced
+//  content, which concerns content that carries no such author instruction.
+//
+//  Both forms are scoped to this component, so neither can reach inside a shared
+//  component and override an appearance this file does not own. Written once
+//  rather than repeated per block, which holds the emitted weight to two short
+//  selectors instead of one per display declaration.
+//
+// MIGRATION: the legacy screen had no equivalent and needed none. Its collapsible
+// groups were server-rendered panels whose visibility was decided before any
+// markup reached the browser, so there was no client-held hidden state to honour.
+// Net-new, and required by either of the two disclosure affordances the target
+// template may choose: a native disclosure group hides its own content, but a
+// toggle paired with a separately marked panel relies entirely on this guard.
+:host([hidden]) {
+  display: none;
+}
+
+:host [hidden] {
+  display: none;
+}
+
+// =============================================================================
+//  NET ADDITIONS AND DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: every spacing value above resolves to the shared four-unit scale,
+// and that scale is itself a net addition — the legacy stylesheet has no spacing
+// system, only ad-hoc values with no intermediate step. The corner and elevation
+// scales are net additions for the same reason, and this screen uses NEITHER:
+// the legacy design is square-cornered and flat, both properties occurring zero
+// times across its one thousand and thirty lines, so no rounding and no shadow
+// is introduced. An intentional visual refinement that alters no behaviour.
+//
+// MIGRATION: the three near-identical legacy font stacks are consolidated into
+// the single base family token. No family name is written in this file; only the
+// token is referenced.
+//
+// MIGRATION: the module colour and module border entries on this screen are
+// PERSISTED DATA FIELDS, not style inputs. The legacy screen let an administrator
+// type a colour with no length limit and no validation at all, and a border width
+// limited to one digit with an integer check. Both are module properties the API
+// returns and the form edits. Neither becomes a token, and neither value is ever
+// interpolated into a declaration — doing so would break the zero-literal rule
+// and open a style-injection path through user-supplied text at the same time.
+//
+// MIGRATION: rich text editing is not carried forward. The two multi-line
+// entries are plain multi-line controls, because the legacy editor provider is
+// out of scope. A deliberate functional reduction, not an oversight.
+//
+// MIGRATION: no data grid is styled here. The genuine grids of this application
+// are owned by the dedicated shared grid component and the global grid partial;
+// this screen has none, and its permissions region is a shared component that
+// owns its own appearance.
+// =============================================================================

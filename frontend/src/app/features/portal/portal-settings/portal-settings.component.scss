@@ -1,0 +1,333 @@
+// Portal settings screen (route /portals/:portalId/settings).
+//
+// The legacy screen (Website/admin/Portal/sitesettings.ascx, 568 lines) is built
+// from 13 `dnn:SectionHead` controls arranged in a TWO-LEVEL hierarchy, not a flat
+// list: three top-level groups carrying `IncludeRule="True"` — Basic Settings
+// (L14), Advanced Settings (L204) and Stylesheet Editor (L539) — each pairing with
+// a `<table id="tbl…">` body, and ten sub-sections nested inside the first two.
+// Stylesheet Editor leaves with skinning, so TWO top-level groups survive and are
+// presented as a two-tab strip whose panels hold the nested collapsible sections.
+//
+// This file owns LAYOUT and the two affordances that have no shared component: the
+// tab strip and the collapsible section head. Everything else is consumed, never
+// restated — _forms.scss already styles `fieldset`, `legend`, `label`, the text and
+// choice controls, `button`, `.form-error` and `.form-help` (which IS the legacy
+// `.Help` panel), and _reset.scss already puts a `:focus-visible` ring on every
+// interactive element and gives the bare `<hr>` its rule. View encapsulation scopes
+// every selector here, so the surface stays flat: one block class, element classes,
+// no descendant chains and no piercing selector.
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  MEASURES
+// -----------------------------------------------------------------------------
+// The token vocabulary declares no width or measure token, and the spacing scale
+// stops at --space-8 (2.5rem), so the two narrow field steps are composed by
+// ADDING tokens rather than by naming a length. Compile-time Sass names, so the
+// same expression is never restated and the emitted CSS is unchanged.
+//
+// Legacy control widths were an artefact of the layout tables: a table cell has no
+// intrinsic sizing, so every control carried an explicit pixel width. In a grid the
+// control track supplies the width and the wide step needs no declaration at all.
+$label-measure: calc(var(--space-8) + var(--space-8) + var(--space-8) + var(--space-6));
+$field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+}
+
+// Body type is set once on the root and inherited by every region below rather
+// than restated per rule, which keeps the component self-sufficient instead of
+// depending on a global base rule to supply its family.
+.portal-settings {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// -----------------------------------------------------------------------------
+//  TAB STRIP — the two surviving top-level groups
+// -----------------------------------------------------------------------------
+// The strip's own rule reproduces the `<hr noshade size="1">` that every
+// `IncludeRule="True"` section head emitted (Website/controls/sectionheadcontrol.ascx).
+// The measured colour of the legacy `HR` rule (default.css L626-630) is the exact
+// value the muted token carries, so the token reproduces it without restating it.
+.portal-settings__tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+}
+
+// A tab is a `<button>`, so its type, padding, radius and cursor already come from
+// _forms.scss. Only the tab-specific presentation is declared: the chrome is
+// dropped so the strip does not read as a button group, and a bottom edge is
+// reserved in the resting state so selecting a tab cannot shift the row.
+.portal-settings__tab {
+  background-color: transparent;
+  border-color: transparent;
+  font-size: var(--font-size-lg);
+}
+
+// Declared flatly rather than inside a hover-capability query. The shared mixin
+// surface is closed and exports no such query, and a component may not author one
+// itself, so the flat rule is the compliant form. The border colour matches the
+// measured legacy tab border (.LoginTab, default.css L996) exactly.
+.portal-settings__tab:hover {
+  border-color: var(--color-primary-hover);
+}
+
+// Selected state, keyed on the ARIA attribute rather than on a presentational
+// class. That satisfies the --color-selected consumption contract structurally:
+// the tint can never be painted without the state also being exposed to assistive
+// technology, because the attribute IS the selector.
+//
+// Distinguished by THREE cues, only two of which are colour: the bold weight
+// carries the state on its own for a reader with a colour-vision deficiency. Tab
+// ink stays --color-primary, which measures 8.24:1 on this tint.
+//
+// Ordered AFTER the hover rule deliberately. The two have equal specificity, so
+// source order decides: this way hovering the selected tab tints its remaining
+// edges without overwriting the bottom edge that marks the selection, and the
+// state survives the pointer being over it.
+.portal-settings__tab[aria-selected='true'] {
+  font-weight: var(--font-weight-bold);
+  background-color: var(--color-selected);
+  border-block-end-color: var(--color-primary);
+}
+
+// _reset.scss already rings `button` and `summary` on :focus-visible. Re-applying
+// the mixin here is deliberate and free of side effects — it is documented
+// idempotent — and it keeps the ring attached to these two affordances even if the
+// template renders either of them as something other than a native element.
+.portal-settings__tab,
+.portal-settings__toggle {
+  @include mx.focus-ring;
+}
+
+// -----------------------------------------------------------------------------
+//  TAB PANEL
+// -----------------------------------------------------------------------------
+// The legacy group bodies were fixed at width="525" inside a width="560" wrapper.
+// No width token exists, so the measure snaps to the smallest declared breakpoint
+// step — the helper is exported for exactly this use. A shade narrower than the
+// legacy table, and a deliberate snap to the scale rather than a pixel match.
+.portal-settings__panel {
+  display: grid;
+  gap: var(--space-4);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// The per-group help paragraph, BasicSettingsHelp / AdvancedSettingsHelp in
+// Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx.
+.portal-settings__intro {
+  margin-block: 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-base);
+}
+
+// -----------------------------------------------------------------------------
+//  NESTED COLLAPSIBLE SECTION
+// -----------------------------------------------------------------------------
+// Renders as `<fieldset><legend>` — whose border, radius, padding and legend type
+// _forms.scss owns — or as `<details><summary>` where the collapse the legacy
+// `IsExpanded` attribute carried is genuinely reproduced. Nothing is declared here
+// that either of those already provides.
+.portal-settings__section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// The section head: an icon-and-title row followed by a rule
+// (Website/controls/sectionheadcontrol.ascx). The button chrome is stripped so the
+// head reads as a heading, and the rule is reinstated as its own bottom edge so it
+// appears whether or not the template emits a separate `<hr>`. `display` is left
+// untouched on purpose: overriding it on a `<summary>` suppresses the native
+// disclosure marker, which is a non-colour cue for the expanded state and worth
+// more than the alignment it would buy.
+.portal-settings__toggle {
+  background-color: transparent;
+  border-color: transparent;
+  border-block-end-color: var(--color-text-muted);
+  padding-inline: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+  text-align: start;
+  cursor: pointer;
+}
+
+// -----------------------------------------------------------------------------
+//  FIELD GRID — replaces the layout tables
+// -----------------------------------------------------------------------------
+.portal-settings__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  // Re-anchors the border-box chain. The global reset sets it on the root and
+  // inherits it through `*`, but inheritance follows the flat tree, and a
+  // collapsible section slots its content through a UA shadow `<slot>` that no
+  // author selector can match — so the slot keeps the initial `content-box` and
+  // everything below inherits that instead. A control carrying an explicit
+  // `inline-size: 100%` then resolves 100% against its CONTENT box and adds its
+  // padding and border on top, overflowing the track it was told to fill and
+  // breaking alignment with the controls above it. Setting the used value here
+  // lets the global `*` rule inherit the correct value down the subtree. Measured
+  // effect: a multi-line control returns to the track width exactly.
+  box-sizing: border-box;
+}
+
+// One column by default and two from the medium step up, which is the mobile-first
+// direction the shared breakpoint mixins declare. The label track stands in for the
+// measured width="150" label cells; the control track absorbs the remainder, so the
+// 325 and 300 pixel control groups both simply fill it.
+.portal-settings__field {
+  display: grid;
+  gap: var(--space-1);
+  align-items: start;
+
+  @include mx.respond-above('md') {
+    grid-template-columns: $label-measure minmax(0, 1fr);
+    column-gap: var(--space-4);
+  }
+}
+
+// The label cell also carries the field's help block, which is where the legacy
+// `pl*.Help` strings hung. Long labels wrap inside the fixed track exactly as they
+// did inside the fixed cell rather than widening it.
+.portal-settings__label {
+  display: grid;
+  gap: var(--space-1);
+  overflow-wrap: break-word;
+}
+
+// A grid rather than a plain block so the control it holds stretches to the track
+// instead of falling back to its intrinsic size — which is what the legacy pixel
+// widths were compensating for — and so a control paired with a notice stacks
+// cleanly.
+.portal-settings__control {
+  display: grid;
+  gap: var(--space-1);
+}
+
+// The two narrow steps. Applied to the wrapper, so whichever control it holds is
+// capped with it. Everything else fills the track.
+.portal-settings__control--medium {
+  max-inline-size: $label-measure;
+}
+
+.portal-settings__control--narrow {
+  max-inline-size: $field-narrow;
+}
+
+// A grid item whose inline size is `auto` already stretches to its track, which is
+// how a text box, a select and a textarea reach the width the step allows — the very
+// thing the legacy pixel widths existed to force. No rule is needed to obtain that.
+//
+// A CHOICE input must be opted OUT of it. Verified in a real browser: without this
+// rule the checkbox stretched to the full 480px track, sizing the box itself rather
+// than its field. This screen carries three of them (sitesettings.ascx L347, L504,
+// L513) plus two radio groups, so the defect was not hypothetical.
+.portal-settings__control > :is([type='checkbox'], [type='radio']) {
+  justify-self: start;
+}
+
+// -----------------------------------------------------------------------------
+//  HOST-LOCK NOTICE
+// -----------------------------------------------------------------------------
+// The advisory that sits with the Banners choice group (sitesettings.ascx L118-126)
+// when the setting is held at host level. Muted and unemphasised because it
+// qualifies the control rather than competing with it; it measures 5.49:1 on the
+// page background and clears AA. It is never the only signal — the control it
+// qualifies carries its own disabled state.
+.portal-settings__notice {
+  margin-block: 0;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
+}
+
+// -----------------------------------------------------------------------------
+//  ACTION BAR
+// -----------------------------------------------------------------------------
+// Update / Cancel / Delete (sitesettings.ascx L562-567). Layout only — the buttons
+// themselves are styled globally. A real gap replaces the literal `&nbsp;&nbsp;`
+// the legacy markup used, so the separation survives white-space collapsing, and
+// the row wraps rather than overflowing a narrow viewport.
+.portal-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  padding-block-start: var(--space-2);
+}
+
+// =============================================================================
+//  DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+// MIGRATION: the legacy screen is built almost entirely from layout tables — 14
+// `summary="… Design Table"` attributes were counted on it — and contains NOT ONE
+// real data grid. Every one of them is replaced by CSS Grid for the field rows and
+// Flexbox within rows. No rule in this file selects a table element.
+//
+// MIGRATION: the tab strip and the collapsible section head are styled here, in the
+// screen that needs them, rather than promoted to shared components. The shared
+// design-system inventory is closed at ten members and neither affordance is one of
+// them, so adding an eleventh to serve a single screen is declined.
+//
+// MIGRATION: the legacy section-head toggle carried `tabIndex="-1"`
+// (Website/controls/sectionheadcontrol.ascx), placing the ONLY control that expands
+// a section outside the tab order — a keyboard user could not reach it at all. The
+// target reverses this: the head is a natively focusable element carrying
+// `aria-expanded`, and it is given a visible focus ring. A genuine accessibility
+// repair with no cost to the resting appearance.
+//
+// MIGRATION: the legacy tab distinguished its selected state by a background-image
+// sprite offset alone (.LoginTabSelected, default.css L999-1008, which differs from
+// .LoginTab only by `background-position`). That is both an out-of-scope image
+// dependency and a colour-only state cue. The selected tab here is marked by weight
+// as well as tint and edge, so the state survives a colour-vision deficiency, and no
+// image asset is referenced.
+//
+// MIGRATION: the legacy `.WorkPanel` wrapper (sitesettings.ascx L13) has NO
+// declarations in any stylesheet under Website/ — verified across every file — so
+// there was nothing to port for the outer panel, and its surface is composed from
+// tokens alone. `Website/Portals/_default/portal.css` is in the same position: 80
+// selectors and zero declaration lines, so it contributes nothing.
+//
+// MIGRATION: every spacing value above comes from the shared spacing scale, and that
+// scale is itself a NET ADDITION — the legacy stylesheet has no spacing, radius or
+// elevation system, only ad-hoc values. This screen uses NEITHER radius nor
+// elevation: the legacy design is square-cornered and flat, so no rounding and no
+// shadow is introduced beyond what the global control rules already carry. An
+// intentional refinement that alters no behaviour.
+//
+// MIGRATION: the three near-identical legacy font stacks are consolidated into the
+// single base family token, an imperceptible difference. The families are named only
+// in the token declaration; this file references the token and never a family name.
+//
+// MIGRATION: the legacy olive `666644` (written without its sigil so the file stays
+// clean of hex literals even in commentary) is deliberately NOT tokenised. Its two
+// legacy uses are incidental decoration with no equivalent on this screen, so no rule
+// here reaches for it and no palette entry was added to accommodate it.
+//
+// MIGRATION: the legacy control widths 325, 300, 150 and 100 and the 525 group
+// measure are expressed as scale values, never as literals — the group measure snaps
+// to the smallest breakpoint step, the two narrow steps are composed by adding
+// spacing tokens, and the wide step is the grid track itself. The 325 and 300 groups
+// collapse into that one fluid step: the 25-pixel difference between them was a
+// layout-table artefact and carries no meaning once the track supplies the width.
+//
+// GAPS REPORTED, NOT WORKED AROUND: the token vocabulary declares no width or
+// measure token, and the shared mixin surface exports neither a motion helper nor a
+// hover-capability query. Nothing here substitutes a literal or a hand-written
+// at-rule for either — the hover rule is declared flatly and no transition is
+// introduced at all, which is also faithful, since the legacy stylesheets declare
+// `transition`, `animation`, `@keyframes` and `transform` zero times each.
+// =============================================================================

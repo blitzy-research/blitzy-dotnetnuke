@@ -52,9 +52,20 @@
 //  redundant with the blockification a grid item already receives, and it is
 //  stated anyway so the band still lays out correctly if it is ever mounted
 //  outside the shell grid — an unknown element such as a component host is
-//  inline by default, and an inline host would collapse the band's block padding.
+//  `inline` by default, and an inline host would wrap the band in an inline box,
+//  which neither establishes the block box the band needs nor sizes to the
+//  content column.
 //
-//  MIGRATION: this stylesheet is a NET ADDITION IN FULL, and the values below are
+//  Note precisely WHAT this rule targets, because the two elements are easy to
+//  conflate: `:host` compiles to a host-attribute selector, so it styles the
+//  `<app-footer>` element, NOT the inner `<footer>`. The inner `<footer>` is a
+//  block box already, from the user-agent stylesheet, and nothing here needs to
+//  restate that. Verified in a rendered build: `<app-footer>` computes
+//  `display: block` with a transparent background, while the fill, the hairline
+//  and the type all resolve on the inner element — so the band's presentation is
+//  scoped to `<footer>` exactly as authored below.
+//
+// MIGRATION: this stylesheet is a NET ADDITION IN FULL, and the values below are
 //  measured rather than invented wherever a measurement exists. There was no
 //  component stylesheet to port: the legacy band was assembled at request time by
 //  `LoadSkin` (Website/Default.aspx.vb L217-L243) and styled by the cached,
@@ -63,7 +74,7 @@
 //  0.2.2.4), so the skin tree is read here as measurement and negative inventory
 //  only, never as a porting target.
 //
-//  MIGRATION: the type is measured from the legacy copyright label's own class.
+// MIGRATION: the type is measured from the legacy copyright label's own class.
 //  Website/admin/Skins/copyright.ascx L2 renders the notice through
 //  `<asp:label id="lblCopyright" cssclass="SkinObject" …>`, and `.SkinObject`
 //  (Website/Portals/_default/default.css L18-L25) declares `font-weight: bold`,
@@ -78,7 +89,7 @@
 //  zero-hardcoded-values rule. `text-decoration: none` is not restated: the band
 //  emits no anchor, so there is nothing to un-decorate.
 //
-//  MIGRATION: the notice is END-ALIGNED because that is where the legacy skin put
+// MIGRATION: the notice is END-ALIGNED because that is where the legacy skin put
 //  it. The only real skin in the checkout floats the copyright to the trailing
 //  edge — `#copy_style { float: right; }` at
 //  Website/Portals/_default/Skins/MinimalExtropy/skin.css L52 — with the legal
@@ -90,7 +101,7 @@
 //  moves to the leading edge under a right-to-left locale instead of stranding
 //  itself against the wrong margin.
 //
-//  MIGRATION: the four float-clearing and sliding-doors wrapper elements are
+// MIGRATION: the four float-clearing and sliding-doors wrapper elements are
 //  eliminated and produce no rule here. The legacy band nested `.bot_left`,
 //  `.bot_right`, `.bot_bg` and `.bot_pad` (skin.css L46-L50), each a raster
 //  background image, and closed with an empty `.clear_float` element (L54) —
@@ -99,31 +110,53 @@
 //  five, and no raster asset is referenced because the only static asset this
 //  workspace ships is the favicon.
 //
-//  MIGRATION: the band's separation from the main region is a FILL plus a
+// MIGRATION: the band's separation from the main region is a FILL plus a
 //  hairline, replacing that raster strip. The fill is --color-surface, which is a
 //  net addition: `.bot_bg` carried an image rather than a colour, so there is no
 //  measured band colour to be faithful to, and the surface token is the
-//  vocabulary's designated non-white band fill. The hairline resolves to
-//  --color-primary rather than to either border token, following the explicit
-//  direction in src/styles/_tokens.scss L232-L235: both border tokens are flagged
-//  there as falling below the contrast threshold for a non-text boundary — 1.37
-//  and 1.61 to 1 — and consumers are told to use the strong border or the brand
-//  colour wherever a boundary must be perceivable rather than decorative. The
-//  brand colour measures 10.87 to 1 against this band's fill, and it is also what
-//  the legacy in-scope frame actually used, `#003366 1px solid` at default.css
-//  L12-L15. The sibling confirm-dialog panel border resolves the same way, so
-//  this is the established convention here rather than a local invention.
+//  vocabulary's designated non-white band fill. The hairline, by contrast, is
+//  MEASURED rather than invented: it resolves to --color-text-muted, whose value
+//  #696969 is exactly the colour the one in-scope legacy separator rule declared —
+//  `HR { color: #696969; height: 1pt; text-align: left; }` at
+//  Website/Portals/_default/default.css L626-L631, the appearance the
+//  `<hr noshade size="1">` in Website/controls/sectionheadcontrol.ascx L7 picked
+//  up. The legacy point width becomes --border-width. So this is a translation at
+//  rank 2 of the precedence order, not an approximation, and the same recipe is
+//  already the workspace's single separator idiom: src/styles/_reset.scss
+//  L257-L261 draws the bare rule element with it and src/styles/_layout.scss
+//  L374-L381 draws the shared between-sections separator with it, both character
+//  for character.
 //
-//  MIGRATION: the legacy band's fixed height is NOT restated, and it does not
+//  The two BORDER tokens are deliberately not used, and the brand colour is
+//  deliberately not substituted for the muted one. src/styles/_tokens.scss
+//  L72-L79 flags --color-border at 1.37 to 1 and --color-border-strong at 1.61 to
+//  1 against the page background — below the 3-to-1 threshold for a non-text
+//  boundary — and tells consumers to reach for the strong border or the brand
+//  colour wherever a boundary must be perceivable. That direction is aimed at
+//  those two tokens and does not reach this one: --color-text-muted measures 4.73
+//  to 1 against this band's own fill and 5.49 to 1 against the main region above
+//  it, so it clears the non-text threshold outright and needs no substitution.
+//  The sibling confirm-dialog does bind its border to --color-primary, but that
+//  is a PANEL FRAME enclosing a top-layer surface, which is a different job from
+//  a one-sided rule dividing two stacked bands; following the frame convention
+//  here would discard a measured legacy value to solve a contrast problem this
+//  hairline does not have. The band's TEXT keeps --color-primary, and the two
+//  stay distinct because they descend from two distinct legacy rules.
+//
+// MIGRATION: the legacy band's fixed height is NOT restated, and it does not
 //  need to be. `.bot_bg` pinned `height: 41px` (skin.css L48) because its
-//  background image was 41px tall. The intrinsic height here lands on the same
-//  measurement from content and padding alone: --space-3 above and below is 12px
-//  each, and the line box is --line-height-base 1.5 against --font-size-base
-//  11px, which is 16.5px — 40.5px in total. A fixed height would clip the notice
-//  the moment a reader raised their browser base font size, so the band is left
-//  to size itself.
+//  background image was 41px tall. The intrinsic height here lands on that same
+//  measurement without declaring it: --space-3 above and below is 12px each and
+//  the line box is --line-height-base 1.5 against --font-size-base 11px, which
+//  is 16.5px, giving 40.5px of content plus padding; the hairline adds its
+//  --border-width, for 41.5px in total. Measured in a rendered build the band
+//  reports exactly that — a 41.5px border box, a 41px padding box once the
+//  border is excluded — against the legacy 41px. A fixed height would clip the
+//  notice the moment a reader raised their browser base font size, so the band
+//  is left to size itself and arrives within half a pixel of the original
+//  anyway.
 //
-//  MIGRATION: the inline gutter is --space-4, matching the shell's own main
+// MIGRATION: the inline gutter is --space-4, matching the shell's own main
 //  gutter — src/styles/_layout.scss declares `.shell__main { padding:
 //  var(--space-6) var(--space-4); }` — so the notice aligns with the trailing
 //  edge of the page content above it rather than with the viewport. That
@@ -134,7 +167,7 @@
 //
 //  WHY THERE IS NO MEDIA QUERY
 //  ---------------------------
-//  MIGRATION: no breakpoint is used, deliberately, and this is a decision rather
+// MIGRATION: no breakpoint is used, deliberately, and this is a decision rather
 //  than an omission — src/styles/_mixins.scss exposes both `respond-above` and
 //  `respond-below`, and a raw media query is forbidden here in any case. The band
 //  is one line of text in a single grid row: it has no columns to collapse and no
@@ -146,7 +179,7 @@
 //
 //  WHY THERE IS NO MOTION, NO HOVER RULE AND NO FOCUS RULE
 //  ------------------------------------------------------
-//  MIGRATION: no timed state change, no keyframe block and no reduced-motion
+// MIGRATION: no timed state change, no keyframe block and no reduced-motion
 //  query appears here. The legacy portal declares all three zero times across
 //  both reference stylesheets, so stillness is the faithful choice; the
 //  framework's optional animations package is absent from the pinned dependency
@@ -164,14 +197,24 @@
 //  ACCESSIBILITY
 //  -------------
 //  Colour contrast is the whole accessibility surface of a non-interactive text
-//  band, and it is measured, not assumed: --color-primary on --color-surface is
-//  10.87 to 1, comfortably above the 4.5-to-1 minimum for normal text, so no
-//  accessibility flag is required and no measured legacy value had to be
-//  compromised to reach it. The line height is the vocabulary's base 1.5 rather
-//  than a tighter step, which is the readability-preserving choice for body copy.
-//  The landmark itself is supplied by the template's `<footer>` element with no
-//  ARIA attribute at all, which is the correct treatment for a top-level
-//  contentinfo element; nothing here suppresses or competes with it.
+//  band, and both of this band's two colour pairings are measured rather than
+//  assumed. The TEXT, --color-primary on --color-surface, is 10.87 to 1. The
+//  4.5-to-1 minimum is the right bar to hold it to and not the 3-to-1 large-text
+//  relaxation: the notice renders at --font-size-base, 11px, and although it is
+//  bold, bold text only qualifies as large above 18.66px, so this is normal text
+//  by definition. It clears the stricter bar more than twice over. The HAIRLINE,
+//  --color-text-muted on the same fill, is 4.73 to 1 against the band and 5.49 to
+//  1 against the main region it divides from, against a 3-to-1 threshold for a
+//  non-text boundary. No accessibility flag is therefore required anywhere in
+//  this file, and — the point worth recording — no measured legacy value had to be
+//  compromised to get there, so rank 2 of the precedence order never came into
+//  conflict with rank 3. The line height is the vocabulary's base 1.5 rather than
+//  a tighter step, which is the readability-preserving choice for body copy, and
+//  every length here scales with the reader's base font size because the ramp and
+//  the spacing scale are both expressed in rem. The landmark itself is supplied
+//  by the template's `<footer>` element with no ARIA attribute at all, which is
+//  the correct treatment for a top-level contentinfo element; nothing here
+//  suppresses or competes with it.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -189,18 +232,19 @@
 //  not needed: no width or height is declared, so the padding and border simply
 //  add to an intrinsic size.
 //
-//  MIGRATION: the hairline colour is the muted-text token, not the primary one.
+// MIGRATION: the hairline colour is the muted-text token, not the primary one.
 //  The measured legacy rule for a horizontal separator is
 //  `Website/Portals/_default/default.css` L626-631, `HR { color: #696969;
 //  height: 1pt; text-align: left; }` - mid grey at one point - and #696969 is
 //  the value the token vocabulary carries as `--color-text-muted` while the one
 //  point becomes `--border-width`. Using it here also keeps ONE separator
-//  treatment expressed one way across the workspace: `_reset.scss` L451 styles
-//  the rule element itself with exactly this recipe, and `_layout.scss` L485
-//  uses it for the shared section separator. The band's TEXT keeps
-//  `--color-primary` (#003366) and bold weight, because that is the measured
-//  `.SkinObject` treatment at default.css L18-25 that the legacy copyright skin
-//  object rendered with - the two are different legacy rules and stay distinct.
+//  treatment expressed one way across the workspace: `_reset.scss` L257-L261
+//  styles the rule element itself with exactly this recipe, and `_layout.scss`
+//  L374-L381 uses it for the shared between-sections separator. The band's TEXT
+//  keeps `--color-primary` (#003366) and bold weight, because that is the
+//  measured `.SkinObject` treatment at default.css L18-25 that the legacy
+//  copyright skin object rendered with - the two are different legacy rules and
+//  stay distinct.
 // -----------------------------------------------------------------------------
 footer {
   padding-block: var(--space-3);

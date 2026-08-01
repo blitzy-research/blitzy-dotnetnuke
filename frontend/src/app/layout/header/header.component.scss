@@ -1,0 +1,559 @@
+// =============================================================================
+//  header.component.scss
+//  Application header — the administration shell's single banner band
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Styles the one `banner` landmark of the dnn-migration administration shell.
+//  The band carries the application's identity affordance at its leading edge and
+//  the session cluster — the signed-in user and the sign-out control — at its
+//  trailing edge. This file lays out the band's OWN contents with Flexbox and
+//  declares its fill, its ink, its type, its gutter and its lower boundary.
+//
+//  It does NOT place the band. Placement is a grid concern and belongs to the
+//  shell: src/styles/_layout.scss declares the `.shell__header` region rule and
+//  assigns it the named header area, and its section 2 states that those region
+//  rules are "PLACEMENT ONLY", because "the host and the landmark are two
+//  different boxes" — a padding declared there would ADD to the padding declared
+//  here rather than override it. Accordingly no named area, no grid template and
+//  no track sizing appears anywhere below.
+//
+//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
+//  ------------------------------------------------
+//  The project rules document was paged five times, four of those windows opening
+//  beyond its first line, and every window reported that no user rules were
+//  provided. That absence is NOT treated as licence to lower the bar and no rule
+//  is invented to fill it. What governs instead is the migration plan's own
+//  normative sections and its enterprise baseline, and the precedence order
+//  applied throughout this file is the plan's own: design-system compliance
+//  first, then visual continuity with the legacy portal, then accessibility, then
+//  responsive behaviour, then code quality. Where the first outranks the second
+//  the token wins and the divergence is annotated rather than absorbed.
+//
+//  ZERO HARDCODED VALUES
+//  ---------------------
+//  Every property value below resolves either to a design token declared in
+//  src/styles/_tokens.scss or to one of the six literals the plan permits — `0`,
+//  `none`, `auto`, `inherit`, `currentColor`, `transparent`. `flex`, `block`,
+//  `column`, `row`, `wrap`, `center`, `space-between`, `flex-start`, `pointer`,
+//  `not-allowed` and `break-word` name a layout mechanism or an interaction
+//  affordance rather than a measured design decision, and none has a token to
+//  resolve to. There is no colour literal, no length literal, no bare numeric
+//  weight, no importance flag, no asset-reference function and no raw media query
+//  anywhere in this file.
+//
+//  SELECTOR CONTRACT — shared with header.component.html
+//  ---------------------------------------------------
+//  Emulated view encapsulation rewrites every selector below with this
+//  component's own content attribute, so all of them are confined to this
+//  component: they cannot reach the shell's other bands, and they cannot reach a
+//  `<header>`, `<a>` or `<button>` that a feature screen renders inside `<main>`.
+//
+//    <header>                      the banner landmark; the Flexbox container
+//      <a class="app-header__brand">          the identity affordance
+//      <div class="app-header__actions">      the trailing session cluster
+//        <span class="app-header__user">      the signed-in user's display name
+//        <button class="app-header__logout">  the sign-out control
+//
+//  The split between type and class selectors is deliberate and load-bearing.
+//  Behaviour that is guaranteed by the ELEMENT — the chrome-link treatment on an
+//  anchor, the native-chrome reset on a button — is attached to the type selector,
+//  so it holds however the paired template names its classes. Only the structural
+//  layout is attached to the class vocabulary. A class name that drifts therefore
+//  degrades the arrangement of the band, never the correctness of its links,
+//  buttons or focus indication.
+//
+//  WHY THE HOST IS A BLOCK AND NOT `display: contents`
+//  --------------------------------------------------
+//  The shell places this component as a named grid area, and its intended markup
+//  is `<app-header class="shell__header">`. The host element is therefore the grid
+//  ITEM, and a grid item with `display: contents` is removed from the grid, which
+//  would drop the band out of its own row. The sibling confirm-dialog component
+//  does use `display: contents`, correctly, because its host wraps a top-layer
+//  dialog rather than participating in any layout. Declaring `block` here is
+//  redundant with the blockification a grid item already receives, and it is
+//  stated anyway so the band still lays out correctly if it is ever mounted
+//  outside the shell grid — an unknown element such as a component host is inline
+//  by default, and an inline host would collapse the band's block padding. The
+//  host is also not wrapped in any extra element: an interposed `<div>` would
+//  change the parent-child relationship the shell's grid depends on.
+//
+//  MIGRATION: this stylesheet is a NET ADDITION IN FULL. There was no component
+//  stylesheet to port, because the legacy band did not exist as a styleable unit:
+//  it was assembled at request time by `LoadSkin` (Website/Default.aspx.vb
+//  L217-L243), which called `LoadControl("~" & SkinPath)` at L224 and bound it
+//  with `ctlSkin.DataBind()` at L226, injecting the result into
+//  `<asp:PlaceHolder ID="SkinPlaceHolder">` at L590. One layout is compiled here
+//  instead: there is no runtime skin selection, no skin registry and no theme
+//  selector, because skinning and containers are out of scope.
+//
+//  MIGRATION: the cached, ordered, twice-executed runtime stylesheet cascade is
+//  replaced by one build-time bundle plus this component-scoped sheet.
+//  `ManageStyleSheets` (Website/Default.aspx.vb L355-L408) read
+//  `DataCache.GetCache("CSS")` into a `Hashtable` at L360 and appended, in order,
+//  `default.css` at L366-L368 — flagged in the source itself as
+//  "' default style sheet ( required )" — then the skin package's `skin.css`,
+//  existence-probed through `Server.MapPath` at L371-L384, then the skin-file
+//  stylesheet at L387-L400, then `portal.css` at L402-L406, with the cache writes
+//  gated on `Common.Globals.PerformanceSetting` at L378 and L394. It ran TWICE,
+//  straddling the skin injection: L587 `ManageStyleSheets(False)`, L590 the
+//  placeholder add, L593 `ManageStyleSheets(True)`, L596 `ManageFavicon()`. The
+//  target declares exactly one global stylesheet in angular.json and resolves
+//  everything else at build time, so no ordering can vary per request.
+//
+//  MIGRATION: `skin.css` is deliberately NOT a source of values. The only real
+//  skin in the checkout, MinimalExtropy, ships a 5241-byte `skin.css` that the
+//  cascade above loaded second — but it sits inside an excluded tree, so it is
+//  not a legitimate visual-token source. Its sibling `index.ascx` IS read, for
+//  COMPOSITION only: L69-L71 place the user and login skin objects together at the
+//  trailing edge of the band, which is the arrangement reproduced below. No colour,
+//  length or font from the skin's own stylesheet is carried, which is why none of
+//  the skin's chrome appears here.
+//
+//  MEASURED PROVENANCE — the two in-scope visual sources
+//  ----------------------------------------------------
+//  Website/Portals/_default/default.css   1030 lines
+//  Website/Portals/_default/portal.css     275 lines, 80 rule bodies, ALL EMPTY
+//
+//  MIGRATION: the band's TYPE is measured from the legacy skin-object class, which
+//  is what every control in the legacy header band actually rendered with.
+//  `.SkinObject` (default.css L18-L25) declares `font-weight: bold`,
+//  `font-size: 8.5pt`, `color: #003366`, `font-family: Tahoma, Arial, Helvetica`
+//  and `text-decoration: none`. Three of those four resolve to tokens exactly: the
+//  bold weight, the brand colour — #003366 is --color-primary verbatim — and the
+//  family, which --font-family-base consolidates from the three near-identical
+//  legacy stacks. The size is the one approximation: 8.5pt is 11.33px and the
+//  nearest step of the ramp is --font-size-base at 11px. The 0.33px difference is
+//  imperceptible, it is the same resolution the sibling footer band adopted, and
+//  the token is the correct answer under the zero-hardcoded-values rule.
+//
+//  MIGRATION: the band's FILL is --color-surface, and it is a net addition because
+//  there is no measured header colour to be faithful to. portal.css declares
+//  `.HeadBg` at L9 under the comment "background color for the header at the top
+//  of the page" and its body is EMPTY — as are all 80 of that file's rule bodies,
+//  so it contributes region vocabulary and zero values. The legacy band's actual
+//  fill came from the excluded skin's raster imagery. --color-surface is the
+//  vocabulary's designated non-white band fill, it is the second most frequent
+//  colour in the legacy stylesheet, and it is exactly what the sibling footer band
+//  resolved to, so the shell's two chrome bands share one treatment and bracket a
+//  white content region. --color-primary measures 10.87:1 against it, clearing AA
+//  and AAA for normal text.
+//
+//  MIGRATION: the band's lower boundary uses the workspace's single separator
+//  recipe rather than a fourth colour of its own. That recipe is
+//  `var(--border-width) var(--border-style) var(--color-text-muted)`, and it is
+//  already established in three places: the rule element in _reset.scss, the
+//  between-sections separator in _layout.scss, and the sibling footer band's own
+//  boundary. It traces to the measured legacy separator
+//  `HR { color: #696969; height: 1pt; }` (default.css L626-L631), where #696969 is
+//  --color-text-muted verbatim and one point becomes --border-width. The
+//  alternative was considered and rejected on the record: the legacy in-scope
+//  bordered panel `.ControlPanel, .PagingTable` (default.css L8-L16) frames itself
+//  with `#003366 1px solid` on all four sides, and the shared `.panel` primitive
+//  reproduces that faithfully — but adopting the brand colour HERE would fragment
+//  one separator treatment into two and leave the header disagreeing with the
+//  footer directly beneath the same content. The two border-named tokens were also
+//  weighed and rejected, and the design system settles it in its own words:
+//  _forms.scss annotates its fieldset boundary as "the one place --color-border is
+//  the right choice", because that line "carries no information and the WCAG 3:1
+//  non-text threshold does not bind on it", adding that "every boundary below that
+//  a user must be able to PERCEIVE uses a stronger value instead". Every use of
+//  --color-border and --color-border-strong in the workspace is a form-control
+//  outline or a decorative container edge; every structural separator BETWEEN
+//  layout regions uses the muted recipe. This boundary divides the banner landmark
+//  from the content region, so it is the perceivable kind and takes the stronger
+//  value. Only a block-end border is drawn, so
+//  the boundary appears where the band meets the content and never boxes the band
+//  in. `.PagingTable`'s companion `height: 33px` (L883-L886) is deliberately not
+//  restated: a fixed height would clip the band the moment a reader raised their
+//  browser base font size, so the band is left to size itself from its type and
+//  its padding.
+//
+//  MIGRATION: the gutter is --space-4 inline, matching both the shell's own page
+//  gutter — _layout.scss declares `.shell__main { padding: var(--space-6)
+//  var(--space-4); }` — and the sibling footer band. The identity affordance
+//  therefore aligns with the leading edge of the page content below it rather than
+//  with the viewport, and with the copyright notice below that. That alignment is
+//  why the value is a shared one and not a locally chosen one. The block padding
+//  is --space-3, matching the footer band, so the two chrome bands are the same
+//  height for the same content.
+//
+//  MIGRATION: no radius and no elevation are applied, though tokens for both
+//  exist. The legacy design is square-cornered and flat, and the shared `.panel`
+//  primitive records the same decision in the same words: a surface defined by its
+//  boundary does not also need a corner, and visual continuity outranks the mere
+//  availability of a token. The band is likewise not made sticky. A
+//  --z-index-sticky token exists, but pinning the banner to the viewport is a
+//  behavioural change the requirements never ask for and the legacy portal never
+//  had, and it would fight the shell's `min-block-size: 100vh` grid.
+//
+//  MIGRATION: no navigation and no heading are emitted or styled here. The legacy
+//  band held a horizontal menu and a breadcrumb alongside the logo
+//  (index.ascx L38-L68); that navigation now lives once, in layout/sidebar, which
+//  is the shell's sole navigation landmark, so this file grows no menu, no tab
+//  strip and no breadcrumb. Nor does the banner carry an `<h1>`: the page's single
+//  level-one heading belongs to the shared page-header component, and a second one
+//  in the banner would break heading order on every screen.
+//
+//  MIGRATION: the legacy separator between the two session controls was CONTENT,
+//  and it becomes spacing. index.ascx L70 places a literal
+//  `&nbsp;&nbsp;|&nbsp;&nbsp;` text node between the user and login skin objects.
+//  Here the two are separated by a `gap` declared against the shared spacing
+//  scale, so the separation is inspectable and adjustable instead of smuggled into
+//  the markup, and no pipe glyph is announced to a screen reader as if it were
+//  text.
+//
+//  MIGRATION: the identity affordance is TEXT, not a raster logo. The legacy logo
+//  skin object rendered an image sourced from the portal's own home directory
+//  (Logo.ascx.vb L66) wrapped in a hyperlink to the portal root whose tooltip was
+//  the portal name (L72-L73). No raster asset ships with this migration — the only
+//  static asset in the workspace is the favicon — so the affordance becomes a text
+//  link and its size is a net addition with no legacy measurement behind it. It
+//  resolves to --font-size-xl, one step BELOW the --font-size-xxl step that the
+//  page title uses, so the banner reads as identity without ever competing with
+//  the page heading beneath it.
+//
+//  MIGRATION: the sign-out control keeps the visual weight of a text link and is
+//  NOT promoted to a filled button, while remaining a real `<button>` element for
+//  keyboard and assistive-technology correctness. Both legacy session controls
+//  were link buttons — `cmdRegister` rendered either "Register" or the user's
+//  display name (User.ascx.vb L99, L112) and `cmdLogin` rendered "Login" or
+//  "Logout" (Login.ascx.vb L100, L109) — and a filled-button class existed
+//  separately in default.css from L475 onward which the legacy chrome deliberately
+//  did not use. Promoting it would be an unrequested visual change.
+//
+//  ⚠ MIGRATION: THE GLOBAL ANCHOR HOVER IS DELIBERATELY OVERRIDDEN HERE
+//  -------------------------------------------------------------------
+//  This is the one place where this file contradicts a global default, and it does
+//  so to RESTORE measured legacy behaviour rather than to depart from it.
+//  src/styles/_reset.scss L66-L78 gives every anchor in the application a hover
+//  treatment — `a:hover { color: var(--color-primary-hover); text-decoration:
+//  underline; }` — which is the correct default for body and feature content,
+//  where it reproduces the legacy generic anchor rule.
+//
+//  The legacy CHROME anchor behaved differently, and the measurement is
+//  unambiguous. All four states of `A.SkinObject` are BYTE-IDENTICAL:
+//  `:link` (L27-L31), `:visited` (L33-L37), `:hover` (L39-L43) and `:active`
+//  (L45-L49) each declare exactly `text-decoration: none; color: #003366;`. The
+//  legacy header chrome therefore had NO hover change of any kind. The generic
+//  anchor is the contrast that proves the distinction was intentional: `A:link`
+//  and `A:visited` (L552-L562) are `none / #003366`, but `A:hover` (L564-L568) is
+//  `text-decoration: underline; color: #ff0000` — an underline and a red that the
+//  token vocabulary carries as --color-danger, the very role it also uses for
+//  error text.
+//
+//  Adopting the global hover inside the banner would therefore import a treatment
+//  the legacy chrome explicitly did not have. The rest-state declarations are
+//  restated on the hover state below so the band is genuinely static under a
+//  pointer. The override is achieved purely by specificity — this component's
+//  scoped selector is more specific than the global element selector — so no
+//  importance flag is used, and none is permitted. The sibling search-input
+//  component's submit control DOES move to --color-primary-hover, correctly: that
+//  control carries the legacy admin action-link semantics, not chrome semantics,
+//  and the difference between the two is measured rather than stylistic.
+//
+//  REPORTED GAPS — named rather than worked around
+//  ----------------------------------------------
+//  MIGRATION: no motion appears in this file, and that is a REPORTED GAP as well
+//  as the faithful choice. src/styles/_mixins.scss closes its exported surface at
+//  the responsive and accessibility members and states that a consumer needing any
+//  other at-rule — naming a reduced-motion guard specifically — "must report the
+//  gap and degrade, never write the query itself"; it exports no duration, easing
+//  or animation helper, and _tokens.scss declares no motion token. Writing a bare
+//  reduced-motion media query here is forbidden outright. The gap costs
+//  nothing to honour, because the legacy portal declares `transition`,
+//  `animation`, `@keyframes` and `transform` ZERO times each across both reference
+//  stylesheets, so stillness is what the legacy band actually did. The band is
+//  consequently static in every state, which is also why no hover transition
+//  appears alongside the override above.
+//
+//  MIGRATION: no hover-capability query is used either, and none is needed. The
+//  usual reason to gate a hover rule behind pointer capability is to stop a hover
+//  style sticking after a tap on a touch device. This band introduces no hover
+//  appearance at all — it removes one — so there is nothing that could stick, and
+//  the gap in the mixin surface is moot here rather than merely tolerated.
+//
+//  ACCESSIBILITY
+//  -------------
+//  MIGRATION: the entire focus layer is a PURE NET ADDITION. `:focus` and
+//  `outline` each occur ZERO times across both legacy reference stylesheets, so
+//  the legacy application declared no focus styling whatsoever and there is no
+//  precedent to preserve. Because the legacy rest state carried no focus
+//  treatment, adding one changes nothing the legacy band rendered at rest: the
+//  improvement has zero visual cost. The ring is applied through the shared
+//  focus-ring mixin on `:focus-visible`, so it appears for keyboard traversal and
+//  not on pointer presses. It is included locally on both interactive selectors
+//  even though _reset.scss L115-L122 already applies it globally to anchors and
+//  buttons: the mixin documents itself as idempotent and explicitly safe to apply
+//  again to an individual control, the sibling search-input component does the
+//  same, and the local include keeps this band's focus indication self-sufficient
+//  rather than dependent on a global rule it does not own.
+//
+//  ⚠ BLITZY [A11Y]: the sign-out control's pointer target is smaller than the
+//  44-by-44 recommendation, and it is implemented per the design source rather
+//  than silently enlarged. The measured legacy affordance is a bare inline text
+//  link: `.SkinObject` declares no padding at all, and the legacy control was a
+//  link button whose target was its own text box. The band adds modest token
+//  padding — the same --space-1 block and --space-2 inline that the sibling
+//  search-input submit control uses — which improves the target over the legacy
+//  bare-text baseline while still presenting as a text link rather than a filled
+//  button. Note this concerns the pointer TARGET, not the type: the control does
+//  carry the measured bold skin-object weight, as the button rule below sets out.
+//  The result is roughly 24px in the block axis and still short of
+//  44px. No token in the vocabulary expresses 44px, so reaching it would require
+//  either a hardcoded length, which the design system forbids, or a fabricated
+//  token, which only _tokens.scss may declare. The shortfall is therefore flagged
+//  here for designer review rather than corrected by inventing a value.
+//
+//  Colour contrast is measured, not assumed: --color-primary on --color-surface is
+//  10.87:1, well above the 4.5:1 minimum for normal text, and --color-text-muted
+//  on the same surface is 4.73:1, which also clears AA — so the disabled treatment
+//  below needs no exemption argument. The line height is the vocabulary's base 1.5
+//  rather than a tighter step, which is the readability-preserving choice.
+//
+//  Nothing here relies on colour alone to convey meaning. The sign-out control is
+//  distinguished from the adjacent identity text by being a real button — it
+//  carries a pointer cursor, a focus ring and an accessible role — rather than by
+//  its colour, and the disabled state pairs its muted ink with a `not-allowed`
+//  cursor and the element's own `disabled` semantics. The landmark itself is
+//  supplied by the template's `<header>` element with no ARIA attribute at all,
+//  which is the correct treatment for a top-level banner; nothing below suppresses
+//  or competes with it.
+//
+//  MIGRATION: the responsive layer is likewise a NET ADDITION. A media query
+//  occurs ZERO times in both legacy reference stylesheets — the legacy portal had
+//  no responsive design of any kind — so every breakpoint below is new behaviour
+//  with no legacy antecedent. It is obtained exclusively by including the shared
+//  breakpoint mixin, never by writing a query, so the step is declared once for
+//  the whole workspace and cannot drift.
+// =============================================================================
+
+// Three levels from this stylesheet to `src/`, derived by counting directories:
+// header -> layout -> app -> src. The workspace configures no Sass load path —
+// angular.json declares no stylePreprocessorOptions and tsconfig.json declares no
+// baseUrl or paths — so a relative specifier is the only form that resolves, and
+// being off by one directory fails the build with "Can't find stylesheet to
+// import." Sass modules are per-file and NOT ambient: the `@use` in
+// src/styles.scss does not reach this file, so this file loads the partial itself.
+// Only the mixin partial is loaded, and deliberately so: it emits no CSS, whereas
+// _tokens.scss owns a document-root block that belongs to the single global
+// stylesheet and would be duplicated into every component that loaded it. The
+// custom properties below are resolved by the browser at run time from that one
+// global block, which is why they need no compile-time import here.
+@use '../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  Host — the shell's banner grid item
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+}
+
+// -----------------------------------------------------------------------------
+//  The band
+//
+//  Flexbox, not Grid: the band arranges items along one axis, and the shell above
+//  it already owns the two-dimensional placement. Authored narrow-first — stacked,
+//  with items sized to their own content — and widened at the shared `md` step
+//  into a single row that pushes the identity affordance and the session cluster
+//  to opposite edges. `flex-start` in the stacked direction matters: a stretched
+//  anchor would make the entire width of the band clickable, so items are held to
+//  their content width until the row layout takes over.
+//
+//  No inline size and no block size are declared. A block-level grid item already
+//  fills its track, and re-declaring a width alongside padding and a border is
+//  exactly the combination that overflows — the legacy `.ControlPanel` paired
+//  `width: 100%` with four borders and depended on the quirks box model to survive
+//  it. Border-box sizing is inherited globally from _reset.scss in any case.
+// -----------------------------------------------------------------------------
+header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+
+  @include mx.respond-above('md') {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  Every anchor in the band — the chrome-link treatment
+//
+//  Attached to the element type rather than to a class so that the treatment holds
+//  for any anchor the band renders, whatever the paired template calls it, and so
+//  that a drifting class name can never silently reinstate the global hover.
+//  Confined to this component by emulated view encapsulation, so it cannot reach a
+//  feature screen's anchors.
+//
+//  The rest state restates the measured `A.SkinObject:link` declarations, and the
+//  hover state restates them again. Both are necessary: the rest state because it
+//  is the measured value, and the hover state because _reset.scss L71-L74 would
+//  otherwise apply --color-primary-hover and an underline that the legacy chrome
+//  anchor demonstrably did not have. `currentColor` is not used for the hover ink
+//  because the point is to pin the colour, not to inherit whatever a future rule
+//  might set. The full rationale, with the measured line numbers for all four
+//  legacy states and for the contrasting generic anchor, is in the header above.
+// -----------------------------------------------------------------------------
+header a {
+  color: var(--color-primary);
+  text-decoration: none;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  The identity affordance
+//
+//  Sized one ramp step below the page title so the banner reads as identity
+//  without competing with the level-one heading the page-header component owns.
+//  The pair of defensive declarations is deliberate: a flex item's automatic
+//  minimum size is its content, so a long portal name would otherwise force the
+//  band wider than its track, and `break-word` restores a break opportunity inside
+//  an unbroken string — a portal alias or a host name has none. Type, ink and
+//  decoration all arrive from the rules above, so nothing is restated here.
+// -----------------------------------------------------------------------------
+.app-header__brand {
+  min-inline-size: 0;
+  font-size: var(--font-size-xl);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  The session cluster
+//
+//  Wraps rather than overflows, because the signed-in name is arbitrary-length
+//  user data. The gap replaces the legacy `&nbsp;&nbsp;|&nbsp;&nbsp;` text node
+//  that separated the two controls.
+//
+//  The empty-element rule collapses the cluster when the band renders no session
+//  controls at all — on the login route, where there is no session to act on. This
+//  is not cosmetic: the parent is a flex container declaring a gap, and a flex gap
+//  applies between ITEMS regardless of whether an item has any size, so a
+//  zero-content wrapper would still levy its share of the band's gap. Only
+//  removing it from the flex formatting context suppresses that, which no amount
+//  of zeroed padding can do. The shell's sidebar region and the shared page-header
+//  actions slot both collapse the same way, for the same reason.
+//
+//  The automatic leading margin in the row layout pins this cluster to the band's
+//  trailing edge independently of how many children the band has. With exactly two
+//  items the parent's `space-between` already achieves that and the margin simply
+//  absorbs the same free space, so the two agree rather than compete; with a third
+//  direct child — a portal name beside the identity affordance, say —
+//  `space-between` alone would distribute all three evenly across the band and
+//  strand the session controls in the middle, whereas the automatic margin keeps
+//  them at the edge. It is confined to the row layout deliberately: in the stacked
+//  layout the inline axis is the cross axis, so an automatic inline margin there
+//  would shunt the cluster to the far edge of a narrow band instead of leaving it
+//  aligned with the identity affordance above it.
+// -----------------------------------------------------------------------------
+.app-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+
+  &:empty {
+    display: none;
+  }
+
+  @include mx.respond-above('md') {
+    margin-inline-start: auto;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  The signed-in user's display name
+//
+//  Declares only the two defensive properties. Its type and ink are inherited from
+//  the band, which is the faithful outcome, and the claim is byte-exact rather
+//  than inferred: `Website/admin/Skins/user.ascx` line 2 declares the display name
+//  as `<asp:LinkButton ID="cmdRegister" ... cssclass="SkinObject" ...>` and
+//  `Website/admin/Skins/login.ascx` line 2 declares the sign-out control with the
+//  same `cssclass="SkinObject"`. Both therefore rendered bold in the legacy
+//  primary ink, side by side. De-emphasising this one — to the muted token at
+//  normal weight, say — would be an invented visual change rather than a measured
+//  one. What distinguishes it from the control beside it is structural — it is
+//  static text, not a button — rather than chromatic.
+// -----------------------------------------------------------------------------
+.app-header__user {
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  Every button in the band — the text-link control treatment
+//
+//  Attached to the element type for the same reason as the anchor rule above. The
+//  native button chrome is removed so the control reads as the text link the
+//  legacy chrome rendered, while remaining a real `<button>` so it keeps its role,
+//  its keyboard activation and its focus behaviour. `_reset.scss` already gives
+//  buttons `color: inherit`, so ink needs no restatement on that count; the
+//  background, border and padding are not reset globally and are handled here.
+//
+//  MIGRATION: the weight is pinned to the bold token to restore measured legacy
+//  chrome, and the reason it must be stated rather than inherited is a cascade
+//  fact that only a rendered check exposes. The legacy sign-out control is
+//  declared in `Website/admin/Skins/login.ascx` line 2 as
+//  `<asp:LinkButton ID="cmdLogin" ... cssclass="SkinObject" ...>`, and
+//  `.SkinObject` (`default.css` lines 18-25) opens with `font-weight: bold`, so
+//  the legacy control was bold. `_reset.scss` does hand buttons `font: inherit`,
+//  but `_forms.scss` then declares `button { font-weight: <normal token> }`, and a
+//  declaration always outranks inheritance — so the band's bold could never reach
+//  this control on its own. An earlier draft justified normal weight from
+//  `.CommandButton` (`default.css` lines 442-447, `font-weight: normal`); that was
+//  the wrong analogue, because no header skin object used that class — it styled
+//  in-page command links. Under the precedence order, weight is expressible
+//  exactly by an existing token, so visual continuity decides it and bold wins.
+//  This also restores the legacy pairing: the display name and the sign-out
+//  control were both skin objects and therefore both bold, sitting side by side.
+//
+//  No hover appearance is declared, matching the anchor rule and the measured
+//  legacy chrome. The colour is pinned explicitly rather than left to `inherit`
+//  because a button's ink is a user-agent value in some engines and inheritance
+//  alone is not a guarantee across all of them.
+//
+//  The disabled state is genuine rather than speculative: the control is disabled
+//  while a sign-out request is in flight. Its ink measures 4.73:1 against the
+//  band, so it clears AA outright and needs no inactive-component exemption, and
+//  the cursor gives the state a second, non-colour cue.
+// -----------------------------------------------------------------------------
+header button {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  background-color: transparent;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+
+  &:disabled {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+}
