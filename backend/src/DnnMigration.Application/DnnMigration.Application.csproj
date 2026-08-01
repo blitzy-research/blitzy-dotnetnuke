@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Application layer (AAP 0.4.3 / Rule T1): references Domain only.
+    Package surface is intentionally minimal - validation plus the DI/options/
+    logging abstractions that application services are injected with. No EF Core,
+    no ASP.NET Core, no data-access package may be added here.
+  -->
+  <PropertyGroup>
+    <RootNamespace>DnnMigration.Application</RootNamespace>
+    <AssemblyName>DnnMigration.Application</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation" Version="11.12.0" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.12.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DnnMigration.Domain\DnnMigration.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

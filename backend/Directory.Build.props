@@ -1,0 +1,42 @@
+<Project>
+
+  <!--
+    Single source of build policy for every project in the DnnMigration solution
+    (AAP 0.6.3). Do not duplicate these properties in individual .csproj files.
+
+    NoWarn is deliberately limited to exactly two entries:
+      CS8618 - non-nullable member must contain a non-null value when exiting
+               constructor (EF Core entities / DTOs are materialised by the
+               framework, so the compiler cannot see the assignment).
+      CS1591 - missing XML comment for publicly visible type or member.
+               Required because GenerateDocumentationFile=true combined with
+               TreatWarningsAsErrors=true otherwise fails the build on every
+               undocumented public member.
+    No other warning is suppressed. Validation Gate 1 additionally runs
+    `dotnet build -configuration Release -warnaserror`.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS8618;CS1591</NoWarn>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Deterministic, reproducible builds across developer machines and containers. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AnalysisLevel>8.0</AnalysisLevel>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+    <!-- NuGet advisories are surfaced as warnings only; they must never be promoted
+         to errors by TreatWarningsAsErrors (AAP 0.6.5 advisory posture). -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Domain layer (AAP 0.4.3 / Rule T1).
+    ZERO project references and ZERO third-party package references, by design:
+    the absence of dependencies is what makes a layering violation a compile
+    error rather than a review finding. Do not add a PackageReference here.
+  -->
+  <PropertyGroup>
+    <RootNamespace>DnnMigration.Domain</RootNamespace>
+    <AssemblyName>DnnMigration.Domain</AssemblyName>
+  </PropertyGroup>
+
+</Project>
