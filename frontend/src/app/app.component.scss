@@ -1,0 +1,56 @@
+// ============================================================================
+//  app.component.scss - root component stylesheet
+//
+//  A MOUNT POINT, NOT A LAYOUT. AppComponent is the single root of the
+//  dnn-migration admin SPA; its template mounts one element, the shell, so its
+//  only visual job is to establish the box the shell lays out inside. No
+//  wrapper element exists, hence `:host` rather than a class. Better scoped
+//  elsewhere and so absent here: the shell grid and its sidebar collapse
+//  (layout/shell, styles/_layout.scss), reset and base typography
+//  (_reset.scss), design values (_tokens.scss). Emulated encapsulation cannot
+//  reach the document body, so page rules here would be inert, not misplaced.
+//
+//  WIRING AND VALUES. Sass modules are per-file, never ambient: a load in
+//  styles.scss exposes nothing here, and with no Sass load path configured the
+//  only path resolving from this depth is `../styles/mixins`. Nothing that
+//  partial exports is needed, so no load is carried. Zero hardcoded values
+//  holds trivially - both declarations below are a CSS keyword and an intrinsic
+//  viewport unit, so no token is consumed and no token gap was found.
+//
+//  LEGACY EQUIVALENT: A RUNTIME, CACHED, ORDERED CASCADE, assembled per request
+//  in code by Website/Default.aspx.vb `ManageStyleSheets` (L355) - host
+//  default.css first, unconditionally, marked `' default style sheet
+//  ( required )` (L366-L368); then skin package skin.css only if a
+//  Server.MapPath disk probe found it (L373); then the skin file's own sheet,
+//  probed alike (L389); then the portal's portal.css (L402-L405). Results were
+//  memoised in a Hashtable in the DataCache under the key "CSS", written back
+//  only when the host performance setting was not no-caching (L378, L394), and
+//  the order came from two lifecycle calls, not one list (L587, L593).
+//
+// MIGRATION: that runtime mechanism becomes ONE build-time bundle - styles.scss,
+//  the workspace's single declared global stylesheet, plus component-scoped
+//  files such as this one from the same build. Cascade order is now a
+//  compile-time property of the source: no cache, no disk probe, no per-portal
+//  or per-skin variation, no way for the "( required )" sheet to land after an
+//  override. Skinning is out of scope, so the skin and portal steps have no
+//  equivalent; that "required" marker is why default.css, 1030 lines, is the
+//  measured provenance of the token palette.
+//
+// MIGRATION: this file intentionally carries almost no styling, because shell
+//  layout belongs to layout/shell and _layout.scss. Both declarations are net
+//  additions too: default.css gives the body only a named-colour background and
+//  a zeroed margin, declaring no height and no viewport unit anywhere.
+// ============================================================================
+
+:host {
+  // A custom element has no user-agent display and would lay out inline,
+  // shrink-wrapping the shell. A block box fills the available inline size and
+  // gives the shell the block-level containing block it expects.
+  display: block;
+
+  // A viewport-height FLOOR: the page still fills the window when a route
+  // renders very little, while taller content grows the root rather than being
+  // clipped. Stretching the shell's own grid to this height is the shell's job,
+  // on its own host. `vh`, not the dynamic unit, which is outside the set.
+  min-height: 100vh;
+}

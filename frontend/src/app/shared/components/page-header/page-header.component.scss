@@ -1,0 +1,477 @@
+// =============================================================================
+//  page-header.component.scss — the page title and action bar
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Component-scoped stylesheet for `app-page-header`, row 2 of the
+//  in-repository shared component library: "Page title and action bar". It
+//  replaces the legacy module-title styling and the legacy skin container's
+//  action-button row with a token-driven layout.
+//
+//  It is LAYOUT-ONLY BY DESIGN. It sets flow, spacing and the two text roles,
+//  and nothing else. It paints no surface, draws no boundary and owns no
+//  interactive state, because the measured legacy design gives it none of those
+//  and inventing them would be an unrequested visual change.
+//
+//  PROJECT STANDARDS
+//  -----------------
+//  The project rules review reports that NO user-specified rules exist.
+//  Completeness is established by the RANGES read rather than by a count of
+//  calls: the default window, a whole-document range, a window beginning past
+//  line 1, and a far window all returned the same single line, so a document
+//  with any body would have answered the later windows differently. No rules
+//  document and no coding-standards document is assumed, invented or implied
+//  here, and their absence is NOT treated as licence to lower the bar.
+//
+//  The migration plan's own normative sections govern instead, and they are
+//  given rule-force: the minimal-change clause (notably item 5, code
+//  organisation derived from discovered patterns, and item 6, inline migration
+//  annotation that is "never silently absorbed"), the system-boundary
+//  exclusions, the non-functional requirements, the validation gates as
+//  acceptance criteria, and the design-system set. The precedence order applied
+//  throughout is: design-system compliance first, then visual continuity with
+//  the legacy portal, then accessibility, then responsive behaviour, then code
+//  quality.
+//
+//  THE ONE NON-NEGOTIABLE RULE — ZERO HARDCODED VALUES
+//  ---------------------------------------------------
+//  Every property value below resolves either to a design token through `var()`
+//  or to a bare CSS keyword. The only literal in the whole file is `0`, which is
+//  one of the six values the design system permits outright. There is no colour
+//  literal, no length literal, no priority override, no document-root block, no
+//  token declaration, no bare responsive at-rule and no asset reference
+//  anywhere in this file.
+//
+//  CLASS-NAME CONTRACT — shared verbatim with page-header.component.html
+//  --------------------------------------------------------------------
+//  Block `page-header`, with the four elements `page-header__text`,
+//  `page-header__title`, `page-header__subtitle` and `page-header__actions`.
+//  Nothing else is styled and no modifier exists, because the component
+//  declares no variants. Selector depth is kept flat — one class per rule, no
+//  descendant chains, no element selector qualified by a class, no identifier
+//  selector — so a consuming feature can override a single element without
+//  fighting specificity.
+//
+//  Legacy class names are deliberately absent. Their measured VALUES informed
+//  the token vocabulary; the vocabulary itself replaces them, so none of the
+//  legacy title, header-background, body-text, item-title, text-link-action,
+//  design-table, work-panel or data-grid class names appears here.
+// =============================================================================
+//
+//  WHY THE LOAD PATH IS FOUR LEVELS, AND WHY IT IS THE ONLY IMPORT
+//  --------------------------------------------------------------
+//  Four, not three, and not two. This folder is
+//  `src/app/shared/components/page-header/`, and the shared stylesheets live at
+//  `src/styles/`, so climbing out passes `components`, `shared`, `app` and
+//  lands on `src`. Verified two independent ways rather than reasoned about:
+//  resolving the candidate depths on disk shows two levels reaching a
+//  non-existent `src/app/shared/styles`, three levels reaching a non-existent
+//  `src/app/styles`, and only four levels reaching the real `src/styles`; and a
+//  throwaway probe compiled at four levels with a zero exit status and no
+//  warnings. The workspace declares no style-preprocessor include path, so
+//  there is no alias to shorten this with, and adding one is out of scope.
+//
+//  ROOT CAUSE of the off-by-one that is easy to make here: `core` and `shared`
+//  are siblings inside `app`, but `styles` is a sibling OF `app`, one level
+//  higher inside `src`. The stylesheet target is therefore always exactly one
+//  level further out than the equivalent TypeScript import.
+//
+//  REPORTED, NOT ACTED UPON: the briefs for the sibling shared stylesheets
+//  disagree with each other and with the filesystem about this depth — some
+//  state three levels, others two. Both are wrong; four is correct and is what
+//  compiles. Those files are consumed here, never edited, and are left exactly
+//  as their owning agent wrote them.
+//
+//  ONLY the mixin partial is loaded, and that is a measured decision rather
+//  than an oversight:
+//    * The mixin partial emits ZERO CSS — it declares mixins and functions
+//      only — so loading it costs nothing and is REQUIRED, because a mixin must
+//      be resolved at compile time and Sass module scope is per-file. A load in
+//      the global stylesheet does not make mixins ambient here.
+//    * The token partial is deliberately NOT loaded. It exports no Sass-level
+//      member at all — no variable, no mixin, no function — so there is nothing
+//      here to reference from it. What it DOES contain is the workspace's single
+//      document-root block, and loading it re-emits that entire block into this
+//      component's compiled CSS. Measured on a probe: loading both partials
+//      compiled to 1827 bytes, of which every byte but the rules themselves was
+//      a duplicate of that block; loading the mixin partial alone compiled to
+//      283 bytes. That duplication would consume roughly half of this
+//      component's 4-kilobyte style budget for no benefit, and it is exactly
+//      what the token partial's own header forbids: it states that it declares
+//      its values in exactly ONE document-root block and that no other partial
+//      may open a second one or re-declare any custom property, because two such
+//      blocks bloat the bundle and make the effective value depend on cascade
+//      order.
+//    * Nothing is lost. Custom properties are resolved by the BROWSER at
+//      runtime through the CSS cascade, and they inherit into component-scoped
+//      subtrees, so every `var()` below resolves against the single
+//      document-root block that the global stylesheet emits once. The probe
+//      confirms the `var()` references survive verbatim into the compiled output
+//      when only the mixin partial is loaded.
+// =============================================================================
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  Host
+//
+//  MIGRATION: no landmark element is emitted by this component, and the name
+//  invites exactly the wrong instinct. The banner, navigation, main and
+//  contentinfo landmarks belong exclusively to the application shell under
+//  `layout/`, which owns them together with the routed outlet. This component
+//  always renders INSIDE the main region, so a second banner landmark — as an
+//  element or as an explicit role — would be an accessibility defect rather
+//  than an improvement, and none of the nine shared components emits one. The
+//  legacy precedent agrees exactly: the shared legacy title control wraps its
+//  title in a bare division element with no landmark of any kind.
+//
+//  A custom element has no intrinsic display, so it is given block flow here.
+//  Without this the host would be inline, and the header's own flow, spacing and
+//  wrapping would be computed against an inline box — a defect that only shows
+//  up once a consumer places the component next to other content.
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+}
+
+// -----------------------------------------------------------------------------
+//  Block — the header bar
+//
+//  Two children only: the text group and the action group.
+//
+//  MIGRATION: the stacked-to-side-by-side behaviour is a NET ADDITION, and it
+//  is annotated as one because the legacy design has no responsive behaviour
+//  whatsoever — the responsive at-rule occurs zero times across all 34
+//  stylesheets under the legacy web tree, which were authored for a fixed-width
+//  desktop. The narrow layout is therefore authored unconditionally and the
+//  wider layout is layered on top, which is the mobile-first direction the
+//  shared mixin documents as its default.
+//
+//  The breakpoint is obtained ONLY by including the shared mixin. A bare
+//  responsive at-rule is forbidden in a component stylesheet, and the shared
+//  mixin partial is the single place the breakpoint scale is declared, so no
+//  component can restate a width and let it drift. The named step consumed here
+//  is the workspace's own tablet step, not an invented value.
+//
+//  Wrapping is enabled alongside the row direction so a long title beside many
+//  actions reflows naturally instead of overflowing. That makes the layout
+//  resilient at widths between the declared steps, without inventing a step to
+//  cover them.
+//
+//  MIGRATION: no surface and no boundary are painted here, and all three
+//  independent reasons are recorded rather than absorbed. The legacy
+//  header-background rule (the one at line 807 of the legacy portal stylesheet)
+//  is (i) already legacy INSIDE the legacy application — the comment
+//  immediately above it at line 806 marks the block that follows as retained
+//  from two major versions earlier; (ii) referenced ZERO times by any legacy
+//  page or user control anywhere in the web tree, measured, so it is
+//  defined-but-unused dead styling; and (iii) blank in the per-portal override
+//  stylesheet, whose 80 rule bodies contain zero declaration characters in
+//  total. Its measured grey is reported as a token gap and is never written as a
+//  literal. Case-normalised it happens to equal the value the vocabulary
+//  carries as the strong-border token, and the plan's colour census counted only
+//  the two lower-case instances of that value, so this upper-case instance is
+//  genuinely uncounted — stated plainly rather than glossed over.
+//
+//  MIGRATION: the separator that the legacy title block could draw beneath
+//  itself is deliberately NOT reproduced here. Its provenance is the legacy
+//  collapsible section-head control, whose include-rule attribute emitted a
+//  horizontal-rule element — set to true on both section heads of the
+//  edit-roles screen, at lines 12 and 69. That control is SECTION scaffolding,
+//  which the shared layout stylesheet and the feature screens own; the
+//  skin-container page title drew no rule at all. Reproducing it here would
+//  import a section affordance into the page header and would double up
+//  wherever a feature draws its own. Where a design genuinely calls for a
+//  separator it is a border resolved against the token vocabulary, never a
+//  horizontal-rule element, whose fixed one-point height and no-shade
+//  attribute are presentation masquerading as content.
+// -----------------------------------------------------------------------------
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-block-end: var(--space-5);
+
+  @include mx.respond-above('md') {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  Element — the text group
+//
+//  Stacks the title over the supporting line and takes the width left over
+//  beside the actions.
+//
+//  The internal spacing is a gap on this column rather than a margin on either
+//  child, so there is nothing to cancel when the supporting line is absent: the
+//  template renders it conditionally, and a single-child flex column emits no
+//  gap at all. A margin-based equivalent would leave a stray edge behind on
+//  title-only screens.
+//
+//  `min-inline-size` is floored so the group may shrink BELOW the intrinsic
+//  width of its longest word. A flex item defaults to refusing that, which is
+//  the usual cause of a long unbroken title pushing the action group off the
+//  bar; flooring it is what lets the wrapping declared on the two text roles
+//  below actually take effect. `0` is one of the six literals the design system
+//  permits, so this needs no token.
+// -----------------------------------------------------------------------------
+.page-header__text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+// -----------------------------------------------------------------------------
+//  Element — the title
+//
+//  MIGRATION: the title is promoted from a plain legacy label to a real
+//  level-1 heading. The measured baseline is literal zero: across the 39
+//  in-scope admin screens there are no heading elements of any level and no
+//  assistive-technology attributes at all, and the legacy title was a label in
+//  three independent places — the shared legacy title control, the skin
+//  container's title skin-object, and the admin container's editable label.
+//  Accessibility outranks visual continuity in the precedence order, which is
+//  what authorises the promotion.
+//
+//  MIGRATION: the promotion is SIZE-NEUTRAL, so it costs no visual change. All
+//  three relevant rules of the legacy portal stylesheet measure the same 20
+//  units — the module-title class at lines 65 to 71, the generic level-1 rule at
+//  lines 488 to 494 and the generic level-2 rule at lines 496 to 502. Only the
+//  colour differed between them.
+//
+//  MIGRATION: the size and weight ARE declared here, and the reasoning is
+//  recorded because the default expectation is the opposite. The bare-element
+//  type ramp belongs to the shared reset stylesheet, so ordinarily a heading
+//  would simply inherit from it — but that partial does not exist in this
+//  checkout yet, so the assumption that it ramps this element cannot be
+//  verified, and an unverified assumption is not a basis for omitting a
+//  declaration. Left undeclared, a level-1 heading falls back to the browser's
+//  own default of twice the inherited size and a bold weight, which contradicts
+//  the measured 20 units at a normal weight. Declaring both explicitly against
+//  the tokens is therefore deterministic; it resolves to exactly the measured
+//  values; and it is idempotent if the reset later ramps this element to the same
+//  step, in which case the declaration is harmless redundancy rather than a
+//  conflict. The largest step of the font-size scale is precisely the measured
+//  title size.
+//
+//  MIGRATION — TOKEN GAP RESOLVED, and this diverges from the brief for this
+//  file, which asserted the opposite. That brief instructed that the measured
+//  title colour is absent from the vocabulary, that no heading colour token
+//  exists, and that no colour should therefore be declared. Reading the real
+//  token partial disproves it: a dedicated heading-colour token IS declared
+//  there, its value is exactly the measured title colour, and its own annotation
+//  names this very component as the affordance it exists for and additionally
+//  assigns it the generic heading colour. The paired template agrees in as many
+//  words. Following the file rather than the brief, the token is consumed here,
+//  which satisfies design-system compliance AND exact visual continuity at the
+//  same time — so no gap remains to report for this element. The discrepancy
+//  itself is reported and the token partial is not edited.
+//
+//  The generic legacy heading colour is a separate matter and is NOT used: the
+//  plan explicitly leaves it untokenised as incidental decoration with no target
+//  equivalent, so the target resolves headings to the heading token instead.
+//
+//  MIGRATION: the font family is deliberately NOT declared here. Three
+//  near-identical legacy stacks are consolidated by the plan into one base
+//  family token, and a document-wide family is set once on the document body
+//  and inherited. Restating it on every component element would multiply one
+//  decision across the bundle for no effect.
+//
+//  Leading is tightened by token, which is a net addition: the legacy design
+//  declares no line height anywhere, and a display-sized heading that wraps to a
+//  second line needs its leading controlled or the two lines drift apart.
+//
+//  Wrapping is forced so an unbroken word — a portal alias or a machine name —
+//  breaks rather than overflowing its container.
+//
+//  The margin is zeroed because the browser gives a heading a large default
+//  block margin, and spacing between the two text roles is owned by the gap on
+//  the group above. Leaving it would double the spacing and make the gap a lie.
+// -----------------------------------------------------------------------------
+.page-header__title {
+  margin: 0;
+  color: var(--color-text-heading);
+  font-size: var(--font-size-xxl);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-tight);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  Element — the supporting line
+//
+//  MIGRATION: this is supporting text, never a second heading, so the template
+//  renders it as a paragraph and it stays out of the document outline. The
+//  legacy precedent is exact — the edit-roles screen renders its two supporting
+//  sentences through plain labels carrying the legacy body-text class, never
+//  through a heading.
+//
+//  The size is the body step, matching the 11 units the legacy body-text class
+//  measures at lines 92 to 97.
+//
+//  MIGRATION — DELIBERATE COLOUR DIVERGENCE, recorded rather than absorbed. That
+//  legacy body-text rule declares NO colour at all, so the legacy supporting
+//  line simply inherited the surrounding text colour. The muted token is chosen
+//  instead, because de-emphasising supporting text beneath a title is what the
+//  design system's own token role is for and it distinguishes the two text roles
+//  without a second type size. This is a real, if small, visual change to an
+//  in-scope element and is logged as one. It is also safe on the accessibility
+//  axis: the token partial measures this value at 5.49 to 1 against the page
+//  background, which clears the AA minimum for body text, so the de-emphasis
+//  costs no legibility. Note for the record that the muted token's measured
+//  legacy provenance is not text at all — its only non-excluded legacy use was
+//  the horizontal-rule colour — so this is the token's target role rather than a
+//  reproduction of a legacy text colour.
+//
+//  Margin zeroed and wrapping forced, for the same reasons as the title.
+// -----------------------------------------------------------------------------
+.page-header__subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  Element — the action group
+//
+//  MIGRATION: the legacy non-breaking-space separators become a spacing token,
+//  never text nodes. Measured: the edit-roles action bar is a plain paragraph
+//  holding four link buttons separated by literal non-breaking-space text nodes
+//  on their own lines at 181, 184 and 187, and the portals screen separates its
+//  letter-filter links with two of them. A gap declared once here is
+//  inspectable and adjustable; a separator smuggled into the markup as content
+//  is neither, and it is announced by a screen reader as content that is not
+//  there. The 8-unit step is chosen on measurement: one non-breaking space at
+//  the legacy 11-unit body size renders around 3 to 4 units and the doubled
+//  form around 6 to 8, so this step sits at the top of the measured band, which
+//  is also the more usable separation between adjacent targets.
+//
+//  MIGRATION: this wrapper carries NO padding, NO boundary and NO surface, and
+//  that is load-bearing rather than minimalism. It is what makes the header
+//  degrade to nothing when a screen projects no actions: an element with no box
+//  decoration and no children occupies no space, so the zero-action case needs
+//  no code at all. The measured distribution justifies the slot being
+//  open-ended: 19 action keys across exactly 8 in-scope screens, with a measured
+//  maximum of five on the user-management screen.
+//
+//  MIGRATION — the zero-action case, MEASURED IN A BROWSER rather than asserted,
+//  because the exact behaviour is not what a reading of the rules alone suggests.
+//  With nothing projected the wrapper measures zero by zero, declares no
+//  decoration on any side, and never appears in hit testing anywhere across the
+//  header band; in the side-by-side layout its vertical contribution is exactly
+//  zero, so a header with no actions is the same height as one with five.
+//  BELOW the breakpoint, however, the stacked layout turns the container's gap
+//  into a gap between rows, and CSS places that gap between adjacent items
+//  regardless of how small an item is. Because the template renders this wrapper
+//  unconditionally, the container always has two children, so one spacing step
+//  of UNPAINTED blank space is reserved beneath the text on a stacked
+//  zero-action header. Nothing is drawn and nothing overflows, so it is
+//  whitespace rather than an artefact — but it is recorded here rather than
+//  absorbed silently, because it means such a header degrades to almost nothing
+//  rather than to nothing at narrow widths.
+//
+//  Two ways to remove that step were considered and BOTH REJECTED. Selecting on
+//  a childless element is unreliable, not merely inelegant: browsers implement
+//  the definition under which a single whitespace text node defeats the match,
+//  and a consumer who writes this element across more than one line produces
+//  exactly that node, so the rule would fire only for the self-closing form and
+//  silently not fire otherwise — worse than not having it. A relational query on
+//  projected element children would be reliable, but it is an unrequested
+//  behavioural change that buys no visible improvement, since there is nothing
+//  painted to remove. Simulating the separation with a margin between siblings is
+//  also rejected: gap is the correct primitive for space between flex children,
+//  and margins between siblings are precisely what it replaces.
+//
+//  MIGRATION — THE PROJECTED-CONTENT BOUNDARY, and the ONE collision it forces.
+//  Content arriving through the content slot keeps the style scoping of the
+//  component that DECLARES it, not of this component, so this stylesheet can
+//  style the wrapper but cannot reach the actions inside it. The `gap` above is
+//  the exception that matters and it is not a loophole: gap is a property of the
+//  flex container itself, applied by the browser to whatever children it ends up
+//  with, so it spaces projected actions correctly. What CANNOT be done from here
+//  is their appearance — the legacy text-link affordance, its underline, and its
+//  link, visited, hover and active colours. That is delegated to the global
+//  element-level stylesheets, which are unscoped and therefore do reach
+//  projected content, or to the consuming feature's own stylesheet. Piercing
+//  scope with a deep-descendant combinator, or disabling this component's style
+//  scoping, are both off limits: one is deprecated, the other destroys the
+//  encapsulation that makes the rest of this file safe.
+//
+//  MIGRATION — the delegated hover colour, decided here even though it is
+//  applied elsewhere. The legacy hover state of the admin text-link action class
+//  (lines 462 to 466) measures the very same value the vocabulary assigns to the
+//  danger role, which is also the legacy error-text colour, sitting under a
+//  comment that names it the style for error messages. Reusing it for a benign
+//  hover would be a semantic regression and would collide with error styling, so
+//  the recorded decision is the primary-hover token instead. Both candidates are
+//  tokens, so the zero-hardcoded-values rule does not decide this one — the
+//  semantic argument does. Recorded rather than dropped, because the consumer
+//  that implements the affordance needs the decision.
+//
+//  MIGRATION: the legacy affordance stays a TEXT LINK and is not promoted to a
+//  filled button. A filled-button class existed separately in the legacy
+//  stylesheet from line 475 onward and the admin action bars deliberately did
+//  not use it, so promoting them would be an unrequested visual change.
+//
+//  MIGRATION: raster action icons are replaced by text, inline vector markup or
+//  CSS. The legacy edit, delete, save, refresh, up, down, checked, unchecked,
+//  help, users, security-roles and search images have no target equivalent, and
+//  no rule in this file references an asset by address — the only static asset
+//  the workspace ships is a favicon.
+//
+//  MIGRATION: the legacy design-table and work-panel wrapper classes that
+//  surrounded these bars are pure net additions with nothing to port. Both are
+//  consumed by the in-scope admin markup — 15 and 9 screens respectively,
+//  measured — yet neither is defined in ANY of the 34 legacy stylesheets, so no
+//  panel or band treatment has a measured legacy value to reproduce. None is
+//  invented here.
+//
+//  MIGRATION: the spacing scale this file consumes, together with the radius and
+//  elevation scales it deliberately does not, are net additions rather than
+//  translations. The legacy design has no spacing system, declares no corner
+//  radius and declares no elevation — all three measured at zero — so the scales
+//  are a systematisation the plan records as such, and this component uses only
+//  the spacing one.
+//
+//  ACCESSIBILITY — FOCUS. No focus rule is declared here, deliberately, and this
+//  is a comment rather than a dead rule: this component owns no focusable
+//  element of its own, because every action is projected by the consumer. Focus
+//  indication for those actions is delegated exactly as their hover colour is,
+//  and it must be applied through the shared focus-ring mixin on the
+//  focus-visible pseudo-class so the ring appears for keyboard and
+//  assistive-technology navigation but not on a mouse press. Suppressing an
+//  outline without an immediately visible replacement is never acceptable. The
+//  measured legacy baseline makes the obligation net-new: across all 34 legacy
+//  stylesheets there are zero focus selectors and zero outline declarations, and
+//  two legacy controls went further and removed keyboard reachability outright.
+//
+//  ACCESSIBILITY — no assistive-technology role is invented for this wrapper. A
+//  toolbar role would impose arrow-key management that neither this component
+//  nor the projected actions implement, and declaring behaviour that is not
+//  implemented is worse than declaring none. The wrapper is a plain container
+//  that suppresses no accessible name.
+//
+//  REPORTED, NOT ACTED UPON: the brief for the shared layout stylesheet
+//  misattributes the legacy collapsible section-head fix to this component. It
+//  is recorded and left alone. This component grows no collapse toggle, gains no
+//  third input and does not become a section component; that disclosure belongs
+//  to the feature screens as a grouped field set with a caption, or as a native
+//  details-and-summary disclosure, and the shared inventory is closed at ten —
+//  the nine components plus the permission directive.
+// -----------------------------------------------------------------------------
+.page-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+

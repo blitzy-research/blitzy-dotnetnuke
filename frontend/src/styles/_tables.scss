@@ -1,0 +1,831 @@
+// =============================================================================
+//  _tables.scss — global table conventions backing the shared data table
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  This partial supplies the ELEMENT-LEVEL table conventions for the whole
+//  dnn-migration administration front end. It is the target replacement for the
+//  legacy DotNetNuke data-grid styling vocabulary — the container, header, item,
+//  alternating-item, selected-item and footer rules that occupy
+//  Website/Portals/_default/default.css lines 131-171 — rebuilt against the
+//  design tokens instead of against literals.
+//
+//  It styles SEMANTIC ELEMENTS plus a small, closed set of state hooks. It does
+//  NOT style the shared data-table component by that component's own selector:
+//  that component lives under src/app/shared/components/data-table, owns its own
+//  scoped stylesheet, and inherits everything below. The division is deliberate.
+//  Global CSS is never tree-shaken, so every byte here ships to every reader on
+//  every route; the production build additionally caps any single component
+//  stylesheet at 4 kB with a hard error at 8 kB, and the reason the shared
+//  conventions live here rather than being restated in each component stylesheet
+//  is precisely that budget. So this file stays small and general, and anything
+//  specific to one screen belongs to that screen.
+//
+//  It is NOT a build entry point. The workspace declares exactly one global
+//  stylesheet, src/styles.scss, and Sass partials are consumed through that file
+//  rather than being listed beside it. Verified in frontend/angular.json: the
+//  build target's `styles` array has one entry.
+//
+//  LOAD ORDER — FIXED BY THE SIBLING CONTRACT
+//  ------------------------------------------
+//  src/styles.scss loads the partials in this order:
+//
+//      tokens -> reset -> layout -> TABLES -> forms
+//
+//  This file is fourth. Everything here therefore lands after the reset, which
+//  is why it can refine bare-element table rules without any importance flag.
+//  Cascade order is the mechanism; specificity is used only where two rules in
+//  THIS file would otherwise tie, and where that happens the ordering is called
+//  out in a comment at the site. No declaration below is marked important, and
+//  none needs to be.
+//
+//  OWNERSHIP BOUNDARY WITH THE RESET
+//  ---------------------------------
+//  `border-collapse` is declared HERE, not in the reset, and the claim is staked
+//  explicitly so the two files cannot both declare it. The reasoning: a reset
+//  normalises disagreements between browsers, and browsers do not disagree about
+//  this one — every engine defaults a table to the separated border model with
+//  a 2px cell spacing. Collapsing the model is therefore a table PRESENTATION
+//  decision, and it is inseparable from the borderless legacy grid this file
+//  exists to reproduce. Bare-element normalisation of any other kind stays in
+//  the reset.
+//
+//  THE ONE NON-NEGOTIABLE RULE — ZERO HARDCODED VALUES
+//  --------------------------------------------------
+//  Every property value below resolves to a `var(--token)` declared in
+//  _tokens.scss, which owns the workspace's only document-root block. The only
+//  literals used are the six the migration plan permits — `0`, `none`, `auto`,
+//  `inherit`, `currentColor` and `transparent` — plus CSS structural keywords
+//  such as `collapse`, `sticky`, `center`, `start` and `top`, which name a layout
+//  mechanism rather than a design decision and have no token to resolve to.
+//  There is no colour literal, no length literal and no font stack anywhere in
+//  this file, and no custom property is declared or re-declared here.
+//
+//  A CONVENTION THIS FILE ADOPTS, AND WHY IT MATTERS
+//  ------------------------------------------------
+//  Documenting a migration means naming what the legacy rule did. Restating a
+//  legacy literal in order to describe it would put that literal back into this
+//  file, which is exactly what the rule above forbids — a comment is still part
+//  of the source. So every legacy value below is cited by FILE AND LINE, and by
+//  the token that now carries it, and never transcribed. Read the referenced
+//  read-only legacy file for the exact value. This keeps provenance fully
+//  traceable while leaving this file literal-free, and it is applied without
+//  exception, including in the migration notes.
+//
+//  Responsive behaviour is obtained only by including a breakpoint mixin from
+//  _mixins.scss. No raw media feature query appears here; that file is the only
+//  place in the workspace permitted one, because a custom property is not
+//  evaluated inside a media feature query and a breakpoint restated per file
+//  drifts silently from every other copy of itself.
+//
+//  HOW TO LOAD THE MIXINS — VERIFIED PATHS, NOT ESTIMATES
+//  -----------------------------------------------------
+//  The workspace configures NO Sass load path: angular.json declares no
+//  style-preprocessor include paths and tsconfig.json declares no base URL or
+//  path aliases. Every load must therefore be RELATIVE, and a path off by one
+//  directory fails the build with "Can't find stylesheet to import." Sass
+//  modules are per-file and are NOT ambient: a load in src/styles.scss does not
+//  make these members visible to a component stylesheet, so every consumer must
+//  load the partial itself. There is deliberately no barrel to forward from.
+//
+//      from src/styles/_<sibling>.scss        @use 'mixins' as mx;
+//      from src/styles.scss                   @use './styles/mixins' as mx;
+//      from src/app/app.component.scss        @use '../styles/mixins' as mx;
+//      from src/app/layout/<x>/               @use '../../../styles/mixins' as mx;
+//      from src/app/shared/directives/        @use '../../../styles/mixins' as mx;
+//      from src/app/shared/components/<x>/    @use '../../../../styles/mixins' as mx;
+//      from src/app/features/<f>/<screen>/    @use '../../../../styles/mixins' as mx;
+//
+//  Count the directories from the stylesheet up to src/ rather than copying a
+//  neighbour's line from a different depth: a layout or directive stylesheet is
+//  three levels below src/, a shared component and a feature screen are four.
+//
+//  Tokens need no load at all. They are referenced by name at run time and are
+//  resolved by the browser from the single document-root block in _tokens.scss.
+//
+//  ZERO DESIGN-SYSTEM DEPENDENCIES
+//  -------------------------------
+//  Nothing is loaded from an installed package. No component library is used
+//  anywhere in this workspace — Angular Material was available at a compatible
+//  version and deliberately not selected, and no utility CSS framework was
+//  introduced — so there is no vendor table component or vendor table class to
+//  lean on, and the conventions below are authored in-repository.
+//
+//  EXPORTED SURFACE — the contract downstream stylesheets and templates consume
+//  ---------------------------------------------------------------------------
+//  Element rules
+//    table                          Full inline size, collapsed borders, no cell
+//                                   borders, grid type ramp and dense line height.
+//    caption                        Visible table name above the grid.
+//    thead, tfoot                   Header and footer sections.
+//    th, td                         Shared cell padding, alignment and wrapping.
+//    th                             Bold, brand-coloured header cell.
+//    th[scope='col']                Centred column header.
+//    th[scope='row']                Start-aligned row header.
+//    tbody > tr:nth-child(even)     Zebra stripe.
+//  State hooks — all six, and no others
+//    caption[data-visually-hidden]  Caption kept for assistive technology only.
+//    tr[aria-selected='true']       Selected row tint. Keyed to the ARIA state on
+//                                   purpose, so a row cannot be painted as
+//                                   selected without also announcing that it is.
+//    th[aria-sort]                  Sortable column header; the two directional
+//                                   values additionally tint the active column.
+//                                   Its inner button is reset and focus-ringed.
+//    td[data-placeholder]           In-table zero-result or loading cell.
+//    [data-table-scroll]            Horizontal scroll region wrapping a table.
+//    table[data-sticky-head]        Opt-in sticky header row.
+//
+//  EXPECTED MARKUP — what the data-table component should emit
+//  ----------------------------------------------------------
+//      <div data-table-scroll role="region" tabindex="0" aria-label="Portals">
+//        <table data-sticky-head>
+//          <caption data-visually-hidden>Portals</caption>
+//          <thead>
+//            <tr>
+//              <th scope="col" aria-sort="ascending">
+//                <button type="button">Title <svg aria-hidden="true">…</svg></button>
+//              </th>
+//              <th scope="col">Users</th>
+//            </tr>
+//          </thead>
+//          <tbody>
+//            <tr aria-selected="false" tabindex="0">
+//              <th scope="row">Main Site</th>
+//              <td>1420</td>
+//            </tr>
+//          </tbody>
+//          <tfoot>…</tfoot>
+//        </table>
+//      </div>
+//      <!-- pagination is a SIBLING of the scroll region, never inside the table -->
+//
+//  The zero-result row is a single spanning cell:
+//
+//      <tbody><tr><td data-placeholder colspan="2">No portals match.</td></tr></tbody>
+//
+//  Four obligations sit on the consumer rather than here, because CSS cannot
+//  enforce them:
+//    * `role="region"`, `tabindex="0"` and an accessible name on the scroll
+//      wrapper, so a keyboard-only reader can reach and scroll a wide grid;
+//    * `aria-sort` on every sortable header, refreshed as the sort changes;
+//    * `aria-selected` on every selectable row — the selected tint conveys
+//      nothing to assistive technology on its own, and _tokens.scss states that
+//      obligation as a condition of using that token;
+//    * the sort DIRECTION indicator itself, which belongs in the component as
+//      inline vector markup with its fill resolving to the current text colour.
+//      It is deliberately not drawn here: this file must reference no external
+//      asset and must not introduce a decorative glyph or a second font stack,
+//      and the active-column tint below is a supplement to that indicator, never
+//      a substitute for it.
+//
+//  PROVENANCE — MEASURED, NOT ASSUMED
+//  ----------------------------------
+//  No design file, frame or reference URL was supplied with this engagement, so
+//  the only visual design source is the legacy portal CSS, and it is quoted by
+//  line number throughout. Every figure below was re-measured directly against
+//  the read-only legacy tree rather than taken on trust:
+//
+//    Website/Portals/_default/default.css      1030 lines; the six legacy grid
+//                                              rules at 131-171; bare TFOOT and
+//                                              THEAD at 536-541; bare TH at
+//                                              543-550
+//    Website/Portals/_default/portal.css        275 lines, 80 rule bodies, and
+//                                              ZERO non-empty bodies — no
+//                                              declaration character and no
+//                                              colour anywhere in it. It carries
+//                                              selector NAMES only, so not one
+//                                              value below comes from it
+//    Website/admin/Portal/portals.ascx          read in full; the grid is
+//                                              declared at 13-19 and the pager
+//                                              sits outside it at 57-58
+//    media feature queries in either stylesheet 0 and 0
+//    border-collapse in default.css             0 — the legacy markup spaced its
+//                                              cells with HTML attributes
+//
+//  All three are read-only reference inputs. This migration is purely additive:
+//  no legacy file is modified, and none is removed.
+//
+//  DIVERGENCE POLICY
+//  -----------------
+//  Where this file departs from what the legacy portal rendered, the departure
+//  is annotated inline with a `MIGRATION:` comment rather than silently
+//  absorbed, and the repository-root migration notes are owned by another agent
+//  and are not edited from here. Where a measured legacy value sits below a
+//  general accessibility recommendation, the legacy value is implemented EXACTLY
+//  — the design source outranks a generic default — and a `BLITZY [A11Y]` flag
+//  is raised for designer review instead of the rendered output being quietly
+//  corrected.
+//
+//  DELIBERATE OMISSIONS — each is a decision, not an oversight
+//  ----------------------------------------------------------
+//    * No cell borders. See migration note 7.
+//    * No row hover. See migration note 10.
+//    * No truncation hook. Cells reflow instead; see migration note 11.
+//    * No pager rule inside `table`. See migration note 3.
+//    * No numeric-column alignment hook: the one legacy numeric column, the
+//      hosting fee at Website/admin/Portal/portals.ascx line 47, is formatted to
+//      two decimal places and is NOT aligned to the end of its cell, so there is
+//      no legacy convention to carry forward and inventing one would cost every
+//      reader bytes for a rule no in-scope screen asked for.
+//    * No fixed table layout hook. Per-column widths exist in the legacy tree
+//      (Website/admin/Users/ProfileDefinitions.ascx lines 21-31) but they are a
+//      per-screen decision, and a component that wants them can set the layout
+//      mode in its own scoped stylesheet without a global rule.
+// =============================================================================
+
+// The mixins partner. Sibling-relative, because the workspace configures no Sass
+// load path — see the verified path table above. _tokens.scss is deliberately
+// NOT loaded: tokens are referenced by name and resolved at run time.
+@use 'mixins' as mx;
+
+// =============================================================================
+//  THE TABLE ELEMENT
+// =============================================================================
+
+table {
+  // Every one of the four in-scope legacy admin grids is declared full width:
+  // Website/admin/Portal/portals.ascx line 13, Website/admin/Users/users.ascx
+  // line 22, Website/admin/Users/ProfileDefinitions.ascx line 7 and
+  // Website/admin/Security/roles.ascx line 22. A percentage is a relationship to
+  // the containing block rather than a design value, so it needs no token.
+  inline-size: 100%;
+
+  // MIGRATION: note 7 — THE LEGACY GRIDS HAVE NO CELL BORDERS, AND THAT IS
+  // PRESERVED HERE DELIBERATELY. All four in-scope grids declare grid lines off
+  // (portals.ascx line 14, users.ascx line 23, ProfileDefinitions.ascx line 8,
+  // roles.ascx line 25), and roles.ascx line 24 goes further and switches off
+  // the border style and width as well, so borderlessness is emphatic rather
+  // than incidental. Not one border declaration appears anywhere in this file as
+  // a result. This is recorded prominently because it is the single easiest
+  // convention for a later contributor to "improve" by adding rules between
+  // cells, which would be a visible divergence from every legacy screen.
+  //
+  // Collapsing the border model is what makes that borderlessness hold: the
+  // separated model the browser defaults to inserts a 2px gap between cells that
+  // no legacy grid had. It also means there is no divider to leave dangling
+  // after the final row, so the usual last-child exception is unnecessary here.
+  border-collapse: collapse;
+
+  // The legacy grid container rule at default.css 139-142 sets exactly one
+  // property, and its value is one of the six permitted literals, so it carries
+  // across verbatim with nothing to tokenise. The rows below paint themselves.
+  background-color: transparent;
+
+  font-family: var(--font-family-base);
+
+  // MIGRATION: note 5 — THE TWO LEGACY FONT SIZES ARE NOT IN CONFLICT, AND BOTH
+  // SURVIVE. The legacy stylesheet appears to contradict itself: the six grid
+  // rules at default.css 131-171 are one step of the ramp, while the bare TFOOT,
+  // THEAD and TH rules at 536-550 are the next step up. Measuring which markup
+  // each governed dissolves the contradiction. A case-insensitive search of the
+  // entire Website tree for the ASP.NET accessible-header switch returns ZERO
+  // hits, so the legacy data grid emitted an ordinary data cell for every header
+  // cell and NO header cell element existed in any admin grid at all. The bare
+  // header-element rules therefore never applied to a grid — they governed the
+  // hand-authored tables elsewhere in the portal. The two measurements describe
+  // DISJOINT element sets, so each is honoured on the elements it actually
+  // styled: the grid cell ramp step here on the table, inherited by the body
+  // cells, and the bare header-element step on the sections below.
+  //
+  // Both steps land on their designated token rather than on a chosen one.
+  // _tokens.scss lines 419-422 designate --font-size-sm for "all four legacy
+  // data-grid rules" and name it "the shared data-table's size"; lines 428-430
+  // list the bare footer, head and header-cell rules among the consumers of
+  // --font-size-lg. A third value sits between them — the legacy general body
+  // and bold-body classes at default.css 92-97 and 106-111, which three of the
+  // four grids used in place of the grid classes — and it maps to --font-size-md.
+  // It is not used here: the grid vocabulary is what the plan names this file as
+  // replacing, and adding a third size to a table would create a hierarchy the
+  // legacy never had.
+  //
+  // BLITZY [A11Y]: the resulting grid text is the smallest in-scope step of the
+  // ramp, smaller again than the body size _tokens.scss already flagged as below
+  // the size generally recommended for comfortable reading. The measured legacy
+  // value is implemented EXACTLY rather than enlarged, because the design source
+  // outranks a generic accessibility default and enlarging it would reflow every
+  // ported admin screen; flagged here for designer review. One real improvement
+  // comes free: the legacy sizes were absolute pixel values that a reader's font
+  // preference could not touch, whereas every step of this ramp is relative to
+  // the browser's own base size, so raising that preference now scales the whole
+  // grid.
+  font-size: var(--font-size-sm);
+
+  // _tokens.scss lines 462-464 designate this step for "headings and dense grid
+  // rows". The legacy stylesheet declares no line height at all, anywhere, so
+  // every legacy row inherited the browser default; naming one is a net addition
+  // that makes row height predictable instead of engine-dependent.
+  line-height: var(--line-height-tight);
+
+  // The legacy grid item rule at default.css 156-163 sets the body text colour,
+  // and --color-text carries that exact value.
+  color: var(--color-text);
+
+  // The grid-level default in the legacy markup is centred, but every text
+  // column overrides it to the start edge — portals.ascx lines 24, 32 and 39,
+  // users.ascx line 25, ProfileDefinitions.ascx line 10 and roles.ascx line 27 —
+  // so start alignment is the effective legacy convention for body content and
+  // is set here as the inherited default. The logical keyword is used rather
+  // than a physical edge so the grid reads correctly under a right-to-left
+  // writing mode, which the legacy portal made no provision for.
+  text-align: start;
+}
+
+// =============================================================================
+//  CAPTION
+// =============================================================================
+
+caption {
+  // MIGRATION: note 4 — THE CAPTION IS NET-NEW, BUT THE NEED FOR IT IS NOT.
+  // A case-insensitive search of every page and control in the Website tree for
+  // a caption element returns ZERO hits, so this element is genuinely new to the
+  // application. What is NOT new is the intent behind it: the legacy markup
+  // describes its tables with the HTML summary attribute that HTML5 removed, and
+  // it does so 133 times across 22 in-scope admin files — 14 in
+  // Website/admin/Portal/sitesettings.ascx alone, 8 in
+  // Website/admin/Modules/modulesettings.ascx, 7 in
+  // Website/admin/Tabs/managetabs.ascx, and on an in-scope grid itself at
+  // Website/admin/Security/roles.ascx line 24 and at
+  // Website/admin/Security/securityroles.ascx lines 4, 8 and 56. A table
+  // description was therefore an established legacy convention applied at scale,
+  // and the caption element is its documented modern replacement. The mechanism
+  // is modernised; the intent is preserved.
+  caption-side: top;
+  padding-block-end: var(--space-2);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+  text-align: start;
+}
+
+// A caption that names the grid for assistive technology without painting it,
+// for the common case where a visible page heading already says the same thing
+// and repeating it on screen would be redundant. This is the hook to reach for
+// instead of dropping the caption: a table with no caption leaves screen-reader
+// users with no way to tell one grid from another on a screen that shows two.
+//
+// The mixin clips the element rather than removing it, so it keeps a box, keeps
+// its text and keeps its place in the reading order. Hiding a caption by taking
+// it out of display or out of visibility would delete it from the accessibility
+// tree as well as from the page, silencing the very text it exists to announce —
+// which is why neither appears anywhere in this file.
+caption[data-visually-hidden] {
+  @include mx.visually-hidden;
+}
+
+// =============================================================================
+//  SECTIONS — HEAD AND FOOT
+// =============================================================================
+
+// The step up from the grid ramp, applied to the two elements the legacy bare
+// rule at default.css 536-541 actually named, together with the brand colour
+// that same rule declared. See migration note 5 on the table element above for
+// why these two elements take a different step from the body cells, and why that
+// is fidelity rather than inconsistency.
+//
+// Declaring the size on the SECTION rather than on the cell is what makes a row
+// header inside the body come out at body size: it inherits from the table, not
+// from here. That is the correct result — a row header sits among the data it
+// labels — and it falls out of the structure instead of needing a second rule.
+thead,
+tfoot {
+  font-size: var(--font-size-lg);
+  color: var(--color-primary);
+}
+
+tfoot {
+  // The legacy grid footer rule at default.css 143-146 declares exactly one
+  // property, and --color-background carries its value.
+  //
+  // MIGRATION: this declaration was INVISIBLE in the legacy portal and is
+  // visible here, through no change of value. The legacy page background at
+  // default.css 2-6 is the same value, so a footer painted with it was
+  // indistinguishable from the page behind it. It becomes meaningful only
+  // because the zebra stripe below now paints alternate body rows a different
+  // surface, which gives the footer something to be distinct from. The value is
+  // carried across unchanged; what changed is that it finally does something.
+  background-color: var(--color-background);
+}
+
+// =============================================================================
+//  CELLS
+// =============================================================================
+
+th,
+td {
+  // MIGRATION: note 6 — CELL PADDING IS NORMALISED ONTO ONE STEP. The four
+  // in-scope legacy grids disagree with each other: portals.ascx line 14 and
+  // users.ascx line 23 declare one cell-padding value, while
+  // ProfileDefinitions.ascx line 7 and roles.ascx line 22 declare double it.
+  // Neither is reproduced as a literal, and the rounding is not a judgement made
+  // here — _tokens.scss line 488 publishes the workspace-wide legacy-to-step
+  // mapping precisely so that every partial rounds the same way, and both
+  // measured values resolve to --space-1 under it: the larger one exactly, the
+  // smaller one by the published rounding rule. So one step now applies
+  // uniformly to every cell in every grid, which is what the legacy screens
+  // would have looked like had they been consistent with each other.
+  padding-block: var(--space-1);
+  padding-inline: var(--space-1);
+
+  // Body cells are pinned to the top edge in every legacy grid — portals.ascx
+  // lines 24, 32, 39 and 44-48, users.ascx line 25, ProfileDefinitions.ascx
+  // line 10 — so a short cell stays level with a tall neighbour instead of
+  // floating in the middle of it. The legacy header cells agree, declaring the
+  // same edge at portals.ascx line 15, users.ascx line 24,
+  // ProfileDefinitions.ascx line 9 and roles.ascx line 26.
+  //
+  // MIGRATION: the bare header-element rule at default.css 543-550 asks for
+  // baseline alignment instead, and it is superseded here. Two reasons, and the
+  // second is decisive: all four in-scope grids state the top edge explicitly in
+  // their markup, and — as migration note 5 establishes — that bare rule never
+  // applied to a grid in the first place, because no legacy grid emitted a header
+  // cell element at all. Following it would import a rule from hand-authored
+  // tables into the one place it demonstrably never governed.
+  vertical-align: top;
+
+  // MIGRATION: note 11 — CELLS REFLOW, THEY DO NOT TRUNCATE, and no truncation
+  // hook is offered. Grid cells in this application really do receive unbroken
+  // runs of text: the portals grid renders a concatenated list of portal aliases
+  // through the helper called at portals.ascx line 41, and an alias is a host
+  // name with no space in it. Permitting a break inside such a run is what keeps
+  // it inside its column instead of forcing the table wider than its container.
+  //
+  // Clipping was considered and rejected. A grid cell is often the only place a
+  // value appears, so hiding its tail hides information the reader came for, and
+  // clipping in a table additionally requires a fixed layout mode and an explicit
+  // column width to have any effect at all — neither of which belongs in a global
+  // rule. A component that genuinely needs a single-line column can set the
+  // layout mode and clip within its own scoped stylesheet. This also keeps the
+  // file consistent with the shared empty-state component, which documents the
+  // same reflow-rather-than-clip decision for the same reason.
+  overflow-wrap: break-word;
+}
+
+th {
+  // Bold is the ONE thing the two legacy readings agree on: the grid header rule
+  // at default.css 147-155 and the bare header-element rule at 543-550 both ask
+  // for it, so it carries across with no reconciliation needed.
+  font-weight: var(--font-weight-bold);
+
+  // MIGRATION: the header colour follows the bare header-element rule at
+  // default.css 543-550 rather than the grid header rule at 147-155, which used
+  // the same colour as the body text. The target header IS a real header cell
+  // inside a real head section, which is exactly the markup that bare rule was
+  // written for, so it is the applicable legacy statement about this element.
+  // Both choices pass at the strictest contrast level — this one measures
+  // 12.61:1 against the page background and 10.87:1 against the zebra surface —
+  // so this is a continuity decision between two legacy rules, not a contrast
+  // one. Applying it to every header cell also gives a row header the same
+  // treatment as a column header, which the legacy had no way to express.
+  color: var(--color-primary);
+}
+
+// Centred column headers over start-aligned body cells is the legacy convention,
+// and it is stated twice independently: the grid markup declares it at
+// portals.ascx line 15, users.ascx line 24, ProfileDefinitions.ascx line 9 and
+// roles.ascx line 26, and the grid header rule at default.css 147-155 declares it
+// again in CSS.
+//
+// Both alignments are written out explicitly rather than left to inheritance,
+// and that is deliberate rather than verbose. The table above sets start
+// alignment, which every cell inherits — but the browser's own stylesheet
+// targets the header cell element directly, and a direct rule outranks an
+// inherited value. So a header cell would silently keep the browser's centring
+// while a row header would too, and neither would be under this file's control.
+// Naming both removes that dependency on a browser default.
+th[scope='col'] {
+  text-align: center;
+}
+
+// A row header labels the row it sits in, so it aligns with the data beside it.
+// Three of the four legacy grids put an identifying text column first and align
+// it to the start edge — portals.ascx line 32, users.ascx line 25 and
+// ProfileDefinitions.ascx line 10 — which is the cell this element replaces.
+th[scope='row'] {
+  text-align: start;
+}
+
+// The legacy grids also override the centred header back to the start edge on
+// individual text columns — portals.ascx lines 25, 31 and 38 — so per-column
+// alignment was a real legacy need. It is met by the column header inheriting
+// from a component-scoped rule rather than by a global modifier class: a column
+// whose body cells are start-aligned can align its own header in the
+// data-table component's stylesheet, and no extra global rule is spent on it.
+
+// =============================================================================
+//  ROW STATES
+// =============================================================================
+
+// MIGRATION: note 1 — THE LEGACY ALTERNATING ROW RECOLOURED ITS TEXT, AND THAT
+// IS DELIBERATELY NOT REPRODUCED. The legacy alternating-row rule at
+// default.css 131-138 keeps the normal row's size and weight but replaces the
+// text colour with the value this system tokenises as --color-danger, which
+// rendered every second row of every grid in the colour the same stylesheet
+// reserves for error messages at default.css 114-120. That is a defect rather
+// than a design intent, the migration plan rules it out explicitly, and it is
+// not carried forward.
+//
+// What replaces it is not a like-for-like substitution, and the measurement is
+// worth stating because it changes how this rule should be read. In the legacy
+// portal the alternating row had NO background distinction whatsoever: the
+// normal row rule at default.css 156-163 leaves its background at one of the six
+// permitted literals, so it showed the page background from default.css 2-6
+// through, and the alternating rule sets its background to that SAME value. The
+// two rows were pixel-identical apart from the recoloured text. Removing the
+// recolour therefore removes the ONLY thing that distinguished them, so a
+// background stripe is not decoration added on top of the legacy design — it is
+// the functional replacement for the one distinction the legacy design had,
+// re-expressed in a way that does not sacrifice legibility to do it.
+//
+// The stripe uses a surface token and leaves the text colour exactly as the
+// normal row sets it. Contrast on the striped row is 18.10:1 for body text and
+// 10.87:1 for a header cell, both far above the strictest requirement.
+//
+// Only the body is striped. The head and foot are separate sections and are not
+// matched by this rule, which is the correct result: a striped header row would
+// compete with the header's own treatment.
+tbody > tr:nth-child(even) {
+  background-color: var(--color-surface);
+}
+
+// MIGRATION: note 2 — THE SELECTED ROW IS THE MOST DIVERGED VALUE IN THE WHOLE
+// DESIGN SYSTEM, and all three layers of that divergence are recorded here
+// rather than absorbed. The token value is used exactly as the migration plan's
+// colour table specifies, because design-system compliance is the first rank of
+// the precedence order and visual continuity only the second — but a reader of
+// this file is entitled to know what was traded away.
+//
+//   (a) PROVENANCE. --color-selected was never a grid colour. Its value occurs
+//       exactly twice in the entire legacy stylesheet, at default.css 705 and
+//       788, and both occurrences are the selected-item rules of the two legacy
+//       menu families — the module-title menu and the main menu — which this
+//       migration places out of scope. Re-measured directly: two occurrences,
+//       those two lines, those two owners, and nothing else.
+//   (b) THE RULE IT NOMINALLY REPLACES. The legacy selected-item grid rule sits
+//       at default.css 164-171 and pairs a mid-grey background — the same value
+//       --color-text-disabled carries — with a saturated cool-hued text colour
+//       this design system does not tokenise anywhere.
+//   (c) THAT RULE IS DEAD CSS. Searching every page, control, code-behind,
+//       resource and configuration file under Website/ and Library/ for that
+//       class identifier returns NOTHING: it is defined and never applied. The
+//       four real in-scope grids instead point their selected row at the legacy
+//       error-text class — roles.ascx line 30, users.ascx line 28 and
+//       ProfileDefinitions.ascx line 13 — or declare no selected style at all,
+//       as portals.ascx does. That class is defined at default.css 114-120 and
+//       changes only the text: bold, one step larger, and recoloured to the
+//       value --color-danger carries. So the EFFECTIVE legacy selected row was
+//       recoloured bold text with no background change of any kind.
+//
+// Net effect: a selected row is now a tinted row where the legacy rendered
+// recoloured text. Contrast on the tint is 13.72:1 for body text and 8.24:1 for
+// a header cell, both above the strictest requirement.
+//
+// The hook is keyed to the ARIA state rather than to a class, and that is the
+// single most useful decision in this rule. _tokens.scss lines 194-199 make it a
+// condition of using this token that any consumer painting a row with it must
+// also expose the state programmatically, on the grounds that colour must never
+// be the only carrier of meaning. Keying the tint to the attribute makes that
+// condition impossible to violate: a row that is not announced as selected
+// cannot be painted as selected, so the accessibility obligation is discharged
+// by the selector itself instead of by a convention someone has to remember.
+//
+// SPECIFICITY: this selector and the stripe above are exactly equal in
+// specificity, so the cascade resolves them by source order and this rule MUST
+// stay below the stripe. That is the whole reason no importance flag is needed
+// anywhere in this file — do not reorder these two rules.
+tbody > tr[aria-selected='true'] {
+  background-color: var(--color-selected);
+}
+
+// A row the reader can select is a row the reader can reach. The pointer is the
+// affordance for a mouse; the ring is the affordance for a keyboard, and it is
+// applied through the shared mixin so it attaches to the focus-visible state
+// rather than to plain focus — appearing for keyboard and assistive-technology
+// navigation while a mouse press produces no ring at all.
+//
+// Matching the bare attribute rather than one of its values covers a row that is
+// selectable but not currently selected, which is the ordinary case.
+tbody > tr[aria-selected] {
+  cursor: pointer;
+
+  @include mx.focus-ring;
+}
+
+// =============================================================================
+//  SORTABLE COLUMN HEADER
+// =============================================================================
+
+// Keyed to the ARIA sort state for the same reason the selected row is keyed to
+// its own state: a header that looks sortable but does not announce its sort
+// direction is unusable with a screen reader, and tying the appearance to the
+// attribute means the two cannot drift apart.
+th[aria-sort] {
+  cursor: pointer;
+}
+
+// The actively-sorted column, marked by a surface tint. This is SUPPLEMENTARY to
+// the direction indicator the component draws, never a replacement for it: a
+// tint alone says "this column" but cannot say "ascending", and direction must
+// not be carried by colour. The head section is not striped, so this tint has
+// nothing to collide with.
+th[aria-sort='ascending'],
+th[aria-sort='descending'] {
+  background-color: var(--color-surface);
+}
+
+// The interactive element inside a sortable header. A real button is used rather
+// than a click handler on the cell, because only a button is reachable by keyboard
+// and announced as operable — and this rule makes that button inherit the header's
+// appearance so choosing the accessible element costs nothing visually.
+//
+// MIGRATION: note 8 — FOCUS INDICATION IS ENTIRELY NET-NEW. Both legacy
+// stylesheets declare no outline rule and no focus selector across all 1030 and
+// 275 lines, so a keyboard user had only whatever the browser drew. Because the
+// legacy resting state carried no focus treatment at all, adding one changes
+// nothing the legacy portal rendered at rest — the improvement is free. The ring
+// is applied through the shared mixin and is never suppressed: no rule in this
+// file removes an outline, so there is nowhere for a focus indicator to be lost.
+th[aria-sort] > button {
+  // Every value here is one of the six permitted literals, so the reset needs no
+  // token and cannot drift from the header it sits in: the type, weight, size and
+  // colour all come from the header cell itself.
+  font: inherit;
+  color: inherit;
+  background-color: transparent;
+  border-width: 0;
+  padding: 0;
+  cursor: pointer;
+
+  // Inline-level on purpose. An inline-level box is positioned by the text
+  // alignment of the cell around it, so the button lands centred under a column
+  // header and at the start edge under a header a component has re-aligned,
+  // without this file having to restate either alignment. The gap reserves room
+  // for the component's direction indicator beside the label.
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  text-align: inherit;
+
+  @include mx.focus-ring;
+}
+
+// =============================================================================
+//  IN-TABLE PLACEHOLDER ROW
+// =============================================================================
+
+// A single spanning cell carrying a zero-result or still-loading message while
+// the table's own structure stays on screen, so the reader keeps the column
+// headings as context.
+//
+// This is the narrower of two patterns and they must not be confused. The shared
+// empty-state component is the other, and it documents that it assumes NO
+// surrounding table context — it replaces the table outright, heading and all.
+// Use that when the grid has nothing to show and no headings worth keeping; use
+// this when the grid stays and only its rows are absent.
+//
+// MIGRATION: both patterns are net additions. Not one of the four in-scope
+// legacy grids declares an empty-data template, so a legacy query returning zero
+// rows rendered SILENTLY — the reader was shown an empty frame with no
+// explanation. Explaining it is a deliberate, documented improvement rather than
+// a port.
+//
+// Generous block padding lifts the message clear of the header row so it does not
+// read as data. The muted colour marks it as commentary rather than a record, and
+// it still measures 5.49:1 against the page background and 4.73:1 against the
+// zebra surface, so it stays above the requirement for normal text on either —
+// though in practice a placeholder is the only row present and is never striped.
+td[data-placeholder] {
+  padding-block: var(--space-6);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+// =============================================================================
+//  HORIZONTAL SCROLL REGION
+// =============================================================================
+
+// MIGRATION: note 9 — RESPONSIVE BEHAVIOUR IS ENTIRELY NET-NEW. A media feature
+// query occurs ZERO times in default.css, zero times in portal.css and zero
+// times across every stylesheet under Website/ — the legacy portal had no
+// responsive design of any kind, and its grids simply overflowed. There is
+// therefore no legacy behaviour to preserve here and nothing to diverge from;
+// the whole of this section is an addition.
+//
+// The breakpoint is obtained by including a mixin from _mixins.scss. No raw media
+// feature query appears in this file, because a breakpoint restated per file
+// drifts silently from every other copy of itself, and because a custom property
+// is not evaluated inside a media feature query at all.
+//
+// An admin grid has many columns and cannot always fit. Scrolling the region
+// rather than the page keeps the surrounding layout intact, and the automatic
+// value means no scrollbar appears at all when the table already fits.
+[data-table-scroll] {
+  // The logical form of this property is not yet reliably supported across the
+  // browsers this build targets, so the physical axis is named. It is an axis,
+  // not a design value, so there is no token for it either way.
+  overflow-x: auto;
+
+  // Stops a horizontal swipe that reaches the end of the grid from continuing
+  // into the page or the browser's own back gesture.
+  overscroll-behavior-x: contain;
+
+  // A scrollable region must be operable by keyboard, which means it must be
+  // focusable — the consumer supplies the tab stop, the accessible name and the
+  // region role, as the markup contract at the top of this file sets out — and a
+  // focusable element must show where the focus is.
+  @include mx.focus-ring;
+
+  // Below the tablet step, stop forcing the grid to the width of its container
+  // and let the columns take the width their content needs, so the region
+  // scrolls instead of crushing every column into an unreadable sliver. The
+  // minimum keeps a narrow grid filling the region rather than collapsing to its
+  // content on a wide screen. Above this step the table rule's full width
+  // applies unchanged, so the wide layout is untouched.
+  @include mx.respond-below('md') {
+    & > table {
+      inline-size: auto;
+      min-inline-size: 100%;
+    }
+  }
+}
+
+// =============================================================================
+//  OPT-IN STICKY HEADER
+// =============================================================================
+
+// Keeps the column headings visible while a long grid scrolls. Opt-in rather
+// than automatic: it is only correct inside a scrolling region or a tall page,
+// and a global default would apply it to short tables that gain nothing from it.
+//
+// Both tokens used here were declared for exactly this purpose — _tokens.scss
+// lines 525-526 assign the first elevation level to "the sticky data-table
+// header", and lines 582-583 assign the sticky layer of the stacking scale to
+// "sticky data-table headers" — so this rule consumes the contract rather than
+// inventing a stacking value.
+//
+// The header must be OPAQUE to work, and that is a genuine divergence: the legacy
+// grid header rule at default.css 147-155 leaves its background at one of the six
+// permitted literals, which is exactly what cannot be used here, since body rows
+// would scroll through it and both layers would be unreadable at once. The page
+// background value is used, so a resting sticky header looks identical to the
+// legacy header on a default page — see migration note 10 below for the full
+// statement of this and of the hover decision.
+//
+// Sticky positioning is applied to the header CELL rather than to the head
+// section, because the collapsed border model does not make the section itself a
+// positionable box in every engine.
+table[data-sticky-head] thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-index-sticky);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-1);
+}
+
+// =============================================================================
+//  TWO REMAINING MIGRATION NOTES, RECORDED AGAINST NO RULE
+//  Both concern behaviour deliberately NOT emitted. They are stated here because
+//  an absent rule leaves no site to annotate, and an undocumented absence is
+//  indistinguishable from an oversight.
+// =============================================================================
+
+// MIGRATION: note 3 — THE LEGACY PAGER HAD NO VISUAL DEFINITION AT ALL, AND NONE
+// IS INVENTED HERE. Its class identifier is applied by all four in-scope grids —
+// portals.ascx line 19, roles.ascx line 32, ProfileDefinitions.ascx line 15 and
+// users.ascx line 30 — and, re-measured across every stylesheet in the
+// repository, it is DEFINED ZERO TIMES. Four references, no definition. The
+// shared pagination component is therefore a pure net addition with no legacy
+// appearance to preserve, and this file gives it nothing.
+//
+// Two things follow, and both are decisions rather than omissions. First, the
+// pager is a SIBLING of the table and not part of it: portals.ascx places it
+// after the grid at lines 57-58 and users.ascx does the same at line 83, so no
+// rule here reaches inside a table to style a pager, and the pagination
+// component must not be rendered into a foot row. Second, the legacy file-manager
+// pager rule at default.css 263-271 was deliberately NOT borrowed to fill the
+// gap, even though it is the closest thing in the stylesheet to a pager and would
+// have been easy to lift: file management is out of scope for this migration, so
+// its parallel grid vocabulary — its own header, item, alternating-item,
+// selected-item, pager and status-bar rules — is not a legitimate source for
+// anything in this file, and not one value from it appears above.
+
+// MIGRATION: note 10 — NO ROW HOVER IS EMITTED, AND THE OMISSION IS PRINCIPLED.
+// Two independent reasons, either sufficient on its own. Measurement first: the
+// legacy grids have no hover treatment of any kind, and the only hover rules in
+// default.css are on links, so there is no legacy row behaviour to preserve.
+// Mechanism second: a hover rule on a touch device sticks to the last-tapped
+// element until something else is tapped, so it must be guarded by a hover
+// capability query — and _mixins.scss, which is the only file in this workspace
+// permitted a raw media feature query, exports breakpoint, motion and
+// accessibility members but NO hover guard. Writing the query here instead would
+// break the rule that keeps every query in one file. So no hover rule is emitted
+// rather than an unguarded one, and the pointer and focus ring already tell the
+// reader which rows and headers are interactive. Should hover styling be wanted
+// later, the correct move is to add a guard mixin to _mixins.scss and include it
+// here — not to write a query in this file.
+//
+// The sticky header above is the one place a legacy background value could not be
+// carried across unchanged, for the mechanical reason given at that rule: a
+// see-through sticky header shows the rows scrolling underneath it. It is
+// recorded as part of this note so the count of divergences stays honest.
+

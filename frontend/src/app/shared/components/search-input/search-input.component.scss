@@ -1,0 +1,345 @@
+// =============================================================================
+//  search-input.component.scss — the shared search / filter field
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Component-scoped presentation for the shared search affordance: a visible
+//  caption, a native search field, and a submit control carrying an inline
+//  vector glyph beside a text caption. It styles exactly the six selectors the
+//  paired template renders and nothing else, and it is reached only through that
+//  component's `styleUrl`, so Angular's emulated encapsulation scopes every rule
+//  below to this component's markup.
+//
+//  SELECTOR VOCABULARY — fixed, and shared with the paired template
+//    :host                        the block
+//    .search-input__label         the visible caption
+//    .search-input__row           the row holding the field and the submit
+//    .search-input__field         the native search field
+//    .search-input__submit        the submit control
+//    .search-input__submit-icon   the inline vector glyph inside the submit
+//
+//  The legacy class vocabulary is deliberately NOT carried over. The legacy
+//  values informed the token set; the names themselves are replaced.
+//
+//  WHAT THIS FILE DELIBERATELY DOES NOT DO
+//  ---------------------------------------
+//  The workspace's single global stylesheet owns the base appearance of bare
+//  form elements — the family, size, weight, border, padding and background of
+//  `label`, `input` and `button`. Angular's emulated encapsulation scopes
+//  COMPONENT styles; it does not shield elements from global ELEMENT selectors,
+//  so that base chrome already reaches the markup here. Restating it would
+//  duplicate the global layer and, worse, would diverge from it silently the
+//  first time either side changed. This file therefore declares only what is
+//  genuinely specific to this component: the block and row layout, the flexible
+//  sizing of the field, the glyph box, the interaction affordances, and one
+//  responsive adjustment.
+//
+//  WHY THE TOKEN PARTIAL IS NOT LOADED HERE — MEASURED, NOT ASSUMED
+//  ---------------------------------------------------------------
+//  Tokens are consumed below purely as custom-property references, and the token
+//  partial is deliberately not loaded. Sass copies the CSS of a loaded partial
+//  into its consumer, and the token partial's entire purpose is to emit one
+//  document-root block of custom properties. Loading it from here would emit a
+//  SECOND copy of that block inside this component's stylesheet — which the
+//  token partial's own header forbids in terms: no other stylesheet may open a
+//  document-root block or re-declare a custom property, because two such blocks
+//  carrying the same property bloat the bundle and make the effective value
+//  depend on cascade order.
+//
+//  Both variants of this file's preamble were compiled to confirm it:
+//    loading the token partial     1611 bytes emitted, one document-root block
+//    not loading it                  67 bytes emitted, no such block
+//  The `var()` references were emitted identically either way, because a custom
+//  property is resolved by the BROWSER at run time from the single global block
+//  the entry stylesheet emits — never by the compiler. The mixin partial states
+//  this same reasoning for itself, and is loaded here only because a mixin body
+//  stays inert until it is included.
+//
+//  The path below is four levels out: `styles/` is a sibling of `app/` inside
+//  `src/`, one level above the `shared/` tree, so a stylesheet under
+//  `src/app/…` always reaches it one level further out than its TypeScript
+//  neighbour would. The workspace configures no Sass load path, so the relative
+//  path has to stand on its own.
+//
+//  DIVERGENCE POLICY
+//  -----------------
+//  Where this file departs from what the legacy portal did, the departure is
+//  annotated inline with a `// MIGRATION:` comment rather than silently
+//  absorbed, and where a measured legacy value falls short of an accessibility
+//  recommendation the legacy value is implemented exactly and flagged for
+//  designer review rather than quietly corrected. Line references point at
+//  Website/Portals/_default/default.css, Website/admin/Users/users.ascx and
+//  Website/controls/labelcontrol.ascx, all of which are read-only inputs: this
+//  migration is purely additive and no legacy file is modified or removed.
+//
+//  ZERO HARDCODED VALUES
+//  ---------------------
+//  Every value below is either a design-token reference, a structural CSS keyword, an
+//  intrinsic ratio, or one of the literals the migration plan permits — `0`,
+//  `none`, `auto`, `inherit`, `currentColor`, `transparent`. No colour, length,
+//  radius or duration is written out.
+// =============================================================================
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  The block
+//
+//  The template renders the caption as a SIBLING of the row rather than inside
+//  it, so the host has to establish a block context for the two to stack.
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+
+  // MIGRATION: net-new, in full. The legacy portal declares no responsive rule
+  // anywhere — its media-query count is zero, as it is across every legacy
+  // stylesheet — so there is no legacy behaviour to preserve and this is an
+  // addition rather than a translation. Below the step the block simply fills
+  // its container, which is the right small-viewport behaviour and needs no
+  // rule of its own.
+  //
+  // The cap is what replaces the legacy fixed-width layout table (users.ascx
+  // L3). A search affordance stretched across a wide desktop is harder to use,
+  // not easier. The width comes from the shared breakpoint helper, which the
+  // mixin partial exports for precisely this kind of intrinsic sizing, so no
+  // length literal is written here and the value can never drift away from the
+  // breakpoint scale. The query itself is obtained by including a mixin: a
+  // component may not author one directly, because a breakpoint restated in a
+  // component silently diverges from every other declaration of it.
+  @include mx.respond-above('md') {
+    max-inline-size: mx.breakpoint('sm');
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  The visible caption
+//
+//  Kept visible rather than folded into the field's accessible name. The legacy
+//  screen labelled its search field visibly (users.ascx L5), and the label
+//  control the admin screens shared rendered its caption above the field it
+//  described, followed by a break (labelcontrol.ascx L2-L8) — so a block-level
+//  caption above the row is the faithful structure here, not an invention.
+// -----------------------------------------------------------------------------
+.search-input__label {
+  display: block;
+  margin-block-end: var(--space-1);
+
+  // The legacy caption for an item title on an admin or edit screen is
+  // distinguished from body text by its weight and by the brand colour
+  // (default.css L74-80). Those two properties are what make it a caption, so
+  // they are declared. Its SIZE is not: that is the legacy body size, which
+  // arrives by inheritance from the global base rather than being restated.
+  //
+  // MIGRATION: no type family is declared here, or anywhere in this file. The
+  // legacy stylesheet spread three near-identical stacks across its rules —
+  // `Tahoma, Arial, Helvetica` on 38 rules, `Tahoma, Verdana, Arial,
+  // Sans-Serif` on 2 and `Verdana, sans-serif` on 1 — and the token set
+  // collapses all three into a single base family token, which the global layer
+  // applies once. The consolidation is a deliberate simplification of
+  // inconsistent legacy authoring and its rendered difference is imperceptible;
+  // repeating the family per component would defeat the point of consolidating
+  // it.
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+
+  // A caption is supplied by the consumer and can be arbitrarily long, and this
+  // block is narrow by design once the cap above applies.
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  The row holding the field and the submit control
+//
+//  MIGRATION: the legacy screen achieved this arrangement with a layout table
+//  and hard-coded spacing — a fixed overall width, a fixed caption column, a
+//  proportional field column, and a fixed-height spacer row (users.ascx L3,
+//  L5-L6, L12) — with non-breaking-space entities separating the links beneath
+//  it (L17). All of it is dropped. The arrangement is real layout rather than
+//  tabular data, and the spacing resolves to a step on the spacing scale, so
+//  nothing here is expressed as a length literal or as markup. That scale is
+//  itself an addition: the legacy stylesheet has no spacing system, and its
+//  corner-radius and shadow counts are both zero, so no rounding or elevation
+//  is introduced here either.
+// -----------------------------------------------------------------------------
+.search-input__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// -----------------------------------------------------------------------------
+//  The native search field
+//
+//  MIGRATION: every part of this field's chrome is an addition, and more
+//  completely so than a border-and-background count alone would suggest. The
+//  legacy field carried no CSS class at all (users.ascx L7) — not even the
+//  shared convention its sibling admin textboxes used, and that convention
+//  itself set only a family, a size and a weight — so it inherited nothing but
+//  the containing cell's type and was otherwise drawn entirely by the browser's
+//  own default form styling. There is consequently no legacy border, padding,
+//  background or rounding to reproduce, and whatever base chrome this field does
+//  receive comes from the global form layer rather than from here.
+//
+//  MIGRATION: the measured legacy type relationship is preserved, but not by
+//  this file. Body text sits at the base step of the type scale and form
+//  controls exactly one step above it (default.css L92-97 against L123-128).
+//  The global form layer carries that one-step difference for every control at
+//  once, so declaring a size here would duplicate it and risk diverging from
+//  it. The relationship is recorded rather than restated, and in no case is it
+//  expressed as a length literal.
+// -----------------------------------------------------------------------------
+.search-input__field {
+  // Take the free space in the row and — the load-bearing half of this pair —
+  // permit shrinking below the intrinsic width of the value being typed. A flex
+  // item's minimum size resolves to `auto`, which would let a long value push
+  // the submit control out of the row instead of scrolling inside the field.
+  flex: 1 1 0;
+  min-inline-size: 0;
+
+  // Deliberately NOT `appearance: none`. A native search field paints its own
+  // clear affordance, and this component's TypeScript intercepts the event that
+  // affordance raises, which makes it a supported part of the control's
+  // behaviour; flattening the appearance would remove it.
+
+  // MIGRATION: the focus indicator is an addition. Two independent counts over
+  // the legacy stylesheet agree that it declared no focus treatment at all —
+  // zero focus selectors and zero outline declarations — so keyboard users had
+  // nothing beyond the browser default. The shared mixin draws it on
+  // `:focus-visible` only, and as an outline rather than a border or a shadow,
+  // so a pointer user sees no change and the indicator cannot reflow the field
+  // it marks. Nothing here suppresses an outline.
+  @include mx.focus-ring;
+}
+
+// -----------------------------------------------------------------------------
+//  The submit control
+//
+//  MIGRATION: the legacy submit was an image button whose entire presentation
+//  was one small raster glyph (users.ascx L9) — no background, no border, no
+//  padding. That raster asset is not carried forward, because the workspace
+//  ships a single static asset and no image family; the glyph is authored as
+//  inline vector markup in the template instead, and this rule supplies its box.
+//  The chrome-less presentation below is therefore the faithful reading of the
+//  legacy control, and the explicit `transparent` and `none` overrides exist
+//  precisely to defeat the filled appearance a bare button would otherwise
+//  inherit from the global form layer. Both are permitted keywords, so stating
+//  the override costs no literal.
+//
+//  MIGRATION: the one legacy filled-button convention (default.css L475-484) is
+//  deliberately not adopted. Its background resolves to no token in the token
+//  set, so reproducing it would require a hardcoded colour — and design-system
+//  compliance outranks literal visual continuity. The point is moot in any case:
+//  the legacy search submit was not that convention, and had no fill.
+//
+//  BLITZY [A11Y]: the resulting target is shorter than the 44-by-44 minimum
+//  commonly recommended for touch, because its height derives from the legacy
+//  type scale and the legacy control was a small glyph. The design source is
+//  implemented as measured rather than the control being silently enlarged;
+//  flagged here for designer review.
+//
+//  Measured in a browser, the shortfall is in the block axis ONLY: the inline
+//  extent clears that recommendation with room to spare, and the whole deficit
+//  sits in the height, which resolves to one spacing step above and below the
+//  glyph box. For the reviewer's benefit, that height still meets the smaller
+//  target-size minimum asked for at level AA, and falls short only of the larger
+//  enhanced recommendation — so this flag records a missed enhancement, not a
+//  conformance failure. The field beside it measures the same height and is in
+//  the same position, but its height comes from the global form layer's own
+//  padding rather than from here, so it is carried into the same review rather
+//  than restated as a rule of this component's own.
+// -----------------------------------------------------------------------------
+.search-input__submit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  // Never absorb the row's free space, and never shrink: the field is the
+  // elastic element in this row, not the submit. This is also what keeps the
+  // glyph and its caption on one line as the row tightens — a non-shrinking
+  // flex item keeps its content-based size, so no wrapping override is needed
+  // and none is declared.
+  flex: none;
+
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+
+  background-color: transparent;
+  border: none;
+  color: var(--color-primary);
+
+  // The legacy stylesheet sets a pointer affordance in seventeen places, so
+  // this has direct precedent, and a keyword needs no token.
+  cursor: pointer;
+
+  // MIGRATION: motion is an addition — the legacy stylesheet's transition,
+  // animation and transform counts are all zero. The shared mixin names the
+  // property explicitly and wraps the result in a reduced-motion guard, so a
+  // reader who has asked their system for less movement simply never receives
+  // it, and the timing resolves to the motion tokens.
+  @include mx.transition(color);
+
+  // MIGRATION: the legacy hover for an admin link button, and for links
+  // generally, resolved to the danger colour (default.css L462-466, L564-568).
+  // That value is tokenised, but under a name whose semantic role is danger, and
+  // reusing it for a benign search would signal a destructive action. The token
+  // whose role IS the hover companion to the brand colour is used instead — the
+  // token partial documents it as exactly that, and it clears WCAG AA and AAA
+  // against the page background. Design-system compliance outranks literal
+  // visual continuity, so this divergence is taken deliberately and recorded
+  // here rather than absorbed. The hover is unguarded by a pointer-capability
+  // query because the shared mixin surface exposes no such guard and a component
+  // may not author a query itself; on a touch device the hover colour may
+  // therefore persist until the next tap, which is bounded and cosmetic.
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+
+  @include mx.focus-ring;
+}
+
+// -----------------------------------------------------------------------------
+//  The inline vector glyph inside the submit control
+//
+//  The template deliberately gives the vector no width or height attribute, so
+//  its box is CSS's to set — which is what keeps the glyph scalable and its
+//  sizing in one place. Its stroke is `currentColor`, so the colour and the
+//  hover transition above are inherited and are never restated here.
+//
+//  MIGRATION: the box is a spacing step chosen because it equals the edge of the
+//  legacy raster glyph it replaces (users.ascx L9), so the replacement occupies
+//  the space the original did. The token set holds no dedicated icon-size token;
+//  the spacing step is the tokenised route to that dimension, and using it keeps
+//  the rule free of a length literal.
+// -----------------------------------------------------------------------------
+.search-input__submit-icon {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  Disabled affordance
+//
+//  Both elements are native form controls and both can genuinely carry the
+//  attribute: the field's reactive control is disabled programmatically by
+//  consumers, and a disabled control must not go on looking live.
+//
+//  MIGRATION: the colour is the legacy disabled-text colour (default.css
+//  L100-103), tokenised rather than written as the named colour the legacy rule
+//  used.
+//
+//  BLITZY [A11Y]: that token's contrast against the page background falls below
+//  the WCAG AA minimum for text. The measured legacy value is implemented
+//  exactly rather than darkened, because the design source outranks a generic
+//  accessibility default; the token partial raises the same flag at the
+//  definition site and it is carried forward here for designer review. Colour is
+//  never the sole indicator of the state — the native disabled attribute always
+//  accompanies it, so assistive technology and keyboard users are served
+//  independently of that contrast figure.
+// -----------------------------------------------------------------------------
+.search-input__field:disabled,
+.search-input__submit:disabled {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}

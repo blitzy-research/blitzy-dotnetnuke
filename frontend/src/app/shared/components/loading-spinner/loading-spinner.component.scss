@@ -1,0 +1,121 @@
+// =============================================================================
+//  loading-spinner.component.scss — async progress indicator
+// =============================================================================
+//  Owns every dimension, colour and the rotation of the shared loading spinner,
+//  styling exactly the sibling template: the host, its decorative `indicator`
+//  glyph and its optional `label` text. Consumes spacing, border, typography
+//  and motion tokens only; every value is a token, an intrinsic unit, pure
+//  geometry or one of the six permitted literals. Token values are named, never
+//  restated, so the token partial stays their one home.
+//
+// MIGRATION: net-new affordance, no legacy ancestor. The legacy portal was
+//  full-page-postback Web Forms, so the browser's page-load indicator WAS the
+//  spinner: zero spinner/progress/loading/throbber/busy selectors across
+//  default.css (136 rule bodies) and portal.css (80, all empty), and zero
+//  UpdatePanel/UpdateProgress/ScriptManager/AsyncPostBack across the five
+//  in-scope admin trees. No legacy class name or raster icon is referenced.
+// =============================================================================
+
+// Four levels up: `styles/` is a sibling of `app/`, one further out than any
+// TypeScript target here. No load path is configured; modules are per-file.
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  vertical-align: middle; // optical alignment beside running text
+}
+
+// MIGRATION: every dimension is a net addition — the legacy stylesheets have no
+//  spacing system and declare border-radius and box-shadow zero times each. No
+//  size-token group exists, so the spacing scale is deliberately reused as the
+//  size scale: --space-6 medium, --space-4 small, --space-7 large. The base IS
+//  medium, covering a missing `data-size` too: an attribute binding is dropped
+//  on a nullish value, and a dimensionless glyph is invisible.
+.indicator {
+  box-sizing: border-box;
+  flex: none;
+  inline-size: var(--space-6);
+  block-size: var(--space-6);
+
+  // GEOMETRY, not a design value: 50% turns a square into a circle; a radius
+  // token would round the corners into a squircle.
+  border-radius: 50%;
+
+  border-width: var(--border-width);
+  border-style: var(--border-style);
+  border-color: var(--color-border);
+
+  // MIGRATION: currentColor is both the most legacy-faithful and the most
+  //  design-system-clean choice — the one place the two coincide. default.css
+  //  L92-L97 styles `Normal`, its own comment's "text style used for most text
+  //  rendered by modules", with no `color` at all, so legacy body text inherited
+  //  from context. This accent arc does the same.
+  border-block-start-color: currentColor;
+
+  // MIGRATION: the rotation is a net addition — animation, keyframes and
+  //  transition each measure zero in both legacy stylesheets.
+  //
+  // MIGRATION: both token gaps close inside the design system, not with a
+  //  literal. --transition-duration exists but is documented for brief state
+  //  changes, so unscaled it would spin several turns a second; an integer ratio
+  //  keeps the token as the one definition site.
+  //
+  // MIGRATION: motion is gated by play-state rather than by declaring the
+  //  animation inside the guard, which is the shape the mixins partial's own
+  //  example shows. Angular's emulated-encapsulation shim scopes a top-level
+  //  @keyframes but rewrites animation-name only at top level, never inside an
+  //  at-rule body, so the guarded shape ships a reference to a name that does
+  //  not exist and silently never spins — measured in a production bundle as
+  //  `loading-spinner-spin` against `@keyframes _ngcontent-%COMP%_loading-
+  //  spinner-spin`, zero animation objects, transform none. Naming the
+  //  animation here keeps reference and keyframes scoped together, and
+  //  motion-safe flips only play-state, so a reduced-motion preference is still
+  //  honoured without this file writing a raw media query, which it may not do.
+  animation-name: loading-spinner-spin;
+  animation-duration: calc(var(--transition-duration) * 4);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-play-state: paused;
+
+  @include mx.motion-safe {
+    animation-play-state: running;
+  }
+}
+
+:host([data-size='small']) .indicator {
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+:host([data-size='large']) .indicator {
+  inline-size: var(--space-7);
+  block-size: var(--space-7);
+  border-width: var(--space-1); // a hairline reads wispy at this diameter
+}
+
+// MIGRATION: three overlapping legacy stacks collapse into --font-family-base —
+//  Tahoma/Arial/Helvetica (dominant), Tahoma/Verdana/Arial/Sans-Serif and
+//  Verdana/sans-serif. Imperceptible and intentional. `color` is deliberately
+//  absent so the label inherits, as the legacy `Normal` rule did.
+.label {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-tight);
+  min-inline-size: 0; // long labels wrap instead of widening the host
+  overflow-wrap: break-word;
+}
+
+// MIGRATION: transform and rotate are themselves net additions — zero in both
+//  legacy stylesheets, which carry no motion vocabulary: no duration, no easing,
+//  no geometry.
+//
+// GEOMETRY, not a design value: a full turn is 360 degrees by definition, so
+// these angles name a rotation. Measured: the shim does scope this identifier,
+// so the component prefix is belt-and-braces for whoever reads the source.
+@keyframes loading-spinner-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

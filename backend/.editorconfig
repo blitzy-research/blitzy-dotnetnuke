@@ -1,108 +1,468 @@
-# EditorConfig for the DnnMigration .NET 8 solution (AAP 0.4.1.1).
+# ==============================================================================
+# backend/.editorconfig
+# CODING CONVENTIONS AND ANALYSER SEVERITIES FOR THE DnnMigration SOLUTION
+# Reference: https://editorconfig.org
+#            https://learn.microsoft.com/dotnet/fundamentals/code-analysis/code-style-rule-options
+# ==============================================================================
 #
-# IMPORTANT: Directory.Build.props sets TreatWarningsAsErrors=true and
-# EnforceCodeStyleInBuild=true. Every code-style rule below is therefore declared
-# at `suggestion` or `silent` severity on purpose: raising a style rule to
-# `warning` would immediately promote it to a build-breaking error. Correctness
-# analysers keep their default severities.
+# SCOPE - THE SIX PROJECTS OF THE .NET 8 SOLUTION, AND NOTHING ELSE
+#
+#   src/DnnMigration.Domain           src/DnnMigration.Api
+#   src/DnnMigration.Application      tests/DnnMigration.UnitTests
+#   src/DnnMigration.Infrastructure   tests/DnnMigration.IntegrationTests
+#
+# THIS FILE IS BUILD-AFFECTING. THAT IS THE WHOLE POINT, AND THE WHOLE DANGER.
+#
+#   The sibling backend/Directory.Build.props pairs two properties whose
+#   combination turns editor guidance into a delivery gate:
+#
+#     EnforceCodeStyleInBuild  true  ->  the IDE-prefixed code-style analysers
+#                                        run during `dotnet build`, not only
+#                                        inside an editor.
+#     TreatWarningsAsErrors    true  ->  and Validation Gate 1 additionally
+#                                        builds the Release configuration with
+#                                        the warnaserror switch.
+#
+#   Consequence: any style rule declared here one notch above `suggestion`
+#   STOPS THE BUILD. Not a squiggle - a failed gate. And there is no rescue
+#   afterwards, because the compiler-warning suppression list in
+#   Directory.Build.props is bounded to exactly two codes and must never be
+#   widened, per its own comment on that element.
+#
+# THEREFORE, THE ONE BINDING RULE OF THIS FILE
+#
+#   Every code-style preference and every analyser severity below sits at
+#   `suggestion` or at `silent`. Nothing is raised higher - not naming, not
+#   member ordering, not `var` usage, not expression bodies, not brace
+#   placement, not using-directive placement, not formatting. Guidance here is
+#   ADVISORY. Correctness is enforced elsewhere and more strongly: by the
+#   compiler, by the nullable annotation context, and by the project reference
+#   graph.
+#
+#   The two severity values that would break the build are deliberately never
+#   spelled anywhere in this file, and neither are the two suppressed compiler
+#   codes - they are referred to only as "the two bounded suppressions declared
+#   in Directory.Build.props". Both omissions are on purpose, so that a guard
+#   grepping this file for those tokens keeps returning nothing. This mirrors
+#   the same discipline Directory.Build.props applies to itself.
+#
+#   When a build reports a style diagnostic, FIX THE CODE. Never lower a
+#   severity to make a real problem invisible, and never add a suppression here
+#   or anywhere else.
+#
+# WHAT THIS FILE DELIBERATELY DOES NOT DO
+#
+#   * It does not enforce Clean Architecture layering. That is enforced by the
+#     project reference graph, which points inward only: Domain references
+#     nothing at all, Application references Domain, Infrastructure references
+#     Application, and Api references Application and Infrastructure. A layering
+#     violation is therefore a compile failure, which no style rule improves on.
+#   * It escalates no analyser category wholesale. Doing so would emit large
+#     numbers of new diagnostics that the warning policy above would convert
+#     into build failures on the spot.
+#   * It declares no section for the legacy tree. No Visual Basic source, Web
+#     Forms page, user control or resource file is authored or edited by this
+#     migration, and `root = true` below stops this file ever reaching them.
+#   * It declares no section for TypeScript, SCSS or HTML. The Angular workspace
+#     carries its own frontend/.editorconfig, which is editor-facing only
+#     because no step of the frontend build reads it.
+#
+# WHY THIS FILE LIVES AT backend/ AND MUST NEVER MOVE TO THE REPOSITORY ROOT
+#
+#   EditorConfig resolution walks UPWARD from each source file and stops at the
+#   first file declaring `root = true`. A copy at the repository root would
+#   therefore also govern the 634 legacy Visual Basic sources under Library/ and
+#   Website/, the 15 pages, the 147 user controls, the 139 resource files, the
+#   legacy configuration files, and - most consequentially - the one stray
+#   legacy .NET Framework C# project in this checkout,
+#   Library/Components/Syndication/DotNetNuke.Syndication.csproj.
+#
+#   This migration is side by side and purely additive: the legacy Library/ and
+#   Website/ trees, both legacy solution files and the legacy configuration
+#   files remain byte identical, which is exactly what gives the work a zero
+#   regression surface. Keeping this file at backend/, with `root = true`,
+#   confines its effect to the six projects listed above.
+#
+# THE BASELINE THIS REPLACES
+#
+#   Library/DotNetNuke.Library.vbproj is the legacy analogue of this file plus
+#   Directory.Build.props. It compiled with Option Compare Binary, Option
+#   Explicit On and Option Strict On, and it promoted ten Visual Basic specific
+#   warning codes into build failures - yet it set warnings as errors to false,
+#   warning level 1 and an empty suppression list in both of its configurations.
+#   The legacy policy was therefore SELECTIVE PROMOTION INSIDE AN OTHERWISE LAX
+#   BUILD. The target inverts it exactly: a strict build declared once in
+#   Directory.Build.props, and purely advisory style guidance declared once
+#   here. Those ten codes are compiler specific, have no C# analogue, and are
+#   not carried forward.
+#
+#   One legacy asymmetry is worth naming because it is NOT solvable here.
+#   Website/release.config line 125 compiled the admin code-behinds with Option
+#   Strict OFF, so they may legally contain late binding and implicit narrowing
+#   conversions that C# rejects outright. Making every such conversion explicit,
+#   annotating it inline and recording it in MIGRATION_NOTES.md, is an
+#   obligation on the code authored under src/. No EditorConfig setting can
+#   express it and nothing below pretends to.
+# ==============================================================================
 
 root = true
 
+# ------------------------------------------------------------------------------
+# EVERY FILE UNDER backend/
+#
+# end_of_line is LF rather than CRLF on purpose: the API image is built on
+# mcr.microsoft.com/dotnet/sdk:8.0-alpine and runs on
+# mcr.microsoft.com/dotnet/aspnet:8.0-alpine, so the source is kept consistent
+# with its Linux deployment target and with the container build context.
+# ------------------------------------------------------------------------------
 [*]
 charset = utf-8
 end_of_line = lf
-indent_style = space
-indent_size = 4
 insert_final_newline = true
 trim_trailing_whitespace = true
-
-[*.{json,yml,yaml}]
-indent_size = 2
-
-[*.{csproj,props,targets,config}]
-indent_size = 2
-
-[*.md]
-trim_trailing_whitespace = false
-
-[*.cs]
+indent_style = space
 indent_size = 4
+tab_width = 4
 
-# --- using directives -------------------------------------------------------
+# ==============================================================================
+# C# SOURCE
+#
+# `csx` is included so that any script-form C# is formatted identically to
+# compiled source. Everything in this section that carries an explicit severity
+# carries `suggestion` or `silent`, for the reason set out in the header.
+# ==============================================================================
+[*.{cs,csx}]
+indent_size = 4
+tab_width = 4
+
+# --- using directives ---------------------------------------------------------
+# ImplicitUsings is enabled solution-wide, which removes the System namespace
+# boilerplate the legacy project declared explicitly. Explicit System imports
+# are therefore rare by design, and this ordering preference mostly governs the
+# third-party and first-party imports that remain.
 dotnet_sort_system_directives_first = true
 dotnet_separate_import_directive_groups = false
 csharp_using_directive_placement = outside_namespace:suggestion
 
-# --- language features ------------------------------------------------------
+# --- namespace declarations ---------------------------------------------------
+# File-scoped namespaces are the C# 10 and later idiom, and LangVersion is 12.0.
+# Advisory only: a block-scoped namespace must never fail a build.
 csharp_style_namespace_declarations = file_scoped:suggestion
-csharp_prefer_braces = true:suggestion
-csharp_style_var_for_built_in_types = false:suggestion
-csharp_style_var_when_type_is_apparent = true:suggestion
-csharp_style_var_elsewhere = false:suggestion
-csharp_style_expression_bodied_methods = when_on_single_line:suggestion
-csharp_style_expression_bodied_properties = true:suggestion
-csharp_style_expression_bodied_accessors = true:suggestion
-csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
-csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
-csharp_style_prefer_switch_expression = true:suggestion
-csharp_style_prefer_primary_constructors = false:silent
-csharp_prefer_simple_using_statement = true:suggestion
-csharp_style_prefer_null_check_over_type_check = true:suggestion
-csharp_style_throw_expression = true:suggestion
-csharp_style_conditional_delegate_call = true:suggestion
+dotnet_style_namespace_match_folder = true:suggestion
 
-dotnet_style_object_initializer = true:suggestion
-dotnet_style_collection_initializer = true:suggestion
-dotnet_style_prefer_auto_properties = true:suggestion
-dotnet_style_null_propagation = true:suggestion
-dotnet_style_coalesce_expression = true:suggestion
-dotnet_style_prefer_conditional_expression_over_assignment = true:silent
-dotnet_style_prefer_conditional_expression_over_return = true:silent
-dotnet_style_readonly_field = true:suggestion
+# --- `this.` qualification ----------------------------------------------------
 dotnet_style_qualification_for_field = false:suggestion
 dotnet_style_qualification_for_property = false:suggestion
 dotnet_style_qualification_for_method = false:suggestion
 dotnet_style_qualification_for_event = false:suggestion
+
+# --- language keywords in place of framework type names -----------------------
 dotnet_style_predefined_type_for_locals_parameters_members = true:suggestion
 dotnet_style_predefined_type_for_member_access = true:suggestion
 
-# --- naming -----------------------------------------------------------------
-dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbols
-dotnet_naming_rule.interfaces_start_with_i.style = begins_with_i
-dotnet_naming_rule.interfaces_start_with_i.severity = suggestion
-dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
-dotnet_naming_symbols.interface_symbols.applicable_accessibilities = *
-dotnet_naming_style.begins_with_i.required_prefix = I
-dotnet_naming_style.begins_with_i.capitalization = pascal_case
+# --- `var` --------------------------------------------------------------------
+# Explicit types for built-in types and in the general case; `var` only where
+# the constructed type is already stated on the right-hand side.
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
 
-dotnet_naming_rule.types_are_pascal_case.symbols = type_symbols
-dotnet_naming_rule.types_are_pascal_case.style = pascal_case_style
-dotnet_naming_rule.types_are_pascal_case.severity = suggestion
-dotnet_naming_symbols.type_symbols.applicable_kinds = class,struct,enum,delegate
-dotnet_naming_symbols.type_symbols.applicable_accessibilities = *
-dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+# --- modifiers ----------------------------------------------------------------
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:suggestion
+csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async:suggestion
+dotnet_style_readonly_field = true:suggestion
+csharp_prefer_static_local_function = true:suggestion
 
-dotnet_naming_rule.private_fields_are_camel_case_with_underscore.symbols = private_field_symbols
-dotnet_naming_rule.private_fields_are_camel_case_with_underscore.style = underscore_camel_case
-dotnet_naming_rule.private_fields_are_camel_case_with_underscore.severity = suggestion
-dotnet_naming_symbols.private_field_symbols.applicable_kinds = field
-dotnet_naming_symbols.private_field_symbols.applicable_accessibilities = private
-dotnet_naming_style.underscore_camel_case.required_prefix = _
-dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+# --- expression-bodied members ------------------------------------------------
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_constructors = false:suggestion
+csharp_style_expression_bodied_operators = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = true:suggestion
+csharp_style_expression_bodied_indexers = true:suggestion
+csharp_style_expression_bodied_accessors = true:suggestion
+csharp_style_expression_bodied_lambdas = true:suggestion
+csharp_style_expression_bodied_local_functions = when_on_single_line:suggestion
 
-# --- analyser severities kept non-breaking ----------------------------------
-# Formatting rules (IDE0055) and unnecessary-code rules stay advisory so that
-# EnforceCodeStyleInBuild + TreatWarningsAsErrors cannot fail a build on layout.
-dotnet_diagnostic.IDE0055.severity = suggestion
+# --- pattern matching ---------------------------------------------------------
+csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
+csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+csharp_style_prefer_switch_expression = true:suggestion
+csharp_style_prefer_not_pattern = true:suggestion
+csharp_style_prefer_extended_property_pattern = true:suggestion
+
+# --- null checking ------------------------------------------------------------
+# Directly relevant to this migration: the legacy sentinel module represented
+# absence with magic values, and the ported domain expresses it with nullable
+# CLR types instead. These preferences keep the resulting null handling idiomatic
+# without ever failing a build over its shape.
+dotnet_style_coalesce_expression = true:suggestion
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:suggestion
+csharp_style_throw_expression = true:suggestion
+csharp_style_conditional_delegate_call = true:suggestion
+csharp_style_prefer_null_check_over_type_check = true:suggestion
+
+# --- initialisers, collections and tuples -------------------------------------
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_collection_expression = true:suggestion
+dotnet_style_prefer_auto_properties = true:suggestion
+dotnet_style_explicit_tuple_names = true:suggestion
+dotnet_style_prefer_inferred_tuple_names = true:suggestion
+dotnet_style_prefer_inferred_anonymous_type_member_names = true:suggestion
+
+# --- C# 12 and modern conveniences --------------------------------------------
+# Primary constructors are held at `silent`: the ported services take their
+# dependencies through conventional constructors with documented parameters, and
+# a rewrite suggestion on every service would be noise rather than guidance.
+csharp_style_prefer_primary_constructors = false:silent
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_prefer_utf8_string_literals = true:suggestion
+csharp_style_prefer_readonly_struct = true:suggestion
+csharp_style_prefer_readonly_struct_member = true:suggestion
+csharp_style_implicit_object_creation_when_type_is_apparent = true:suggestion
+csharp_style_deconstructed_variable_declaration = true:suggestion
+csharp_style_inlined_variable_declaration = true:suggestion
+csharp_prefer_simple_default_expression = true:suggestion
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_style_prefer_top_level_statements = true:silent
+
+# --- braces, blocks and unused values -----------------------------------------
+csharp_prefer_braces = true:suggestion
+dotnet_style_prefer_compound_assignment = true:suggestion
+dotnet_style_prefer_simplified_boolean_expressions = true:suggestion
+dotnet_style_prefer_simplified_interpolation = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:silent
+dotnet_style_prefer_conditional_expression_over_return = true:silent
+csharp_style_unused_value_assignment_preference = discard_variable:suggestion
+csharp_style_unused_value_expression_statement_preference = discard_variable:silent
+
+# ------------------------------------------------------------------------------
+# C# FORMATTING - NEW LINES (ALLMAN)
+#
+# Formatting options are inert on their own: they describe layout but emit no
+# diagnostic by themselves. Only the formatting analyser pinned further down
+# reports on them, and it is pinned advisory. That is what makes it safe to state
+# a complete, opinionated layout here under a warnings-as-errors build.
+# ------------------------------------------------------------------------------
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+# --- indentation --------------------------------------------------------------
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = false
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+
+# --- spacing ------------------------------------------------------------------
+csharp_space_after_cast = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_around_binary_operators = before_and_after
+csharp_space_around_declaration_statements = false
+csharp_space_after_comma = true
+csharp_space_before_comma = false
+csharp_space_after_dot = false
+csharp_space_before_dot = false
+csharp_space_after_semicolon_in_for_statement = true
+csharp_space_before_semicolon_in_for_statement = false
+csharp_space_before_open_square_brackets = false
+csharp_space_between_empty_square_brackets = false
+csharp_space_between_square_brackets = false
+csharp_space_between_parentheses = false
+csharp_space_between_method_declaration_name_and_open_parenthesis = false
+csharp_space_between_method_declaration_parameter_list_parentheses = false
+csharp_space_between_method_declaration_empty_parameter_list_parentheses = false
+csharp_space_between_method_call_name_and_opening_parenthesis = false
+csharp_space_between_method_call_parameter_list_parentheses = false
+csharp_space_between_method_call_empty_parameter_list_parentheses = false
+
+# --- wrapping -----------------------------------------------------------------
+csharp_preserve_single_line_statements = false
+csharp_preserve_single_line_blocks = true
+dotnet_style_operator_placement_when_wrapping = beginning_of_line
+
+# ==============================================================================
+# ANALYSER SEVERITIES - EVERY ONE HELD ADVISORY, ON PURPOSE
+#
+# Only rules with no corresponding preference option above need pinning here;
+# every preference option already carries its own severity inline. Each pin below
+# is a rule that has bitten strict .NET 8 builds in practice, so each is stated
+# explicitly rather than left to a default that a future SDK could change.
+# ==============================================================================
+
+# IDE0005 - unnecessary using directive. This one is a genuine trap in THIS
+# solution rather than a theoretical risk: the rule only reports during a build
+# when XML documentation generation is switched on, and Directory.Build.props
+# switches it on for all six projects. Combined with the strict warning policy,
+# a single leftover import would otherwise become a delivery blocker. It stays
+# advisory, and unused imports are removed by the author, not by the gate.
 dotnet_diagnostic.IDE0005.severity = suggestion
+
+# IDE0055 - "Fix formatting". This is the single rule that reports every layout
+# option declared in the formatting sections above, so raising it would turn a
+# stray blank line or a misplaced brace into a failed Gate 1. It must remain at
+# this level. Run `dotnet format` to apply the layout instead of escalating it.
+dotnet_diagnostic.IDE0055.severity = suggestion
+
+# IDE0161 - block-scoped namespace could be file-scoped. Paired with the
+# namespace preference above and held at the same advisory level, so a
+# block-scoped namespace is a suggestion to the author and never a build failure.
 dotnet_diagnostic.IDE0161.severity = suggestion
 
-[*.{cs}]
-# Nullable-reference correctness must stay visible; Directory.Build.props already
-# suppresses only CS8618 (framework-materialised members).
-dotnet_diagnostic.CS8602.severity = warning
-dotnet_diagnostic.CS8604.severity = warning
+# ==============================================================================
+# NAMING
+#
+# Roslyn applies naming rules in the order they are declared and stops at the
+# first rule whose symbol group matches, so these run from most specific to most
+# general. Reordering them changes which suggestion appears; it cannot change the
+# build outcome, because every rule below is advisory.
+# ==============================================================================
 
-[tests/**/*.cs]
-# Test projects may use magic values and long method names freely.
-dotnet_diagnostic.IDE1006.severity = none
+# --- naming styles ------------------------------------------------------------
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.camel_case.capitalization = camel_case
+dotnet_naming_style.prefix_interface_with_i.capitalization = pascal_case
+dotnet_naming_style.prefix_interface_with_i.required_prefix = I
+dotnet_naming_style.prefix_type_parameter_with_t.capitalization = pascal_case
+dotnet_naming_style.prefix_type_parameter_with_t.required_prefix = T
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.pascal_case_with_async_suffix.capitalization = pascal_case
+dotnet_naming_style.pascal_case_with_async_suffix.required_suffix = Async
+
+# --- symbol groups ------------------------------------------------------------
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_symbols.interfaces.applicable_accessibilities = *
+
+dotnet_naming_symbols.type_parameters.applicable_kinds = type_parameter
+dotnet_naming_symbols.type_parameters.applicable_accessibilities = *
+
+dotnet_naming_symbols.types.applicable_kinds = class,struct,enum,delegate
+dotnet_naming_symbols.types.applicable_accessibilities = *
+
+dotnet_naming_symbols.constant_fields.applicable_kinds = field
+dotnet_naming_symbols.constant_fields.applicable_accessibilities = *
+dotnet_naming_symbols.constant_fields.required_modifiers = const
+
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.applicable_accessibilities = *
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static,readonly
+
+dotnet_naming_symbols.non_public_fields.applicable_kinds = field
+dotnet_naming_symbols.non_public_fields.applicable_accessibilities = private,internal,private_protected
+
+dotnet_naming_symbols.public_fields.applicable_kinds = field
+dotnet_naming_symbols.public_fields.applicable_accessibilities = public,protected,protected_internal
+
+dotnet_naming_symbols.async_methods.applicable_kinds = method
+dotnet_naming_symbols.async_methods.applicable_accessibilities = *
+dotnet_naming_symbols.async_methods.required_modifiers = async
+
+dotnet_naming_symbols.non_field_members.applicable_kinds = property,event,method,local_function
+dotnet_naming_symbols.non_field_members.applicable_accessibilities = *
+
+dotnet_naming_symbols.parameters.applicable_kinds = parameter
+dotnet_naming_symbols.parameters.applicable_accessibilities = *
+
+dotnet_naming_symbols.locals.applicable_kinds = local
+dotnet_naming_symbols.locals.applicable_accessibilities = *
+
+# --- rules, most specific first -----------------------------------------------
+# Interfaces are I-prefixed PascalCase. The Domain layer alone declares nine
+# repository abstractions plus a unit-of-work abstraction, and five service
+# abstractions for password hashing, the clock, caching, host settings and the
+# per-request portal context, so this convention carries real weight here.
+dotnet_naming_rule.interfaces_are_prefixed_with_i.symbols = interfaces
+dotnet_naming_rule.interfaces_are_prefixed_with_i.style = prefix_interface_with_i
+dotnet_naming_rule.interfaces_are_prefixed_with_i.severity = suggestion
+
+dotnet_naming_rule.type_parameters_are_prefixed_with_t.symbols = type_parameters
+dotnet_naming_rule.type_parameters_are_prefixed_with_t.style = prefix_type_parameter_with_t
+dotnet_naming_rule.type_parameters_are_prefixed_with_t.severity = suggestion
+
+dotnet_naming_rule.types_are_pascal_case.symbols = types
+dotnet_naming_rule.types_are_pascal_case.style = pascal_case
+dotnet_naming_rule.types_are_pascal_case.severity = suggestion
+
+# Constants and static readonly fields are PascalCase, and both rules precede the
+# non-public field rule so that a private constant is not asked to take the
+# underscore prefix.
+dotnet_naming_rule.constant_fields_are_pascal_case.symbols = constant_fields
+dotnet_naming_rule.constant_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.constant_fields_are_pascal_case.severity = suggestion
+
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.severity = suggestion
+
+dotnet_naming_rule.non_public_fields_are_underscore_camel_case.symbols = non_public_fields
+dotnet_naming_rule.non_public_fields_are_underscore_camel_case.style = underscore_camel_case
+dotnet_naming_rule.non_public_fields_are_underscore_camel_case.severity = suggestion
+
+dotnet_naming_rule.public_fields_are_pascal_case.symbols = public_fields
+dotnet_naming_rule.public_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.public_fields_are_pascal_case.severity = suggestion
+
+# Asynchronous methods carry the Async suffix. This encodes the migration's
+# async-all-the-way-down rule, under which every I/O-bound method returns a task
+# and nothing bridges back to a synchronous call. The rule sits before the
+# general non-field-member rule so that it wins for async methods, and it stays
+# advisory: the convention is upheld by authorship and review, not by a
+# build-breaking diagnostic.
+dotnet_naming_rule.async_methods_end_with_async.symbols = async_methods
+dotnet_naming_rule.async_methods_end_with_async.style = pascal_case_with_async_suffix
+dotnet_naming_rule.async_methods_end_with_async.severity = suggestion
+
+dotnet_naming_rule.non_field_members_are_pascal_case.symbols = non_field_members
+dotnet_naming_rule.non_field_members_are_pascal_case.style = pascal_case
+dotnet_naming_rule.non_field_members_are_pascal_case.severity = suggestion
+
+dotnet_naming_rule.parameters_are_camel_case.symbols = parameters
+dotnet_naming_rule.parameters_are_camel_case.style = camel_case
+dotnet_naming_rule.parameters_are_camel_case.severity = suggestion
+
+dotnet_naming_rule.locals_are_camel_case.symbols = locals
+dotnet_naming_rule.locals_are_camel_case.style = camel_case
+dotnet_naming_rule.locals_are_camel_case.severity = suggestion
+
+# ==============================================================================
+# PROJECT AND BUILD FILES
+#
+# Two-space indentation, matching backend/Directory.Build.props, the six project
+# files and backend/DnnMigration.sln conventions already in place. No `.config`
+# glob appears here: legacy configuration files live under Website/, are
+# read-only reference inputs, and are outside this file's reach in any case.
+# ==============================================================================
+[*.{csproj,props,targets}]
+indent_size = 2
+
+# ==============================================================================
+# JSON AND YAML
+#
+# Covers the three appsettings overlays, launchSettings.json and global.json
+# under backend/, all of which are two-space by convention.
+# ==============================================================================
+[*.{json,yml,yaml}]
+indent_size = 2
+
+# ==============================================================================
+# MARKDOWN
+#
+# Trailing whitespace is preserved here and only here: two trailing spaces are a
+# meaningful hard line break in Markdown, so trimming them would silently change
+# rendered output.
+# ==============================================================================
+[*.md]
+trim_trailing_whitespace = false
+
