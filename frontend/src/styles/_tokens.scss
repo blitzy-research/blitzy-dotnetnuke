@@ -1,0 +1,609 @@
+// =============================================================================
+//  _tokens.scss — the design-token vocabulary for the dnn-migration SPA
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  This partial IS the design system. No third-party component library, theme
+//  package or utility framework is used anywhere in this workspace: a search of
+//  every *.json, *.config, *.yml and *.yaml in the repository for antd /
+//  ant-design / mui / material-ui / Angular Material / primeng / bootstrap /
+//  tailwind / shadcn / ui5 / chakra / semantic-ui returned zero hits, and
+//  Angular Material was available at a compatible version but deliberately not
+//  selected. Zero design-system dependencies are added; the vocabulary below is
+//  authored in-repository instead.
+//
+//  It is also the ROOT of the workspace Sass dependency chain. It loads nothing
+//  — no sibling partial, no package, no vendored reset — so it can never take
+//  part in a load cycle and needs no load path (none is configured: the
+//  workspace build declares no style-preprocessor include paths). Sibling
+//  partials reach it as `@use 'tokens'`; the single global entry point reaches
+//  it as `@use './styles/tokens'`. The modern module system only — the legacy
+//  Sass file-inclusion at-rule is deprecated in Dart Sass and would emit build
+//  deprecation warnings.
+//
+//  It is NOT a build entry point. The workspace declares exactly one global
+//  stylesheet (src/styles.scss); Sass partials are consumed through that file,
+//  never listed alongside it.
+//
+//  THE ONE NON-NEGOTIABLE RULE
+//  ---------------------------
+//  Zero hardcoded values downstream. Every CSS property value in every other
+//  partial and in every *.component.scss must resolve to a `var(--token)`
+//  declared here. The only literals permitted outside this file are `0`, `none`,
+//  `auto`, `inherit`, `currentColor` and `transparent`.
+//
+//  This file is therefore the single legitimate definition site for literal
+//  values in the workspace, and it declares them in exactly ONE document-root
+//  block — the one opened below, which is the only occurrence of that selector
+//  anywhere in this folder. No other partial may open a document-root block or
+//  re-declare any custom property: two such blocks carrying the same property
+//  bloat the bundle and make the effective value depend on cascade order.
+//
+//  No at-rules appear below. Tokens are static, so there are no breakpoints
+//  here — the breakpoint set is declared once, in _mixins.scss, and consumed by
+//  mixin so that no component ever restates one.
+//
+//  PROVENANCE AND HOW IT WAS MEASURED
+//  ----------------------------------
+//  Every colour, family, size and width below was measured from the legacy
+//  DotNetNuke portal stylesheet Website/Portals/_default/default.css — 1030
+//  lines, UTF-8 with BOM, CRLF, 135 real rules — which is the only visual design
+//  source that exists for this migration. No Figma frame, design URL or
+//  attachment was supplied with this engagement, so the measured legacy CSS is
+//  the authoritative design source and the legacy file is quoted by line number
+//  throughout. Occurrence counts were taken by exact-match extraction, then
+//  cross-checked against a full distinct-value inventory and a
+//  selector-ownership map, then confirmed by reading the stylesheet end to end.
+//
+//  The sibling legacy stylesheet Website/Portals/_default/portal.css contributes
+//  SEMANTIC NAMING ONLY and ZERO measured values: all 275 of its lines resolve
+//  to 80 rule bodies of which none is non-empty — zero declaration characters,
+//  zero colours. It is a per-portal override skeleton of comment banners and
+//  prose intent. Nothing below is sourced from it.
+//
+//  Both legacy stylesheets are read-only reference inputs. This migration is
+//  purely additive: no legacy file is modified or removed.
+//
+//  EXPORTED TOKEN SURFACE — the contract downstream agents consume
+//  --------------------------------------------------------------
+//  Colour, brand and surface
+//    --color-primary            --color-primary-hover
+//    --color-background         --color-surface           --color-surface-hint
+//    --color-selected           --color-danger
+//    --color-border             --color-border-strong
+//  Colour, text
+//    --color-text               --color-text-heading
+//    --color-text-muted         --color-text-disabled
+//  Typography
+//    --font-family-base         --font-family-mono
+//    --font-size-xs   (8px)     --font-size-sm  (10px)    --font-size-md (11px)
+//    --font-size-lg  (12px)     --font-size-xl  (14px)    --font-size-xxl (20px)
+//    --font-size-base           (semantic alias of --font-size-md)
+//    --font-weight-normal       --font-weight-bold
+//    --line-height-none         --line-height-tight       --line-height-base
+//  Spacing        --space-1 --space-2 --space-3 --space-4
+//                 --space-5 --space-6 --space-7 --space-8   (4px-based)
+//  Radius         --radius-sm --radius-md --radius-lg
+//  Elevation      --elevation-1 --elevation-2 --elevation-3
+//  Border         --border-width --border-style
+//  Motion         --transition-duration --transition-easing
+//  Layering       --z-index-sticky --z-index-dropdown
+//                 --z-index-overlay --z-index-modal
+//  Focus          --focus-ring-width --focus-ring-offset --focus-ring-color
+//
+//  Token names are stable and are not to be renamed: the nine colour names, the
+//  two family names, the eight spacing steps and the three radius steps are
+//  fixed by the migration plan's token table, and downstream stylesheets are
+//  written against them.
+//
+//  DIVERGENCE POLICY
+//  -----------------
+//  Where a token departs from what the legacy stylesheet actually did, the
+//  departure is annotated inline with a `// MIGRATION:` comment rather than
+//  silently absorbed. Where a measured legacy value computes below a WCAG AA
+//  recommendation, the legacy value is implemented EXACTLY — the design source
+//  outranks a generic accessibility default — and a `BLITZY [A11Y]` flag is
+//  emitted for designer review instead of the rendered output being quietly
+//  corrected. Contrast ratios quoted below are computed against
+//  --color-background unless stated otherwise.
+// =============================================================================
+
+:root {
+  // ===========================================================================
+  //  COLOUR — brand and surface
+  //  Eight of the migration plan's nine table colours, reproduced value-for-value
+  //  from the legacy stylesheet, plus one net-new hint surface that the plan's
+  //  table omits. The ninth table colour, --color-text-muted, is grouped with the
+  //  text colours below because that is the role its name assigns it.
+  // ===========================================================================
+
+  // MIGRATION: hex case is normalised to UPPER and three-digit shorthand is
+  // expanded to six digits throughout this block, so the file reads with one
+  // consistent convention. CSS hex is case-insensitive and #FFF and #FFFFFF are
+  // the same colour, so this is a purely lexical change with zero rendering
+  // impact. The legacy casing of each value is recorded in its own comment below
+  // so provenance stays greppable against default.css.
+
+  // 28 occurrences — the single most-used value in the legacy stylesheet and its
+  // unambiguous brand colour. Legacy casing #003366. Body text, link rest state
+  // (A:link/:visited/:active L552-574), the ControlPanel/PagingTable frame
+  // (L12-15), and headings H3-H6 and TH/THEAD/TFOOT (L504-550).
+  // Contrast on --color-background: 12.61:1 — passes WCAG AA and AAA.
+  --color-primary: #003366;
+
+  // MIGRATION: 2 occurrences, and the plan describes this token as the "link and
+  // hover state" — but neither measured use is a link or a hover. Both are
+  // borders on the legacy login-tab chrome: `border: 1px #25569a solid` at
+  // default.css L996 and L1007. The REAL legacy link-hover is
+  // `A:hover { text-decoration: underline; color: #ff0000 }` at L564-568, which
+  // is --color-danger. The token value is kept exactly as the plan specifies;
+  // only the name over-promises, so treat this as the darker brand tint (a
+  // hover/active companion to --color-primary) rather than as evidence that the
+  // legacy portal tinted its links this way. Legacy casing #25569a.
+  // Contrast on --color-background: 7.30:1 — passes WCAG AA and AAA.
+  --color-primary-hover: #25569A;
+
+  // 20 occurrences, plus 2 as three-digit shorthand = 22 direct uses of white,
+  // with the legacy `Body` rule (L2-6) additionally declaring the named colour
+  // `white`. Legacy casing #FFFFFF, and #FFF at L995 and L1005.
+  --color-background: #FFFFFF;
+
+  // 24 occurrences (20 upper-case + 4 lower-case) — the legacy secondary
+  // surface: menu icons and breaks, and the file-manager pager and alternating
+  // row. Legacy casing was mixed, #EEEEEE and #eeeeee, and is normalised here.
+  --color-surface: #EEEEEE;
+
+  // MIGRATION: net-new token, and a deliberate departure from the plan's
+  // nine-colour table, which omits this value entirely. default.css L438 gives
+  // the legacy help panel `background-color: #ffff99` alongside `color: black`
+  // (L434) and a 1px border on all four sides (L426, L428, L433, L436). That
+  // panel is IN SCOPE — it is the affordance the shared form-field component
+  // replaces — so the two alternatives were to fold it onto --color-surface or
+  // to declare it. Folding a pale-yellow hint panel onto a neutral grey surface
+  // would be a real, visible colour change to an in-scope element, absorbed
+  // silently and invisibly at every call site. Declaring the token instead
+  // preserves legacy continuity at zero cost and keeps _forms.scss free of a
+  // literal. Legacy casing #ffff99. Measured once, at L438.
+  // Contrast of --color-text on this surface: 20.02:1 — passes AA and AAA.
+  --color-surface-hint: #FFFF99;
+
+  // MIGRATION: a TRIPLE divergence. The value is kept exactly as the plan's
+  // colour table specifies, because design-system compliance outranks legacy
+  // fidelity — but all three layers are recorded here rather than absorbed.
+  //   (a) PROVENANCE. This colour's only two uses in the entire legacy
+  //       stylesheet are the selected-item rules of the two out-of-scope legacy
+  //       menu families: ModuleTitle_MenuItemSel at default.css L705 and
+  //       MainMenu_MenuItemSel at L788. It was never a data-grid colour.
+  //   (b) THE RULE IT NOMINALLY REPLACES. DataGrid_SelectedItem, L164-171,
+  //       actually declares `background-color: Silver; color: Blue;
+  //       font-size: 10px; font-weight: normal` — a grey row with blue text.
+  //   (c) THAT RULE IS DEAD CSS. Searching every .ascx, .aspx, .vb, .resx and
+  //       .config file under Website/ and Library/ for DataGrid_SelectedItem
+  //       returns no match at all. The four real in-scope admin grids instead
+  //       wire `<selecteditemstyle cssclass="NormalRed"/>`
+  //       (Website/admin/Security/roles.ascx L30,
+  //        Website/admin/Users/users.ascx L28,
+  //        Website/admin/Users/ProfileDefinitions.ascx L13) or declare no
+  //       selected style whatsoever (Website/admin/Portal/portals.ascx). So the
+  //       EFFECTIVE legacy selected row was bold 12px red text with no
+  //       background change at all — not a tinted row.
+  // Net effect: the target selected row is a tinted row where the legacy
+  // rendered recoloured text. Legacy casing #C1D2EE.
+  // Contrast of --color-text on this surface: 13.72:1 — passes AA and AAA.
+  // CONSUMPTION CONTRACT: this tint is a visual affordance only and conveys
+  // nothing to assistive technology. Every consumer that paints a row, tab or
+  // option with it must ALSO expose the state programmatically — aria-selected
+  // on a selectable row or option, aria-current on the active navigation item —
+  // because colour is never the sole indicator of meaning. Applying the tint
+  // without the attribute is an accessibility defect in the consumer, not here.
+  --color-selected: #C1D2EE;
+
+  // MIGRATION: 5 occurrences, of which only ONE is error text — NormalRed at
+  // default.css L114-120, the class the real admin grids also reuse for their
+  // selected row. The other four are all link :hover states: the legacy tree
+  // menu (L204), the file-manager tree (L343), A.CommandButton:hover (L465) and
+  // the generic A:hover (L567). This token therefore carries two legacy
+  // responsibilities — error/danger text AND the universal link-hover colour —
+  // and downstream stylesheets may legitimately use it for both.
+  // Legacy casing #ff0000.
+  // BLITZY [A11Y]: contrast on --color-background is 3.998:1 — fractionally
+  // below 4.00 and therefore below the WCAG AA minimum of 4.5:1 for normal text.
+  // On --color-surface it falls further, to 3.45:1. It clears the 3:1 threshold
+  // for non-text UI, so it is sound as a boundary or indicator colour, but the
+  // 3:1 LARGE-TEXT allowance is NOT available at the size the legacy design uses
+  // it: WCAG defines large text as 24px, or 18.66px when bold, and the legacy
+  // NormalRed pairing is bold at 12px. The binding requirement for that pairing
+  // is therefore 4.5:1, which this value fails. The measured legacy value is
+  // implemented EXACTLY rather than darkened, because the design source outranks
+  // a generic accessibility default; flagged here for designer review. Because
+  // the bold weight is not a WCAG mitigation, error states downstream must also
+  // carry a non-colour cue — an icon or the word itself — never colour alone.
+  --color-danger: #FF0000;
+
+  // MIGRATION: 3 occurrences, and NOT ONE of them is a border — all three are
+  // `background-color`, on TreeMenu_NodeSelected (default.css L186),
+  // FileManagerTreeNodeSelected (L325) and WizardButton (L372), and all three
+  // owning families are out of scope. The token name describes its target role,
+  // not its legacy role: the legacy portal's actual hairline was
+  // `#003366 1px solid` (L12-15). The value is kept exactly as the plan's colour
+  // table specifies. Legacy casing #dcdcdc.
+  // BLITZY [A11Y]: contrast on --color-background is 1.37:1, below the 3:1
+  // WCAG AA threshold for non-text UI components. Implemented exactly as
+  // measured; flagged for designer review. Use --color-border-strong, or
+  // --color-primary as the legacy frame did, wherever a boundary must be
+  // perceivable rather than merely decorative.
+  --color-border: #DCDCDC;
+
+  // MIGRATION: 2 lower-case occurrences, and both are out of scope — the hover
+  // colour of the legacy tab-navigation links, A.SelectedTab:hover
+  // (default.css L841) and A.OtherTabs:hover (L874). The one IN-SCOPE
+  // occurrence of this colour is the separate upper-case #CCCCCC on the legacy
+  // HeadBg rule at L809, a header background. Value kept as the plan specifies;
+  // the single normalised token serves both readings. Legacy casing #cccccc and
+  // #CCCCCC.
+  // BLITZY [A11Y]: contrast on --color-background is 1.61:1, below the 3:1
+  // threshold for non-text UI. Implemented exactly as measured; flagged for
+  // designer review. --color-primary on this surface measures 7.85:1, which is
+  // how the legacy header pairing actually read.
+  --color-border-strong: #CCCCCC;
+
+  // ===========================================================================
+  //  COLOUR — text
+  //  Net-new tokens. The plan's colour table has no base text colour and no
+  //  disabled colour, yet the legacy stylesheet plainly has both and the
+  //  zero-hardcoded-values rule forbids _reset.scss from writing them as
+  //  literals. These are justified on exactly the reasoning the plan uses to
+  //  authorise the net-new spacing scale.
+  // ===========================================================================
+
+  // MIGRATION: net-new token. The legacy stylesheet renders in-scope text in the
+  // NAMED colour `black`, which occurs 32 times case-insensitively and is
+  // in-scope on SubSubHead (default.css L83-89), DataGrid_Header (L147-155),
+  // DataGrid_Item (L156-163) and Help (L424-439). It is expressed here as a hex
+  // value for consistency with every other colour token; `black` and #000000 are
+  // the same colour, so this is lexical only. Note that the numerically
+  // identical literal at L482 belongs to the out-of-scope StandardButton rule
+  // and is NOT the provenance of this token — that rule is deliberately not
+  // tokenised on its own account.
+  // Contrast on --color-background: 21.00:1 — the maximum achievable.
+  --color-text: #000000;
+
+  // MIGRATION: net-new token, and a second deliberate departure from the plan's
+  // nine-colour table, which omits this value. default.css L65-71 gives the
+  // legacy module-title style `font-size: 20px; font-weight: normal;
+  // color: #333333` — a dark grey that is neither the brand navy nor the base
+  // text black. The module title is IN SCOPE: it is the affordance the shared
+  // page-header component replaces. Folding it onto --color-primary (navy) or
+  // --color-text (black) would each be a visible change to an in-scope element,
+  // so it is declared. It is additionally the destination for the H1 and H2
+  // heading colour, which the annotation on the untokenised legacy heading
+  // colour below explains. Legacy casing #333333. Measured once, at L70.
+  // Contrast on --color-background: 12.63:1 — passes WCAG AA and AAA.
+  --color-text-heading: #333333;
+
+  // MIGRATION: 9 occurrences, and NOT ONE of them renders text — the token name
+  // describes its target role, not its legacy role. Eight are borders: the
+  // file-manager explorer and file list (default.css L230, L238), the
+  // file-manager header and pager rules (L259, L269) and all four borders of
+  // WizardButton (L364, L366, L369, L371) — every one of those families being
+  // out of scope. The ninth and only non-excluded use is the horizontal-rule
+  // rule, `HR { color: #696969; height: 1pt; text-align: left }` at L626-631.
+  // No in-scope legacy element renders text in this colour. The value is kept
+  // exactly as the plan's colour table specifies, and it is a sound de-emphasis
+  // colour on its merits. Legacy casing #696969.
+  // Contrast on --color-background: 5.49:1 — passes WCAG AA for normal text.
+  --color-text-muted: #696969;
+
+  // MIGRATION: net-new token. default.css L100-103 gives NormalDisabled
+  // `color: Silver`, the named colour, and the zero-hardcoded-values rule
+  // forbids _reset.scss and the shared components from writing that keyword
+  // directly. `Silver` is a named alias of #C0C0C0, so this is lexical only.
+  // The named colour occurs twice: here, and as the background of the dead
+  // DataGrid_SelectedItem rule at L166.
+  // BLITZY [A11Y]: contrast on --color-background is 1.82:1, far below the WCAG
+  // AA minimum of 4.5:1. The measured legacy value is implemented EXACTLY rather
+  // than darkened, because the design source outranks a generic accessibility
+  // default; flagged here for designer review. Colour is never the sole
+  // indicator of a disabled state in the target — the disabled attribute (or
+  // aria-disabled) always accompanies it, so assistive technology and keyboard
+  // users are served independently of this contrast figure.
+  --color-text-disabled: #C0C0C0;
+
+  // MIGRATION: three groups of legacy colour are deliberately NOT tokenised, so
+  // that no downstream stylesheet can reach for them.
+  //   1. The olive heading colour, 2 occurrences, on H1 (default.css L488-494)
+  //      and H2 (L496-502). See the dedicated annotation below — this one is a
+  //      real, visible change.
+  //   2. The legacy dingbat/symbol font family, 4 occurrences (L710, L720, L792,
+  //      L801), used only by the menu-arrow rules of the two out-of-scope legacy
+  //      menu families. Those arrows have no target component; the target draws
+  //      its own inline SVG icons.
+  //   3. Eleven single-use colours, each occurring exactly once, every one owned
+  //      by an excluded family: the three site-wizard chrome colours (L376 header
+  //      background, L383 footer background, L404 help background), five
+  //      file-manager colours (L257 and L258 header, L278 status bar, L289 item,
+  //      L309 selected item), the edit-in-place toolbar background (L932) and the
+  //      two legacy standard-button colours (L481 background, L482 text).
+  //      File management, the site wizard — which collapses into a tabbed
+  //      settings screen in the target — the legacy navigation providers and the
+  //      edit-in-place Web Forms controls are all out of scope, so the
+  //      decoration these colours style has no target equivalent.
+  // No raster asset is referenced either. The legacy login-tab rules (L989-1020)
+  // are painted with a background sprite GIF that this migration does not ship —
+  // the only static asset in scope is the favicon — so neither this file nor any
+  // sibling partial may point at it or at any other legacy image.
+
+  // MIGRATION: the olive heading colour is NOT tokenised, and that is a real,
+  // VISIBLE change rather than a cosmetic one. H1 (default.css L488-494) and H2
+  // (L496-502) both declare `font-size: 20px; font-weight: normal` in that olive
+  // shade. The plan's colour table characterises those two uses as incidental
+  // legacy decoration with no target equivalent — but headings plainly DO have a
+  // target equivalent, namely the shared page-header component and the base type
+  // ramp in _reset.scss. The plan's decision not to tokenise it is binding here,
+  // because design-system compliance outranks legacy fidelity, so H1 and H2
+  // resolve to --color-text-heading (the measured legacy module-title grey)
+  // instead of to olive. _reset.scss carries the matching annotation at the point
+  // where it sets the heading colour. This is the single most visible deliberate
+  // colour difference introduced by this file.
+
+  // MIGRATION: two further measured colours from the legacy login-tab hover rule
+  // (default.css L1010-1020) are mapped onto the existing vocabulary rather than
+  // tokenised: its text colour (a grey one step darker than --color-text-muted,
+  // measured once at L1017) maps onto --color-text-muted, and its border colour
+  // (a dark red, measured once at L1018) maps onto --color-danger. Both are
+  // near-imperceptible substitutions, and both are safe because all three legacy
+  // login-tab rules are inseparable from the background sprite GIF that this
+  // migration does not ship: the target login feature is a single form with no
+  // tab strip, since the multi-provider tab group belonged to the excluded
+  // authentication-provider model. Recorded so that neither value is ever
+  // written as a literal downstream.
+
+  // ===========================================================================
+  //  TYPOGRAPHY — families
+  // ===========================================================================
+
+  // MIGRATION: three near-identical legacy font stacks are CONSOLIDATED into one
+  // base family. Measured across default.css: `Tahoma, Arial, Helvetica` 38
+  // times, `Tahoma, Verdana, Arial, Sans-Serif` twice (WizardHelpText L412 and
+  // WizardText L419) and `Verdana, sans-serif` once (StandardButton L483). Those
+  // are the only three text stacks the legacy stylesheet contains; the
+  // inconsistency is legacy authoring drift, not design intent. The consolidated
+  // value is the four-family form, with the generic keyword lower-cased from the
+  // legacy `Sans-Serif`. The visual difference is imperceptible — Tahoma resolves
+  // first in every one of the three legacy stacks that a modern desktop has
+  // installed, and the generic fallback is unchanged — and it is an intentional
+  // refinement rather than a translation.
+  --font-family-base: Tahoma, Verdana, Arial, sans-serif;
+
+  // Measured once, at default.css L586-589, on the in-scope bare elements
+  // BLOCKQUOTE and PRE. The multi-word family name is quoted here, which the
+  // legacy declaration omitted; unquoted multi-word family names are invalid CSS
+  // that browsers merely tolerate, so quoting is a correctness fix with no
+  // rendering change. This token has a genuine in-scope consumer and is not
+  // speculative.
+  --font-family-mono: "Lucida Console", monospace;
+
+  // ===========================================================================
+  //  TYPOGRAPHY — size ramp
+  // ===========================================================================
+
+  // MIGRATION: net-new scale. The legacy stylesheet has TEN distinct font sizes
+  // spread across TWO unit systems with no system connecting them: 11px (17
+  // uses), 12px (8), 9pt (6), 10px (4), 10pt (4), 8.5pt (3), 20px (3), 8px (1),
+  // 8pt (1) and 14px (1). The zero-hardcoded-values rule forbids _reset.scss and
+  // the shared components from writing any of them as literals, so a ramp is
+  // required.
+  //
+  // MIGRATION: the `pt` unit system is dropped in full, and this is an
+  // evidence-based resolution rather than an arbitrary consolidation. Mapping
+  // every one of the fourteen `pt` declarations to its owning selector shows that
+  // ALL FOURTEEN belong to excluded families: 8.5pt to the skin-object rule
+  // (default.css L21) and to the two legacy tab-navigation rules (L820, L853);
+  // 9pt to the two site-wizard text rules (L399, L417) and to the menu-item and
+  // selected-menu-item rules of both out-of-scope menu families (L654, L702,
+  // L741, L785); 10pt to the four menu-arrow rules (L711, L721, L793, L802); and
+  // 8pt to the site-wizard help text (L409). Skinning, the site-wizard chrome,
+  // the legacy navigation providers and the legacy tab strip are all out of
+  // scope, so the `pt` system disappears together with the features that used it
+  // and nothing in scope needs converting. The ramp below therefore derives from
+  // the `px` system ALONE, and every one of its six steps has at least one
+  // in-scope legacy consumer.
+  //
+  // Sizes are expressed in rem against the browser default 16px root so that a
+  // reader who raises their base font size scales the whole interface. _reset.scss
+  // must NOT restate the root font size — doing so would break that scaling.
+  //
+  // 8px — the legacy SMALL element (default.css L576-579).
+  --font-size-xs: 0.5rem;
+  // 10px — all four legacy data-grid rules: alternating item (L131-138), header
+  // (L147-155), item (L156-163) and the dead selected item (L164-171). This is
+  // the shared data-table's size.
+  --font-size-sm: 0.625rem;
+  // 11px — 17 uses and the dominant legacy body size. In scope on SubHead
+  // (L74-80), SubSubHead (L83-89), Normal and NormalDisabled (L92-97),
+  // NormalBold (L106-111), Help (L424-439), CommandButton (L442-447),
+  // StandardButton (L475-484) and the H5/DT and H6 rules (L520-534).
+  --font-size-md: 0.6875rem;
+  // 12px — 8 uses. In scope on NormalRed (L114-120), NormalTextBox (L123-128),
+  // H3 (L504-510), H4 (L512-518), TFOOT and THEAD (L536-541) and TH (L543-550).
+  --font-size-lg: 0.75rem;
+  // 14px — the legacy BIG element (L581-584).
+  --font-size-xl: 0.875rem;
+  // 20px — the legacy module title (L65-71) and the H1 and H2 rules (L488-502).
+  --font-size-xxl: 1.25rem;
+
+  // Semantic alias of the dominant legacy body size, so that _reset.scss and the
+  // shared components express "body text" by intent rather than by ramp position.
+  // BLITZY [A11Y]: 11px is below the 16px body size that is generally recommended
+  // for comfortable reading. The measured legacy value is implemented EXACTLY
+  // rather than enlarged, because the design source outranks a generic
+  // accessibility default and enlarging it would reflow every ported admin
+  // screen; flagged here for designer review. The rem basis above means a reader
+  // who raises their browser base font size still scales this value.
+  --font-size-base: var(--font-size-md);
+
+  // ===========================================================================
+  //  TYPOGRAPHY — weight and line height
+  // ===========================================================================
+
+  // MIGRATION: the legacy stylesheet uses exactly two weights and expresses both
+  // as keywords — `normal` 20 times and `bold` 18 times, with no numeric weight
+  // anywhere. They are expressed numerically here because `normal` and `bold` are
+  // defined as exactly 400 and 700, so this is lexical only, and because numeric
+  // weights are what a variable font needs. No third weight is introduced.
+  --font-weight-normal: 400;
+  --font-weight-bold: 700;
+
+  // MIGRATION: net-new scale. The legacy stylesheet declares NO line-height at
+  // all — zero occurrences across all 1030 lines — so every legacy element
+  // inherited the browser default. Three unitless steps are declared because
+  // unitless line-height inherits as a ratio rather than as a computed length,
+  // which is what nested components need: `none` for single-line controls and
+  // badges whose box height is set by padding, `tight` for headings and dense
+  // grid rows, and `base` for body copy. Unitless values also mean these tokens
+  // stay correct as the font-size ramp is applied.
+  --line-height-none: 1;
+  --line-height-tight: 1.25;
+  --line-height-base: 1.5;
+
+  // ===========================================================================
+  //  SPACING
+  // ===========================================================================
+
+  // MIGRATION: net-new 4px-based scale. The legacy stylesheet has no spacing
+  // system whatsoever — its padding and margin values are ad hoc: 2px (8 uses),
+  // 5px (7), 10px (4), the shorthand `5px 5px 4px 5px` (3), `2px 2px 2px 2px`
+  // (3), `0 3px 3px 0` (3), 0px (2), `25px 25px 25px 25px` (1) and a -22px pull
+  // (1). No standalone 4px step exists anywhere; 4px appears only as the third
+  // component of that one login-tab padding shorthand, on the sprite-painted tab
+  // chrome this migration does not carry forward. So this scale is a net addition
+  // rather than a translation, exactly as the migration plan authorises.
+  //
+  // Values are rem against the browser default 16px root, so spacing scales with
+  // a reader's base font size in step with the type ramp.
+  //
+  // Legacy-to-step mapping, published so that every downstream partial rounds the
+  // same way rather than each choosing its own step:
+  //   legacy 2px, 3px and 5px  -> --space-1   (4px)
+  //   legacy 10px              -> --space-3   (12px)
+  //   legacy 22px and 25px     -> --space-6   (24px)
+  //   legacy 33px              -> --space-7   (32px)
+  //   legacy 0px               -> the literal 0, which needs no token
+  --space-1: 0.25rem; // 4px
+  --space-2: 0.5rem; // 8px
+  --space-3: 0.75rem; // 12px
+  --space-4: 1rem; // 16px
+  --space-5: 1.25rem; // 20px
+  --space-6: 1.5rem; // 24px
+  --space-7: 2rem; // 32px
+  --space-8: 2.5rem; // 40px
+
+  // ===========================================================================
+  //  RADIUS
+  // ===========================================================================
+
+  // MIGRATION: net-new scale. The legacy design is square-cornered — a
+  // case-insensitive search for `border-radius` across default.css returns
+  // ZERO occurrences — so rounding is a net addition and a deliberate visual
+  // refinement, not a translation. Values are px rather than rem: corner rounding
+  // is decorative and should not grow when a reader raises their base font size.
+  // Downstream stylesheets that want the legacy square corner use the literal 0,
+  // which needs no token.
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  // ===========================================================================
+  //  ELEVATION
+  // ===========================================================================
+
+  // MIGRATION: net-new scale. The legacy design is flat — a case-insensitive
+  // search for `box-shadow` across default.css returns ZERO occurrences, and the
+  // only depth cue in the whole stylesheet is the `outset` border on the
+  // out-of-scope edit-in-place toolbar. Three levels are declared and mapped to
+  // the target's three surface heights: level 1 for resting cards and the sticky
+  // data-table header, level 2 for dropdowns and popovers, level 3 for the modal
+  // dialog. Values are px for the same reason as the radius scale, and each is a
+  // complete shadow so that no consumer has to compose one from parts.
+  --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --elevation-2: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --elevation-3: 0 8px 24px rgba(0, 0, 0, 0.16);
+
+  // ===========================================================================
+  //  BORDER
+  // ===========================================================================
+
+  // The legacy border width is uniform: `1px solid` occurs 46 times across
+  // default.css and is the only width any in-scope rule uses — the module frame
+  // (L12-15), the help panel (L426-436) and the login-tab chrome (L996, L1007)
+  // all use it. px rather than rem, because a hairline should stay a hairline.
+  //
+  // MIGRATION: the legacy horizontal rule is the one exception — `HR` at
+  // default.css L626-631 declares `height: 1pt`, which is 1.333px. It is unified
+  // onto the single 1px hairline here, both because the `pt` unit system is
+  // dropped in full and because a sub-pixel difference in one decorative rule
+  // does not warrant a second width token.
+  --border-width: 1px;
+
+  // Declared so that no downstream stylesheet has to write the `solid` keyword as
+  // a literal. `solid` is the only style any in-scope legacy rule uses; the two
+  // `dashed` and two `outset` uses both belong to excluded families, so no
+  // additional style token is needed.
+  --border-style: solid;
+
+  // ===========================================================================
+  //  MOTION
+  // ===========================================================================
+
+  // MIGRATION: net-new. The legacy Web Forms portal had no CSS transitions at
+  // all. One duration and one easing function are declared so that every
+  // interactive state change in the target is consistent, and the duration sits
+  // inside the 150-300ms window the migration plan's interaction requirements
+  // set, with the ease-out curve they specify.
+  //
+  // These tokens supply the VALUES only. The reduced-motion guard that must wrap
+  // every transition is a prefers-reduced-motion query, and no at-rule may appear
+  // in this file: the guard lives in the shared mixin in _mixins.scss, and every
+  // component applies transitions through that mixin rather than declaring the
+  // query itself.
+  --transition-duration: 200ms;
+  --transition-easing: ease-out;
+
+  // ===========================================================================
+  //  LAYERING
+  // ===========================================================================
+
+  // MIGRATION: net-new scale. The legacy stylesheet declares z-index exactly
+  // twice, both times as 1000, and both on the sub-menu rules of the two
+  // out-of-scope menu families (default.css L678 and L763) — so there is no
+  // legacy stacking system to port. Four steps are declared, spaced by 100 so a
+  // value can be interposed without renumbering, and they cover every stacking
+  // need in the shared component set: sticky data-table headers, the search-input
+  // and select dropdown surfaces, the dialog backdrop, and the dialog itself. The
+  // ordering is the contract — nothing downstream may invent a fifth layer.
+  --z-index-sticky: 100;
+  --z-index-dropdown: 200;
+  --z-index-overlay: 300;
+  --z-index-modal: 400;
+
+  // ===========================================================================
+  //  FOCUS
+  // ===========================================================================
+
+  // MIGRATION: net-new. The legacy stylesheet has no focus styling of any kind —
+  // zero `outline` declarations and zero `:focus` selectors across all 1030
+  // lines, so keyboard users had only the browser default. A visible focus
+  // indicator is required in the target and is applied through the focus-ring
+  // mixin in _mixins.scss on `:focus-visible`, so it appears for keyboard
+  // navigation without adding a ring to mouse clicks. Because the legacy rest
+  // state carries no focus treatment, adding one changes nothing that the legacy
+  // portal rendered at rest.
+  //
+  // The colour is a reference to --color-primary rather than a repeated literal,
+  // so the brand colour has exactly one definition. On --color-background the
+  // ring measures 12.61:1, far above the 3:1 WCAG AA threshold for non-text UI.
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --focus-ring-color: var(--color-primary);
+}

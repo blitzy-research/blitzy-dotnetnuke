@@ -1,55 +1,202 @@
-## ---------------------------------------------------------------------------
-## DotNetNuke migration repository
-##
-## The legacy VB.NET trees (Library/, Website/) are read-only reference inputs and
-## keep their pre-built bin/ assemblies under source control, so the .NET ignore
-## rules below are scoped to the new backend/ tree only.
-## ---------------------------------------------------------------------------
+# =============================================================================
+# DotNetNuke migration repository — root ignore rules
+#
+# This repository hosts a side-by-side ("strangler pattern") technology
+# migration. The modern trees — backend/ (C# 12 / .NET 8 ASP.NET Core API) and
+# frontend/ (Angular 19 SPA) — live ALONGSIDE the original VB.NET trees
+# Library/ and Website/, which are read-only reference inputs: they must remain
+# byte-identical and fully tracked, and the legacy solutions must stay
+# buildable. Nothing here may change the git status of a single legacy file.
+#
+# Two properties of this repository shape the rules below. Anyone editing this
+# file must preserve both, or tracked legacy sources start disappearing from
+# `git status` on other developers' machines:
+#
+#   1. The legacy trees COMMIT their pre-built bin/ assemblies to source
+#      control — 52 tracked .dll/.xml files across 8 bin/ directories. The
+#      build-output rules are therefore followed by explicit directory
+#      negations; see "Legacy committed binaries" below.
+#
+#   2. Several patterns in everyday use collide with real legacy directory
+#      names — Library/Components/Packages/, Website/admin/Packages/ and
+#      Website/Portals/_default/Logs/. Those patterns are ANCHORED to the new
+#      trees with a leading slash instead of being applied repository-wide.
+#      Never un-anchor them: git folds case when matching ignore patterns on
+#      any clone where core.ignorecase is true (macOS and Windows), so a bare
+#      `packages/` or `logs/` rule silently swallows those legacy sources even
+#      though the casing differs.
+#
+# Verify any change to this file with:
+#   git ls-files | git check-ignore --no-index --stdin
+# It must print nothing. `--no-index` is required — without it git reports
+# already-tracked files as "not ignored" and masks exactly this class of bug.
+# =============================================================================
 
-## --- .NET 8 backend ---
-backend/**/bin/
-backend/**/obj/
-backend/**/[Dd]ebug/
-backend/**/[Rr]elease/
-backend/**/x64/
-backend/**/x86/
-backend/**/TestResults/
-backend/**/*.user
-backend/**/*.userosscache
-backend/**/*.suo
-backend/**/*.userprefs
-backend/**/.vs/
-backend/**/*.received.*
-backend/coverage/
-backend/**/coverage.*.json
-backend/**/coverage.*.xml
-backend/**/coverage.*.info
 
-## --- Angular 19 frontend ---
-frontend/node_modules/
-frontend/dist/
-frontend/coverage/
-frontend/.angular/
-frontend/npm-debug.log*
-frontend/yarn-error.log*
-frontend/.eslintcache
+# -----------------------------------------------------------------------------
+# Build output — required exclusions
+# -----------------------------------------------------------------------------
+[Bb]in/
+[Oo]bj/
+node_modules/
+dist/
+coverage/
 
-## --- Containers / local environment ---
-docker/.env
-.env
-.env.local
-.env.*.local
 
-## --- Editors and OS noise ---
+# -----------------------------------------------------------------------------
+# Legacy committed binaries — DO NOT ignore
+#
+# These directories hold source-less, pre-built reference assemblies that are
+# already under source control and that the legacy build links against
+# directly. Dropping them would break DotNetNuke.sln and destroy the only copy
+# of binaries that have no source anywhere in the checkout, for example:
+#   Library/Components/DataAccessBlock/bin/Microsoft.ApplicationBlocks.Data.dll
+#       — the SqlHelper implementation the entire legacy ADO.NET layer calls
+#   Library/Controls/DotNetNuke.WebControls/bin/DotNetNuke.WebControls.dll
+#   Library/Components/SharpZipLib/bin/SharpZipLib.dll
+#       — both referenced by HintPath from Library/DotNetNuke.Library.vbproj
+#   Website/bin/*.dll + *.xml  — 44 tracked files, the deployed legacy binaries
+#
+# Git cannot re-include a file whose PARENT DIRECTORY is excluded, so these
+# negations re-include the DIRECTORIES themselves (`!Website/bin/`), not their
+# contents (`!Website/bin/**`, which does NOT work). They must stay AFTER the
+# `[Bb]in/` rule above — for ignore rules, the last matching pattern wins.
+# -----------------------------------------------------------------------------
+!Website/bin/
+!Library/**/bin/
+
+
+# -----------------------------------------------------------------------------
+# .NET build, test and tooling artefacts
+# -----------------------------------------------------------------------------
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild[Ll]og.*
+msbuild.log
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.dbmdl
+*.log
+.vs/
+artifacts/
+project.lock.json
+
+# Test and coverage output (`dotnet test`, coverlet.collector).
+# The `coverage*` globs use a single wildcard on purpose so they catch both
+# coverlet's default file names (coverage.json, coverage.info) and its
+# format-qualified ones (coverage.cobertura.xml, coverage.opencover.xml).
+# No tracked file in this repository has a basename beginning "coverage".
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coverlet.json
+coverage*.json
+coverage*.xml
+coverage*.info
+
+
+# -----------------------------------------------------------------------------
+# NuGet
+# -----------------------------------------------------------------------------
+*.nupkg
+*.snupkg
+.nuget/packages/
+
+# The packages.config-era restore folder. ANCHORED to the backend solution on
+# purpose — an un-anchored `packages/` rule matches the legacy VB source trees
+# Library/Components/Packages/ (34 tracked files) and Website/admin/Packages/
+# (7 tracked files) on any case-insensitive clone. backend/DnnMigration.sln
+# restores via PackageReference into the global cache, so this folder should
+# never appear at all; the rule exists only as a guard.
+/backend/packages/*
+!/backend/packages/build/
+
+
+# -----------------------------------------------------------------------------
+# Entity Framework Core — intentionally NOTHING is ignored
+#
+# backend/src/DnnMigration.Infrastructure/Persistence/Migrations/ holds the
+# baseline migration and MUST be committed. It is deliberately a no-op that
+# only seeds __EFMigrationsHistory, because the legacy schema is immutable and
+# depends on externally installed aspnet_* objects. Never ignore Migrations/.
+# -----------------------------------------------------------------------------
+
+
+# -----------------------------------------------------------------------------
+# Node / Angular
+#
+# NOTE: frontend/package-lock.json and frontend/karma.conf.js are
+# gate-critical and must never be ignored — `npm ci` fails outright without a
+# committed lockfile, and the headless-Chrome test run fails outright without
+# the karma config. Do not add `package-lock.json` or `*-lock.json` here.
+# -----------------------------------------------------------------------------
+.angular/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+.eslintcache
+chrome-profiler-events*.json
+speed-measure-plugin*.json
+
+# Explicit anchors for the Angular workspace output (also covered by the
+# repository-wide `dist/` and `coverage/` rules above).
+/frontend/dist/
+/frontend/coverage/
+
+
+# -----------------------------------------------------------------------------
+# Runtime log directories
+#
+# ANCHORED for the same reason as the NuGet rule: a bare `logs/` would match
+# Website/Portals/_default/Logs/, which has tracked files.
+# -----------------------------------------------------------------------------
+/backend/logs/
+/frontend/logs/
+
+
+# -----------------------------------------------------------------------------
+# IDE and editor state
+# -----------------------------------------------------------------------------
+.idea/
 .vscode/*
 !.vscode/extensions.json
-.idea/
 *.swp
 *.swo
 *~
+
+
+# -----------------------------------------------------------------------------
+# OS noise
+# -----------------------------------------------------------------------------
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-## --- Logs ---
-*.log
-logs/
+
+# -----------------------------------------------------------------------------
+# Secrets and local environment overrides
+#
+# Real credentials never enter source control. Only the committed
+# docker/.env.example template documents the required variables, and
+# appsettings.json / appsettings.Development.json / appsettings.Production.json
+# are tracked configuration — only *.local.json overlays are ignored.
+# -----------------------------------------------------------------------------
+*.env
+.env
+.env.local
+.env.*.local
+appsettings.*.local.json
+*.pfx
+*.p12
+*.key
+
+# Keep the credential-free template that docker-compose.yml documents.
+!docker/.env.example

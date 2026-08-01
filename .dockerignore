@@ -1,46 +1,122 @@
-# Root build context ignore list (AAP 0.2.1.3).
-# docker/api.Dockerfile and docker/frontend.Dockerfile are built from the
-# repository root, so everything the images do not need is excluded here to keep
-# the context small and the builds reproducible.
+# =============================================================================
+# Docker build-context ignore list - REPOSITORY ROOT (AAP 0.1.1.3, 0.2.1.3).
+#
+# THE BUILD CONTEXT IS THE REPOSITORY ROOT, so this single file governs BOTH
+# image builds:
+#   docker/docker-compose.yml -> both services declare `build.context: ..`
+#   docker build -f docker/api.Dockerfile      -t dnnmigration-api      .
+#   docker build -f docker/frontend.Dockerfile -t dnnmigration-frontend .
+# (frontend/.dockerignore is a separate file that applies only to a
+#  frontend-rooted context; it does NOT apply to the builds above.)
+#
+# NEVER EXCLUDE - every item below is COPYd by a Dockerfile, and its absence
+# breaks an image build in a way no compiler catches:
+#   backend/           global.json, Directory.Build.props, DnnMigration.sln,
+#                      all six *.csproj, src/**/*.cs, all appsettings*.json
+#   frontend/          package.json AND package-lock.json (`npm ci` fails
+#                      outright without the lockfile - AAP 0.6.2), angular.json,
+#                      tsconfig*.json, karma.conf.js, .nvmrc, src/**, public/**
+#   docker/nginx.conf  COPYd by docker/frontend.Dockerfile; the frontend image
+#                      build fails at that COPY step if it is missing
+#                      (AAP 0.5.1.9, 0.9.3)
+#
+# Consequently there is NO blanket rule for backend/, frontend/ or docker/, and
+# NO `!` re-inclusion anywhere in this file: every rule is either root-anchored
+# or `**/`-scoped, so rule ordering can never resurrect or hide a required file.
+#
+# Effect: the context shrinks from ~47 MB to well under 1 MB, because the legacy
+# reference trees below account for ~35 MB of it and no image copies a byte.
+# =============================================================================
 
-# --- build output / dependencies ---
-**/bin/
-**/obj/
-**/node_modules/
-**/dist/
-**/coverage/
-**/.angular/
-**/TestResults/
+# Version control and repository plumbing.
+.git/
+.gitignore
+.gitattributes
+.github/
 
-# --- legacy VB.NET trees (reference only, never shipped in a container) ---
+# Legacy VB.NET reference trees - never copied into an image.
+# Library/ (8.8 MB, 576 files) and Website/ (26 MB, 1754 files) are read-only
+# .NET Framework 2.0 reference inputs (AAP 0.2.1.4) and stay byte-identical on
+# disk (AAP 0.9.5); excluding them here is a build-context optimisation only.
 Library/
 Website/
 DotNetNuke.sln
 DotNetNuke_VS2008.sln
 
-# --- documentation and repository metadata ---
+# Documentation and repository metadata - no image serves documentation.
 docs/
 blitzy/
 mkdocs.yml
 catalog-info.yaml
+README.md
+MIGRATION_NOTES.md
+# Any other root-level Markdown. Root-scoped on purpose: `*` never crosses `/`,
+# so nested files such as frontend/README.md are deliberately left untouched.
 *.md
-!README.md
 
-# --- vcs / editors / os ---
-.git/
-.gitignore
-.github/
-.vs/
-.vscode/
-.idea/
-*.user
-*.suo
-.DS_Store
-Thumbs.db
+# .NET build output.
+# Load-bearing, not cosmetic: docker/api.Dockerfile runs `dotnet restore` inside
+# the SDK stage and only afterwards does `COPY backend/ ./` followed by
+# `dotnet publish --no-restore`. A host-built obj/ reaching the context would
+# overwrite the container's project.assets.json with host paths and break that
+# publish. These rules are intentionally GLOBAL, unlike .gitignore which scopes
+# them to backend/** because Library/ and Website/ keep 52 pre-built bin/
+# assemblies under source control. Here we want zero stale bytes in the context,
+# so do not narrow these to backend/**.
+**/bin/
+**/obj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/x64/
+**/x86/
+**/artifacts/
+**/TestResults/
+**/*.trx
+**/*.coverage
+**/coverage.*.json
+**/coverage.*.xml
+**/coverage.*.info
+**/*.received.*
 
-# --- secrets and local environment ---
-**/.env
-**/.env.local
+# Node / Angular output.
+# node_modules/ is equally load-bearing: docker/frontend.Dockerfile runs
+# `npm ci` before `COPY frontend/ ./`, so a host node_modules would overwrite a
+# Linux-native install with host-platform native bindings and defeat the
+# deterministic lockfile install.
+**/node_modules/
+**/dist/
+**/coverage/
+**/.angular/
+**/npm-debug.log*
+**/yarn-error.log*
+**/*.tsbuildinfo
+**/.eslintcache
+
+# Secrets and local environment - never bake credentials into a layer.
+# `**/.env*` also covers docker/.env.example: docker-compose interpolates
+# docker/.env from the HOST before any build starts, so neither file is ever
+# needed inside the context. appsettings.{Development,Production}.json are NOT
+# excluded - they are shipped configuration (AAP 0.2.1.1); only *.local.json
+# developer overrides are.
+**/.env*
+**/appsettings.*.local.json
 **/*.pfx
+**/*.p12
 **/*.key
-**/appsettings.Development.json
+**/*.pem
+
+# IDE / editor / OS noise.
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/*.userosscache
+**/*.userprefs
+**/*.suo
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+**/Thumbs.db
+**/logs/
+**/*.log
