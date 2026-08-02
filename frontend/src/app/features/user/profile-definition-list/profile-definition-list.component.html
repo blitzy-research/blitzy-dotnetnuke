@@ -1,0 +1,282 @@
+<!--
+  The profile-property catalogue.
+
+  The host is the grid, so every region below is a direct child of it and none declares
+  an outer margin of its own — the two that inherit a user-agent paragraph margin
+  neutralise it through their own class, which is why `.profile-definitions__help` and
+  `.profile-definitions__grid-actions` both zero `margin-block`.
+-->
+<app-page-header [title]="heading" />
+
+<p class="profile-definitions__help">
+  A profile property is a field every account on this site can fill in. The order below
+  is the order the fields appear on the profile screen. Deleting a property also deletes
+  every value recorded against it.
+</p>
+
+@if (loading) {
+  <app-loading-spinner label="Loading profile properties…" />
+} @else {
+  @if (hasDefinitions) {
+    <!-- The bulk region sets one flag across every declaration at once. Each control is
+         a real checkbox inside its own label, so the label is the control's accessible
+         name and the whole pair is clickable; the global form partial lays a label that
+         contains a checkbox out as a row, which is why no extra class is needed here. -->
+    <div class="profile-definitions__bulk">
+      <label class="profile-definitions__bulk-item">
+        <input
+          type="checkbox"
+          [checked]="allRequired"
+          [indeterminate]="someRequired"
+          [disabled]="saving"
+          (change)="onBulkFlag('required', $event)"
+        />
+        Required for every property
+      </label>
+      <label class="profile-definitions__bulk-item">
+        <input
+          type="checkbox"
+          [checked]="allVisible"
+          [indeterminate]="someVisible"
+          [disabled]="saving"
+          (change)="onBulkFlag('visible', $event)"
+        />
+        Visible for every property
+      </label>
+    </div>
+
+    <table>
+      <!-- The caption names the table for assistive technology without duplicating the
+           screen title visually; the global table partial hides a caption carrying this
+           attribute rather than removing it from the accessibility tree. -->
+      <caption data-visually-hidden>
+        Profile properties declared by this site
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Category</th>
+          <th scope="col">Length</th>
+          <th scope="col">Required</th>
+          <th scope="col">Visible</th>
+          <th scope="col">Visible to</th>
+          <th scope="col">Default</th>
+          <th scope="col">Validation</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (definition of definitions; track definition.propertyDefinitionId) {
+          <tr>
+            <!-- The name is the row's own heading, so it is a row-scoped header cell
+                 rather than a data cell: a screen reader then announces it alongside
+                 every other cell in the row. -->
+            <th scope="row">{{ definition.propertyName }}</th>
+            <td>{{ definition.propertyCategory }}</td>
+            <td>{{ definition.length }}</td>
+            <td>{{ definition.required | yesNo }}</td>
+            <td>{{ definition.visible | yesNo }}</td>
+            <td>{{ visibilityLabel(definition.visibility) }}</td>
+            <td>
+              @if (definition.defaultValue) {
+                <code class="profile-definitions__code">{{ definition.defaultValue }}</code>
+              }
+            </td>
+            <td>
+              @if (definition.validationExpression) {
+                <code class="profile-definitions__code">{{
+                  definition.validationExpression
+                }}</code>
+              }
+            </td>
+            <td>
+              <div class="profile-definitions__row-actions">
+                <button
+                  type="button"
+                  class="profile-definitions__row-action"
+                  [disabled]="saving"
+                  (click)="openEdit(definition)"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="profile-definitions__row-action"
+                  [disabled]="saving"
+                  (click)="requestRemoval(definition)"
+                >
+                  Delete
+                </button>
+                <!-- The direction affordances carry a visible glyph and an accessible
+                     name that says which property moves, because "Up" on its own is
+                     meaningless once a screen reader has left the row context. -->
+                <button
+                  type="button"
+                  class="profile-definitions__row-action"
+                  [disabled]="saving || !canMoveUp(definition)"
+                  [attr.aria-label]="'Move ' + definition.propertyName + ' up'"
+                  (click)="onReorder(definition, 'up')"
+                >
+                  <span aria-hidden="true">↑</span>
+                </button>
+                <button
+                  type="button"
+                  class="profile-definitions__row-action"
+                  [disabled]="saving || !canMoveDown(definition)"
+                  [attr.aria-label]="'Move ' + definition.propertyName + ' down'"
+                  (click)="onReorder(definition, 'down')"
+                >
+                  <span aria-hidden="true">↓</span>
+                </button>
+              </div>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  } @else {
+    <app-empty-state
+      message="This site declares no profile properties yet. Add one to start collecting profile information."
+    />
+  }
+
+  <p class="profile-definitions__grid-actions">
+    <button type="button" [disabled]="saving" (click)="openCreate()">Add property</button>
+  </p>
+
+  <!-- A disclosure control rather than a second create affordance: it reports the
+       editor's state through `aria-expanded`, which is simultaneously the hook a screen
+       reader reads and the only state this button owns. Opening it with nothing selected
+       starts a new property; the row-level Edit affordance opens it on an existing one. -->
+  <button
+    type="button"
+    class="profile-definitions__form-toggle"
+    [disabled]="saving"
+    [attr.aria-expanded]="formOpen"
+    (click)="toggleForm()"
+  >
+    {{ formOpen ? 'Hide the property editor' : 'Show the property editor' }}
+  </button>
+
+  @if (formOpen) {
+    <form [formGroup]="form" (ngSubmit)="onSubmit()">
+      <fieldset class="profile-definitions__form">
+        <legend class="profile-definitions__form-legend">{{ formLegend }}</legend>
+
+        <div class="profile-definitions__form-grid">
+          <div>
+            <label for="definition-name">
+              Property name
+              <span class="form-required" aria-hidden="true">*</span>
+            </label>
+            <input
+              id="definition-name"
+              type="text"
+              formControlName="propertyName"
+              aria-required="true"
+              [attr.aria-invalid]="nameMessage ? 'true' : null"
+              [attr.aria-describedby]="nameMessage ? 'definition-name-message' : null"
+            />
+            @if (nameMessage; as message) {
+              <p class="form-error" id="definition-name-message">{{ message }}</p>
+            }
+          </div>
+
+          <div>
+            <label for="definition-category">Category</label>
+            <input id="definition-category" type="text" formControlName="propertyCategory" />
+            <small class="profile-definitions__form-hint">
+              Properties sharing a category are grouped together on the profile screen.
+              Leave this blank to group under General.
+            </small>
+          </div>
+
+          <div>
+            <label for="definition-data-type">Data type</label>
+            <input id="definition-data-type" type="number" min="0" formControlName="dataType" />
+            <small class="profile-definitions__form-hint">
+              The identifier of the stored data type. Every type is edited as text on the
+              profile screen.
+            </small>
+          </div>
+
+          <div>
+            <label for="definition-length">Maximum length</label>
+            <input id="definition-length" type="number" min="0" formControlName="length" />
+            <small class="profile-definitions__form-hint">
+              Zero means no limit. A length above 250 is edited as a multi-line field.
+            </small>
+          </div>
+
+          <div>
+            <label for="definition-default">Default value</label>
+            <input id="definition-default" type="text" formControlName="defaultValue" />
+            <small class="profile-definitions__form-hint">
+              Used when an account has never recorded a value of its own.
+            </small>
+          </div>
+
+          <div>
+            <label for="definition-validation">Validation expression</label>
+            <input id="definition-validation" type="text" formControlName="validationExpression" />
+            <small class="profile-definitions__form-hint">
+              A regular expression a value must match. An expression this browser cannot
+              read is still applied by the server.
+            </small>
+          </div>
+
+          <div>
+            <label for="definition-order">Display order</label>
+            <input id="definition-order" type="number" min="0" formControlName="viewOrder" />
+          </div>
+
+          <div>
+            <label for="definition-visibility">Visible to</label>
+            <select id="definition-visibility" formControlName="visibility">
+              @for (option of visibilityOptions; track option.code) {
+                <option [ngValue]="option.code">{{ option.label }}</option>
+              }
+            </select>
+            <small class="profile-definitions__form-hint">
+              The default an account starts with. An account may narrow its own value.
+            </small>
+          </div>
+
+          <div>
+            <label>
+              <input type="checkbox" formControlName="required" />
+              A value is required
+            </label>
+          </div>
+
+          <div>
+            <label>
+              <input type="checkbox" formControlName="visible" />
+              Show this property on the profile screen
+            </label>
+          </div>
+        </div>
+
+        <div class="profile-definitions__form-actions">
+          <button type="submit" [disabled]="saving">
+            {{ saving ? 'Saving…' : editing ? 'Update' : 'Add' }}
+          </button>
+          <button type="button" [disabled]="saving" (click)="closeForm()">Cancel</button>
+        </div>
+      </fieldset>
+    </form>
+  }
+}
+
+<!-- Presence in the DOM is what opens the shared dialog — it calls `showModal()` once it
+     is attached — so it is rendered only while a removal is awaiting confirmation. -->
+@if (pendingRemoval) {
+  <app-confirm-dialog
+    title="Delete profile property"
+    [message]="removalMessage"
+    confirmLabel="Delete"
+    danger
+    (confirm)="onRemovalConfirmed()"
+    (cancel)="onRemovalCancelled()"
+  />
+}

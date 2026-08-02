@@ -1,0 +1,11 @@
+<!--
+  One element, deliberately.
+
+  The shell owns every fixed region and the router owns everything inside its
+  outlet, so there is nothing for the root template to add. The three session
+  bindings the shell accepts — `userName`, `signingOut` and `(signOut)` — are the
+  seam at which an authentication service is wired in; they are left unbound because
+  no such service exists in this workspace yet, and the shell and banner both handle
+  their absence as "no account signed in" rather than as a missing value.
+-->
+<app-shell />

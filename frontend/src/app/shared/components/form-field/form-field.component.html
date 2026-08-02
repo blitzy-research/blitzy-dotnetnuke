@@ -1,0 +1,53 @@
+<div class="form-field">
+  <!--
+    The label is a real `label` with a `for` target rather than a styled span, so
+    clicking it focuses the control and assistive technology names the control from
+    it. The target is the consumer's responsibility: this component cannot reach into
+    projected content to read or write an id.
+  -->
+  <label class="form-field__label" [attr.for]="for">
+    {{ label }}
+    @if (required) {
+      <!--
+        Hidden from assistive technology on purpose. The projected control carries its
+        own `required` state, which is what is announced; announcing this marker as
+        well would say "required" twice for one field. It remains visible, because a
+        person scanning the form needs to see which fields they must complete before
+        they try to submit.
+      -->
+      <span class="form-field__required" aria-hidden="true">{{ requiredMarker }}</span>
+    }
+  </label>
+
+  <!--
+    The control slot. Unnamed and accepting any control, because the administration
+    screens use text, number, date, select, checkbox, radio and textarea controls and
+    a shared wrapper must not enumerate them.
+
+    Appearance of the projected control is NOT styled from here - projected content
+    keeps the style scoping of the component that declares it - so control appearance
+    belongs to the global form stylesheet. Neither deep-descendant piercing nor
+    disabling per-component scoping is used to work around that.
+  -->
+  <div class="form-field__control">
+    <ng-content />
+  </div>
+
+  @if (hasHelp) {
+    <!--
+      Carries the derived help id so a consumer can point the control's
+      `aria-describedby` at it. Rendered after the control, matching reading order.
+    -->
+    <p class="form-field__help" [attr.id]="helpId">{{ help }}</p>
+  }
+
+  @if (hasError) {
+    <!--
+      `role="alert"` announces the message when it appears, which is what makes a
+      validation failure discoverable without moving focus. The element is absent
+      while the field is valid rather than hidden, so it neither occupies space nor
+      sits in the accessibility tree as an empty node.
+    -->
+    <p class="form-field__error" [attr.id]="errorId" role="alert">{{ error }}</p>
+  }
+</div>

@@ -26,11 +26,16 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// update request describes only the desired state.
 /// </para>
 /// <para>
-/// Route precedence. The <c>{id}</c> segment of <c>PUT /api/v1/portals/{id}</c> is authoritative and
-/// identifies the portal being updated. <see cref="PortalId"/> carries the same identifier because
-/// the replacement of the legacy signature is one-for-one, so the two can disagree. The controller,
-/// or <c>Application/Validation/UpdatePortalRequestValidator.cs</c>, compares them and treats a
-/// mismatch as a validation failure. That comparison is deliberately not implemented here.
+/// The subject is carried by the route and by nothing else. The <c>{id}</c> segment of
+/// <c>PUT /api/v1/portals/{id}</c> identifies the portal being updated, and it is the sole source of
+/// that identifier: no member below carries a copy of it. An earlier revision did carry one, on the
+/// ground that the replacement of the legacy signature was one-for-one, and left the resulting
+/// route-versus-body disagreement to be resolved elsewhere. That is an authorisation risk whose
+/// safety depends on a comparison nobody is obliged to perform, so the duplicate was removed instead;
+/// the reasoning is recorded in full at the point where the member used to be declared, and the
+/// divergence is listed in <c>MIGRATION_NOTES.md</c>. There is consequently no identity comparison for
+/// <c>Application/Validation/UpdatePortalRequestValidator.cs</c> to make - the class of defect is
+/// closed by the shape of the contract rather than by a rule.
 /// </para>
 /// <para>
 /// Deliberately not updatable. The legacy entity
@@ -166,10 +171,8 @@ public sealed class UpdatePortalRequest
     //       (Library/Providers/MembershipProviders/DataProvider/DataProvider.vb:L82), the second
     //       through the page controller's tab count -- and both are absent from the read view. A
     //       count is computed, never submitted.
-    //       Measured correction to the specification: both were described as read-only properties.
-    //       They are not. Users declares a setter at PortalInfo.vb:L316 and Pages at L327, so both
-    //       are read/write on the legacy entity. The exclusion stands regardless, on the stronger
-    //       ground that neither is a column.
+    //       Both declare a setter on the legacy entity (PortalInfo.vb:L316 and L327), so neither is
+    //       read-only there; the exclusion rests on the stronger ground that neither is a column.
     //     HomeDirectoryMapPath (L388) is the single read-only property on the legacy entity. It
     //       derives an absolute server filesystem path, reaching into two subsystems this migration
     //       excludes -- the static utility module for the application path, and the file-system
@@ -223,31 +226,37 @@ public sealed class UpdatePortalRequest
     //   PortalService.UpdatePortalAsync and mirrored in the Angular portal-settings form. It is
     //   deliberately absent from this type, which validates nothing and authorises nothing.
 
-    /// <summary>
-    /// Gets or sets the identifier of the portal to update.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Legacy argument 1, <c>PortalId</c>, typed <c>Integer</c>. The backing column is
-    /// <c>Portals.PortalID</c>, declared <c>[int] IDENTITY (-1, 1) NOT NULL</c> at
-    /// <c>01.00.00.SqlDataProvider:L77</c>. The legacy code-behind supplied it from page state
-    /// rather than from a control, and the forwarding overload at
-    /// <c>PortalController.vb:L1524</c> supplied it from the entity's own <c>PortalID</c> member.
-    /// </para>
-    /// <para>
-    /// The property is not nullable because the column is not nullable and because an update
-    /// without a subject is meaningless. The <c>{id}</c> route segment is authoritative; a
-    /// disagreement between the two is a validation failure resolved by the controller or the
-    /// validator, never here.
-    /// </para>
-    /// <para>
-    /// No value of this property means absent. Because the identity seed is the same negative
-    /// value that the legacy contract used as its absent-integer sentinel, and because the stock
-    /// <c>_default</c> portal occupies zero (<c>01.00.00.SqlDataProvider:L7125</c>), both are real
-    /// addressable identifiers. Presence is expressed by the request carrying a body at all.
-    /// </para>
-    /// </remarks>
-    public int PortalId { get; set; }
+    // MIGRATION: LEGACY ARGUMENT 1, PortalId, IS DELIBERATELY NOT A MEMBER OF THIS CONTRACT, and its
+    // removal is a considered decision rather than an omission. The argument itself is preserved - it
+    // is the {id} segment of PUT /api/v1/portals/{id} and the first parameter of
+    // IPortalService.UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken) - so nothing about
+    // the operation is lost. What is removed is a SECOND, caller-controlled copy of the same key
+    // inside the body.
+    //
+    // An earlier revision carried the copy and documented that the route segment was authoritative,
+    // that the two could disagree, and that a comparison "belongs to the controller or the validator".
+    // That arrangement is the defect: a subject key supplied twice, with the mismatch handled by a
+    // rule declared somewhere else, is an authorisation risk that depends for its safety on a check
+    // nobody is forced to invoke. The two candidate fixes are enforcing equality or removing the
+    // duplicate, and removal is chosen because it is the only one that cannot be forgotten. Enforcing
+    // equality is mechanically possible - Api/Filters/FluentValidationActionFilter.cs publishes every
+    // route value into the validation context's root data, so a rule could read the route identifier -
+    // but a rule protects only the requests that actually reach it, and only for as long as nobody adds
+    // an entry point that binds the body without it. With no second copy in the body there is nothing
+    // to disagree on any path, and the class of defect is closed by construction rather than by
+    // vigilance.
+    //
+    // Legacy provenance, retained because it explains where the argument came from: the column is
+    // Portals.PortalID, declared [int] IDENTITY (-1, 1) NOT NULL at 01.00.00.SqlDataProvider:L77; the
+    // legacy code-behind supplied the argument from page state rather than from a control, and the
+    // forwarding overload at PortalController.vb:L1524 supplied it from the entity's own PortalID
+    // member. The identity seed is the same negative value the legacy contract used as its
+    // absent-integer sentinel, and the stock _default portal occupies zero
+    // (01.00.00.SqlDataProvider:L7125), so both are real addressable identifiers and no route value
+    // may be rejected on the ground that it looks like an "absent" marker.
+    //
+    // This also makes the update contract consistent with CreatePortalRequest, which carries no
+    // identifier at all.
 
     /// <summary>
     /// Gets or sets the display name of the portal.
@@ -301,7 +310,12 @@ public sealed class UpdatePortalRequest
     /// <c>ctlLogo</c> picker control declared at <c>sitesettings.ascx:L140</c>, whose selected
     /// value the code-behind read into a local before passing it as the third argument
     /// (<c>SiteSettings.ascx.vb:L698</c>, call site L772). The backing column is declared
-    /// <c>[nvarchar] (50) NULL</c> at <c>01.00.00.SqlDataProvider:L80</c>.
+    /// <c>[nvarchar] (50) NULL</c> at <c>01.00.00.SqlDataProvider:L81</c>, and the
+    /// <c>Tmp_Portals</c> rebuild carries the same width forward at
+    /// <c>01.00.05.SqlDataProvider:L1369</c>, so 50 is terminal. The citation previously read L80,
+    /// which is the adjacent <c>[UploadDirectory] [nvarchar] (100) NOT NULL</c> column - a different
+    /// column of a different width and nullability. The line was verified by reading the baseline
+    /// <c>CREATE TABLE [dbo].[Portals]</c> block at L76-L93 in full.
     /// </para>
     /// <para>
     /// The value is either a managed-file token of the form <c>fileid=NNN</c> or a path, and the two
@@ -324,7 +338,9 @@ public sealed class UpdatePortalRequest
     /// <para>
     /// Legacy argument 4, <c>FooterText</c>, typed <c>String</c>, supplied by the
     /// <c>txtFooterText</c> text box. The backing column is declared <c>[nvarchar] (100) NULL</c> at
-    /// <c>01.00.00.SqlDataProvider:L81</c>. The stock <c>_default</c> portal ships with a copyright
+    /// <c>01.00.00.SqlDataProvider:L82</c>, and the <c>Tmp_Portals</c> rebuild carries it forward
+    /// unchanged at <c>01.00.05.SqlDataProvider:L1370</c> with no later <c>ALTER COLUMN</c>, so that
+    /// declaration is terminal. The stock <c>_default</c> portal ships with a copyright
     /// notice in this column (<c>01.00.00.SqlDataProvider:L7125</c>).
     /// </para>
     /// <para>
@@ -454,8 +470,12 @@ public sealed class UpdatePortalRequest
     /// <para>
     /// Legacy argument 8, <c>Currency</c>, typed <c>String</c>, supplied by the <c>cboCurrency</c>
     /// list and passed as the selected item's value (<c>SiteSettings.ascx.vb:L775</c>). The backing
-    /// column is declared <c>[char] (3) NULL</c> at <c>01.00.00.SqlDataProvider:L87</c>, and the
-    /// stock <c>_default</c> portal ships with "USD".
+    /// column is declared <c>[char] (3) NULL</c> at <c>01.00.00.SqlDataProvider:L88</c>, carried
+    /// forward unchanged by the <c>Tmp_Portals</c> rebuild at
+    /// <c>01.00.05.SqlDataProvider:L1376</c>, and the stock <c>_default</c> portal ships with "USD".
+    /// The citation previously read L87, which is the adjacent
+    /// <c>[PayPalId] [nvarchar] (50) NULL</c> column. The line was verified by reading the baseline
+    /// <c>CREATE TABLE [dbo].[Portals]</c> block at L76-L93 in full.
     /// </para>
     /// <para>
     /// Measured rules: exactly three characters, imposed by the fixed-width column rather than by any
@@ -475,7 +495,8 @@ public sealed class UpdatePortalRequest
     /// Legacy argument 9, <c>AdministratorId</c>, typed <c>Integer</c>, supplied by the
     /// <c>cboAdministratorId</c> list through an explicit integer conversion of the selected item's
     /// value (<c>SiteSettings.ascx.vb:L776</c>). The backing column is declared <c>[int] NULL</c> at
-    /// <c>01.00.00.SqlDataProvider:L85</c> and is the foreign key the terminal read view joins on to
+    /// <c>01.00.00.SqlDataProvider:L86</c> - previously cited as L85, which is the adjacent
+    /// <c>[BannerAdvertising] [int] NULL</c> column - and is the foreign key the terminal read view joins on to
     /// project the administrator's electronic-mail address onto the portal row.
     /// </para>
     /// <para>

@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using FluentValidation;
+using FluentValidation.Results;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Api.Filters;
@@ -48,7 +51,10 @@ namespace DnnMigration.Api.Filters;
 /// <b>Wire contract.</b> Payloads carry <c>type</c>, <c>title</c>,
 /// <c>status</c>, <c>detail</c> and a per-field <c>errors</c> object whose values
 /// are arrays of message strings, plus the one framework-native extension member
-/// <c>traceId</c>. The framework selects the <c>application/problem+json</c>
+/// <c>traceId</c>. Of these, <c>status</c>, <c>title</c> and <c>detail</c> are
+/// guaranteed present on every payload this type produces, at every status code,
+/// so a client may bind them without a presence test.
+/// The framework selects the <c>application/problem+json</c>
 /// media type from the returned type, so no header is set here. Member casing and
 /// null handling are decided once by the serialiser configuration in
 /// <c>Program.cs</c>; this type declares no naming policy, no converter and no
@@ -83,8 +89,8 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     //          severities have no counterpart in this envelope; they belong to
     //          successful responses, which this type never shapes.
     //
-    // MIGRATION: a uniform, machine-readable error contract is net-new
-    // behaviour, not a translation. The legacy screens surfaced failure by
+    // MIGRATION: a uniform, machine-readable error contract has no legacy
+    // behaviour to translate. The legacy screens surfaced failure by
     // rendering markup for a human - inline validator text plus a banner - and
     // routed unexpected faults through page-level handlers. There was no
     // machine-readable error envelope to port, so nothing was ported; the shape
@@ -106,6 +112,96 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     /// Name of the single RFC 7807 extension member this type contributes.
     /// </summary>
     private const string TraceIdExtensionKey = "traceId";
+
+    /// <summary>
+    /// Fallback problem-type link, title and detail for each status code this API emits.
+    /// </summary>
+    /// <remarks>
+    /// This table exists because the framework's own registration cannot cover the whole range. The
+    /// mapping consulted first — <c>ApiBehaviorOptions.ClientErrorMapping</c> — is populated by
+    /// default with CLIENT-error status codes only, so every server-error response produced through
+    /// this factory arrived with a null title and a null problem type. A payload missing either is
+    /// still valid against the specification, and that is precisely the difficulty: a client written
+    /// against a documented envelope receives a member that is sometimes present and sometimes not,
+    /// and no failure ever announces itself. The entries below therefore complete the range rather
+    /// than override it, and the client-error rows deliberately restate the framework's own values so
+    /// that a deployment which clears or replaces the framework registration still emits one
+    /// vocabulary rather than two.
+    /// </remarks>
+    private static readonly Dictionary<int, (string Type, string Title, string Detail)> StatusVocabulary =
+        new()
+        {
+            [StatusCodes.Status400BadRequest] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+                "Bad Request",
+                "The request could not be processed as submitted."),
+            [StatusCodes.Status401Unauthorized] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.2",
+                "Unauthorized",
+                "Authentication is required to reach this resource."),
+            [StatusCodes.Status403Forbidden] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.4",
+                "Forbidden",
+                "The authenticated caller is not permitted to perform this operation."),
+            [StatusCodes.Status404NotFound] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.5",
+                "Not Found",
+                "The requested resource does not exist."),
+            [StatusCodes.Status405MethodNotAllowed] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.6",
+                "Method Not Allowed",
+                "The requested method is not supported for this resource."),
+            [StatusCodes.Status406NotAcceptable] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.7",
+                "Not Acceptable",
+                "No representation acceptable to the caller is available for this resource."),
+            [StatusCodes.Status409Conflict] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.10",
+                "Conflict",
+                "The request conflicts with the current state of the resource."),
+            [StatusCodes.Status415UnsupportedMediaType] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.16",
+                "Unsupported Media Type",
+                "The submitted media type is not supported by this endpoint."),
+            [StatusCodes.Status422UnprocessableEntity] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.5.21",
+                "Unprocessable Content",
+                "The request was understood but could not be processed."),
+            [StatusCodes.Status429TooManyRequests] = (
+                "https://tools.ietf.org/html/rfc6585#section-4",
+                "Too Many Requests",
+                "Too many requests have been submitted. Retry after a short delay."),
+            [StatusCodes.Status500InternalServerError] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.6.1",
+                "Internal Server Error",
+                "An unexpected error occurred while processing the request."),
+            [StatusCodes.Status501NotImplemented] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.6.2",
+                "Not Implemented",
+                "The requested operation is not implemented."),
+            [StatusCodes.Status503ServiceUnavailable] = (
+                "https://tools.ietf.org/html/rfc9110#section-15.6.4",
+                "Service Unavailable",
+                "The service is temporarily unavailable. Retry after a short delay."),
+        };
+
+    /// <summary>
+    /// Detail used for a status code that appears in neither mapping.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately says nothing about the cause. A detail is a required member of the documented
+    /// envelope, so one must exist for every status code this API can possibly return, including a
+    /// status code added later by a caller of this factory. Saying nothing is the only wording that is
+    /// guaranteed to remain both true and safe for an unknown condition — a guess about the cause
+    /// could be wrong, and an internal explanation could disclose something.
+    /// </remarks>
+    private const string FallbackDetail = "The request could not be completed.";
+
+    /// <summary>
+    /// Title used when neither mapping covers the status code and the platform knows no reason phrase
+    /// for it.
+    /// </summary>
+    private const string FallbackTitle = "Error";
 
     private readonly ApiBehaviorOptions _apiBehaviorOptions;
 
@@ -376,6 +472,21 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     /// Fills in the members the caller left unspecified, so that both factory
     /// paths cannot drift apart, and attaches the trace identifier.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three sources are consulted in strict precedence, and every assignment is by null-coalescence
+    /// so that an earlier source always wins: what the caller supplied, then the framework's
+    /// client-error registration, then this type's own status vocabulary. Title and detail are then
+    /// guaranteed non-null, because both are documented members of the envelope this API publishes
+    /// and a member present on some responses but absent on others is a contract a client cannot
+    /// rely on.
+    /// </para>
+    /// <para>
+    /// An empty string supplied by a caller is content, not absence, and survives every pass — the
+    /// tests here are against null alone, exactly as they are in
+    /// <see cref="ApplyValidationTitle"/> and in the trace-identifier assignment below.
+    /// </para>
+    /// </remarks>
     /// <param name="httpContext">
     /// Context of the request being answered, or <see langword="null"/> when the
     /// framework supplied none.
@@ -410,6 +521,40 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
             problemDetails.Type ??= clientErrorData.Link;
         }
 
+        // Whatever the framework registration did not cover is completed here. Server-error status
+        // codes are the reason this second pass exists: the registration above holds client-error
+        // rows only, so before this every 500 produced through this factory carried a null title and
+        // a null problem type. Assignment is still by null-coalescence, in this order — caller,
+        // then framework registration, then this table — so nothing already decided is overwritten
+        // and the default validation title continues to survive untouched.
+        if (StatusVocabulary.TryGetValue(statusCode, out var vocabulary))
+        {
+            problemDetails.Title ??= vocabulary.Title;
+            problemDetails.Type ??= vocabulary.Type;
+            problemDetails.Detail ??= vocabulary.Detail;
+        }
+
+        // Last resort for a status code in neither mapping. The reason phrase is the platform's own,
+        // so a code it recognises still yields the conventional wording; it answers with an empty
+        // string rather than null for one it does not, which is why the result is tested for content
+        // instead of for null before being used.
+        if (problemDetails.Title is null)
+        {
+            string reasonPhrase = ReasonPhrases.GetReasonPhrase(statusCode);
+            problemDetails.Title = string.IsNullOrEmpty(reasonPhrase) ? FallbackTitle : reasonPhrase;
+        }
+
+        // Detail is a required member of the documented envelope, so it is filled unconditionally
+        // last. No detail assigned anywhere in this file mentions an exception, a message, a path, a
+        // type name or any other internal fact: every one is a fixed string chosen for its status
+        // code. That is what makes this member safe to guarantee — the guarantee is that it is
+        // always present, never that it is ever specific.
+        problemDetails.Detail ??= FallbackDetail;
+
+        // The problem type is deliberately NOT given a blanket fallback. Every status code this API
+        // returns is covered above, and inventing a link for one that is not would publish a URI
+        // that documents nothing. Absent is more honest than wrong, and the specification permits it.
+
         // MIGRATION: traceId is the one extension member added here, and it is
         // the framework's own value, taken from the ambient diagnostic activity
         // and falling back to the request's trace identifier. Preserving it keeps
@@ -440,5 +585,95 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         {
             problemDetails.Extensions[TraceIdExtensionKey] = traceId;
         }
+    }
+}
+
+/// <summary>
+/// Runs a declarative validator over an inbound request and turns its failures into a problem-details
+/// response.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This lives beside <see cref="ValidationProblemDetailsFactory"/> because it exists solely to feed it, and
+/// because the two together are the whole answer to "how does a rule violation reach the caller".
+/// </para>
+/// <para>
+/// <strong>Why controllers call a validator by hand as well.</strong> The MVC integration package that
+/// would wire FluentValidation into the model-binding pipeline automatically is deprecated and is not
+/// among the dependencies this project takes. Two mechanisms therefore cover declarative validation, and
+/// they are deliberately both present. <c>Filters/FluentValidationActionFilter.cs</c> is registered
+/// globally, so an endpoint whose author forgets to validate still has its declared rules applied - a
+/// per-action opt-in has a silent failure mode, because an unvalidated endpoint looks exactly like one
+/// with no rules. The explicit call below is what an action uses when it needs to name the validator
+/// itself: it makes the step visible at the call site, it distinguishes an absent body from an invalid
+/// one, and it lets an action choose an endpoint-specific validator rather than whichever one the
+/// container resolves for the request type. Running both on a valid request costs one extra pass over
+/// rules that have no side effects; on an invalid request the filter answers first, and both paths
+/// produce the identical problem-details shape because both route through the factory above.
+/// </para>
+/// <para>
+/// <strong>Why failures go through model state.</strong> The failures could be handed to the factory as a
+/// dictionary directly. Routing them through <see cref="ControllerBase.ValidationProblem(ModelStateDictionary)"/>
+/// instead means declarative failures and model-binding failures - a malformed body, a route value that is
+/// not an integer - arrive at the caller in one identical shape, produced by one code path. Two paths would
+/// drift, and the drift would show up as clients that can parse one kind of 400 and not the other.
+/// </para>
+/// </remarks>
+public static class RequestValidation
+{
+    /// <summary>Validates a request, returning the failure response when it is invalid.</summary>
+    /// <typeparam name="TRequest">The request type.</typeparam>
+    /// <param name="controller">The controller handling the request.</param>
+    /// <param name="validator">The validator registered for <typeparamref name="TRequest"/>.</param>
+    /// <param name="request">The bound request, which may be <see langword="null"/> when no body was sent.</param>
+    /// <param name="cancellationToken">Abandons validation when the caller disconnects.</param>
+    /// <returns>
+    /// <see langword="null"/> when the request is valid, so the caller proceeds; otherwise the
+    /// <c>400 Bad Request</c> problem-details response to return unchanged.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="controller"/> or <paramref name="validator"/> is <see langword="null"/>.
+    /// </exception>
+    public static async Task<ActionResult?> ValidateRequestAsync<TRequest>(
+        this ControllerBase controller,
+        IValidator<TRequest> validator,
+        TRequest? request,
+        CancellationToken cancellationToken)
+        where TRequest : class
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentNullException.ThrowIfNull(validator);
+
+        if (request is null)
+        {
+            // An absent body is a validation failure rather than an exception: the caller sent a request this
+            // endpoint cannot act on, and telling them so is more useful than a 500.
+            controller.ModelState.AddModelError(
+                string.Empty,
+                "A request body is required and was not supplied.");
+
+            return controller.ValidationProblem(controller.ModelState);
+        }
+
+        ValidationResult outcome = await validator
+            .ValidateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outcome.IsValid)
+        {
+            return null;
+        }
+
+        foreach (ValidationFailure failure in outcome.Errors)
+        {
+            // A rule declared against the object rather than a property carries no property name; those
+            // failures are recorded against the empty key, which the factory surfaces as a request-level
+            // error rather than attributing it to a field the caller did not send.
+            controller.ModelState.AddModelError(
+                failure.PropertyName ?? string.Empty,
+                failure.ErrorMessage);
+        }
+
+        return controller.ValidationProblem(controller.ModelState);
     }
 }

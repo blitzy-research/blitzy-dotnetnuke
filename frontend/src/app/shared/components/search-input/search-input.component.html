@@ -1,32 +1,28 @@
 <!--
-  `for` is bound through `attr.` because the DOM property of a label is `htmlFor`,
-  not `for`, so a plain property binding would not compile under strict template
-  checking.
+  `for` is bound through `attr.` because the DOM property of a label is `htmlFor`, not
+  `for`, so a plain property binding would not compile under strict template checking.
 -->
 <label class="search-input__label" [attr.for]="fieldId">Search:</label>
 
 <!--
-  No `form` element wraps this row. A feature screen may legitimately render the
-  component inside a form it already owns, and nesting one form inside another is
-  invalid, so submission is never delegated to a native form: Enter is handled by
-  the keyboard binding on the control, and the button declares `type="button"`
-  explicitly so it can never implicitly submit an ancestor form.
+  No `form` element wraps this row. A feature screen may legitimately render the component
+  inside a form it already owns, and nesting one form inside another is invalid, so
+  submission is never delegated to a native form: Enter is handled by the keyboard binding
+  on the control, and the button declares `type="button"` explicitly so it can never
+  implicitly submit an ancestor form.
 -->
 <div class="search-input__row">
   <!--
-    A placeholder is a hint and never an accessible name, which is why the visible
-    label above is mandatory rather than optional.
+    A placeholder is a hint and never an accessible name, which is why the visible label
+    above is mandatory rather than optional. `placeholder` is a property binding, not an
+    attribute interpolation, so an explicitly supplied empty string is honoured exactly as
+    given instead of being replaced by a fallback.
 
-    The value is held by the component's typed, non-nullable reactive control, so its
-    value is always a plain string and resetting it returns to the empty string rather
-    than to null. That matters: an empty term is a meaningful value here, and it means
-    "omit the query parameter and request the unfiltered page" rather than "search for
-    nothing". Emptiness is never inferred from truthiness anywhere in this component.
-
-    `placeholder` is a property binding, not an attribute interpolation, so an explicitly
-    supplied empty string is honoured exactly as given instead of being replaced by a
-    fallback. A placeholder is a hint and never an accessible name, which is precisely why
-    the visible label above is mandatory rather than optional.
+    The value is held by the component's typed, non-nullable reactive control, so it is
+    always a plain string and resetting it returns to the empty string rather than to null.
+    That matters: an empty term is a meaningful value here, meaning "omit the query
+    parameter and request the unfiltered page" rather than "search for nothing". Emptiness
+    is never inferred from truthiness anywhere in this component.
 
     Enter emits immediately, so a keyboard user who has just pressed Enter is not made to
     wait out the debounce they were trying to skip. The immediate path and the debounced
@@ -38,34 +34,30 @@
     triggers that form's implicit submission and, in a single-page application, a full page
     navigation: the search would appear to work for an instant and then the application
     would reload. A shared component cannot control where a consumer mounts it and cannot
-    detect an ancestor form, so the handler cancels unconditionally — which costs nothing
+    detect an ancestor form, so the handler cancels unconditionally - which costs nothing
     when no form is present.
 
     No disabled binding is needed on this control. Its disabled state is owned by the
-    reactive control it is bound to, so `term.disable()` renders the attribute here
+    reactive control it is bound to, so disabling that control renders the attribute here
     automatically; adding a second binding would fight the forms directive for the same
     attribute. The submit button below is a different case and does need an explicit one,
     because it is not form-bound.
 
-    `autocomplete="off"` suppresses browser form-history suggestions, which are noise over
-    a filter field whose terms are transient rather than remembered profile data.
+    `autocomplete="off"` suppresses browser form-history suggestions, which are noise over a
+    filter field whose terms are transient rather than remembered profile data.
 
-    MIGRATION: 13 of 13 — THE FIELD CARRIES A LENGTH BOUND THE LEGACY TEXT BOX DID NOT.
-    `users.ascx` L8 declared no `MaxLength`, so any length could be posted. The bound comes
-    from the component and is derived from the schema the predicate runs against, not chosen
-    here: see `MAX_TERM_LENGTH`.
+    MIGRATION: the field carries a length bound the legacy text box did not, which declared
+    no maximum and would accept any length. The bound is derived from the schema the
+    predicate runs against rather than chosen here; see `MAX_TERM_LENGTH`.
 
     It is bound with `[attr.maxlength]` and deliberately NOT with a `maxlength` property
     binding or a literal `maxlength` attribute. Those two forms match the reactive forms
-    `MaxLengthValidator` selector, which would attach a validator and make this control
-    report itself INVALID once the value exceeded the bound — adding an `ng-invalid` class
-    and an error state that no consumer asked for. The bound is a truncation policy, not a
-    validation rule, so the control's validity must remain untouched.
-
-    This attribute constrains typing and pasting only; it has no effect on a programmatic
-    `term.setValue(...)`. It is here so an over-long term is stopped visibly in the field
-    rather than silently shortened later, while the component's emission funnel remains the
-    actual guarantee.
+    max-length validator selector, which would attach a validator and make this control
+    report itself INVALID once the value exceeded the bound, adding an error state no
+    consumer asked for. The bound is a truncation policy, not a validation rule, so the
+    control's validity must remain untouched. It constrains typing and pasting only and has
+    no effect on a programmatic write, so an over-long term is stopped visibly in the field
+    while the component's emission funnel remains the actual guarantee.
   -->
   <input
     class="search-input__field"
@@ -79,51 +71,40 @@
   />
 
   <!--
-    The accessible name is carried by visible text rather than by a tool tip or an
-    attribute, so it needs no extra element and no visually-hidden helper.
+    The accessible name is carried by visible text rather than by a tool tip or an attribute
+    alone. Visible text is self-evidently discernible and needs no extra element and no
+    visually-hidden helper, so it neither widens the fixed class vocabulary nor depends on
+    one. The wording is authored here because no resource entry exists to defer to.
 
-    The name is carried by visible text, not by a tool tip and not by an attribute alone.
-    Visible text is self-evidently discernible, and it needs no additional element or
-    class, so it neither widens the fixed class vocabulary nor depends on a
-    visually-hidden helper. The wording is authored here because no resource entry exists
-    to defer to.
+    A real `<button>` keeps the control keyboard-reachable and activatable by both Enter and
+    Space natively, with no scripting. `type="button"` is explicit so the element can never
+    implicitly submit an ancestor form.
 
-    A real `<button>` keeps the control keyboard-reachable and activatable by both Enter
-    and Space natively, with no scripting. `type="button"` is explicit so the element can
-    never implicitly submit an ancestor form.
+    MIGRATION: the legacy shared label control set a tab index of minus one on both its help
+    link and the image nested inside it, removing the control from the tab order entirely and
+    leaving it operable only by pointer. That legacy accessibility defect is not reproduced:
+    nothing interactive here is withdrawn from the tab order, so the field and the button are
+    both reachable in ordinary document order.
 
-    MIGRATION: 8 of 10 — THE LEGACY NEGATIVE TAB INDEX IS NOT REPRODUCED.
-    `Website/controls/labelcontrol.ascx` L3 and L4 both set a tab index of minus one — on
-    its help link and again on the image nested inside that link — removing the control
-    from the tab order entirely and leaving it operable only by pointer. That is a legacy
-    accessibility defect. Nothing interactive in this template is withdrawn from the tab
-    order by any means, so the field and the button are both reachable in ordinary
-    document order.
+    MIGRATION: the legacy raster icon is replaced by an inline vector. No legacy raster asset
+    is carried across - exactly one static binary is in scope, the favicon - so the glyph is
+    authored here, its viewBox matching the legacy icon's own dimensions. It is sized
+    entirely by the stylesheet, declaring no width or height, so it scales with the button's
+    typography rather than being pinned to a fixed pixel box, and it is stroked in
+    `currentColor` so its colour resolves from the button's own token-driven colour with no
+    colour value hardcoded in markup. It is hidden from the accessibility tree so it cannot
+    compete with or duplicate the adjacent text as a naming source, and marked unfocusable so
+    it can never become a stray tab stop.
 
-    MIGRATION: 3 of 10 — THE RASTER ICON IS REPLACED.
-    The legacy button at `users.ascx` L9 drew a 16-pixel raster GIF served from the legacy
-    site's shared images directory. No legacy raster asset is carried across — exactly one
-    static binary is in scope for this application, and it is the favicon — so the glyph is
-    an inline vector authored here instead. Its viewBox is 16 by 16, matching the legacy
-    icon's own dimensions, and it is sized entirely by the stylesheet: the element declares
-    no width or height, so it scales with the button's typography rather than being pinned
-    to a fixed pixel box. It is stroked in `currentColor`, so its colour resolves from the
-    button's own token-driven colour and no colour value is hardcoded in markup.
-
-    The glyph is hidden from the accessibility tree so it cannot compete with, or
-    duplicate, the adjacent text as a naming source, and it is marked unfocusable so it
-    never becomes a stray tab stop in engines that treat embedded vectors as focusable.
-
-    THE DISABLED BINDING IS LOAD-BEARING, NOT DECORATIVE.
-    The field above receives its disabled attribute automatically from the reactive control
-    it is bound to, but this button is not form-bound and so receives nothing. Without this
-    binding a consumer that called `term.disable()` produced a half-disabled control: the
-    field greyed out and refused input while the button beside it stayed styled as live,
-    stayed focusable, stayed in the tab order and still ran a query on click. The binding
-    reads the component's single disabled getter, which derives from the same control the
-    field is bound to, so the two affordances cannot disagree by construction. The
-    component additionally refuses to emit while disabled, so the guarantee does not rest
-    on this attribute alone.
+    THE DISABLED BINDING IS LOAD-BEARING, NOT DECORATIVE. The field above receives its
+    disabled attribute automatically from the reactive control it is bound to, but this
+    button is not form-bound and so receives nothing. Without this binding a consumer that
+    disabled the control produced a half-disabled affordance: the field greyed out and
+    refused input while the button beside it stayed styled as live, stayed focusable, stayed
+    in the tab order and still ran a query on click. The binding reads the component's single
+    disabled getter, which derives from the same control the field is bound to, so the two
+    affordances cannot disagree by construction. The component additionally refuses to emit
+    while disabled, so the guarantee does not rest on this attribute alone.
   -->
   <button
     class="search-input__submit"
@@ -149,6 +130,6 @@
 </div>
 
 <!--
-  Both visible strings are authored inline in English; no translation runtime is
-  wired into this workspace.
+  Both visible strings are authored inline in English; no translation runtime is wired into
+  this workspace.
 -->

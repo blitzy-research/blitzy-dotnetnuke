@@ -32,6 +32,74 @@ const DEFAULT_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 const DEFAULT_CONFIRM_LABEL = 'Delete';
 
 /**
+ * Normalises a string that will be rendered as an accessible name.
+ *
+ * Trims first, then substitutes the supplied fallback when nothing survives, so
+ * a value that is present but blank can never reach the DOM. Trimming is not
+ * cosmetic here: the accessible-name computation already collapses surrounding
+ * white space, so a value of `'   '` and a value of `''` are indistinguishable
+ * to a screen reader and both must be treated as absent rather than only the
+ * empty one.
+ *
+ * @param value The caller-supplied string.
+ * @param fallback The guaranteed non-blank replacement.
+ * @returns The trimmed value, or the fallback when the value is blank.
+ */
+function coerceNonBlank(value: string, fallback: string): string {
+  // The parameter is typed `string`, but a JavaScript caller or an `any`-typed
+  // binding can still deliver null or undefined, and `.trim()` on either would
+  // throw a TypeError whose message names neither this component nor this
+  // input. Coalescing first means a nullish value takes the fallback path
+  // instead of failing.
+  const normalised = (value ?? '').trim();
+
+  return normalised.length === 0 ? fallback : normalised;
+}
+
+/**
+ * Guarantees the dialog has an accessible name.
+ *
+ * The `<h2>` this value feeds is the target of the dialog's `aria-labelledby`,
+ * so a blank value leaves an `alertdialog` that assistive technology announces
+ * without ever saying what it is about — for a destructive confirmation, the one
+ * piece of information the user most needs.
+ *
+ * A FALLBACK rather than a throw, and the difference from
+ * `PageHeaderComponent.requireNonBlankTitle` is deliberate rather than an
+ * inconsistency. That input is declared `required: true` with no default, so
+ * absence is inexpressible and there is no value to fall back TO; throwing is
+ * the only way it can refuse a blank. This input is optional and already owns a
+ * measured default, so the safe outcome is available for free. Throwing here
+ * would also fail at the worst possible moment: input assignment happens while
+ * the consumer's control-flow block is already flipped, so the exception would
+ * replace the confirmation with a broken view in the middle of a delete flow —
+ * turning a naming defect into a functional one. Falling back yields a correctly
+ * named dialog and lets the user complete or abandon the action.
+ *
+ * @param value The caller-supplied title.
+ * @returns A non-blank title, never the empty string.
+ */
+export function coerceDialogTitle(value: string): string {
+  return coerceNonBlank(value, DEFAULT_TITLE);
+}
+
+/**
+ * Guarantees the confirming affordance has an accessible name.
+ *
+ * The label IS that button's accessible name: the severity glyph beside it is
+ * `aria-hidden`, precisely so it cannot act as a naming source, which leaves a
+ * blank label with nothing at all to fall back on. An unnamed destructive button
+ * is the most consequential unnamed control this component could produce, so the
+ * same guarantee applies here as to the title.
+ *
+ * @param value The caller-supplied label.
+ * @returns A non-blank label, never the empty string.
+ */
+export function coerceConfirmLabel(value: string): string {
+  return coerceNonBlank(value, DEFAULT_CONFIRM_LABEL);
+}
+
+/**
  * Elements that can plausibly receive keyboard focus.
  *
  * Deliberately broad, because the dialog body is author-supplied content whose
@@ -216,8 +284,22 @@ function resolveTabOrigin(event: KeyboardEvent, focusable: readonly HTMLElement[
  *   {@link ConfirmDialogComponent.titleId} and
  *   {@link ConfirmDialogComponent.messageId} values published below - and never on
  *   the host element;
- * - bind `(cancel)="onDialogCancel()"` and `(click)="onBackdropClick($event)"` on
- *   that same `<dialog>`;
+ * - bind `(cancel)="onDialogCancel($event)"` and
+ *   `(click)="onBackdropClick($event)"` on that same `<dialog>`. The `cancel`
+ *   event object is REQUIRED, not decorative: the handler suppresses that event's
+ *   default action, which is the only thing standing between a platform-originated
+ *   dismissal and the element closing itself in defiance of the settlement
+ *   contract below;
+ * - give that `<dialog>` exactly ONE element child, a plain
+ *   `<div class="confirm-dialog__panel">`, and place the title, the message and the
+ *   action row inside it. This is a load-bearing structural requirement, not
+ *   decoration: it is what lets the stylesheet move the visible inset off the
+ *   `<dialog>` and onto a child, and any inset left on the `<dialog>` itself is a
+ *   region that reports the dialog as a click target and is therefore
+ *   indistinguishable from the `::backdrop`. See
+ *   {@link ConfirmDialogComponent.onBackdropClick} for why the two safeguards -
+ *   this wrapper and the pointer-geometry test - are independent rather than
+ *   redundant;
  * - render the title as an `<h2>` bearing `titleId`, never as an `<h1>`: the page's
  *   single first-level heading belongs to the shared page-header primitive that the
  *   feature screen behind this dialog already renders, so a second one would give
@@ -271,6 +353,14 @@ function resolveTabOrigin(event: KeyboardEvent, focusable: readonly HTMLElement[
  * agent originates; a backdrop click can only ever cancel, because a destructive
  * action must not follow the least deliberate gesture available. Neither output
  * closes the dialog — teardown belongs to the consumer.
+ *
+ * That last sentence is enforced rather than merely intended, and it takes two
+ * suppressions to hold, because the platform offers two independent routes to
+ * closure that this component does not initiate. `Escape` is suppressed in
+ * {@link onKeydown} and the element's own `cancel` is suppressed in
+ * {@link onDialogCancel}. Without both, a dismissal the user agent originates
+ * would close the element while the component stayed mounted, which is a state no
+ * consumer can observe and none can recover from.
  */
 @Component({
   selector: 'app-confirm-dialog',
@@ -305,8 +395,14 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
    * input, so a call site written as `title="…"` would leave a live `title` on
    * the host — a native tooltip, and a competing accessible name for the whole
    * subtree. Consumers should still prefer the property form.
+   *
+   * A blank binding cannot reach the DOM: {@link coerceDialogTitle} trims the
+   * value and substitutes the default when nothing survives, so the dialog always
+   * has an accessible name. The transform runs only when the input is actually
+   * bound; leaving it unbound takes the field initialiser instead, and both routes
+   * land on the same non-blank string.
    */
-  @Input() public title: string = DEFAULT_TITLE;
+  @Input({ transform: coerceDialogTitle }) public title: string = DEFAULT_TITLE;
 
   /**
    * The confirmation question put to the user. Plain text.
@@ -315,6 +411,14 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
    * legacy null-string sentinel is itself the empty string, so `''` is a
    * legitimate caller-supplied value and must never be swapped for the default;
    * the default applies only when the input is not bound at all.
+   *
+   * Deliberately carries NO blank-coercing transform, unlike {@link title} and
+   * {@link confirmLabel}. Those two are accessible names, where blank means an
+   * unnamed control and there is no such thing as a caller legitimately wanting
+   * one. This is descriptive body text referenced by `aria-describedby`, and a
+   * description is genuinely optional — a dialog whose title already states the
+   * whole question needs no second sentence. Coercing this input would overwrite
+   * a deliberate `''` with wording the caller explicitly declined.
    */
   @Input() public message: string = DEFAULT_MESSAGE;
 
@@ -323,8 +427,14 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
    *
    * Prefer a verb naming the outcome — 'Delete', 'Remove', 'Unregister' — over a
    * generic 'OK', so the label itself carries the consequence.
+   *
+   * A blank binding cannot reach the DOM: {@link coerceConfirmLabel} trims the
+   * value and substitutes the default when nothing survives. This matters more
+   * here than for any other input, because the severity glyph beside the label is
+   * `aria-hidden` and therefore contributes nothing to the name — a blank label
+   * would leave the destructive button with no accessible name whatsoever.
    */
-  @Input() public confirmLabel: string = DEFAULT_CONFIRM_LABEL;
+  @Input({ transform: coerceConfirmLabel }) public confirmLabel: string = DEFAULT_CONFIRM_LABEL;
 
   /**
    * Whether to present the confirming affordance as destructive.
@@ -484,17 +594,56 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
    * Named for its source because a method called `cancel()` would collide with
    * the output field of that name. This is the path for a dismissal the platform
    * originates, where no keydown reaches this component at all.
+   *
+   * The default action is suppressed first, for exactly the reason the `Escape`
+   * branch of {@link onKeydown} suppresses it. The user agent's default action for
+   * `cancel` is to CLOSE the element, and this class's settlement contract is that
+   * neither output closes the dialog - teardown belongs to the consumer. Letting
+   * the default run would close the element while leaving this component mounted,
+   * so the DOM and the consumer's own control-flow block would disagree about
+   * whether the dialog is open: a consumer that deliberately keeps it mounted
+   * after `cancel` - to overlay a spinner while it unwinds, say - would find the
+   * question already gone, and one that unmounts on `cancel` would be closing an
+   * element the browser had closed a moment earlier. Suppressing the default makes
+   * closure a single decision taken in a single place.
+   *
+   * Suppression happens BEFORE the emit-once guard is consulted, so a second
+   * dismissal of an already-settled dialog is still prevented from closing it.
+   *
+   * @param event The element's own `cancel` event, whose default action is
+   * suppressed so that closure stays the consumer's decision.
    */
-  public onDialogCancel(): void {
+  public onDialogCancel(event: Event): void {
+    event.preventDefault();
     this.emitCancel();
   }
 
   /**
-   * Cancels when a click landed on the backdrop rather than inside the dialog.
+   * Cancels when a click landed on the backdrop rather than on the dialog itself.
    *
-   * A modal `<dialog>` paints its own backdrop, and a click there reports the
-   * dialog element as the target while a click on its content reports that
-   * content, so comparing the two is an exact test rather than a heuristic.
+   * Two conditions must both hold, because neither is sufficient alone.
+   *
+   * The target check comes first and is a cheap, exact rejection of everything
+   * inside the panel: a click on the title, the message or either button reports
+   * that descendant, so it exits here without any geometry being read.
+   *
+   * The geometry check is what the target check cannot do. A modal `<dialog>`
+   * paints its `::backdrop` as a pseudo-element of the dialog, and the platform
+   * attributes a click there to the dialog itself — but a click anywhere on the
+   * dialog's OWN box that is not over a child does exactly the same. Border and
+   * any padding that survives on the dialog element therefore report an identical
+   * target to the backdrop, and no amount of target comparison can separate them.
+   * Only the pointer position can. Comparing the pointer against the dialog's
+   * border box splits the two cases precisely: inside the box is the dialog, and
+   * outside it is the backdrop, which by construction occupies the whole viewport
+   * around the box.
+   *
+   * The comparison uses the DIALOG's rectangle, not the panel's, and the choice is
+   * deliberate. The panel wrapper already removes padding from the dialog element,
+   * so the panel's own edges are not a dismissal hazard — but the dialog keeps its
+   * border, and a click on that border is a click on the dialog, not past it.
+   * Testing against the outer box keeps the border on the non-dismissing side. The
+   * wrapper and this test are independent safeguards, not two halves of one.
    *
    * @param event The click event observed on the inner `<dialog>`.
    */
@@ -503,7 +652,25 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
     if (dialog === undefined) {
       return;
     }
-    if (event.target === dialog) {
+
+    // Anything reporting a descendant is content, and content never dismisses.
+    if (event.target !== dialog) {
+      return;
+    }
+
+    const bounds = dialog.getBoundingClientRect();
+
+    // A dialog that is closed, detached or display:none measures zero. There is no
+    // rectangle to be outside of, so every point would read as a backdrop click
+    // and a synthetic or stray event would settle a dialog the user cannot see.
+    if (bounds.width === 0 || bounds.height === 0) {
+      return;
+    }
+
+    const outsideHorizontally = event.clientX < bounds.left || event.clientX > bounds.right;
+    const outsideVertically = event.clientY < bounds.top || event.clientY > bounds.bottom;
+
+    if (outsideHorizontally || outsideVertically) {
       this.emitCancel();
     }
   }

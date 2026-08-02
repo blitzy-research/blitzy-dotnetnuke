@@ -1,0 +1,55 @@
+<!--
+  The shell's five regions, in the exact source order the grid's mobile track list
+  expects: skip, header, sidebar, main, footer. Source order matters even though
+  every child is explicitly placed by `grid-area`, because the skip link must be the
+  first focusable element in the document and because a screen reader in
+  document-order mode follows source order rather than visual order.
+
+  The class names below are the grid areas published by `src/styles/_layout.scss`.
+  The host itself carries `.shell`, applied by the component's host metadata.
+-->
+
+<!-- The skip link. A real anchor, because the `href` is what makes it a tab stop
+     and what makes assistive technology announce it as a link, and the global
+     partial hides it with `:not(:focus-visible)` so it stays in the tab order
+     while invisible.
+
+     ⚠ THE FRAGMENT IS DELIBERATELY NOT ALLOWED TO RESOLVE. Activation is handled
+     and the default action cancelled, because a fragment-only `href` resolves
+     against the document's BASE url — `<base href="/">` — rather than against the
+     address showing, so from any route below the root it names a different path
+     and letting it resolve performs a full document reload that discards the
+     current screen. That was measured in a real browser against the production
+     bundle. The component documents the observation and the two alternatives that
+     were rejected. -->
+<a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)"
+  >Skip to main content</a
+>
+
+<app-header
+  class="shell__header"
+  [applicationName]="applicationName"
+  [userName]="userName"
+  [signingOut]="signingOut"
+  (signOut)="onSignOut()"
+/>
+
+<!-- The secondary navigation region. It is rendered unconditionally and left empty
+     by default, because the stylesheet collapses it with
+     `.shell__sidebar:empty { display: none }` and the grid's `auto` first column
+     then contributes no width. Content projected into `<app-shell>` lands here, so
+     a navigation surface can be supplied by whichever component mounts the shell
+     without this file changing. The projected content brings its own landmark and
+     its own accessible name; an empty region is removed from the accessibility tree
+     by the stylesheet rather than announced as a nameless landmark, which is why no
+     `<nav>` element is written here. -->
+<div class="shell__sidebar"><ng-content /></div>
+
+<!-- `tabindex="-1"` makes the region programmatically focusable without adding it
+     to the tab order, which is what lets the skip link actually move focus rather
+     than only scroll. -->
+<main [id]="mainRegionId" class="shell__main" tabindex="-1">
+  <router-outlet />
+</main>
+
+<app-footer class="shell__footer" />

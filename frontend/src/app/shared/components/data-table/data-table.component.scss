@@ -1,0 +1,158 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+}
+
+// The scroll container, not the table itself. A wide table on a narrow viewport must
+// scroll within its own bounds rather than widening the page, which would otherwise
+// push the whole layout sideways and move every other control off screen.
+//
+// `overflow-x: auto` makes the container focusable in some browsers so the scroll can be
+// driven from the keyboard, which is why the border lives here: it marks the edge of the
+// scrollable region rather than the edge of the table.
+.data-table__container {
+  overflow-x: auto;
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+// MIGRATION: the legacy grid container declared a full-width table with collapsed
+// borders on the base font stack, and all three are carried across. `collapse` rather
+// than `separate` so a single-pixel rule sits between cells instead of a doubled one.
+.data-table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+}
+
+.data-table__caption {
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: start;
+}
+
+// Removed from the painted output while remaining in the accessibility tree. The shared
+// mixin is included rather than the technique being restated, so every visually-hidden
+// element in the workspace uses one implementation - `display: none` and
+// `visibility: hidden` would both remove the caption from the tree as well as the page.
+.data-table__caption--hidden {
+  @include mx.visually-hidden;
+}
+
+// MIGRATION: the legacy header row painted the brand colour behind reversed bold text.
+// That treatment is carried across, and it is the reason the sort control below inherits
+// its colour rather than resolving to the link colour: a brand-coloured link on a
+// brand-coloured background would be invisible.
+.data-table__header {
+  padding: var(--space-2) var(--space-3);
+  border-block-end: var(--border-width) var(--border-style) var(--color-border-strong);
+  background-color: var(--color-primary);
+  color: var(--color-background);
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
+}
+
+// The sort control is a button styled to look like the heading text it replaces, because
+// the legacy heading was a text link. Everything the browser adds to a button - the
+// border, the background, the padding, the font - is reset so the heading does not
+// suddenly gain a chrome-coloured box, and `color: inherit` picks up the reversed
+// heading colour above.
+.data-table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  // While a request is in flight the control shows the default cursor and stops
+  // responding, so a second sort cannot be queued behind the first.
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.data-table__sort-indicator {
+  font-size: var(--font-size-xs);
+}
+
+// MIGRATION: the legacy grid alternated its row surface between the page background and
+// the surface colour, and both values are carried across as tokens. The alternation is
+// applied with `:nth-child(even)` rather than by a class written onto every other row,
+// so it cannot desynchronise from the rendered order when a page is re-sorted.
+.data-table__row {
+  &:nth-child(even) {
+    background-color: var(--color-surface);
+  }
+
+  // MIGRATION: the legacy selected-row colour is carried across and re-purposed as the
+  // hover treatment, because row selection is no longer a persistent state - activating
+  // a row navigates away from the list rather than marking it.
+  &:hover {
+    background-color: var(--color-selected);
+  }
+}
+
+.data-table__cell {
+  padding: var(--space-2) var(--space-3);
+  border-block-start: var(--border-width) var(--border-style) var(--color-border);
+  vertical-align: top;
+}
+
+.data-table__cell--start {
+  text-align: start;
+}
+
+.data-table__cell--end {
+  text-align: end;
+  // Digits share one advance width, so figures in a numeric column line up on their
+  // decimal position instead of drifting with the glyph widths.
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table__cell--center {
+  text-align: center;
+}
+
+// The row action is a text control in the brand colour, matching the legacy grid's
+// per-row command links. Underlined only on hover and focus, so a column of them does
+// not read as a wall of rules.
+.data-table__row-action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// The waiting and empty messages share one treatment: centred, muted and given room, so
+// the table does not collapse to a single thin line when it has nothing to show.
+.data-table__message {
+  padding: var(--space-5) var(--space-4);
+  border-block-start: var(--border-width) var(--border-style) var(--color-border);
+  color: var(--color-text-muted);
+  text-align: center;
+}

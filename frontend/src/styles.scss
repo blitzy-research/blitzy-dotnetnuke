@@ -1,0 +1,130 @@
+// =============================================================================
+//  styles.scss - the single global stylesheet of the dnn-migration workspace
+// =============================================================================
+//
+//  ROLE - AN ORCHESTRATOR, NOT A STYLESHEET
+//  ----------------------------------------
+//  This file is the one and only entry in the workspace's global stylesheet list.
+//  `angular.json` declares `"styles": ["src/styles.scss"]` on BOTH the `build`
+//  target and the `test` target, so this is the only SCSS file the builder
+//  compiles as a global stylesheet, and the only route by which the design tokens
+//  reach either the production bundle or the Karma test bundle. Everything else
+//  beneath `src/styles/` is a Sass PARTIAL - a leading underscore, never a build
+//  entry point - and is reached exclusively through the `@use` list at the foot of
+//  this file. Listing a partial in `angular.json` alongside this file would compile
+//  it twice.
+//
+//  Because it is an orchestrator, it declares no selector and no property of its
+//  own. Every rule the application needs globally already has exactly one owner:
+//
+//    * the custom properties, emitted once at `:root`   -> _tokens.scss
+//    * `html`, `body`, the universal box-sizing
+//      declaration, the bare-element type ramp and the
+//      default focus ring                              -> _reset.scss
+//    * the shell grid, the width-capped centring column
+//      and the two content primitives                  -> _layout.scss
+//    * bare tables plus the data-grid conventions       -> _tables.scss
+//    * bare form controls, labels and buttons           -> _forms.scss
+//    * the root component's own box, as `:host`         -> app/app.component.scss
+//
+//  Restating any of those here would give one concern two declarations whose
+//  winner depends on load order - precisely the failure mode the fixed order below
+//  exists to prevent. A screen-reader-only utility class is deliberately not
+//  declared either: `_mixins.scss` already publishes `visually-hidden` as a MIXIN,
+//  no template in the workspace asks for such a class, and global CSS is never
+//  tree-shaken, so an unused class would ship to every reader on every route.
+//
+//  THE LOAD ORDER IS LOAD-BEARING, NOT ALPHABETICAL
+//  ------------------------------------------------
+//  Sass emits each module's CSS where that module is first loaded, so this list
+//  fixes the cascade order of the whole global layer. `_layout.scss` states the
+//  required order in its own header - tokens, then reset, then layout, then
+//  tables, then forms - and each step earns its position:
+//
+//    1. tokens - every later declaration resolves `var(--...)`, so the custom
+//       properties must be in the document before anything consumes them.
+//    2. reset  - normalises the user-agent defaults. It must come before the
+//       convention partials so that it cannot override them; a convention may
+//       refine a bare-element rule the reset established, and it does so by
+//       cascade order alone. No rule anywhere in this layer carries an importance
+//       flag, and none needs one.
+//    3. layout - document and shell scaffolding, which may refine the reset.
+//    4. tables - the data-grid conventions the shared data table composes from.
+//    5. forms  - element-level form presentation, last because it is the most
+//       specific of the three convention partials.
+//
+//  `_mixins.scss` IS DELIBERATELY ABSENT FROM THAT LIST
+//  ----------------------------------------------------
+//  It is a pure-abstraction partial: it declares only `@function` and `@mixin`
+//  members and emits not one byte of CSS, and its own header states that it is not
+//  a build entry point. Loading it from here would add nothing to the bundle and
+//  would imply, wrongly, that it does. Sass modules are also per-file rather than
+//  ambient, so a `@use` here could never make its mixins visible to a component
+//  stylesheet - each consumer loads it itself, which is exactly what the four
+//  convention partials below already do. `@forward`ing it from here would not
+//  change that and is not attempted.
+//
+//  THREE THINGS THIS FILE MUST NEVER DO
+//  ------------------------------------
+//  1. No component styles. Every component carries its own `*.component.scss`
+//     under Angular's emulated view encapsulation; the styling decision for this
+//     workspace is component-scoped SCSS plus one global token stylesheet, and a
+//     component rule placed here would escape its component and apply document
+//     wide.
+//  2. No third-party stylesheet, and no load path that leaves `src/`. Zero
+//     design-system dependencies are added to this workspace: a component library,
+//     a CSS framework and a utility framework were each considered and declined,
+//     so there is nothing external to pull in, and every path below is relative.
+//  3. No raw value and no raw media query. Every value in every stylesheet
+//     resolves to a token declared in `_tokens.scss`, the only literals permitted
+//     downstream being `0`, `none`, `auto`, `inherit`, `currentColor` and
+//     `transparent`; and the breakpoint set is declared once, in `_mixins.scss`,
+//     and consumed by mixin, because custom properties are not evaluated inside a
+//     media feature query. This file honours both by declaring no value at all.
+//
+//  Loading is expressed with the Sass module system throughout. The older `import`
+//  at-rule is not used anywhere in this workspace: it is deprecated in Dart Sass and
+//  every occurrence would emit a build-time deprecation warning. The module system
+//  also gives each partial a private member scope, which is what lets
+//  `_tokens.scss` and `_mixins.scss` be loaded by several partials at once without
+//  duplicating anything.
+//
+//  MIGRATION: this file has no legacy counterpart. The DotNetNuke 4.9.0 source
+//  tree contains 34 CSS files under `Website/` and not one SCSS file, no npm
+//  dependency graph and no design-token source of any kind; the token vocabulary
+//  the `@use` list below installs is derived by measurement from
+//  `Website/Portals/_default/default.css` (1030 lines) and
+//  `Website/Portals/_default/portal.css` (275 lines), the latter of which is an
+//  override skeleton carrying semantic naming and almost no declarations. Both
+//  legacy stylesheets are read-only reference inputs and are unmodified by this
+//  migration.
+//
+//  MIGRATION: the legacy sheet declared three overlapping font stacks, and they
+//  are consolidated into the single `--font-family-base` token. The rendered
+//  difference is imperceptible - the stacks differed only in their fallback tails -
+//  and one stack is what makes the zero-hardcoded-values rule enforceable.
+//
+//  MIGRATION: the spacing, radius and elevation scales are net ADDITIONS with no
+//  legacy equivalent. The legacy design predates systematic design tokens: it has
+//  no spacing system whatsoever, is square-cornered throughout and declares no
+//  shadow, so the eight-step spacing scale on a four-pixel base, the three radius
+//  steps and the three elevation levels in `_tokens.scss` are a deliberate visual
+//  refinement rather than a translation of anything measured.
+//
+//  MIGRATION: `--color-selected` diverges from the measured legacy selected-row
+//  declaration, which named two user-agent colour keywords rather than a palette
+//  value, and the value the token carries instead was used by only two legacy
+//  selectors, both of them members of the out-of-scope menu families. Two further
+//  legacy values are deliberately NOT tokenised at all - an incidental decoration
+//  colour used twice, and a symbol font family used four times - because the only
+//  selectors that consumed them belong to the excluded legacy menu and file
+//  management features, which have no target component. The precise legacy values
+//  behind all three decisions belong in the repository-root migration notes, which
+//  this file neither owns nor edits; they are reported by the agent that authored
+//  this file so that they can be captured there.
+
+@use './styles/tokens';
+@use './styles/reset';
+@use './styles/layout';
+@use './styles/tables';
+@use './styles/forms';

@@ -87,8 +87,33 @@
   // button resolved to the value the token set now carries under the danger role,
   // so reusing it for a benign search would signal a destructive action; the token
   // whose role is the hover companion to the brand colour is used instead.
-  &:hover {
+  //
+  // Guarded on `:enabled` rather than left bare, and the guard is load-bearing
+  // rather than defensive. This control is a real `<button>` carrying a
+  // `[disabled]` binding, and a bare `&:hover` weighs (0,2,0) against the global
+  // `button:disabled` rule's (0,1,1) — one class outranks one type selector, so
+  // the component hover would win and paint the INTERACTIVE brand-hover ink onto
+  // an unavailable control the moment a pointer crossed it. `:enabled` cannot
+  // match a disabled button at all, so the boundary is structural and needs no
+  // ordering convention to hold it.
+  &:enabled:hover {
     color: var(--color-primary-hover);
+  }
+
+  // The press state the global button vocabulary declares, restated here for the
+  // same specificity reason as the hover above: this file strips the control's
+  // fill to `transparent`, and that declaration weighs (0,1,0) against the global
+  // `button:active` rule's (0,1,1), so the global press tint is suppressed by this
+  // component and has to be reinstated inside it. The tint is the vocabulary's own
+  // press signal, not a new one, and the radius the global button rule sets is not
+  // overridden here, so the tint arrives already contained by it.
+  //
+  // Press is a genuinely distinct third state rather than a repeat of hover: hover
+  // changes only the ink and leaves the fill transparent, press changes only the
+  // fill and leaves the hover ink standing, so the two compose visibly instead of
+  // one masking the other.
+  &:enabled:active {
+    background-color: var(--color-selected);
   }
 
   @include mx.focus-ring;

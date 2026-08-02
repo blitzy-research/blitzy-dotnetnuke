@@ -22,18 +22,63 @@ namespace DnnMigration.Application.Dtos.User;
 /// password material, never a generated credential, never a hint.
 /// </para>
 /// <para>
-/// ONE REQUEST TYPE, THREE LEGACY FLOWS. The legacy screen
+/// ONE REQUEST TYPE, TWO SUPPORTED OPERATIONS. The legacy screen
 /// <c>Website/admin/Users/Password.ascx</c> declares three independent panels, each a
 /// separate operation: <c>pnlChange</c> (old, new and confirm), <c>pnlReset</c>
 /// (answer the stored password question) and <c>pnlQA</c> (re-authenticate with the
-/// current password, then replace the password question and answer). This DTO folder
-/// is fixed at eight files and holds no ResetPasswordRequest and no
-/// ChangePasswordQuestionAndAnswerRequest, so this single type is the union of all
-/// three field sets. Every member is consequently nullable, and
+/// current password, then replace the password question and answer). Two of the three
+/// are carried forward - a self-service CHANGE and an administrative RESET - and the
+/// third is not, for the reason given in the next paragraph. This DTO folder is fixed
+/// at eight files and holds no ResetPasswordRequest, so this single type is the union
+/// of both surviving field sets. Every member is consequently nullable, and
 /// <c>ChangePasswordRequestValidator</c> - not this type - decides which combination
 /// of members is legal for the declared <c>Operation</c>, using conditional rule
-/// sets. Do not split this type into three; doing so would add files the plan does
+/// sets. Do not split this type into two; doing so would add a file the plan does
 /// not contain.
+/// </para>
+/// <para>
+/// THE QUESTION-AND-ANSWER OPERATION IS NOT CARRIED FORWARD, AND ITS MEMBERS ARE
+/// REMOVED RATHER THAN LEFT INERT. The recovery pair has no target counterpart at
+/// all: <c>IUserService</c> records that the legacy question-and-answer member has no
+/// counterpart, that no member declares a question or answer parameter, and that the
+/// pair's only real purpose was to guard credential retrieval - which is dropped
+/// outright, because the store is now one-way. An earlier revision of this type
+/// declared a third operation constant together with an existing-answer member and a
+/// new-question and new-answer pair, so the wire contract published an operation
+/// whose entire effect was to store two strings that nothing would ever store and
+/// nothing could ever check. That is strictly worse than an absent feature, because a
+/// caller receives a success response for work that did not happen. The measured
+/// legacy behaviour that makes the removal safe rather than merely convenient: the
+/// provider is registered with the pair not required
+/// (<c>Website/release.config</c> L241), the legacy panel was itself gated on that
+/// same flag and on the caller editing their own account (L187), so the panel was
+/// never rendered in the observed installation, and the reset handler's answer guard
+/// (L240) is compound on the same flag and therefore never fired either. The bound
+/// policy flag is consequently unsatisfiable in the target, and
+/// <c>PasswordPolicyOptions.Validate</c> rejects a deployment that sets it rather
+/// than letting it appear enforced.
+/// </para>
+/// <para>
+/// THE TWO OPERATIONS ARE SEPARATED BY AUTHORISATION AS WELL AS BY FIELDS, AND THAT
+/// SEPARATION IS THE POINT. A CHANGE is self-service: the caller proves possession of
+/// the account by presenting its current credential, so <see cref="CurrentPassword"/>
+/// is unconditionally required for that operation. A RESET is administrative: the
+/// caller cannot present a credential they do not know, so proof of possession is
+/// replaced by proof of privilege, which the API layer establishes from the caller's
+/// role claims before this request is acted on - and <see cref="CurrentPassword"/>
+/// must therefore be ABSENT on a reset, because a value there would be meaningless
+/// and accepting it would blur the two authorisation models. An earlier revision
+/// required the current credential for neither operation, on the argument that the
+/// legacy change guard was compound and its privilege half was unavailable to a
+/// validator. That argument was sound about the legacy screen and wrong about the
+/// consequence: it left RESET requiring no proof of any kind at all - no current
+/// credential, and no new credential either, since generation was assumed - so an
+/// empty request body was a complete, destructive credential reset. Naming the two
+/// operations separately is what lets the validator demand proof of possession on the
+/// one that can supply it, without deleting the administrative path that cannot. The
+/// legacy administrative change - an administrator editing another account, for whom
+/// the current-credential row was hidden (L150-L152) - maps onto RESET, which is what
+/// it always was.
 /// </para>
 /// <para>
 /// NULL AND THE EMPTY STRING ARE BOTH MEANINGFUL, AND THEY ARE NOT THE SAME. No
@@ -131,9 +176,12 @@ namespace DnnMigration.Application.Dtos.User;
 ///     supplied, otherwise <c>PasswordMissing</c>. The measured guard is
 ///     <c>Not IsAdmin And txtOldPassword.Text = ""</c>. An administrator changing
 ///     another user's password supplies no current password at all - the legacy screen
-///     hides that row for an administrator editing someone else (L150-L152) - so
-///     making it unconditionally required would break administrative password
-///     changes.
+///     hides that row for an administrator editing someone else (L150-L152). In the
+///     target that administrative path is the RESET operation rather than a
+///     privilege-conditional variant of CHANGE, so this guard becomes unconditional
+///     for CHANGE: every request that declares CHANGE is asserting self-service and
+///     must present the credential it is replacing. No workflow is lost, because the
+///     path this guard exempted is reachable under the other operation.
 ///     </description>
 ///   </item>
 ///   <item>
@@ -154,71 +202,49 @@ namespace DnnMigration.Application.Dtos.User;
 ///   </item>
 /// </list>
 /// <para>
-/// RESET flow - the legacy <c>cmdReset_Click</c> handler, L237-L257.
+/// RESET flow - the legacy <c>cmdReset_Click</c> handler, L237-L257, and the one place
+/// this migration deliberately changes the field set rather than the rules.
 /// </para>
 /// <list type="table">
 ///   <item>
-///     <term>L239</term>
+///     <term>L239-L241</term>
 ///     <description>
-///     The answer variable is seeded with the empty string, and that empty string is
-///     what reaches the provider whenever the guard below does not fire.
+///     The legacy handler seeded an answer variable with the empty string, required it
+///     only under the compound guard
+///     <c>RequiresQuestionAndAnswer And Not IsAdmin</c>, and rejected a blank one
+///     inside that guard. Because the measured configuration sets
+///     <c>requiresQuestionAndAnswer</c> to false, the guard never opened, the empty
+///     string always reached the provider, and an entirely empty reset request was
+///     legal. None of this is reproduced: the recovery pair is not carried forward, so
+///     there is no answer member to seed, guard or reject.
 ///     </description>
 ///   </item>
 ///   <item>
-///     <term>L240</term>
+///     <term>L249-L253</term>
 ///     <description>
-///     The answer is required only under a compound guard,
-///     <c>RequiresQuestionAndAnswer And Not IsAdmin</c> - so it is required only when
-///     the membership configuration demands a question and answer AND the caller is
-///     not an administrator. Because the measured configuration sets
-///     <c>requiresQuestionAndAnswer</c> to false, the answer is never required in the
-///     observed installation and an otherwise empty reset request is legal. This is
-///     precisely why <c>Operation</c> exists: see its own documentation.
+///     Execution: the legacy call generated a credential inside the provider and
+///     returned it, surfacing a wrong answer as <c>InvalidPasswordAnswer</c> (L251)
+///     and any other failure as <c>PasswordResetFailed</c> (L253). The generation is
+///     NOT carried forward. A generated credential has to be transmitted to be
+///     useful, the mail subsystem that would transmit it is excluded from this
+///     migration, and no endpoint in the target returns, echoes or reconstructs a
+///     credential - so a generated credential would be knowable to nobody, including
+///     the account's own holder, and the reset would be indistinguishable from
+///     locking the account out. The target reset therefore takes the replacement
+///     credential explicitly, in <see cref="NewPassword"/> and
+///     <see cref="ConfirmPassword"/>, and applies the same policy and the same
+///     confirmation comparison the change flow applies. Only the persistence outcome
+///     <c>PasswordResetFailed</c> survives, as a service-layer failure code.
 ///     </description>
 ///   </item>
 ///   <item>
-///     <term>L241</term>
+///     <term>L237</term>
 ///     <description>
-///     Inside that guard, a blank answer yields <c>InvalidPasswordAnswer</c>.
-///     </description>
-///   </item>
-///   <item>
-///     <term>L249</term>
-///     <description>
-///     Execution: a wrong answer surfaces as <c>InvalidPasswordAnswer</c> (L251) and
-///     any other failure as <c>PasswordResetFailed</c> (L253).
-///     </description>
-///   </item>
-/// </list>
-/// <para>
-/// CHANGE QUESTION AND ANSWER flow - the legacy <c>cmdUpdateQA_Click</c> handler,
-/// L319-L345. All three members are unconditionally required, in this order.
-/// </para>
-/// <list type="table">
-///   <item>
-///     <term>L321</term>
-///     <description>
-///     The current password is required, otherwise <c>PasswordInvalid</c>.
-///     </description>
-///   </item>
-///   <item>
-///     <term>L326</term>
-///     <description>
-///     The new question is required, otherwise <c>InvalidPasswordQuestion</c>.
-///     </description>
-///   </item>
-///   <item>
-///     <term>L331</term>
-///     <description>
-///     The new answer is required, otherwise <c>InvalidPasswordAnswer</c>.
-///     </description>
-///   </item>
-///   <item>
-///     <term>L337-L338</term>
-///     <description>
-///     Execution. Note that L337 resolves the target user from the ambient portal and
-///     user identifiers rather than from the submitted form, which is the legacy
-///     precedent for sourcing both from the route and the portal context here.
+///     What the reset keeps from the legacy handler is exactly what made it a reset:
+///     it does not ask for the credential being replaced. That absence is now
+///     asserted rather than merely permitted - a reset carrying a current password is
+///     rejected - because the two operations are separated by authorisation and a
+///     value in that member would imply the wrong one.
 ///     </description>
 ///   </item>
 /// </list>
@@ -248,42 +274,75 @@ namespace DnnMigration.Application.Dtos.User;
 /// AND. This is recorded for the validator author; there is no logic here to fix.
 /// </para>
 /// <para>
-/// NO LENGTH CEILING IS INHERITED. The original column was
-/// <c>[Password] [nvarchar] (20) NOT NULL</c> (<c>01.00.00.SqlDataProvider</c> L106),
-/// and the legacy markup repeats that ceiling as a twenty-character input limit on
-/// all seven of its text boxes. A password hash column supersedes both, so no
-/// schema-derived maximum length applies to any member of this type and none is
-/// declared. The password question and answer are not stored in this schema at all -
-/// they live in the externally installed membership tables that the new user entity
-/// maps alongside - so they inherit no length truth either. Any bound the product
-/// wants belongs in the validator, and it must be generous.
+/// NO SCHEMA LENGTH CEILING IS INHERITED, BUT THE HASHER'S OWN CEILING IS ENFORCED.
+/// The original column was <c>[Password] [nvarchar] (20) NOT NULL</c>
+/// (<c>01.00.00.SqlDataProvider</c> L106), and the legacy markup repeats that ceiling
+/// as a twenty-character input limit on all seven of its text boxes. A password hash
+/// column supersedes both, so no schema-derived maximum length applies to any member
+/// of this type and none is declared. One bound does apply, and it is a property of
+/// the credential hasher rather than of the schema or of the policy: BCrypt derives
+/// its key from at most 72 encoded bytes and discards the remainder without reporting
+/// anything, so two credentials agreeing on their first 72 bytes verify
+/// interchangeably. The validator rejects a longer credential in ENCODED BYTES rather
+/// than in characters, because a character outside the ASCII range occupies between
+/// two and four of them; the infrastructure hasher enforces the identical constant, so
+/// the boundary and the primitive cannot disagree. It is more than three times the
+/// legacy input ceiling, so it can reject nothing the legacy screen accepted.
 /// </para>
 /// <para>
 /// THE PASSWORD STORE CHANGES, AND SO DOES WHAT A RESET RETURNS. The legacy store is
 /// reversible: the membership provider is registered with an encrypted password
 /// format and password retrieval enabled, and the key that decrypts every stored
 /// password is committed to the legacy configuration file in the clear. The target
-/// replaces that with one-way password hashing, and the documented transition is to
-/// re-hash on the first successful login with an administrative reset as the
-/// fallback. Retrieval is NOT carried forward: the legacy entry point
+/// replaces that with one-way password hashing, and THE TRANSITION FOR EXISTING
+/// CREDENTIALS IS AN ADMINISTRATIVE RESET, AND NOTHING ELSE. An earlier revision of
+/// this paragraph said the transition was a re-hash on the first successful login
+/// with reset as a fallback; that is the intent recorded in AAP section 0.7.5.5, and
+/// its primary branch cannot execute, because no component in this solution verifies
+/// a credential held under the legacy reversible scheme and that same section forbids
+/// building one. Retrieval is NOT carried forward: the legacy entry point
 /// <c>UserController.GetPassword</c> (L433) has no target equivalent, by design, and
 /// no member of this folder asks for a password back. Reset IS carried forward,
 /// because the same configuration enables password reset, and the reset flow this
-/// type serves is exactly the administrative fallback named above - do not conflate
-/// the two flags. One measured caveat: the legacy
+/// type serves is therefore the ONLY migration path for a pre-existing account
+/// rather than a fallback from one - which makes this request shape load-bearing for
+/// the migration rather than incidental to it. Do not conflate the two flags. One
+/// measured caveat: the legacy
 /// <c>UserController.ResetPassword</c> (L906) is structurally identical to the
 /// retrieval method - both assign to the user's password member and return it as a
 /// string (L915) - so the legacy reset returns generated plaintext to its caller. The
-/// target preserves the reset OPERATION and drops that RETURN VALUE; a generated
-/// credential is delivered out of band and never through this endpoint's response.
+/// target preserves the reset OPERATION and drops both the generation and that return
+/// value: the administrator supplies the replacement credential explicitly, so there
+/// is nothing for the response to carry and no out-of-band channel to depend on. An
+/// earlier revision of this paragraph said the generated credential was "delivered out
+/// of band", which was not a design so much as a gap - the mail subsystem is excluded,
+/// so no out-of-band channel exists in this migration, and a credential nobody can
+/// learn is a lockout rather than a reset.
 /// </para>
 /// </remarks>
 public sealed class ChangePasswordRequest
 {
-    // MIGRATION: This type is the union of three legacy operations rather than three
-    // request types, because the plan fixes this folder at eight files. The
+    // MIGRATION: This type is the union of the two SUPPORTED legacy operations rather
+    // than two request types, because the plan fixes this folder at eight files. The
     // combination of members that is legal for each operation is enforced by
     // Application/Validation/ChangePasswordRequestValidator.cs, not here.
+    //
+    // MIGRATION: The legacy screen's third operation - replace the recovery question and
+    // answer - is NOT reproduced, and its three members are removed rather than left
+    // inert. The recovery pair has no counterpart anywhere in the target: the owning
+    // service contract states so explicitly, the pair existed to guard credential
+    // retrieval, and retrieval is dropped because the store is now one-way. Publishing an
+    // operation that only writes two strings nothing stores would return success for work
+    // that did not happen.
+    //
+    // MIGRATION: The two surviving operations are separated by AUTHORISATION, not merely
+    // by field set. CHANGE is self-service and requires proof of possession, so the
+    // current credential is unconditionally required for it. RESET is administrative and
+    // cannot require proof of possession - an administrator does not know the credential -
+    // so it requires proof of PRIVILEGE, established by the API layer from the caller's
+    // role claims, and it requires the current credential to be ABSENT. An earlier
+    // revision required the current credential for neither, which left RESET reachable
+    // with an entirely empty body.
     //
     // MIGRATION: Every member is nullable and NONE is initialised to string.Empty,
     // which deviates from the usual convention for request DTOs in this folder. The
@@ -307,20 +366,28 @@ public sealed class ChangePasswordRequest
     //
     // MIGRATION: The reversible encrypted password store, whose decryption key is
     // committed to the legacy configuration in the clear, is replaced by one-way
-    // hashing, with re-hash on first successful login and administrative reset as the
-    // fallback. Password RETRIEVAL is dropped outright and has no target equivalent;
-    // password RESET is kept, because the same legacy configuration enables it and it
-    // is the administrative fallback - but the legacy reset's plaintext return value
-    // is dropped, so this endpoint's response carries a status and nothing more.
+    // hashing. Credentials that predate the migration are replaced by ADMINISTRATIVE
+    // RESET ONLY - see the paragraph above for why the first-login re-hash that an
+    // earlier revision of this note promised cannot execute. Password RETRIEVAL is
+    // dropped outright and has no target equivalent; password RESET is kept, because
+    // the same legacy configuration enables it and it is now the sole migration path -
+    // but the legacy reset's plaintext return value is dropped, so this endpoint's
+    // response carries a status and nothing more.
     //
     // MIGRATION: Three legacy affordances are deliberately not reproduced. The
     // twenty-character password ceiling, present both on the original column and as an
     // input limit on all seven legacy text boxes, is superseded by the hash column and
-    // is not restated on any member here or in the validator. The CAPTCHA control is
-    // out of scope, so no CAPTCHA member exists on this request. Password expiry and
-    // its reminder are host-level settings and out of scope; the legacy screen's
-    // last-changed and expires labels were display-only chrome and belong to the user
-    // detail response.
+    // is not restated on any member here. The CAPTCHA control is out of scope, so no
+    // CAPTCHA member exists on this request. Password expiry and its reminder are
+    // host-level settings and out of scope; the legacy screen's last-changed and expires
+    // labels were display-only chrome and belong to the user detail response.
+    //
+    // MIGRATION: One ceiling IS enforced by the validator, and it is not a policy rule
+    // and not the legacy twenty. BCrypt consumes at most 72 encoded bytes of its input
+    // and silently ignores the rest, so a longer credential would be truncated without
+    // anyone being told and two distinct credentials could produce one digest. The
+    // validator and the infrastructure hasher enforce the same constant, measured in
+    // encoded bytes rather than characters.
     //
     // MIGRATION: The password policy is preserved verbatim rather than hardened -
     // minimum length seven, zero required non-alphanumeric characters, no question and
@@ -344,43 +411,45 @@ public sealed class ChangePasswordRequest
     /// </summary>
     public const string OperationReset = "reset";
 
-    /// <summary>
-    /// The value of <see cref="Operation"/> that selects the change-question-and-answer
-    /// flow: the legacy <c>pnlQA</c> panel.
-    /// </summary>
-    public const string OperationChangeQuestionAndAnswer = "change-question-and-answer";
+    // MIGRATION: There is deliberately NO third operation constant. An earlier revision
+    // published "change-question-and-answer" for the legacy pnlQA panel, whose entire
+    // effect was to store a recovery question and answer that the target does not store
+    // and cannot check. Removing the constant - rather than keeping it and rejecting it -
+    // means the three places that share these values (the validator, the service and the
+    // Angular model) cannot name an operation that does not exist.
 
     /// <summary>
-    /// Which of the three legacy operations this request performs. Expected to be one
-    /// of <see cref="OperationChange"/>, <see cref="OperationReset"/> or
-    /// <see cref="OperationChangeQuestionAndAnswer"/>.
+    /// Which of the two supported operations this request performs. Expected to be either
+    /// <see cref="OperationChange"/> or <see cref="OperationReset"/>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// FLOW: all three. This member replaces the legacy screen's three submit buttons -
-    /// <c>cmdUpdate</c>, <c>cmdReset</c> and <c>cmdUpdateQA</c> - each of which
-    /// unambiguously identified its own operation because it was wired to its own
-    /// handler. A single endpoint has no equivalent signal, so the intent is stated
-    /// explicitly rather than inferred from which members happen to be populated.
+    /// FLOW: both. This member replaces the legacy screen's submit buttons -
+    /// <c>cmdUpdate</c> and <c>cmdReset</c>, each of which unambiguously identified its
+    /// own operation because it was wired to its own handler. A single endpoint has no
+    /// equivalent signal, so the intent is stated explicitly rather than inferred from
+    /// which members happen to be populated. The legacy screen's third button,
+    /// <c>cmdUpdateQA</c>, has no counterpart because its operation is not carried
+    /// forward.
     /// </para>
     /// <para>
-    /// WHY AN EXPLICIT DISCRIMINATOR RATHER THAN INFERENCE. Inference is genuinely
-    /// ambiguous for one measured case. Because the observed membership configuration
-    /// does not require a question and answer, the legacy reset handler's compound
-    /// guard never fires and its answer variable keeps the empty string it was seeded
-    /// with (L239-L240), so a reset carries no field at all in that installation. An
-    /// empty request body would therefore have to be read as "reset this user's
-    /// password" - meaning any caller that failed to populate its fields would
-    /// silently trigger a destructive credential reset. Naming the operation removes
-    /// that hazard and lets the validator and the service branch on a stated intent.
+    /// WHY AN EXPLICIT DISCRIMINATOR RATHER THAN INFERENCE. Inference cannot separate
+    /// these two operations safely. Both carry a new credential and its confirmation;
+    /// they differ only in whether the current credential is present, so inference would
+    /// have to read "no current credential supplied" as "reset this account's
+    /// credential" - which is exactly what a caller who simply failed to populate that
+    /// field would send. A stated intent means the validator can demand the current
+    /// credential for a change and forbid it for a reset, and the service can require a
+    /// different authorisation for each, neither of which is possible while the operation
+    /// is a guess.
     /// </para>
     /// <para>
     /// It is a string and not an enumeration on purpose: the plan's domain
     /// enumerations do not include a password-operation kind, and adding one would add
-    /// a file this folder's fixed contents do not contain. The three legal values are
+    /// a file this folder's fixed contents do not contain. The two legal values are
     /// published as the constants above so that the validator, the service, the
     /// controller, the integration tests and the Angular model share one definition
-    /// instead of five copies of three magic strings. Rejecting an absent or
+    /// instead of five copies of two magic strings. Rejecting an absent or
     /// unrecognised value is a validator rule, not a concern of this type.
     /// </para>
     /// </remarks>
@@ -392,23 +461,31 @@ public sealed class ChangePasswordRequest
     /// </summary>
     /// <remarks>
     /// <para>
-    /// FLOW: change, and change question and answer. LEGACY CONTROLS:
-    /// <c>txtOldPassword</c> in the <c>pnlChange</c> panel, and <c>txtQAPassword</c> in
-    /// the <c>pnlQA</c> panel.
+    /// FLOW: change only. LEGACY CONTROL: <c>txtOldPassword</c> in the
+    /// <c>pnlChange</c> panel. The legacy <c>txtQAPassword</c> box in the
+    /// <c>pnlQA</c> panel carried the same thing for the same purpose and would have
+    /// merged into this member, but that panel's operation is not carried forward.
     /// </para>
     /// <para>
-    /// The two legacy text boxes are merged into one member because they carry the same
-    /// thing for the same purpose - the credential the caller already holds, presented
-    /// as proof of identity. Contrast <see cref="PasswordAnswer"/> and
-    /// <see cref="NewPasswordAnswer"/>, which stay separate precisely because their
-    /// meanings differ.
+    /// UNCONDITIONALLY REQUIRED FOR A CHANGE, AND FORBIDDEN ON A RESET. The legacy
+    /// change guard at L284 was compound - <c>Not IsAdmin And txtOldPassword.Text = ""</c>
+    /// - because the same button served both a self-service change and an
+    /// administrator changing someone else's credential, and the screen hid this row
+    /// for the latter (L150-L152). The target splits those two cases across the two
+    /// operations instead of across a privilege test, so the guard becomes
+    /// unconditional for CHANGE: declaring CHANGE is declaring self-service, and
+    /// self-service means presenting the credential being replaced. On a RESET this
+    /// member must be absent, because an administrator does not hold the credential and
+    /// a value here would imply an authorisation model the reset does not use.
     /// </para>
     /// <para>
-    /// Required for the change flow ONLY when the caller is not an administrator
-    /// (L284), and unconditionally required for the change-question-and-answer flow
-    /// (L321). Unused by the reset flow. Verification is performed by the
-    /// infrastructure password hasher through the application service; nothing here
-    /// compares, hashes or measures it.
+    /// Verification is performed by the infrastructure password hasher through the
+    /// application service; nothing here compares, hashes or measures it. It is never
+    /// policy-checked either: it is an EXISTING stored credential, and the shipped
+    /// database seeds the Host and Administrator accounts with four-character and
+    /// five-character credentials, both below the configured minimum, so measuring this
+    /// member against the policy would leave precisely those accounts unable to change
+    /// their own credentials.
     /// </para>
     /// </remarks>
     public string? CurrentPassword { get; set; }
@@ -418,15 +495,26 @@ public sealed class ChangePasswordRequest
     /// </summary>
     /// <remarks>
     /// <para>
-    /// FLOW: change. LEGACY CONTROL: <c>txtNewPassword</c> in the <c>pnlChange</c>
-    /// panel.
+    /// FLOW: both change and reset. LEGACY CONTROL: <c>txtNewPassword</c> in the
+    /// <c>pnlChange</c> panel; the reset panel had no equivalent input because the
+    /// legacy provider generated the credential itself.
     /// </para>
     /// <para>
     /// Must equal <see cref="ConfirmPassword"/> (L272), must satisfy the preserved
-    /// policy (L278) and, when the caller is not an administrator, must differ from
-    /// <see cref="CurrentPassword"/> (L290). All three are validator rules. Unused by
-    /// the reset flow, which generates a credential server-side, and unused by the
-    /// change-question-and-answer flow, which leaves the password untouched.
+    /// policy (L278), must fit within the credential hasher's encoded-byte ceiling, and
+    /// - when a current credential was supplied - must differ from it (L290). All four
+    /// are validator rules.
+    /// </para>
+    /// <para>
+    /// REQUIRED ON A RESET TOO, WHICH IS A DELIBERATE DIVERGENCE. The legacy reset
+    /// generated a credential inside the membership provider and returned it to the
+    /// caller (L906, returned at L915). Generation is not carried forward: a generated
+    /// credential has to be transmitted to be useful, the mail subsystem is excluded
+    /// from this migration, and no endpoint returns, echoes or reconstructs a
+    /// credential - so a generated value would be knowable to nobody and the reset
+    /// would lock the account out rather than restore access to it. The administrator
+    /// therefore supplies the replacement explicitly, and it is held to the same policy,
+    /// the same confirmation comparison and the same ceiling as a self-service change.
     /// </para>
     /// </remarks>
     public string? NewPassword { get; set; }
@@ -437,8 +525,8 @@ public sealed class ChangePasswordRequest
     /// </summary>
     /// <remarks>
     /// <para>
-    /// FLOW: change. LEGACY CONTROL: <c>txtNewConfirm</c> in the <c>pnlChange</c>
-    /// panel.
+    /// FLOW: both change and reset. LEGACY CONTROL: <c>txtNewConfirm</c> in the
+    /// <c>pnlChange</c> panel.
     /// </para>
     /// <para>
     /// The equality check against <see cref="NewPassword"/> is the legacy screen's
@@ -446,75 +534,33 @@ public sealed class ChangePasswordRequest
     /// accessor-side comparison here: a request DTO that validated itself would place
     /// a rule outside the one place rules are meant to live, and would report failure
     /// through an exception rather than through the problem-details response the API
-    /// contract requires.
+    /// contract requires. It applies to a reset as well as to a change, because a reset
+    /// now carries an explicitly supplied credential and a typing error there would lock
+    /// the account out just as surely.
     /// </para>
     /// </remarks>
     public string? ConfirmPassword { get; set; }
 
-    /// <summary>
-    /// The answer to the user's EXISTING stored password question, supplied to
-    /// authorise a reset.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// FLOW: reset. LEGACY CONTROL: <c>txtAnswer</c> in the <c>pnlReset</c> panel, read
-    /// at L245 and passed to the reset call at L249.
-    /// </para>
-    /// <para>
-    /// This is an EXISTING value being checked, not a new value being stored, which is
-    /// why it is a separate member from <see cref="NewPasswordAnswer"/>. Conflating the
-    /// two would make the reset and change-question-and-answer flows indistinguishable
-    /// on the wire and would let a caller overwrite the stored answer while pretending
-    /// to answer it.
-    /// </para>
-    /// <para>
-    /// Required only under the legacy compound guard at L240 - the membership
-    /// configuration requires a question and answer AND the caller is not an
-    /// administrator - so in the observed installation, which does not require a
-    /// question and answer, it is optional and the legacy code forwards the empty
-    /// string. The stored question itself is never submitted: the legacy panel renders
-    /// it as a read-only label, so it belongs to the user detail response rather than
-    /// to this request.
-    /// </para>
-    /// </remarks>
-    public string? PasswordAnswer { get; set; }
-
-    /// <summary>
-    /// The replacement password question.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// FLOW: change question and answer. LEGACY CONTROL: <c>txtEditQuestion</c> in the
-    /// <c>pnlQA</c> panel, passed as the new question at L338.
-    /// </para>
-    /// <para>
-    /// Unconditionally required for this flow (L326). Note that the whole flow is
-    /// configuration-gated in the legacy screen: its panel is shown only when the
-    /// membership configuration requires a question and answer and the caller is
-    /// editing their own account (L187), so with the observed configuration the panel
-    /// is never rendered and the flow is latent. It is carried forward because it is
-    /// reachable under a different membership configuration, and because dropping a
-    /// reachable operation would breach functional parity.
-    /// </para>
-    /// </remarks>
-    public string? NewPasswordQuestion { get; set; }
-
-    /// <summary>
-    /// The replacement password answer.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// FLOW: change question and answer. LEGACY CONTROL: <c>txtEditAnswer</c> in the
-    /// <c>pnlQA</c> panel, passed as the new answer at L338.
-    /// </para>
-    /// <para>
-    /// Unconditionally required for this flow (L331). Distinct from
-    /// <see cref="PasswordAnswer"/> by design: this member SETS the stored answer,
-    /// whereas that one PROVES knowledge of it. The legacy method's own parameter
-    /// documentation is explicit on the point, describing its question and answer
-    /// arguments as the new values while its password argument is the existing
-    /// credential.
-    /// </para>
-    /// </remarks>
-    public string? NewPasswordAnswer { get; set; }
+    // MIGRATION: THREE RECOVERY MEMBERS ARE DELIBERATELY ABSENT from the end of this type,
+    // and each is named here so that none is later mistaken for an oversight.
+    //
+    //   PasswordAnswer     - the answer to the EXISTING stored question, read by the
+    //                        legacy reset panel at L245 and forwarded at L249.
+    //   NewPasswordQuestion - the replacement question, required by the legacy
+    //                        question-and-answer panel at L326 and written at L338.
+    //   NewPasswordAnswer  - the replacement answer, required at L331 and written at L338.
+    //
+    // All three belong to the recovery pair, which has no counterpart in the target: the
+    // owning service contract states that the legacy question-and-answer member has no
+    // counterpart and that no member declares a question or answer parameter, and the
+    // pair's only real purpose was to guard credential retrieval, which is dropped
+    // outright because the store is now one-way. The measured legacy configuration
+    // registers the pair as not required (Website/release.config L241), the panel that
+    // wrote it was gated on that same flag (L187) and so never rendered, and the reset
+    // handler's answer guard (L240) was compound on the same flag and so never fired -
+    // meaning nothing in the observed installation ever supplied, stored or checked any of
+    // the three. They are removed rather than kept and ignored, because a member on a
+    // published contract is indistinguishable from a supported one, and a caller that
+    // supplied a new question would receive a success response for a write that never
+    // happened.
 }

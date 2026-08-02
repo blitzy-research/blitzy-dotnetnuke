@@ -14,6 +14,9 @@
 // hashed (MembershipProviderConfig.vb:L182-L190). A permanently-false switch would only invite someone
 // to set it true and expect it to work.
 
+using System.Text.RegularExpressions;
+using DnnMigration.Application.Validation;
+
 namespace DnnMigration.Application.Options;
 
 /// <summary>
@@ -23,11 +26,18 @@ namespace DnnMigration.Application.Options;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This type is data, not behaviour. It supplies the numbers and switches that the request validators
-/// in <c>DnnMigration.Application.Validation</c> enforce, and it performs no validation of its own: it
-/// declares no check method, holds no message wording and compiles no pattern. It is declared in this
-/// layer and bound by the Api layer, which is why it carries no framework type, no attribute and no
-/// import at all.
+/// This type supplies the numbers and switches that the request validators
+/// in <c>DnnMigration.Application.Validation</c> enforce. It applies no password rule of its own, holds
+/// no message wording and caches no compiled pattern. It is declared in this
+/// layer and bound by the Api layer, which is why it carries no framework type and no attribute.
+/// </para>
+/// <para>
+/// The one method it does declare, <see cref="Validate"/>, reports whether the POLICY ITSELF is
+/// coherent - not whether any password satisfies it. The distinction matters: judging a password is
+/// the validators' work and happens per request, whereas an unsatisfiable or nonsensical policy is a
+/// deployment defect that should stop the host from starting. <see cref="Validate"/> is deliberately
+/// conservative about what counts as a defect, because the policy is preserved verbatim and every
+/// shipped value has to pass unchanged.
 /// </para>
 /// <para>
 /// <b>Where the defaults come from.</b> Every default below is a value measured from the
@@ -77,6 +87,16 @@ namespace DnnMigration.Application.Options;
 /// <c>Infrastructure/Security/BcryptPasswordHasher.cs</c>. No message wording: that belongs to the
 /// validators, and this type supplies only the numbers they substitute.
 /// </para>
+/// <para>
+/// <b>Deliberately absent - the maximum credential length.</b> Every rule on this type is legacy
+/// policy that a deployment may legitimately vary, which is exactly why it is bindable. The upper
+/// bound on a submitted credential is neither of those things: it is net-new, it is a security
+/// bound rather than a policy preference, and a maximum that configuration can raise provides no
+/// guarantee at all. It is therefore a compile-time constant on
+/// <see cref="Validation.CredentialBounds"/> rather than a property here, and every credential
+/// entry point reads it from that one place. Placing it here would have made this type's own
+/// contract - "the six values below are the legacy policy preserved verbatim" - false.
+/// </para>
 /// </remarks>
 public sealed class PasswordPolicyOptions
 {
@@ -93,6 +113,44 @@ public sealed class PasswordPolicyOptions
     /// configuration section.
     /// </remarks>
     public const string SectionName = "PasswordPolicy";
+
+    // ------------------------------------------------------------------------
+    // Policy bounds on the policy itself. These constrain what a DEPLOYMENT may
+    // configure; they are not password rules and they are not applied to any
+    // credential. Held here, beside the settings they constrain, and const
+    // rather than configurable, because a bound a configuration file can widen
+    // bounds nothing. Enforcement reads them from
+    // Api/Extensions/ServiceCollectionExtensions.cs at startup.
+    // ------------------------------------------------------------------------
+
+    /// <summary>
+    /// Floor beneath which <see cref="MinRequiredPasswordLength"/> may not be
+    /// configured: <c>7</c>, the measured legacy value.
+    /// </summary>
+    /// <remarks>
+    /// The guidance below forbids <em>raising</em> the minimum, because that
+    /// would lock out users the legacy installation already accepted. This
+    /// constant closes the opposite direction: lowering it below the legacy
+    /// figure would accept credentials the legacy installation rejected, which is
+    /// a security regression rather than migration fidelity. Preserving the
+    /// policy verbatim means both directions are closed, and the shipped default
+    /// sits exactly on this floor.
+    /// </remarks>
+    public const int MinimumConfigurablePasswordLength = 7;
+
+    /// <summary>
+    /// Longest acceptable <see cref="PasswordStrengthRegularExpression"/>
+    /// pattern: 512 characters.
+    /// </summary>
+    /// <remarks>
+    /// The pattern is compiled once and then evaluated against every submitted
+    /// credential, so its cost is paid on an unauthenticated path. A ceiling
+    /// keeps that cost bounded and is far above any legitimate strength pattern -
+    /// the legacy installation shipped none at all. It is a size bound only; that
+    /// the pattern also has to compile, and has to run under a match timeout, is
+    /// enforced separately.
+    /// </remarks>
+    public const int MaximumPasswordStrengthRegularExpressionLength = 512;
 
     // MIGRATION: the six values below are the legacy policy preserved verbatim - 7, 0, false, false,
     // true and empty - and they are deliberately NOT tightened. Raising the minimum length, demanding
@@ -236,4 +294,182 @@ public sealed class PasswordPolicyOptions
     /// </para>
     /// </remarks>
     public string PasswordStrengthRegularExpression { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The number of consecutive failed sign-in attempts that locks an account out. Defaults to 5.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy membership provider registration at
+    /// <c>Website/release.config</c> lines 236 to 246 declares neither
+    /// <c>passwordAttemptThreshold</c> nor its framework spelling
+    /// <c>maxInvalidPasswordAttempts</c>, so the effective legacy value was the
+    /// <c>System.Web.Security.SqlMembershipProvider</c> default of five rather than a configured one.
+    /// That measured effective value is reproduced here as the default so an unconfigured deployment
+    /// behaves exactly as the legacy installation did, while remaining overridable through
+    /// configuration.
+    /// </para>
+    /// <para>
+    /// The value is consumed by the authentication service and handed to the repository member that
+    /// records a failed attempt; the counting itself belongs to the external membership store, whose
+    /// failed-attempt and lock-out bookkeeping DotNetNuke added in the 04.00.00 upgrade script.
+    /// </para>
+    /// </remarks>
+    public int MaxInvalidPasswordAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// The window, in minutes, within which consecutive failed sign-in attempts accumulate towards
+    /// <see cref="MaxInvalidPasswordAttempts"/>. Defaults to 10.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: as with <see cref="MaxInvalidPasswordAttempts"/>, the legacy provider registration
+    /// omits <c>passwordAttemptWindow</c>, so the effective legacy value was the framework default of
+    /// ten minutes. It is expressed in minutes rather than as a time span because that is the unit the
+    /// legacy attribute used, and it is converted once, at the single point of use.
+    /// </remarks>
+    public int PasswordAttemptWindowMinutes { get; set; } = 10;
+
+    /// <summary>
+    /// Reports every way in which the policy bound onto this instance is incoherent, so that a
+    /// misconfigured deployment fails while the host is starting rather than when a user first tries
+    /// to choose a password.
+    /// </summary>
+    /// <returns>
+    /// One message per failure, each naming the configuration path an operator has to change, or an
+    /// empty collection when the policy is coherent.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Every failure is reported rather than only the first, because an operator fixing one setting
+    /// per restart is the outcome a single-failure result produces.
+    /// </para>
+    /// <para>
+    /// What this method deliberately does NOT do is enforce the legacy figures as minimums. A
+    /// deployment may set a length of 8 or demand a non-alphanumeric character; that is a hardening
+    /// decision an operator is entitled to take, and the remarks above ask them not to take it
+    /// during the migration rather than making it impossible. What is rejected is a policy no
+    /// password can satisfy and a policy that admits an empty password, neither of which any legacy
+    /// configuration could express.
+    /// </para>
+    /// <para>
+    /// The pattern is compiled here purely to prove it is well formed, and the compiled instance is
+    /// discarded. Caching a matcher for reuse belongs to the validator that applies the rule, as the
+    /// remarks on <see cref="PasswordStrengthRegularExpression"/> state; proving at start-up that the
+    /// pattern parses is a different concern, and leaving it unproven defers a configuration defect
+    /// to the first sign-up attempt.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> Validate()
+    {
+        List<string> failures = [];
+
+        if (MinRequiredPasswordLength < 1)
+        {
+            // Every number reaches the message through an invariant conversion first, so the
+            // concatenation below interpolates strings only and cannot pick up a culture.
+            string actual = FormattableString.Invariant($"{MinRequiredPasswordLength}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(MinRequiredPasswordLength)} is {actual}, and at least 1 is "
+                + "required. A minimum of zero or less admits an empty password, which no legacy "
+                + "configuration permitted - the shipped value is 7.");
+        }
+
+        if (MinRequiredNonAlphanumericCharacters < 0)
+        {
+            string actual = FormattableString.Invariant($"{MinRequiredNonAlphanumericCharacters}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(MinRequiredNonAlphanumericCharacters)} is {actual}, which is "
+                + "negative. Use 0 to express 'no rule', which is the shipped value.");
+        }
+
+        if (MinRequiredPasswordLength >= 1
+            && MinRequiredNonAlphanumericCharacters > MinRequiredPasswordLength)
+        {
+            string required = FormattableString.Invariant($"{MinRequiredNonAlphanumericCharacters}");
+            string length = FormattableString.Invariant($"{MinRequiredPasswordLength}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(MinRequiredNonAlphanumericCharacters)} is {required} while "
+                + $"{SectionName}:{nameof(MinRequiredPasswordLength)} is {length}. A password cannot "
+                + "contain more non-alphanumeric characters than it has characters, so no password "
+                + "could satisfy this policy.");
+        }
+
+        // MIGRATION: the minimum is checked against the SHARED CREDENTIAL CEILING as well as against
+        // itself, because the two are declared in different places and only their combination can be
+        // unsatisfiable. Every credential entry point rejects a submission longer than
+        // Validation/CredentialBounds.cs allows, so a configured minimum above that ceiling would
+        // reject every candidate a caller could possibly send - the policy and the bound would each be
+        // internally consistent while jointly admitting nothing. The comparison is sound across
+        // encodings rather than only for plain ASCII: UTF-8 spends at least one byte on every UTF-16
+        // code unit, so a value whose length exceeds the ceiling in code units necessarily exceeds it
+        // in bytes too. The ceiling is deliberately NOT the hashing algorithm's own 72-byte
+        // significance limit: the hasher digests the credential with SHA-384 before hashing, so every
+        // byte of the input contributes and no prefix can stand in for the whole.
+        if (MinRequiredPasswordLength > CredentialBounds.MaximumByteLength)
+        {
+            string length = FormattableString.Invariant($"{MinRequiredPasswordLength}");
+            string ceiling = FormattableString.Invariant($"{CredentialBounds.MaximumByteLength}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(MinRequiredPasswordLength)} is {length}, which exceeds the "
+                + $"{ceiling}-byte ceiling every credential entry point applies. Every candidate "
+                + "password would be rejected as too long before its length could be judged "
+                + "sufficient, so no password could satisfy this policy.");
+        }
+
+        // MIGRATION: the recovery question-and-answer requirement is UNSATISFIABLE in the target, so the
+        // only legal value is the measured legacy one. The provider is registered with
+        // requiresQuestionAndAnswer="false" at Website/release.config L241, and the pair is not carried
+        // forward at all: the owning service contract records that the legacy question-and-answer member
+        // has no counterpart and that no member declares a question or answer parameter, because the
+        // pair's only real purpose was to guard credential retrieval, which is dropped outright now the
+        // store is one-way. No request in the target carries a question or an answer, so switching this
+        // on cannot cause anything to be collected, stored or checked - it would merely make an operator
+        // believe a requirement was in force. Failing at start-up is the only way that belief can be
+        // corrected, and it is the same reasoning that removed the request members and the validator
+        // rules rather than leaving them inert.
+        //
+        // Contrast RequiresUniqueEmail, which this method does NOT reject, although the deployment does.
+        // The distinction is the one this method is scoped by: it refuses what is UNSATISFIABLE, and a
+        // unique-email requirement is merely UNIMPLEMENTED. The address it governs is on the wire, so a
+        // future uniqueness rule has something to check, and the contract itself is not entitled to
+        // forbid a configuration that will one day be legitimate. Its measured legacy value is false and
+        // the terminal schema corroborates it, the single unique constraint having moved off Email and
+        // onto Username, so the flag records a fact rather than promising enforcement.
+        //
+        // The HOST additionally refuses a true value, on the narrower ground that a flag which reads as
+        // a requirement and is enforced nowhere misleads whoever set it - see the options validator in
+        // Api/Extensions/ServiceCollectionExtensions.cs, which applies this method's rules and then its
+        // own deployment rules on top. That refusal is the operative behaviour today, and it is a
+        // deployment policy rather than a property of the contract, which is why it lives there and not
+        // here. The change that implements a uniqueness check deletes that one guard.
+        if (RequiresQuestionAndAnswer)
+        {
+            failures.Add(
+                $"{SectionName}:{nameof(RequiresQuestionAndAnswer)} is true, and the target has no "
+                + "password-recovery question or answer to satisfy it. The recovery pair is not carried "
+                + "forward, so no request accepts a question or an answer and nothing could ever be "
+                + "checked against one. Set it to false, which is the measured legacy value.");
+        }
+
+        if (!string.IsNullOrEmpty(PasswordStrengthRegularExpression))
+        {
+            try
+            {
+                _ = new Regex(PasswordStrengthRegularExpression);
+            }
+            catch (ArgumentException exception)
+            {
+                failures.Add(
+                    $"{SectionName}:{nameof(PasswordStrengthRegularExpression)} is not a valid "
+                    + $"regular expression: {exception.Message} An unparseable pattern would fail "
+                    + "every password-setting request at run time instead of failing this start-up.");
+            }
+        }
+
+        return failures;
+    }
 }

@@ -11,11 +11,19 @@
     which already references this project and would invert the graph, and never
     reference a test project or a legacy project under Library/ or Website/.
 
-    This project owns every Entity Framework Core, SQL client, password-hashing
-    and health-check reference in the solution, and nothing else. JWT, Swagger,
-    versioning and logging belong to Api; validation belongs to Application; the
-    test database providers belong to the integration test project, because
-    shipping one here would put a test provider into production.
+    This project owns every Entity Framework Core, SQL client, password-hashing,
+    health-check and token-signing reference in the solution, and nothing else.
+    Swagger, versioning and logging belong to Api; validation belongs to
+    Application; the test database providers belong to the integration test
+    project, because shipping one here would put a test provider into production.
+
+    JWT is deliberately split across two projects rather than owned by one,
+    because minting and validating a token are different jobs living in different
+    layers. This project mints — JwtTokenService signs the access token — so it
+    references the signing library. Api validates every inbound token on the
+    request path, which is middleware, so it references the ASP.NET Core bearer
+    authentication handler. Moving either reference to the other project would
+    force one of those two responsibilities into a layer that must not hold it.
 
     Build policy is inherited from backend/Directory.Build.props, which is why
     this file declares no PropertyGroup. Restating or overriding an inherited
@@ -61,9 +69,17 @@
     <!--
       One-way password hashing, replacing a reversibly-encrypted credential store
       whose key was committed to the legacy configuration. Existing credentials
-      cannot be verified against a one-way hash, so the path is a re-hash on
-      first successful login with administrative reset as the fallback, and the
-      legacy password policy is preserved rather than tightened mid-migration.
+      cannot be verified against a one-way hash and this solution contains no
+      legacy verifier, so the migration path is an ADMINISTRATIVE RESET ONLY.
+      An earlier revision of this comment claimed a re-hash on first successful
+      login; THAT CLAIM WAS FALSE - no code path could perform it - and it has
+      been removed rather than softened.
+      Security/BcryptPasswordHasher.cs uses this package's ENHANCED hash and
+      verify pair, which pre-digests the credential and so removes the plain
+      algorithm's 72-byte input-equivalence behaviour; the two halves must always
+      be changed together. The legacy password policy is preserved rather than
+      tightened mid-migration. Both divergences are recorded in
+      MIGRATION_NOTES.md.
     -->
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
 
@@ -73,6 +89,22 @@
       healthy, and the Alpine runtime image probes it with wget rather than curl.
     -->
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
+
+    <!--
+      Access-token signing for JwtTokenService. This is the token-handling library
+      only, not the ASP.NET Core authentication middleware: nothing here touches
+      the request pipeline, which is why a class library may reference it.
+
+      The 7.7.3 pin is not arbitrary and must not be raised independently. The
+      Api project's Microsoft.AspNetCore.Authentication.JwtBearer 8.0.29 resolves
+      Microsoft.IdentityModel.Protocols.OpenIdConnect 7.7.3, which pulls
+      Microsoft.IdentityModel.Tokens 7.7.3 — the very assembly this package also
+      depends on. Pinning the same 7.7.3 band means the token this project signs
+      and the token Api validates are handled by one loaded assembly version
+      rather than two, so a signature that verifies in a unit test also verifies
+      on the request path. Bump both together or neither.
+    -->
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.3" />
 
   </ItemGroup>
 

@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+
 namespace DnnMigration.Domain.Common;
 
 // MIGRATION: This type retires the legacy `ByRef totalRecords As Integer` status
@@ -69,7 +71,13 @@ namespace DnnMigration.Domain.Common;
 /// <para>
 /// A zero-record answer is available as <see cref="Empty"/>. Every instance is
 /// immutable once constructed and is therefore safe to cache and to share across
-/// threads.
+/// threads. Immutability is enforced rather than merely declared: the factory
+/// methods copy the records they are given and publish them through a read-only
+/// view, so a caller that keeps hold of the collection it supplied cannot afterwards
+/// change what a published envelope reports. The factories also reject coordinate
+/// combinations that contradict one another, so no envelope can describe a page that
+/// holds more records than the set contains, a page larger than its own page size, or
+/// an unpaged set sitting at a non-zero page index.
 /// </para>
 /// </remarks>
 /// <typeparam name="T">
@@ -83,13 +91,20 @@ public sealed class PagedResult<T>
     /// <see cref="Create"/>, <see cref="Unpaged"/> or <see cref="Empty"/>, so the
     /// argument guards cannot be bypassed and no partially valid envelope exists.
     /// </summary>
-    /// <param name="items">The already-validated records for this page.</param>
+    /// <param name="items">
+    /// A private snapshot array that the factory has already taken and validated.
+    /// The array parameter is deliberate and is confined to this private
+    /// constructor: ownership transfers here, this instance is the only holder of
+    /// the reference, and the array is never handed back out. It is published only
+    /// as a read-only view on <see cref="Items"/>, so the mutable shape cannot
+    /// escape.
+    /// </param>
     /// <param name="totalCount">The already-validated total across all pages.</param>
     /// <param name="pageIndex">The already-validated zero-based page index.</param>
     /// <param name="pageSize">The already-validated page size, 0 when unpaged.</param>
-    private PagedResult(IReadOnlyList<T> items, int totalCount, int pageIndex, int pageSize)
+    private PagedResult(T[] items, int totalCount, int pageIndex, int pageSize)
     {
-        Items = items;
+        Items = new ReadOnlyCollection<T>(items);
         TotalCount = totalCount;
         PageIndex = pageIndex;
         PageSize = pageSize;
@@ -99,9 +114,21 @@ public sealed class PagedResult<T>
     /// Gets the records that make up this page, already materialised.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Materialised deliberately. A deferred sequence would let a query escape the
     /// repository that created it, could be enumerated twice with different answers,
     /// and would hide the count this envelope exists to expose.
+    /// </para>
+    /// <para>
+    /// The records are also <b>copied</b> on the way in and published through a
+    /// genuinely read-only view. The declared parameter type on the factory methods
+    /// only promises that the <em>caller</em> will not be given a mutating
+    /// interface; it does not stop the caller from having handed over a collection it
+    /// still holds and can still change, and a plain array would not help either
+    /// because its indexer is settable. Taking a private snapshot and wrapping it is
+    /// what makes the immutability claimed by this type actually true, and therefore
+    /// what makes an instance safe to cache and to share across threads.
+    /// </para>
     /// </remarks>
     public IReadOnlyList<T> Items { get; }
 
@@ -156,7 +183,16 @@ public sealed class PagedResult<T>
     /// <see cref="TotalPages"/> so it stays correct for an unpaged set and for an
     /// empty one.
     /// </summary>
-    public bool HasNextPage => PageIndex + 1 < TotalPages;
+    /// <remarks>
+    /// Written as a comparison against one less than <see cref="TotalPages"/> rather
+    /// than by advancing <see cref="PageIndex"/>, because incrementing a page index
+    /// that already sits at the largest representable integer would wrap to the most
+    /// negative one and then compare as though a further page existed. Subtracting
+    /// from <see cref="TotalPages"/> cannot wrap: the property is never negative, so
+    /// the smallest value the right-hand side can take is minus one, which no
+    /// non-negative page index is below.
+    /// </remarks>
+    public bool HasNextPage => PageIndex < TotalPages - 1;
 
     /// <summary>
     /// Gets the shared zero-record, unpaged envelope. Use it for a list operation
@@ -176,7 +212,8 @@ public sealed class PagedResult<T>
     /// </summary>
     /// <param name="items">
     /// The records on this page, already materialised. May be empty when the
-    /// requested page matched nothing.
+    /// requested page matched nothing. A private copy is taken, so the caller may
+    /// keep and reuse whatever it passed in without affecting the envelope returned.
     /// </param>
     /// <param name="totalCount">
     /// The total number of records across every page, not the size of
@@ -194,10 +231,23 @@ public sealed class PagedResult<T>
     /// <paramref name="items"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
+    /// <para>
     /// <paramref name="totalCount"/>, <paramref name="pageIndex"/> or
     /// <paramref name="pageSize"/> is negative. Negative coordinates are rejected
     /// rather than interpreted, so the legacy null-integer sentinel cannot leak in
     /// and be mistaken for a real page address.
+    /// </para>
+    /// <para>
+    /// Or the three coordinates contradict one another. A page size of 0 declares an
+    /// unpaged set, which has no page coordinate to address, so it may only be paired
+    /// with a <paramref name="pageIndex"/> of 0. A page can never hold more records
+    /// than the set contains, so <paramref name="items"/> may not be longer than
+    /// <paramref name="totalCount"/>. And a paged read honours the page size it was
+    /// given, so <paramref name="items"/> may not be longer than
+    /// <paramref name="pageSize"/> when that size is positive. Each of these
+    /// combinations describes an envelope no real query could have produced, and each
+    /// would otherwise be published as fact to a pager that trusts it.
+    /// </para>
     /// </exception>
     public static PagedResult<T> Create(IReadOnlyList<T> items, int totalCount, int pageIndex, int pageSize)
     {
@@ -206,7 +256,36 @@ public sealed class PagedResult<T>
         ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
         ArgumentOutOfRangeException.ThrowIfNegative(pageSize);
 
-        return new PagedResult<T>(items, totalCount, pageIndex, pageSize);
+        if (pageSize == 0 && pageIndex != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageIndex),
+                pageIndex,
+                "A page size of 0 describes an unpaged, all-records set, which has no page to address, so the page index must be 0. Use the Unpaged factory method to express that case.");
+        }
+
+        // A private copy is taken before the remaining guards so that the length the
+        // guards inspect is the same length the finished envelope will report, even if
+        // the collection the caller supplied is one it can still change.
+        T[] snapshot = [.. items];
+
+        if (snapshot.Length > totalCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(totalCount),
+                totalCount,
+                "The total across every page cannot be smaller than the number of records on this page. Supply the grand total, not the size of the page.");
+        }
+
+        if (pageSize > 0 && snapshot.Length > pageSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(items),
+                snapshot.Length,
+                "A page cannot carry more records than the page size it declares. Either the page size understates the read or the collection holds more than one page.");
+        }
+
+        return new PagedResult<T>(snapshot, totalCount, pageIndex, pageSize);
     }
 
     /// <summary>
@@ -232,6 +311,11 @@ public sealed class PagedResult<T>
     {
         ArgumentNullException.ThrowIfNull(items);
 
-        return new PagedResult<T>(items, items.Count, 0, 0);
+        // The total is derived from the private copy rather than from the supplied
+        // collection, so the reported total and the published records are guaranteed
+        // to agree even if the caller retains and changes what it passed in.
+        T[] snapshot = [.. items];
+
+        return new PagedResult<T>(snapshot, snapshot.Length, 0, 0);
     }
 }

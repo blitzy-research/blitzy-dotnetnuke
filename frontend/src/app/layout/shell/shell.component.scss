@@ -1,467 +1,148 @@
-// =============================================================================
-//  shell.component.scss
-//  Application shell — the residual, component-scoped layer over the shared grid
-// =============================================================================
-//
-//  ROLE
-//  ----
-//  The dnn-migration administration console mounts one shell, and the shell
-//  places four regions — banner, navigation, main and contentinfo — plus a
-//  skip-to-content affordance ahead of all of them.
-//
-//  This file does NOT lay that grid out. The grid is shared scaffolding and it
-//  already exists, in full, in src/styles/_layout.scss: that partial declares the
-//  grid container, both of its region maps, its track lists, its viewport floor
-//  and its one breakpoint, and it assigns every region its named area. Restating
-//  any of it here would create a second definition of the page layout that drifts
-//  from the first, and it is precisely what the production component-style budget
-//  is set up to catch.
-//
-//  What is left is the residual — three things the shared partial cannot express
-//  and no other file will:
-//
-//    1. the host element's own box, which only this component's stylesheet can
-//       address at all;
-//    2. one ink correction on the skip link, where two shared partials collide
-//       and the accessible affordance loses;
-//    3. two overflow defences on the main region, which the shell renders itself
-//       and which therefore has no component of its own to defer to.
-//
-//  Three rules. That is the whole file, and the smallness is the point.
-//
-//  WHAT THIS FILE DELIBERATELY DOES NOT DO
-//  ---------------------------------------
-//  * No grid property of any kind — no template, no area, no row, no column, no
-//    track list, no gap. All of it belongs to src/styles/_layout.scss. That
-//    partial also records, with its reasoning, why the shell carries NO gap: the
-//    four regions are contiguous bands, and a gap would open strips of page
-//    background between them and cut through backgrounds the header, navigation
-//    and contentinfo components legitimately paint edge to edge.
-//  * No viewport query, directly or by mixin. The only breakpoint the shell needs
-//    is the one at which the navigation region moves from above the main region
-//    to beside it, and the shared partial owns it.
-//  * No padding, background, border, font or colour on a region that a component
-//    renders. Those regions are three separate components with three separate
-//    stylesheets; a declaration here would not override theirs, it would ADD to
-//    theirs, because a component host and the landmark element inside it are two
-//    different boxes.
-//  * No landmark styling and no ARIA. The shell's markup supplies the real
-//    landmark elements, which is what makes the accessibility tree correct
-//    without a single attribute being written anywhere.
-//  * No reset and no bare-element baseline. src/styles/_reset.scss owns the
-//    universal border-box declaration, the body box, the heading ramp, the anchor
-//    states, the horizontal-rule recipe and the shared focus ring.
-//  * No utility class, no layout switcher, no theme selector and no skin
-//    registry. Skinning is out of scope for this migration.
-//
-//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
-//  -------------------------------------------------
-//  The project rules document was read to exhaustion before this file was
-//  written — five separate reads, three of them opening past its first line — and
-//  every one returned the same single statement, that no user rules were
-//  provided. Nothing is invented to fill the gap and the absence is not treated
-//  as licence to lower the bar. What governs instead is the migration plan's own
-//  normative sections and its enterprise baseline, and the precedence order
-//  applied throughout is the plan's own: design-system compliance first, then
-//  visual continuity with the legacy portal, then accessibility, then responsive
-//  behaviour, then code quality.
-//
-//  Three baseline clauses are worth naming as NOT APPLICABLE here rather than
-//  passing over in silence, because silence would read as an oversight: the
-//  asynchronous-throughout rule, the repository and unit-of-work rule, and the
-//  data-transfer-object and problem-details boundary rule. All three are backend
-//  clauses. A stylesheet performs no input or output, holds no transfer object
-//  and reaches no data source, so none of the three can be satisfied or violated
-//  by anything below.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every property value below is either a design token declared in
-//  src/styles/_tokens.scss or one of the literals the design system permits — 0,
-//  none, auto, inherit, currentColor, transparent — or an intrinsic layout
-//  keyword. `block` names a layout mechanism and `break-word` names a line-break
-//  opportunity; neither is a measured design decision and neither has a token to
-//  resolve to. There is no colour literal, no length literal, no bare numeric
-//  transparency, no importance flag and no asset reference anywhere in this file,
-//  and there is none in the commentary either.
-//
-//  Four token gaps were found while writing this file and are reported rather
-//  than papered over. src/styles/_tokens.scss declares no navigation-rail width,
-//  no content-cap width, no band-height and no base text colour. None is
-//  hardcoded here and no fallback argument is passed to any var() call, because a
-//  fallback is a hardcoded value wearing a disguise. None was needed either: the
-//  navigation column is sized intrinsically by the shared partial, the content
-//  cap is resolved there from the shared breakpoint lookup, the bands size
-//  themselves from their own content, and the base text colour is inherited
-//  exactly as src/styles/_tokens.scss instructs.
-//
-//  HOW THE SHARED PARTIALS ARE REACHED — AND WHY NOTHING IS LOADED HERE
-//  -------------------------------------------------------------------
-//  This file loads no Sass module at all, and that is a decision rather than an
-//  omission. A load would be needed only to reach a mixin, a function or a Sass
-//  variable, and this file reaches none: the responsive behaviour, the focus ring
-//  and the hide-and-reveal geometry are all applied upstream, so including any of
-//  them again would be duplication. Design tokens need no load in any case — a
-//  custom property is resolved at run time through var() and inherits through the
-//  DOM, so loading the token partial from a component would merely re-emit its
-//  declaration block. The sibling stylesheets for the root component, the
-//  contentinfo band and the progress indicator all load nothing, for the same
-//  reason.
-//
-//  Were a mixin ever needed here, the correct reference from this folder is the
-//  three-level relative path ../../../styles/mixins — src/app/layout/shell is
-//  three directories below src/, and the workspace configures no Sass load path,
-//  so a relative reference is the only form that resolves. Two published notes in
-//  this workspace disagree with each other on that point and one of them is
-//  wrong; the discrepancy is recorded in this file's completion report and
-//  neither file is edited here, because both belong to other owners.
-//
-//  SELECTOR CONTRACT — shared with shell.component.html
-//  ----------------------------------------------------
-//  The shared partial publishes the shell's markup contract, and the two rules
-//  below that select an element rely on it: the skip link is an anchor carrying
-//  the published skip-link region class, and the main region is a native `main`
-//  element that the shell renders itself around the routed outlet. Emulated view
-//  encapsulation rewrites both selectors with this component's own content
-//  attribute, so neither can reach a `main` element or an anchor rendered inside
-//  any other component, and neither can reach a feature screen's content.
-//
-//  The host is addressed as a host and not as a class, because there is no
-//  wrapper to name — and see the note on the host rule for why the declaration is
-//  conditional rather than flat.
-//
-//  =============================================================================
-//  DOCUMENTED DIVERGENCES FROM THE LEGACY SHELL
-//  =============================================================================
-//  Every line number below was verified first-hand against the read-only legacy
-//  trees, which this migration never edits. The plan's behaviour-preservation rule
-//  requires each divergence to be annotated rather than silently absorbed.
-//
-//  MIGRATION: the runtime, cached, ORDERED stylesheet cascade is deleted, not
-//  translated. Website/Default.aspx.vb assembled the page's styling per request in
-//  ManageStyleSheets, L355 to L408, keying the result in a hash table under the
-//  cache entry named CSS at L360 and layering four levels in a fixed order: the
-//  host default sheet first, flagged in the source itself as the required default
-//  by the comment at L366 and added at L368; then the skin package sheet, probed
-//  for existence on disk; then the skin file's own sheet; and finally the
-//  per-portal sheet last, at L402 to L406, as the override hook. The routine ran
-//  TWICE per request, straddling the skin injection — L587 with the portal pass
-//  off, L590 adding the skin control, L593 with the portal pass on, L596 adding
-//  the favicon. All of it is replaced by one build-time bundle: the workspace
-//  declares a single global stylesheet entry, that stylesheet loads the five
-//  shared partials in the fixed order tokens, reset, layout, tables, forms, and
-//  component styling such as this file is compiled and scoped alongside it. There
-//  is no per-request assembly, no cache entry and no ordering decision left to
-//  make at run time. That the per-portal sheet ran LAST is also why it is empty:
-//  it was an override hook nobody had filled, and a direct read confirms eighty
-//  selectors with not one declaration between them.
-//
-//  MIGRATION: the table-based pane layout is replaced by CSS Grid, and the shared
-//  partial owns that grid. The only real skin in the checkout,
-//  Website/Portals/_default/Skins/MinimalExtropy/index.ascx, laid its content out
-//  in a full-width, border-free, zero-spacing table at L83: a top pane spanning
-//  three columns at L85, a three-cell middle row at L89, L91 and L93, and a
-//  bottom pane spanning three columns at L97. All five panes were marked not
-//  visible by default and all five were top-aligned. Wrapping them sat five
-//  nested background-image containers at L78 to L82, sliding-doors triples for
-//  rounded corners, and three empty float-clearing elements at L55, L73 and L121.
-//  The plan's rule is to delete the workaround and adopt the primitive: Grid
-//  supersedes the table, the nesting and all three clearing elements, so none of
-//  them produces a rule here or anywhere. Top alignment needs no rule either — a
-//  grid item stretches to its area and its content flows from the block start, so
-//  the legacy per-cell alignment attribute is expressed by the layout mechanism
-//  rather than restated as a property.
-//
-//  MIGRATION: the navigation region is a one-hundred-per-cent net-new structural
-//  invention. There was no left navigation rail in the legacy application to
-//  preserve. Legacy primary navigation was a HORIZONTAL menu bar in the header
-//  band — the navigation provider control at index.ascx L42 to L47, declared with
-//  horizontal orientation and carrying exactly ELEVEN node-class parameters,
-//  nested inside four presentational wrappers at L38 to L41, with the search
-//  affordance as its sibling at L49 — and a second horizontal strip of root links
-//  sat in the footer band at L109. The left-hand cell at L89 was a MODULE CONTENT
-//  pane, not navigation, and it was marked not visible like every other pane. So
-//  the shell's navigation region has no legacy antecedent at all, and its column
-//  behaviour, its collapse and its placement are new work, all of it in the shared
-//  partial.
-//
-//  MIGRATION: the entire responsive layer is a net addition. Measured across both
-//  legacy reference stylesheets, the count of viewport queries is zero and zero —
-//  the legacy portal had no responsive design whatsoever. Every breakpoint in the
-//  target therefore originates with this migration, and this file declares none of
-//  them: the shell's single step lives in the shared layout partial and is
-//  obtained there from the one shared breakpoint definition, which is the only
-//  place in the workspace permitted to write a viewport query at all.
-//
-//  MIGRATION: the entire focus layer is a net addition. Measured across both
-//  legacy reference stylesheets, the count of focus selectors is zero and zero and
-//  the count of outline declarations is zero and zero. The legacy portal indicated
-//  keyboard focus nowhere. The target's ring is defined once, in the shared mixin,
-//  and applied by the reset to every natively focusable element and again by the
-//  layout partial to the skip link. Nothing below suppresses it: no outline is
-//  removed anywhere in this file, with or without a replacement.
-//
-//  MIGRATION: the skip-to-content affordance is net-new and repo-wide
-//  unprecedented — measured across the legacy trees, files mentioning a skip link
-//  number zero, files carrying any ARIA attribute number zero, and master pages
-//  number zero. Its hide-and-reveal geometry comes from the shared clip-based
-//  reveal-on-focus mixin, which DOES exist, so nothing is re-implemented here; the
-//  layout partial already includes it, together with the shared focus ring, its
-//  own grid row, its fill and its intended ink. What this file adds is one ink
-//  CORRECTION, and it is a genuine divergence from the composition rather than
-//  from the legacy: see the note on that rule below.
-//
-//  MIGRATION: the corner-radius and elevation scales are net additions to the
-//  vocabulary, and this file consumes neither. Measured in the legacy default
-//  stylesheet, the count of corner-radius declarations is zero and the count of
-//  box-shadow declarations is zero — the legacy design was square-cornered and
-//  flat. The shell is structural chrome with no surface of its own to raise or
-//  round, so applying either token here would introduce a visible difference that
-//  no requirement asks for and that visual continuity argues against.
-//
-//  MIGRATION: the shared panel treatment those regions compose from is a net
-//  addition, and this file neither declares nor consumes it. The two legacy class
-//  names it stands in for were referenced from in-scope administration markup yet
-//  defined in ZERO stylesheets anywhere in the repository — a direct search of
-//  every stylesheet returns no match for either. Their reference counts differ by
-//  measurement scope, not by error: the settings class occurs twenty times across
-//  the whole legacy site and ten times within the five in-scope administration
-//  trees, and the work-panel class occurs ten times whole-tree and eight times
-//  in-scope. Both figures are correct for the scope each was measured over. The
-//  treatment itself lives in the shared layout partial.
-//
-//  MIGRATION: runtime dynamic skin selection is deleted, not translated. Legacy
-//  resolved the page's entire chrome per request: LoadSkin at
-//  Website/Default.aspx.vb L217 to L243 loaded the skin as a control at L224 and
-//  data-bound it at L226 so that server logic embedded in the skin executed, and
-//  four separate call sites chose which skin to load. The target is one static,
-//  compile-time layout with no runtime selection, no skin objects and no
-//  containers. There is no master-page mapping to perform either, because the
-//  checkout contains zero master pages — this generation of the platform used
-//  skins instead.
-//
-//  MIGRATION: the legacy olive heading colour is deliberately NOT tokenised, and
-//  its loss on the two largest heading levels is a real, accepted visible change
-//  rather than a cosmetic one. It occurs exactly twice in the legacy default
-//  stylesheet, on those two heading rules and nowhere else. The decision belongs
-//  to the token vocabulary and its consequence is carried by the shared reset,
-//  which resolves the whole heading ramp to the brand colour instead. It is
-//  recorded here because the shell is the surface on which those headings appear,
-//  and because no downstream stylesheet may reach for the olive value — this file
-//  names no colour at all beyond the one token it needs.
-//
-//  =============================================================================
-//  CONSIDERED AND DECLINED — stated rather than omitted
-//  =============================================================================
-//  Keeping this layer minimal is a standing constraint, so each of the following
-//  was weighed and left out on purpose. An unexplained absence is
-//  indistinguishable from an oversight.
-//
-//  * A scroll offset on the main region, so that a heading is not left under a
-//    pinned banner after the skip link jumps to it. Declined as speculative: it
-//    matters only if the banner is pinned, and whether it is pinned is the banner
-//    component's decision, taken in its own stylesheet, which does not exist yet.
-//    If it is ever pinned, the offset belongs with this rule and the shared
-//    layering scale already provides the stacking step it would need.
-//  * A positioned ancestor and a stacking level for the skip link. Neither is
-//    needed. The shared partial gives the link its own grid row, so revealing it
-//    grows that row and pushes the document down by exactly the link's own height
-//    instead of covering anything, and out of focus the shared mixin takes it out
-//    of flow so the row measures nothing. An overlay would have needed both; this
-//    arrangement needs neither, and it obscures nothing at any viewport.
-//  * A focus ring on the main region. The reset applies the shared ring to every
-//    natively focusable element and explicitly excludes elements made
-//    programmatically focusable only, which is what a skip-link target is. That
-//    exclusion is the reset's deliberate decision and is left intact rather than
-//    overridden from here. Measured in a real browser rather than assumed: after
-//    the skip is activated, the destination still carries a plainly painted ring,
-//    because the user agent draws its own around an element it has focused
-//    programmatically. Declining to author one therefore costs the reader nothing,
-//    and no indicator is suppressed anywhere in this file. Re-declaring the ring
-//    here would CONTRADICT the reset's stated intent, whereas the ink correction
-//    below RESTORES an intent that was being overridden — that difference is the
-//    line this file does not cross, and it is the whole test for whether a
-//    component stylesheet may reach a value another layer owns.
-//  * A timed state change, a keyframe block and the matching reduced-motion
-//    query. Nothing in this file moves, so there is nothing to guard. Stillness is
-//    also the faithful choice — the legacy portal declared no transition and no
-//    keyframe in either reference stylesheet — and the framework's animation
-//    package is absent from the pinned dependency set.
-//  * A hover rule. The shell owns no interactive surface of its own; the one
-//    anchor in its markup is the skip link, whose hover ink is settled by the rule
-//    below and whose hover is in practice unreachable, since it exists for
-//    keyboard users.
-//
-//  =============================================================================
-//  ACCESSIBILITY
-//  =============================================================================
-//  The shell is where this application's accessibility is won or lost, because it
-//  owns every landmark and the one affordance that lets a keyboard user bypass the
-//  banner and the navigation. Two things here serve it, and both are invisible to
-//  a sighted pointer user, so neither carries any visual cost:
-//
-//  * the skip link's ink is restored to a contrast ratio of 12.61 to 1 against its
-//    own fill, from the 1-to-1 the composition would otherwise have produced —
-//    which is to say, from an affordance that could not be seen at all;
-//  * the main region is made resistant to content that cannot break, so a long
-//    unbreakable value can never push the page into a horizontal scroll that a
-//    low-vision reader at high magnification would have to fight.
-//
-//  Nothing here removes a focus indicator, nothing hides content from assistive
-//  technology, and nothing uses colour as the sole carrier of meaning. The legacy
-//  collapse toggle that took itself out of the tab order — the icon button marked
-//  as unreachable in Website/controls/sectionheadcontrol.ascx — is a legacy
-//  accessibility defect and is reproduced nowhere.
-// =============================================================================
 
-// -----------------------------------------------------------------------------
-//  1. THE HOST BOX
+// Application shell: the residual, component-scoped layer over the shared grid. This file does NOT lay
+// the shell's grid out. That grid lives in full in _layout.scss - the container, both region maps, the
+// track lists, the viewport floor, the single breakpoint and every named area - and restating any of it
+// here would create a second definition of the page layout that drifts from the first.
 //
-//  A custom element has no user-agent display and lays out inline, which would
-//  shrink-wrap the grid inside it and hand the shared partial's viewport floor a
-//  containing block it cannot fill. The root component's stylesheet states the
-//  expectation from the other side, that mounting the shell yields "the
-//  block-level containing block it expects", and this is the only stylesheet in
-//  the workspace that can address this host at all — the shared layout partial
-//  deliberately selects no component element name.
+// What is left is the residual: three things the shared partial cannot express and no other file will.
+//   1. The host element's own box, which only this component's stylesheet can address at all.
+//   2. One ink correction on the skip link, where two shared partials collide and the accessible
+//      affordance loses.
+//   3. Two overflow defences on the main region, which the shell renders itself and which therefore has
+//      no component of its own to defer to.
+// Three rules, and the smallness is the point.
 //
-//  WHY THE DECLARATION IS CONDITIONAL AND NOT FLAT. The shared partial's markup
-//  contract puts the grid class on the shell's outermost element without saying
-//  whether the component reaches that by rendering its own wrapper or by binding
-//  the class onto its host. Both are valid and the template does not exist yet, so
-//  this rule has to be correct under either. If the host carries the grid class
-//  itself, then the grid declaration is already on this element and a flat block
-//  declaration here would be a same-specificity competitor resolved by injection
-//  order — component styles are injected after the global sheet — which would
-//  silently replace the grid with a plain block box and collapse the entire page
-//  layout with no error anywhere. Excluding that one case removes the collision
-//  outright rather than relying on an ordering that is not this file's to
-//  guarantee, and it also states the intent exactly: a block box is the right
-//  value precisely when this host is NOT itself the grid.
+// WHAT THIS FILE MUST NOT DO. No grid property of any kind - no template, area, row, column, track list
+// or gap. No viewport query, directly or by mixin: the shell's one step lives in _layout.scss, which is
+// reached from the only file permitted to write such a query. No padding, background, border, font or
+// colour on a region that a component renders - those are separate components with separate
+// stylesheets, and a declaration here would not override theirs but ADD to it, because a component host
+// and the landmark element inside it are two different boxes. No landmark styling and no ARIA: the
+// markup supplies the real landmark elements, which is what makes the accessibility tree correct
+// without an attribute being written anywhere. No reset or bare-element baseline, which _reset.scss
+// owns. No utility class, theme selector or skin registry.
 //
-//  `display: contents` was rejected. It is right for the confirmation-dialog
-//  component, whose host wraps a top-layer element and participates in no layout,
-//  and wrong here: it would erase this box and leave the shell's regions as
-//  children of the root component instead, which is a different grid parent from
-//  the one the contract names.
-// -----------------------------------------------------------------------------
+// ZERO HARDCODED VALUES. Every property value below resolves either to a design token declared in
+// _tokens.scss or to one of the six literals the design system permits - `0`, `none`, `auto`,
+// `inherit`, `currentColor`, `transparent`. No stylesheet may widen that set. There is no colour
+// literal, no length literal, no importance flag and no asset reference here, and no `var()` call is
+// given a fallback argument either, because a fallback is a hardcoded value in disguise.
+//
+// THIS FILE LOADS NO SASS MODULE, and that is a decision rather than an omission: a load would be
+// needed only to reach a mixin, a function or a Sass variable, and this file reaches none - the
+// responsive behaviour, the focus ring and the hide-and-reveal geometry are all applied upstream.
+// Design tokens need no load in any case, since a custom property is resolved at run time and inherits
+// through the DOM, so loading the token partial from a component would merely re-emit its declaration
+// block. Were a mixin ever needed here, the correct reference from this folder is the three-level
+// relative path `../../../styles/mixins`: the workspace configures no Sass load path, so a relative
+// specifier is the only form that resolves.
+//
+// SELECTOR CONTRACT. The two rules below that select an element depend on the shell's markup contract:
+// the skip link must be an anchor carrying the published skip-link region class, and the main region
+// must be a native `main` element that the shell renders itself around the routed outlet. Emulated view
+// encapsulation rewrites both selectors with this component's content attribute, so neither can reach a
+// `main` element or an anchor rendered inside another component. The host is addressed as a host rather
+// than by class because there is no wrapper to name.
+//
+// MIGRATION: the legacy per-request stylesheet cascade and runtime skin selection are deleted, not
+// translated. Legacy rebuilt and cached the page's styling on every request, layering a host sheet, a
+// skin-package sheet, a skin-file sheet and a per-portal sheet in a fixed order, and ran the routine
+// twice per request around the skin injection. The target declares one global stylesheet that loads the
+// five shared partials in the fixed order tokens, reset, layout, tables, forms, with component styling
+// such as this file compiled and scoped alongside it, so no ordering decision is left to make at run
+// time. There is no master-page mapping to perform either, because this generation of the platform used
+// skins instead. The legacy table-based pane layout, its nested background containers and its
+// float-clearing elements are superseded by Grid and produce no rule here; per-cell top alignment needs
+// no rule either, since a grid item stretches to its area and its content flows from the block start.
+// The navigation region, the responsive layer, the focus layer and the skip affordance have no legacy
+// antecedent, and this file declares none of them.
+//
+// THE HOST BOX. A custom element has no user-agent display and lays out inline, which would shrink-wrap
+// the grid inside it and hand the shared partial's viewport floor a containing block it cannot fill.
+//
+// WHY THE DECLARATION IS CONDITIONAL AND NOT FLAT. The markup contract puts the grid class on the
+// shell's outermost element without saying whether the component reaches that by rendering its own
+// wrapper or by binding the class onto its host. Both are valid, so this rule has to be correct under
+// either. If the host carries the grid class itself, the grid declaration is already on this element
+// and a flat block declaration here would be a same-specificity competitor resolved by injection order
+// - component styles are injected after the global sheet - which would silently replace the grid with a
+// plain block box and collapse the entire page layout with no error anywhere. Excluding that one case
+// removes the collision outright rather than relying on an ordering that is not this file's to
+// guarantee, and it states the intent exactly: a block box is the right value precisely when this host
+// is NOT itself the grid. `display: contents` is wrong here for the same class of reason - it would
+// erase this box and leave the shell's regions as children of the root component, a different grid
+// parent from the one the contract names.
+//
+// THE SKIP LINK'S INK, and why one declaration is needed. _reset.scss styles unvisited and visited
+// anchors with the brand colour at a specificity of one class-level selector plus one element, while
+// _layout.scss gives the skip link the page background as its ink at one class-level selector and no
+// element. The anchor rule therefore WINS on specificity, and specificity is resolved before source
+// order, so the partial loading later in the fixed chain does not save it: the revealed link would
+// paint the brand colour on the brand-coloured fill the partial gives it - a ratio of 1 to 1, an
+// affordance that is focusable, announced and completely unreadable. Emulated encapsulation rewrites
+// the selector below to two class-level selectors and no element, which beats the anchor rule
+// deterministically rather than by ordering, and beats its hover and active siblings at the same time,
+// so one declaration settles all three states and the ink cannot change under a pointer either. Only
+// the ink is restored: the fill, the padding, the row placement, the reveal-on-focus geometry, the
+// focus ring and the inline alignment all remain _layout.scss's, so the corrected pair is the intended
+// pair and measures 12.61 to 1.
+//
+// ACCESSIBILITY. Nothing here removes a focus indicator, hides content from assistive technology, or
+// uses colour as the sole carrier of meaning. A focus ring on the main region is deliberately not
+// authored: _reset.scss applies the shared ring to every natively focusable element and explicitly
+// excludes elements made programmatically focusable only, which is what a skip-link target is, and the
+// user agent draws its own indicator on an element it has focused programmatically. Re-declaring the
+// ring here would CONTRADICT the reset's stated intent, whereas the ink correction above RESTORES an
+// intent that was being overridden. That distinction is the line this file does not cross, and it is
+// the whole test for whether a component stylesheet may reach a value another layer owns.
 :host(:not(.shell)) {
   display: block;
 }
 
-// -----------------------------------------------------------------------------
-//  2. THE SKIP LINK'S INK
-//
-//  MIGRATION: this single declaration is a divergence from the COMPOSITION of two
-//  shared partials rather than from the legacy application, and it is recorded
-//  here because absorbing it silently would leave the shell's only keyboard
-//  affordance invisible.
-//
-//  THE COLLISION. The reset styles unvisited and visited anchors with the brand
-//  colour, at a specificity of one class-level selector plus one element. The
-//  layout partial gives the skip link the page background as its ink, at a
-//  specificity of one class-level selector and no element. The anchor rule
-//  therefore WINS on specificity, and specificity is resolved before source order,
-//  so the layout partial loading later in the fixed partial chain does not save
-//  it. The revealed link would render the brand colour on the brand-coloured fill
-//  the layout partial gives it: a contrast ratio of 1 to 1, an affordance that is
-//  focusable, announced, and completely unreadable. It fails the contrast
-//  criterion and, because the reveal conveys nothing a sighted keyboard user can
-//  perceive, the visible-focus criterion with it.
-//
-//  THE REMEDY, AND WHY IT BELONGS HERE. Emulated view encapsulation rewrites the
-//  selector below with this component's content attribute, raising it to two
-//  class-level selectors and no element, which beats the anchor rule
-//  deterministically rather than by ordering — and beats the hover and active
-//  anchor rules at the same time, so one declaration settles all three states and
-//  the ink cannot change under a pointer either. It is expressed here rather than
-//  upstream because the shared partials belong to other owners and are not edited
-//  by this migration, and because the element itself is rendered inside this
-//  component's own view, which is exactly the scope this stylesheet governs.
-//
-//  Only the ink is restored. The fill, the padding, the row placement, the
-//  reveal-on-focus geometry, the focus ring and the inline alignment are all the
-//  layout partial's and are left untouched, so the corrected pair is the intended
-//  pair: the page background on the brand colour, measuring 12.61 to 1, clear of
-//  the normal-text threshold and of the enhanced one as well. The hover underline
-//  the reset contributes is left in place; it is harmless and it is an honest
-//  affordance.
-// -----------------------------------------------------------------------------
 .shell__skip-link {
   color: var(--color-background);
 }
 
-// -----------------------------------------------------------------------------
-//  3. THE MAIN REGION'S OVERFLOW DEFENCES
+// The main region's overflow defences. Placement and the page gutter for this region come from
+// _layout.scss, which also records that main is the one region with no component of its own to defer
+// to, because the shell renders it directly around the routed outlet. These two declarations are the
+// region's non-placement concerns and there is nowhere else for them to live. The type selector is
+// deliberate: encapsulation confines it to the `main` element this component renders, so it cannot
+// reach a feature screen's content, and it stays correct if the published region class is ever renamed.
 //
-//  Placement and the page gutter for this region come from the shared layout
-//  partial, which also records that main is the one region with no component of
-//  its own to defer to, because the shell renders it directly around the routed
-//  outlet. These two declarations are the consequence of that: they are the
-//  region's non-placement concerns, and there is nowhere else for them to live.
+// THE FIRST DECLARATION closes the item side of a clamp _layout.scss makes on the track side. That
+// partial clamps the main column's minimum to zero so a wide descendant cannot widen the column and
+// drag a horizontal scrollbar onto the whole document, but a grid ITEM keeps an automatic minimum size
+// of its own, so a table wider than its track can still push this element past the column the track
+// pinned. Zeroing the item's minimum inline size is the companion half of the same defence and confines
+// the overflow to the element that caused it. Zero removes a minimum rather than setting a size.
 //
-//  The type selector is deliberate and matches the convention the contentinfo
-//  band's stylesheet established. Encapsulation confines it to the `main` element
-//  this component renders, so it cannot reach a feature screen's content, and it
-//  stays correct if the published region class is ever renamed.
+// THE SECOND DECLARATION restores the line-break opportunity inside values that offer none - connection
+// strings, module identifiers, portal aliases, file paths, a bare address in an error message. The
+// initial behaviour forbids breaking inside a word, so such a value overruns this box. _layout.scss
+// applies exactly this recipe to the padded panel interior and the reset applies it nowhere, which
+// leaves content landing in main WITHOUT a panel around it undefended; this closes that gap with the
+// same recipe rather than a new one, and it costs nothing on content that already wraps.
 //
-//  THE FIRST DECLARATION closes the item side of a clamp the shared partial makes
-//  on the track side. That partial clamps the main column's minimum to zero so a
-//  wide descendant cannot widen the column and drag a horizontal scrollbar onto
-//  the whole document. A grid ITEM, though, keeps an automatic minimum size of its
-//  own, so a table wider than its track can still push this element past the
-//  column the track pinned. Zeroing the item's minimum inline size is the
-//  companion half of the same defence, and it confines the overflow to the element
-//  that actually caused it. Zero is one of the literals the design system permits
-//  and is not a measured value: it removes a minimum rather than setting a size.
+// Deliberately a break rule and NOT an overflow value. Hiding would silently amputate content;
+// scrolling would make the main region a scroll container, which clips the focus ring of every control
+// inside it and neutralises any sticky positioning placed within, trading one cosmetic problem for two
+// functional ones.
 //
-//  THE SECOND DECLARATION restores the line-break opportunity inside values that
-//  offer none — connection strings, module identifiers, portal aliases, file
-//  paths, a bare address in an error message. The initial behaviour forbids
-//  breaking inside a word, so such a value overruns this box. The shared partial
-//  applies exactly this recipe to the padded panel interior, and the reset applies
-//  it nowhere at all, which leaves content that lands in main WITHOUT a panel
-//  around it — a page title, a message, a bare paragraph — undefended. This closes
-//  that gap with the same recipe rather than a new one, so the workspace keeps one
-//  treatment expressed one way, and it costs nothing on content that already
-//  wraps.
-//
-//  Deliberately a break rule and NOT an overflow value. Hiding would silently
-//  amputate content; scrolling would make the main region a scroll container,
-//  which clips the focus ring of every control inside it and neutralises any
-//  sticky positioning placed within — trading one cosmetic problem for two
-//  functional ones. Content that genuinely cannot reflow, such as a wide data
-//  table whose minimum width is the sum of its columns, needs a scroll container
-//  scoped to the table itself, and that belongs to the shared table partial.
-//
-//  The exact boundary of what these two declarations do and do not guarantee, all
-//  of it measured in a real browser rather than argued, because a future reader
-//  will otherwise mis-attribute a table overflow to this rule and be tempted to
-//  escalate it here:
-//    * They DO hold the main region itself inside the shell at every viewport
-//      tested, from a narrow handset up to a wide desktop, in both the stacked and
-//      the side-by-side arrangement, even with a table far wider than its column
-//      inside — the two right edges measured identically equal every time.
-//    * They DO break a genuinely unbreakable run: a single word of one hundred and
-//      seventy-eight identical letters occupies four line boxes at handset width
-//      and one at desktop width, so the break rule is doing real work and is not
-//      merely declared.
-//    * They do NOT shrink a table's intrinsic minimum width, and cannot. Breaking
-//      inside a word changes where lines end at paint time; by specification it
-//      does not reduce a box's min-content contribution. So a table whose columns
-//      sum to more than the region can offer will still paint outside it, and no
-//      value of this property will change that.
-//    * The workspace already answers that case, and this file must not answer it
-//      a second time: the shared table partial exposes an opt-in scroll affordance
-//      keyed on a data attribute, which turns on horizontal scrolling, contains the
-//      scroll chain, carries its own focus ring so the region stays reachable by
-//      keyboard, and below the one declared breakpoint releases the table's full
-//      width so it may size to its content. A wide table opts into that. Escalating
-//      to a break-anywhere keyword here instead would silently alter the intrinsic
-//      sizing of every descendant of main, and switching this to a scrolling
-//      overflow value would incur the two functional costs named above. Neither is
-//      a trade this file is entitled to make on the table partial's behalf.
-// -----------------------------------------------------------------------------
+// THE BOUNDARY of what these two declarations do and do not guarantee, because a future reader will
+// otherwise mis-attribute a table overflow to this rule and be tempted to escalate it here. They DO
+// hold the main region itself inside the shell at every viewport and in both the stacked and the
+// side-by-side arrangement, even with a table far wider than its column inside, and they DO break a
+// genuinely unbreakable run. They do NOT shrink a table's intrinsic minimum width, and cannot: breaking
+// inside a word changes where lines end at paint time and by specification does not reduce a box's
+// min-content contribution, so a table whose columns sum to more than the region can offer will still
+// paint outside it. The workspace already answers that case and this file must not answer it a second
+// time - _tables.scss exposes an opt-in scroll affordance keyed on a data attribute, which turns on
+// horizontal scrolling, contains the scroll chain, carries its own focus ring so the region stays
+// reachable by keyboard, and below the one declared breakpoint releases the table's full width. A wide
+// table opts into that. Escalating to a break-anywhere keyword here would silently alter the intrinsic
+// sizing of every descendant of main, and switching this to a scrolling overflow value would incur the
+// two functional costs named above; neither is a trade this file may make on the table partial's behalf.
 main {
   min-inline-size: 0;
   overflow-wrap: break-word;

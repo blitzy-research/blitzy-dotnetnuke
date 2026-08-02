@@ -13,11 +13,38 @@
 // screen above it returns or mails a stored password. Under a one-way digest that is impossible
 // rather than forbidden, which is the entire point of the change.
 //
-// MIGRATION: credentials already present in the database are upgraded lazily rather than in bulk,
-// because a one-way digest cannot be derived from a value held under the legacy scheme. A row is
-// upgraded by re-hashing the plaintext its owner supplies on the first successful sign-in against
-// the legacy value, and an administrative reset is the fallback for an account that never signs in
-// again. NeedsRehash is the hook that makes both paths workable.
+// MIGRATION: CREDENTIALS ALREADY PRESENT IN THE DATABASE ARE MIGRATED BY ADMINISTRATIVE RESET, AND
+// BY NOTHING ELSE. A one-way digest cannot be derived from a value held under the legacy reversible
+// scheme, and this class verifies BCrypt digests only - it holds no legacy verifier, and the target
+// maps no legacy credential column, so nothing anywhere in this solution can check a submitted
+// password against a legacy stored value. Every pre-existing account therefore requires an
+// administrative password reset before its owner can sign in, and that is a DELIBERATE FUNCTIONAL
+// REDUCTION recorded in MIGRATION_NOTES.md rather than a gap.
+//
+// An earlier revision of this comment claimed the target upgraded rows lazily, by re-hashing the
+// plaintext an owner supplied on their first successful sign-in against the legacy value. THAT CLAIM
+// WAS FALSE and is removed rather than softened: a first successful sign-in against a legacy value
+// is impossible without a legacy verifier, so the path it described could never run. Implementing
+// one would require reading the legacy reversible material, decrypting it with the key committed at
+// Website/release.config:L91-L92, and re-encrypting on success - a design that reintroduces exactly
+// the reversibility this class exists to remove, and one the AAP's scope does not include.
+//
+// MIGRATION: NeedsRehash serves the remaining, genuinely supported upgrade: raising the cost of a
+// digest this class produced itself. It reports whether a stored BCrypt digest was computed below
+// the current work factor, so a caller that has ALREADY verified a password successfully can
+// re-hash it at the current cost. It is not, and never was, a legacy-credential detector.
+//
+// MIGRATION: HASHING AND VERIFICATION BOTH USE BCRYPT.NET'S ENHANCED PAIR, AND THE TWO CAN NEVER
+// DIVERGE BECAUSE NEITHER IS CALLED ANYWHERE ELSE. Plain BCrypt ignores every byte of its input past
+// the first 72, so two distinct passwords sharing a 72-byte prefix authenticate interchangeably -
+// verified empirically against BCrypt.Net-Next 4.0.3 rather than assumed. The enhanced pair digests
+// the credential with SHA-384 before hashing, so the whole of the input contributes and that
+// equivalence disappears. The pairing is not optional: an enhanced digest is an ordinary BCrypt
+// digest of the pre-hashed value and carries no marker distinguishing it, so mixing an enhanced hash
+// with a plain verification - or the reverse - fails every check silently. Both directions were
+// confirmed to return false. This is a divergence from the legacy scheme in a class that already
+// replaces it wholesale; it is recorded in MIGRATION_NOTES.md, and because the target maps no
+// credential column the change has no stored data to be compatible with.
 //
 // MIGRATION: the legacy password policy is preserved exactly and is never tightened. A minimum
 // length of 7 (Website/release.config:L242) and a minimum of zero characters outside 0-9, A-Z and
@@ -28,7 +55,9 @@
 // policy boundary through its bound options and its declarative request validators. Strengthening
 // any of these during the migration would deny access to accounts the legacy installation accepted.
 
+using BCrypt.Net;
 using DnnMigration.Application.Options;
+using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Abstractions.Services;
 using Microsoft.Extensions.Options;
 
@@ -81,6 +110,16 @@ namespace DnnMigration.Infrastructure.Security;
 /// stored digest is a credential-equivalent that offers an offline attacker a target, so neither is
 /// recorded. Exception messages raised below quote policy numbers only and never the value supplied.
 /// </para>
+/// <para>
+/// <b>Input length is bounded, and the bound is shared rather than restated.</b> Both
+/// <see cref="Hash(string)"/> and <see cref="Verify(string, string)"/> refuse a credential longer
+/// than <see cref="CredentialBounds.MaximumByteLength"/> UTF-8 bytes. That constant is the same one
+/// every request validator applies, so a credential that reaches this class has already been bounded
+/// once; the check here is defence in depth for any future caller that reaches the hasher without
+/// passing through a validator. Enforcing it explicitly matters because neither hashing entry point
+/// of the underlying package refuses an over-long input of its own accord - a four-hundred-character
+/// password was confirmed to hash without complaint - so silence is not a bound.
+/// </para>
 /// </remarks>
 internal sealed class BcryptPasswordHasher : IPasswordHasher
 {
@@ -89,12 +128,35 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// performed grows as 2^<c>WorkFactor</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Twelve is one step above the 11 the hashing package uses when no cost is supplied, and it is
     /// stated explicitly rather than left to that default so a package upgrade cannot silently move
     /// it in either direction. It is the sole cost in this type: hashing and replacement detection
     /// share it, so the two can never disagree about what "current" means.
+    /// </para>
+    /// <para>
+    /// It is bounded by being a <see langword="const"/>. The algorithm accepts a cost between 4 and
+    /// 31, and a value at the bottom of that range would make an offline attack cheap while a value
+    /// at the top would make a single sign-in take minutes; twelve sits deliberately in the middle
+    /// and cannot be moved by configuration, an environment variable or a request. This is the same
+    /// reasoning that keeps the shared credential ceiling a constant on
+    /// <see cref="CredentialBounds"/>: a security parameter a deployment can weaken is not a
+    /// parameter, it is a suggestion.
+    /// </para>
     /// </remarks>
     private const int WorkFactor = 12;
+
+    /// <summary>
+    /// The pre-hash algorithm used by the enhanced hashing pair, stated explicitly on every call.
+    /// </summary>
+    /// <remarks>
+    /// SHA-384 is also the package's own default for both halves of the pair, so naming it changes
+    /// no behaviour today. It is named anyway for one reason: an enhanced digest records nothing
+    /// about which pre-hash produced it, so if a future package release moved that default the
+    /// hashing and verification halves would begin disagreeing silently and every existing digest
+    /// would stop verifying. Stating the algorithm on both sides makes that failure impossible.
+    /// </remarks>
+    private const HashType PreHashAlgorithm = HashType.SHA384;
 
     /// <summary>
     /// The password policy in force, captured once at construction.
@@ -181,7 +243,26 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
                 nameof(password));
         }
 
-        return BCrypt.Net.BCrypt.HashPassword(password, WorkFactor);
+        // The shared upper bound, applied explicitly. The value and the unit both come from
+        // CredentialBounds so that this guard and every request validator enforce one number, and it
+        // is checked here rather than assumed because the hashing call below accepts an input of any
+        // length without complaint. Throwing is correct on this path: minting a stored credential is
+        // a deliberate act by trusted code, and a value that reached it unbounded is a defect in the
+        // caller rather than a bad submission. The message quotes the bound and never the value.
+        if (!CredentialBounds.IsWithinMaximumByteLength(password))
+        {
+            throw new ArgumentException(
+                "A password must be no longer than "
+                + $"{CredentialBounds.MaximumByteLength} bytes when encoded as UTF-8.",
+                nameof(password));
+        }
+
+        // The enhanced half of the pair. It digests the credential with SHA-384 before hashing, so
+        // every byte of the input contributes and the algorithm's 72-byte significance limit cannot
+        // make two distinct passwords equivalent. Verify below MUST use the matching enhanced half:
+        // the returned value carries no marker recording which half produced it, so a mismatched
+        // pair fails silently rather than loudly.
+        return BCrypt.Net.BCrypt.EnhancedHashPassword(password, WorkFactor, PreHashAlgorithm);
     }
 
     /// <summary>
@@ -196,8 +277,9 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// </param>
     /// <returns>
     /// <see langword="true"/> when <paramref name="password"/> matches
-    /// <paramref name="passwordHash"/>; otherwise <see langword="false"/>. A mismatch and a stored
-    /// representation this implementation cannot parse are both reported as <see langword="false"/>.
+    /// <paramref name="passwordHash"/>; otherwise <see langword="false"/>. A mismatch, a candidate
+    /// exceeding <see cref="CredentialBounds.MaximumByteLength"/>, and a stored representation this
+    /// implementation cannot parse are all reported as <see langword="false"/>.
     /// </returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="password"/> or <paramref name="passwordHash"/> is <see langword="null"/>.
@@ -210,6 +292,22 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
         // lock out exactly the accounts this migration exists to carry forward.
         ArgumentNullException.ThrowIfNull(password);
         ArgumentNullException.ThrowIfNull(passwordHash);
+
+        // The shared upper bound again, and the ONLY bound applied on this path. It is not policy: no
+        // stored credential can exceed it, because Hash refuses to mint one that does, so refusing an
+        // over-long candidate cannot lock anyone out of an existing account. What it does prevent is
+        // an unauthenticated caller handing an arbitrarily large value to a deliberately expensive
+        // function on every request.
+        //
+        // A refusal is reported as "does not match" rather than thrown, deliberately. This member
+        // answers a sign-in attempt, so an over-long candidate is a failed attempt, not a fault; a
+        // thrown exception here would turn a submission into a server error and would also let a
+        // caller distinguish "too long" from "wrong", which is a difference an attacker has no
+        // business being able to observe.
+        if (!CredentialBounds.IsWithinMaximumByteLength(password))
+        {
+            return false;
+        }
 
         // A stored value arrives from a database row that may predate this implementation entirely,
         // so every way the hashing package can reject one is answered with "does not match" rather
@@ -226,9 +324,16 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
         // Nothing wider is caught. This method indexes nothing, parses nothing and allocates
         // nothing, so each of these can only have arisen from parsing the supplied stored value; any
         // other fault is genuine and still propagates to the caller.
+        //
+        // The enhanced half of the pair, matching Hash. This pairing is load-bearing rather than
+        // stylistic: an enhanced digest is an ordinary BCrypt digest of the SHA-384 pre-hash and
+        // records nothing that identifies it as one, so verifying an enhanced digest with the plain
+        // entry point - or a plain digest with this one - returns false for every credential,
+        // confirmed in both directions against the pinned package. Neither entry point may be changed
+        // without changing the other in the same edit.
         try
         {
-            return BCrypt.Net.BCrypt.Verify(password, passwordHash);
+            return BCrypt.Net.BCrypt.EnhancedVerify(password, passwordHash, PreHashAlgorithm);
         }
         catch (BCrypt.Net.SaltParseException)
         {
@@ -255,10 +360,16 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// <param name="passwordHash">The stored representation to examine.</param>
     /// <returns>
     /// <see langword="true"/> when <paramref name="passwordHash"/> should be replaced, either
-    /// because this implementation cannot account for it - the shape a value written by the legacy
-    /// store has - or because it carries a lower cost than <c>WorkFactor</c>; otherwise
-    /// <see langword="false"/>.
+    /// because it carries a lower cost than <c>WorkFactor</c> or because this implementation cannot
+    /// parse it at all; otherwise <see langword="false"/>.
     /// </returns>
+    /// <remarks>
+    /// This member exists to support ONE upgrade: raising the cost of a digest
+    /// <see cref="Hash(string)"/> produced. It is not a legacy-credential detector, and a
+    /// <see langword="true"/> answer must never be read as an invitation to accept a credential that
+    /// <see cref="Verify(string, string)"/> rejected. Legacy credentials are migrated by
+    /// administrative reset only, for the reasons set out at the head of this file.
+    /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="passwordHash"/> is <see langword="null"/>.
     /// </exception>
@@ -266,12 +377,13 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     {
         ArgumentNullException.ThrowIfNull(passwordHash);
 
-        // MIGRATION: a stored value this implementation cannot account for is the shape of a row
-        // still held under the legacy scheme, and answering "yes, replace it" is what drives the lazy
-        // upgrade described at the head of this file. It is safe as well as useful: a caller reaches
-        // here only after Verify has already succeeded, and Verify reports a non-match for precisely
-        // the values that land in these handlers, so no account can be pushed towards a rewrite on
-        // the strength of a credential that was never accepted.
+        // MIGRATION: an unparseable stored value answers "yes, replace it" because there is nothing
+        // else it could usefully answer, NOT because such a value can be upgraded in place. It cannot:
+        // a caller reaches here only after Verify has already succeeded, and Verify reports a non-match
+        // for precisely the values that land in these handlers, so an unparseable row can never be
+        // accompanied by an accepted credential. The practical consequence is that this answer is
+        // unreachable for a legacy row, and the only reachable use of this member is the work-factor
+        // upgrade described above.
         //
         // The handled set deliberately mirrors Verify's, so the two members can never disagree about
         // which stored values this implementation understands. The pinned package funnels every

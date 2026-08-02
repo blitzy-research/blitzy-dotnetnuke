@@ -3,373 +3,247 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
-/// Wire contract for one row of the security-roles listing served by <c>GET
-/// /api/v1/roles</c> and rendered by the Angular role-list screen through the
-/// shared data-table component.
+/// One row of the security-roles listing served by <c>GET /api/v1/roles</c>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// THIS SHAPE IS THE LEGACY GRID, NOT THE LEGACY ENTITY. The eleven members below
-/// are the exact eleven the legacy screen bound, measured column by column from
-/// the grid declaration in <c>Website/admin/Security/roles.ascx</c> - note the
-/// lower-case file name, whose code-behind <c>Roles.ascx.vb</c> is capitalised.
-/// The legacy <c>RoleInfo</c> class carries fifteen public members; four of them
-/// are deliberately absent here because that screen never rendered them, and a
-/// response shape is derived from what the legacy screen actually rendered rather
-/// than from the shape of the persisted model. Widening this contract towards the
-/// entity would leak columns the listing has no column for. The four are: the
-/// owning-portal identifier, which every row in a response already shares because
-/// the request is tenant-scoped, and which the grid has no column for; the
-/// role-group identifier, which that screen used as a FILTER through an
-/// auto-posting drop-down at <c>roles.ascx</c> line 9 feeding the group-scoped
-/// query at <c>Roles.ascx.vb</c> line 75, so it belongs to the query contract and
-/// not to a row; and the invitation code together with the icon path, two real
-/// columns added by <c>03.02.03.SqlDataProvider</c> lines 44 to 45 that this grid
-/// simply does not show, and that consequently belong to the detail contract. A
-/// per-user assignment status is absent for a different reason: that
-/// classification describes one user's membership of a role, derived from the
-/// effective and expiry dates on the assignment table, so a role definition has no
-/// such status at all.
+/// The member set is the legacy grid, not the legacy entity. The eleven members and their
+/// declaration order are measured from <c>Website/admin/Security/roles.ascx</c>, so rendering
+/// them in declaration order reproduces the legacy column order. Legacy <c>RoleInfo</c> carries
+/// fifteen public members; four are deliberately absent. The owning-portal identifier is absent
+/// because the request is already tenant-scoped and the grid had no such column. The role-group
+/// identifier is absent because that screen used it as a <i>filter</i> - an auto-posting
+/// drop-down at <c>roles.ascx</c> L9 feeding the group-scoped query at <c>Roles.ascx.vb</c> L75 -
+/// so it belongs to the query contract, not to a row. The invitation code and the icon path are
+/// real columns (added by <c>03.02.03.SqlDataProvider</c> L44-L45) that the grid never showed. A
+/// per-user assignment status is absent for a different reason: that classification describes one
+/// user's membership, derived from the effective and expiry dates on the assignment table, so a
+/// role definition has none.
 /// </para>
 /// <para>
-/// THE TYPE IS INERT. It holds no behaviour, computes nothing, reaches no database
-/// and performs no validation. Field rules live in the FluentValidation validators
-/// under <c>Application/Validation</c>, and translation to and from the persisted
-/// model lives in <c>Application/Mapping/RoleMappings.cs</c>, which is the single
-/// place that owns every sentinel decision described against the individual
-/// members below. Nothing here carries serialisation metadata either: the legacy
-/// class decorated most of its members with element-name serialisation attributes,
-/// and those are dropped because the property names alone express the wire shape.
+/// The type is inert: no validation, no persistence and no serialisation attributes, and the
+/// legacy element-name serialisation attributes are dropped. Field rules belong to a
+/// FluentValidation validator under <c>Application/Validation</c>, and translation to and from
+/// the persisted model belongs to a hand-written role mapper under <c>Application/Mapping/</c>.
 /// </para>
 /// <para>
-/// THE PAGING ENVELOPE IS NOT PART OF THIS TYPE. A row is a row. The controller
-/// wraps a sequence of these in the <c>PagedResponse</c> envelope declared in the
-/// sibling <c>Dtos/Common</c> folder, which is the only place that carries the
-/// collection, the total and the page coordinates. No positional, ordering,
-/// filtering, navigation or link member appears here.
+/// Paging is not part of this type: an implementer is obliged to return a sequence of these
+/// inside the paged response envelope, which alone owns the item list, total count, page index
+/// and page size. Paging and sorting have no legacy counterpart - <c>roles.ascx</c> L22-L25 set
+/// only <c>AutoGenerateColumns</c> and <c>EnableViewState</c>, and the role query at
+/// <c>RoleController.vb</c> L208 returned every matching role in one untyped pre-generic
+/// collection.
+/// </para>
+/// <para>
+/// Every optional money and period member arrives <see langword="null"/> for a role that is free
+/// or offers no trial, which is faithful rather than a modernisation: the terminal listing
+/// procedure already projected SQL NULL for those cases, gating the billing pair on
+/// <c>convert(int,R.ServiceFee) &lt;&gt; 0</c> and the trial pair on
+/// <c>R.TrialFrequency &lt;&gt; 'N'</c>; the legacy reader substituted its null sentinel; and the
+/// <c>FormatPrice</c> and <c>FormatPeriod</c> helpers at <c>Roles.ascx.vb</c> L175 and L152
+/// rendered that sentinel as an empty cell. No sentinel value is carried into this contract.
 /// </para>
 /// </remarks>
-// MIGRATION: paging is a NET ADDITION, not a translation. The legacy grid was
-// unpaged and unsorted: its declaration at roles.ascx lines 22 to 25 sets only
-// AutoGenerateColumns and EnableViewState, and declares no paging attribute, no
-// sorting attribute and no page-size attribute at all. Behind it, the role query
-// at RoleController.vb line 208 returns an untyped, pre-generic collection of
-// every matching role in one shot. Serving this contract inside a paged envelope
-// therefore adds a capability the legacy screen did not have. It is additive and
-// cannot change any existing outcome - an unpaged caller receives the same rows in
-// the same order - but it is a deliberate enhancement and is stated as such rather
-// than presented as fidelity.
-// MIGRATION: the wire representation of the two frequency members changes from a
-// human-readable description to the stable stored code, and that is intentional.
-// The terminal listing procedure, recreated for the last time in
-// 04.05.05.SqlDataProvider and never dropped afterwards, resolved each frequency
-// through a lookup join and projected the lookup's display text, not the code:
-// "case when convert(int,R.ServiceFee) <> 0 then L1.Text else '' end" for billing
-// and the matching expression over the trial column. Projecting display text made
-// the payload a presentation artefact - unsortable, unfilterable, and unstable
-// under any change of wording. This contract carries the code as an enumeration
-// member instead and leaves the wording to the client, which is what lets the same
-// payload serve a grid, a filter and a future translation. The legacy wording
-// itself stays recoverable from the resource files, which remain the authority for
-// user-facing text.
+// MIGRATION: the two frequency members carry the stored CODE, not the lookup's display text. The
+// terminal listing procedure (last recreated in 04.05.05.SqlDataProvider and never dropped
+// afterwards) resolved each frequency through a lookup join and projected the lookup's Text
+// column - "case when convert(int,R.ServiceFee) <> 0 then L1.Text else '' end", with a matching
+// expression over the trial column - which made the payload a presentation artefact: unsortable,
+// unfilterable, and unstable under any wording change. The legacy wording stays recoverable from
+// the resource files.
 public sealed class RoleListItemDto
 {
     /// <summary>
-    /// Identifier of the role, and the row key the listing acts on.
+    /// Primary key of the role, carried by the legacy grid as the key of both action affordances
+    /// rather than as a rendered column.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.RoleID int IDENTITY (0, 1) NOT NULL</c>, declared
-    /// in the baseline table at <c>01.00.00.SqlDataProvider</c> lines 114 to 115.
-    /// Legacy member <c>RoleInfo.RoleID</c>, an <c>Integer</c> at
-    /// <c>RoleInfo.vb</c> line 65. The legacy grid did not render it as a column;
-    /// it carried it as the key of both action columns, declared
-    /// <c>keyfield="RoleID"</c> at <c>roles.ascx</c> lines 34 and 35, which are
-    /// the edit and role-membership affordances now addressed by the routed detail
-    /// and membership screens.
+    /// Backing column <c>Roles.RoleID int IDENTITY (0, 1) NOT NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L114-L115); legacy member <c>RoleInfo.RoleID</c>
+    /// (<c>RoleInfo.vb</c> L65), used as <c>keyfield="RoleID"</c> on the edit and role-membership
+    /// columns at <c>roles.ascx</c> L34-L35.
     /// </remarks>
-    // MIGRATION: the column is seeded IDENTITY(0,1), so the very FIRST role ever
-    // inserted carries the identifier zero, and zero is therefore a perfectly
-    // legitimate, addressable role rather than a missing one. Never probe this
-    // property for absence by comparing it against zero, against a
-    // negative-or-zero range, or against the type's default value: each of those
-    // tests would silently exclude the first row in the table. Nor may negative
-    // one be treated as absence here. That value is the legacy integer null
-    // sentinel from Null.vb line 41, and the legacy editor did overload it as its
-    // own add-versus-edit switch, but the same schema also seeds a neighbouring
-    // table IDENTITY(-1,1) at 01.00.00.SqlDataProvider line 77, which makes
-    // negative one a genuine identifier elsewhere and the sentinel unsafe to
-    // generalise. The routed endpoints already distinguish creation from update,
-    // so no magic value is carried forward, and the property stays a plain
-    // non-nullable int faithful to the NOT NULL column.
+    // MIGRATION: identifier trap. The column is seeded IDENTITY(0,1), so the first role ever
+    // inserted carries identifier zero and zero is a legitimate addressable role. Never probe for
+    // absence by comparing against zero, a negative-or-zero range, or the type default. -1 is
+    // equally unsafe: it is the legacy integer null sentinel (Null.vb L41) which the legacy editor
+    // overloaded as its own add-versus-edit switch, but the same schema seeds Portals.PortalID
+    // IDENTITY(-1,1) at 01.00.00.SqlDataProvider L77, so -1 is a genuine identifier elsewhere. The
+    // routed endpoints distinguish creation from update, so no magic value is carried forward.
     public int RoleId { get; set; }
 
     /// <summary>
-    /// Name of the role, unique within its portal, and the column the legacy
-    /// listing ordered by.
+    /// Display name of the role, and the natural default ordering for the paged endpoint because
+    /// the terminal listing procedure sorts on this column.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.RoleName nvarchar(50) NOT NULL</c>, declared at
-    /// <c>01.00.00.SqlDataProvider</c> line 117. Legacy member
-    /// <c>RoleInfo.RoleName</c>, a <c>String</c> at <c>RoleInfo.vb</c> line 110,
-    /// bound as the first data column at <c>roles.ascx</c> line 36 under the
-    /// header "Name". The terminal listing procedure sorts on this column, so it
-    /// is the natural default ordering for the paged endpoint. The length ceiling
-    /// and the mandatory-value rule are reproduced declaratively by the
-    /// validators; this contract asserts neither.
+    /// Backing column <c>Roles.RoleName nvarchar(50) NOT NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L117); legacy member <c>RoleInfo.RoleName</c>
+    /// (<c>RoleInfo.vb</c> L110), the first data column at <c>roles.ascx</c> L36 under the header
+    /// "Name". The length ceiling and the mandatory-value rule are reproduced declaratively by the
+    /// validator; this contract asserts neither.
     /// </remarks>
     public string RoleName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Free-text description of the role, or <see langword="null"/> when the role
-    /// has none.
+    /// Free-text description of the role.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.Description nvarchar(1000) NULL</c>, declared at
-    /// <c>01.00.00.SqlDataProvider</c> line 118. Legacy member
-    /// <c>RoleInfo.Description</c>, a <c>String</c> at <c>RoleInfo.vb</c> line
-    /// 125, bound as the second data column at <c>roles.ascx</c> line 38 under the
-    /// header "Description".
+    /// Backing column <c>Roles.Description nvarchar(1000) NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L118); legacy member <c>RoleInfo.Description</c>
+    /// (<c>RoleInfo.vb</c> L125), the second data column at <c>roles.ascx</c> L38.
     /// </remarks>
-    // MIGRATION: the legacy read path could never yield null here, because every
-    // read funnelled through Null.SetNull and its string sentinel -
-    // Null.NullString at Null.vb line 70 - is the EMPTY STRING and not null. A
-    // database NULL and an empty description were therefore indistinguishable once
-    // loaded, and the grid rendered an empty cell for both. This contract models
-    // the nullable column honestly with a nullable string rather than importing
-    // that sentinel, which makes the two distinguishable on the wire for the first
-    // time. Which of them stands for an absent description is settled in
-    // Application/Mapping/RoleMappings.cs, the one place that translates between
-    // this contract and the persisted model, and is stated here in prose rather
-    // than imposed by a serialisation attribute or a custom converter so that the
-    // divergence stays visible instead of being applied silently while the payload
-    // is written.
+    // MIGRATION: the legacy read path could never yield null, because every read funnelled through
+    // Null.SetNull and its string sentinel is the EMPTY STRING (Null.vb L70). A database NULL and
+    // an empty description were therefore indistinguishable once loaded, and the grid rendered an
+    // empty cell for both. This contract models the nullable column honestly, which makes the two
+    // distinguishable for the first time; deciding which of them stands for an absent description
+    // is an obligation of the role mapper.
     public string? Description { get; set; }
 
     /// <summary>
-    /// Recurring subscription fee for the role, or <see langword="null"/> when the
-    /// role is free and the legacy listing showed a blank fee cell.
+    /// Recurring subscription fee for the role, or <see langword="null"/> when the role is free.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.ServiceFee money NULL DEFAULT (0)</c>. Legacy
-    /// member <c>RoleInfo.ServiceFee</c>, declared <c>As Single</c> at
-    /// <c>RoleInfo.vb</c> line 164, bound through the <c>FormatPrice</c> helper by
-    /// the "Fee" template column at <c>roles.ascx</c> lines 40 and 42.
+    /// Backing column <c>Roles.ServiceFee money NULL DEFAULT (0)</c>; legacy member
+    /// <c>RoleInfo.ServiceFee</c>, declared <c>As Single</c> (<c>RoleInfo.vb</c> L164), bound
+    /// through <c>FormatPrice</c> by the "Fee" template column at <c>roles.ascx</c> L40 and L42.
     /// </remarks>
-    // MIGRATION: the type is resolved from the TERMINAL schema and not from the
-    // legacy property, which declared a single-precision floating-point value. A
-    // binary floating-point type cannot represent a decimal currency amount
-    // exactly and must never carry a fee, so this member is a decimal.
-    // MIGRATION: the terminal schema also overrides the BASELINE schema, and this
-    // column is the clearest demonstration of why only the terminal state of the
-    // upgrade chain is meaningful. Reading the baseline alone gives the wrong
-    // answer twice over. The chronology, verified case-insensitively across all
-    // four naming forms the chain uses: 01.00.00.SqlDataProvider line 119 declares
-    // "[ServiceFee] [decimal](5, 2) NULL", which caps a fee at 999.99; the table
-    // is then recreated as "money" at 01.00.04.SqlDataProvider line 1326 and again
-    // at 01.00.05.SqlDataProvider line 2752; and 03.01.01.SqlDataProvider line
-    // 1173 issues the terminal "ALTER COLUMN [ServiceFee] [money] NULL", with line
-    // 1177 adding a default of zero. That ALTER COLUMN is the ONLY one applied to
-    // this table anywhere in the 88-script chain, so nothing supersedes it, and
-    // every later procedure signature agrees - the last of them declares the
-    // parameter "money" at 04.00.04.SqlDataProvider line 459. The independent
-    // third witness is the legacy editor, which validated this field as a currency
-    // data type. Money is a fixed-point type that maps to a decimal, so the scale
-    // ceiling implied by the baseline is not merely superseded, it never applied
-    // to a live database.
-    // MIGRATION: null is the FAITHFUL representation of a free role, not a
-    // modernisation. The legacy pipeline already blanked this cell end to end: the
-    // terminal listing procedure projects "case when convert(int,R.ServiceFee) <>
-    // 0 then R.ServiceFee else null end", the reader then substituted the legacy
-    // single-precision null sentinel, and FormatPrice at Roles.ascx.vb line 175
-    // returned the empty string for exactly that sentinel. A blank cell was
-    // therefore what an administrator saw for a free role, and null is what that
-    // blank cell means. Nothing in this contract represents the sentinel value
-    // itself; converting between the two is settled in
-    // Application/Mapping/RoleMappings.cs.
+    // MIGRATION: decimal, resolved from the TERMINAL schema rather than from the legacy property
+    // or the baseline column. A binary floating-point type cannot represent a currency amount
+    // exactly, so the single-precision legacy declaration cannot be carried forward; and the
+    // baseline "[ServiceFee] [decimal](5, 2) NULL" at 01.00.00.SqlDataProvider L119, which would
+    // cap a fee at 999.99, is superseded by the terminal "ALTER COLUMN [ServiceFee] [money] NULL"
+    // at 03.01.01.SqlDataProvider L1173, with a default of zero added at L1177. That is the only
+    // ALTER COLUMN applied to this table anywhere in the chain, and every later procedure
+    // signature agrees, the last declaring the parameter money at 04.00.04.SqlDataProvider L459.
+    // Money is a fixed-point type that maps to decimal, so the baseline scale ceiling never
+    // applied to a live database.
     public decimal? ServiceFee { get; set; }
 
     /// <summary>
-    /// Number of billing units between charges, or <see langword="null"/> when the
-    /// role is free and the legacy listing showed a blank period cell. It is a
-    /// multiplier over <see cref="BillingFrequency"/> and is meaningless alone.
+    /// Number of billing units between charges, or <see langword="null"/> when the role is free.
+    /// It is a multiplier over <see cref="BillingFrequency"/> and is meaningless alone.
     /// </summary>
     /// <remarks>
     /// Backing column <c>Roles.BillingPeriod int NULL</c>, added at
-    /// <c>01.00.08.SqlDataProvider</c> line 6829 and never altered afterwards;
-    /// that same script backfills existing rows to one at lines 6900 to 6901.
-    /// Legacy member <c>RoleInfo.BillingPeriod</c>, declared <c>As Integer</c> at
-    /// <c>RoleInfo.vb</c> line 218, bound through the <c>FormatPeriod</c> helper
-    /// by the first "Every" template column at <c>roles.ascx</c> lines 45 and 47.
+    /// <c>01.00.08.SqlDataProvider</c> L6829 and never altered afterwards; that same script
+    /// backfills existing rows to one at L6900-L6901. Legacy member <c>RoleInfo.BillingPeriod</c>,
+    /// declared <c>As Integer</c> (<c>RoleInfo.vb</c> L218), bound through <c>FormatPeriod</c> by
+    /// the first "Every" template column at <c>roles.ascx</c> L45 and L47.
     /// </remarks>
-    // MIGRATION: a genuine three-way type conflict, resolved four-to-one in favour
-    // of a nullable integer. The legacy entity property is an integer, the schema
-    // column is int NULL, and the legacy editor validated the field as an integer
-    // data type; only one legacy data-provider signature disagreed by passing the
-    // value as text, and a textual period would make every arithmetic and ordering
-    // operation over this column a parse. The decisive witness is the terminal
-    // listing procedure itself, which emits SQL NULL for a free role - "case when
-    // convert(int,R.ServiceFee) <> 0 then R.BillingPeriod else null end" -
-    // regardless of what is actually stored in the column. A nullable integer
-    // carrying null is therefore not a modernisation of the legacy contract; it is
-    // the literal value the legacy data layer produced.
-    // MIGRATION: null here is faithful for the same reason it is faithful on the
-    // fee. FormatPeriod at Roles.ascx.vb line 152 returned the empty string
-    // whenever the value equalled the legacy integer null sentinel, so the legacy
-    // grid already rendered a blank period cell. The sentinel value is not carried
-    // into this contract.
+    // MIGRATION: a nullable integer, never text. One legacy data-provider signature passed this
+    // value as text, which would make every arithmetic and ordering operation over the column a
+    // parse; the entity property, the schema column and the legacy editor's validator all agree on
+    // an integer, and the terminal listing procedure emits SQL NULL for a free role regardless of
+    // what is actually stored in the column.
     public int? BillingPeriod { get; set; }
 
     /// <summary>
-    /// Unit the billing period is counted in, or <see langword="null"/> when no
-    /// code is stored against the role.
+    /// Unit the billing period is counted in, or <see langword="null"/> when no code is stored
+    /// against the role.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.BillingFrequency char(1) NULL</c>, declared at
-    /// <c>01.00.00.SqlDataProvider</c> line 120 and never altered afterwards; the
-    /// baseline constrained it with <c>FK_Roles_CodeFrequency</c> at line 583.
-    /// Legacy member <c>RoleInfo.BillingFrequency</c>, declared <c>As String</c>
-    /// at <c>RoleInfo.vb</c> line 149, bound as a plain data column at
-    /// <c>roles.ascx</c> line 50 under the header "Period".
+    /// Backing column <c>Roles.BillingFrequency char(1) NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L120, never altered; the baseline constrained it with
+    /// <c>FK_Roles_CodeFrequency</c> at L583). Legacy member <c>RoleInfo.BillingFrequency</c>,
+    /// declared <c>As String</c> (<c>RoleInfo.vb</c> L149), a plain data column at
+    /// <c>roles.ascx</c> L50 under the header "Period".
     /// </remarks>
-    // MIGRATION: the legacy single-character text value becomes the shared domain
-    // enumeration, whose members are explicitly valued at the code points of those
-    // very characters. The codes are LOAD-BEARING DATA - they are the literal
-    // bytes already sitting in this column in every existing database - so no
-    // member is ever renamed or renumbered. Typing the member list is a real
-    // strengthening and not decoration: the constraint that once policed this
-    // column was dropped when the dedicated lookup table was folded into the
-    // generic list table, so the terminal column accepts any single character, and
-    // confining it to the declared members restores a guarantee the schema itself
-    // stopped providing.
-    // MIGRATION: null means NO CODE IS STORED, and it must never be conflated with
-    // the None member. That member is the real stored code 'N', meaning "does not
-    // expire", and the legacy SQL relies on it as a live discriminator: the
-    // terminal listing procedure gates the whole trial group behind "case when
-    // R.TrialFrequency <> 'N'", which only works because 'N' is a value present in
-    // the column rather than its absence. Collapsing the two would break
-    // trial-period selection.
+    // MIGRATION: the codes are LOAD-BEARING DATA - the literal bytes already sitting in this
+    // column in every existing database - so the shared domain enumeration values its members at
+    // those code points and no member is ever renamed or renumbered. Typing the member list is a
+    // real strengthening: the constraint that once policed this column was dropped when the
+    // dedicated lookup table was folded into the generic list table, so the terminal column
+    // accepts any single character.
+    // MIGRATION: null means NO CODE IS STORED and must never be conflated with the None member,
+    // which is the real stored code 'N' meaning "does not expire". The legacy SQL relies on that
+    // distinction: the terminal listing procedure gates the whole trial group behind
+    // "case when R.TrialFrequency <> 'N'", which only works because 'N' is a value present in the
+    // column rather than its absence. Collapsing the two would break trial-period selection.
     public BillingFrequency? BillingFrequency { get; set; }
 
     /// <summary>
-    /// Fee charged for the trial period, or <see langword="null"/> when the role
-    /// offers no trial and the legacy listing showed a blank trial cell.
+    /// Fee charged for the trial period, or <see langword="null"/> when the role offers no trial.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.TrialFee money NULL</c>, added at
-    /// <c>01.00.08.SqlDataProvider</c> line 6830 and never altered afterwards, so
-    /// unlike its billing counterpart it was fixed-point from birth and never
-    /// passed through a superseded decimal declaration. Every later procedure
-    /// signature agrees, the last declaring the parameter <c>money</c> at
-    /// <c>04.00.04.SqlDataProvider</c> line 462. Legacy member
-    /// <c>RoleInfo.TrialFee</c>, declared <c>As Single</c> at <c>RoleInfo.vb</c>
-    /// line 233, bound through the <c>FormatPrice</c> helper by the "Trial"
-    /// template column at <c>roles.ascx</c> lines 53 and 55.
+    /// Backing column <c>Roles.TrialFee money NULL</c>, added at <c>01.00.08.SqlDataProvider</c>
+    /// L6830 and never altered, so unlike its billing counterpart it was fixed-point from birth
+    /// and never passed through a superseded decimal declaration; the last procedure signature
+    /// declares the parameter <c>money</c> at <c>04.00.04.SqlDataProvider</c> L462. Legacy member
+    /// <c>RoleInfo.TrialFee</c>, declared <c>As Single</c> (<c>RoleInfo.vb</c> L233), bound
+    /// through <c>FormatPrice</c> by the "Trial" template column at <c>roles.ascx</c> L53 and L55.
     /// </remarks>
-    // MIGRATION: a decimal for the same two reasons as the billing fee - a binary
-    // floating-point type cannot hold a currency amount exactly, and the terminal
-    // schema type is fixed-point - and null for the same reason as well, except
-    // that the terminal listing procedure gates this member on the trial code
-    // rather than on the fee: "case when R.TrialFrequency <> 'N' then R.TrialFee
-    // else null end". A role with no trial therefore arrived as SQL NULL, became
-    // the legacy single-precision null sentinel on read, and was rendered as a
-    // blank cell by FormatPrice. Null preserves that outcome exactly.
+    // MIGRATION: decimal for the same currency reason as the billing fee. Note that the terminal
+    // listing procedure gates this member on the trial CODE rather than on the fee -
+    // "case when R.TrialFrequency <> 'N' then R.TrialFee else null end" - so null here follows
+    // from the absence of a trial, not from the fee being zero.
     public decimal? TrialFee { get; set; }
 
     /// <summary>
-    /// Number of trial units before the first charge, or <see langword="null"/>
-    /// when the role offers no trial and the legacy listing showed a blank period
-    /// cell. It is a multiplier over <see cref="TrialFrequency"/> and is
-    /// meaningless alone.
+    /// Number of trial units before the first charge, or <see langword="null"/> when the role
+    /// offers no trial. It is a multiplier over <see cref="TrialFrequency"/> and is meaningless
+    /// alone.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.TrialPeriod int NULL</c>, present in the baseline
-    /// table at <c>01.00.00.SqlDataProvider</c> line 121, restated when the table
-    /// was recreated at <c>01.00.04.SqlDataProvider</c> line 1328 and
-    /// <c>01.00.05.SqlDataProvider</c> line 2754, and never altered afterwards.
-    /// Legacy member <c>RoleInfo.TrialPeriod</c>, declared <c>As Integer</c> at
-    /// <c>RoleInfo.vb</c> line 203, bound through the <c>FormatPeriod</c> helper
-    /// by the second "Every" template column at <c>roles.ascx</c> lines 58 and 60.
+    /// Backing column <c>Roles.TrialPeriod int NULL</c>, present in the baseline table at
+    /// <c>01.00.00.SqlDataProvider</c> L121, restated when the table was recreated at
+    /// <c>01.00.04.SqlDataProvider</c> L1328 and <c>01.00.05.SqlDataProvider</c> L2754, and never
+    /// altered afterwards. Legacy member <c>RoleInfo.TrialPeriod</c>, declared <c>As Integer</c>
+    /// (<c>RoleInfo.vb</c> L203), bound through <c>FormatPeriod</c> by the second "Every" template
+    /// column at <c>roles.ascx</c> L58 and L60. A nullable integer on the same evidence as the
+    /// billing period, and never text.
     /// </remarks>
-    // MIGRATION: a nullable integer on the same four-to-one evidence as the
-    // billing period, and never text. The terminal listing procedure emits "case
-    // when R.TrialFrequency <> 'N' then R.TrialPeriod else null end", so a role
-    // with no trial was already delivered as SQL NULL, and FormatPeriod already
-    // rendered the resulting legacy integer null sentinel as a blank cell. The
-    // sentinel value is not carried into this contract.
     public int? TrialPeriod { get; set; }
 
     /// <summary>
-    /// Unit the trial period is counted in, or <see langword="null"/> when no code
-    /// is stored against the role.
+    /// Unit the trial period is counted in, or <see langword="null"/> when no code is stored
+    /// against the role. Null is never the same thing as the <c>None</c> member, for the reason
+    /// given on <see cref="BillingFrequency"/>.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.TrialFrequency char(1) NULL</c>, declared at
-    /// <c>01.00.00.SqlDataProvider</c> line 122 and never altered afterwards.
-    /// Legacy member <c>RoleInfo.TrialFrequency</c>, declared <c>As String</c> at
-    /// <c>RoleInfo.vb</c> line 188, bound as a plain data column at
-    /// <c>roles.ascx</c> line 63 under the header "Period".
+    /// Backing column <c>Roles.TrialFrequency char(1) NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L122, never altered). Legacy member
+    /// <c>RoleInfo.TrialFrequency</c>, declared <c>As String</c> (<c>RoleInfo.vb</c> L188), a
+    /// plain data column at <c>roles.ascx</c> L63 under the header "Period".
     /// </remarks>
-    // MIGRATION: this member deliberately reuses the SAME shared domain
-    // enumeration as its billing counterpart, and no separate trial-specific type
-    // is created anywhere. The schema settles it: one frequency lookup is joined
-    // TWICE from a single role row, once per column, in both eras of the chain -
-    // early on against the dedicated lookup table's code, and terminally as two
-    // joins onto the same generic 'Frequency' list, one keyed on this column and
-    // one on the billing column. Both columns therefore draw from one shared code
-    // set, and one type covers them both. Declaring a second enumeration, or a
-    // local copy of the shared one, would fork a single source of truth for no
-    // gain.
-    // MIGRATION: as on the billing counterpart, null means no code is stored and
-    // is never the same thing as the None member, which is the real stored code
-    // 'N' meaning "no trial" and is precisely the value the terminal listing
-    // procedure tests against to decide whether the trial group applies at all.
+    // MIGRATION: this member deliberately reuses the SAME shared enumeration as its billing
+    // counterpart, and no trial-specific type exists. The schema settles it: one frequency lookup
+    // is joined twice from a single role row, once per column, in both eras of the chain - early
+    // against the dedicated lookup table's code, and terminally as two joins onto the same generic
+    // 'Frequency' list. Both columns draw from one shared code set, so one type covers them both.
     public BillingFrequency? TrialFrequency { get; set; }
 
     /// <summary>
-    /// Whether the role is publicly visible, so that a user may subscribe to it
-    /// themselves rather than being assigned to it by an administrator.
+    /// Whether the role is publicly visible, so that a user may subscribe to it themselves rather
+    /// than being assigned to it by an administrator.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.IsPublic bit NOT NULL DEFAULT 0</c>, added with its
-    /// default constraint at <c>01.00.08.SqlDataProvider</c> line 6831 and
-    /// re-asserted under qualifier templating at <c>03.01.01.SqlDataProvider</c>
-    /// line 1174, whose line 1179 restores the default of zero. Legacy member
-    /// <c>RoleInfo.IsPublic</c>, a <c>Boolean</c> at <c>RoleInfo.vb</c> line 248,
-    /// bound by the "Public" template column at <c>roles.ascx</c> lines 66 to 69,
-    /// which showed one of two images according to the value.
+    /// Backing column <c>Roles.IsPublic bit NOT NULL DEFAULT 0</c>, added with its default
+    /// constraint at <c>01.00.08.SqlDataProvider</c> L6831 and re-asserted under qualifier
+    /// templating at <c>03.01.01.SqlDataProvider</c> L1174, whose L1179 restores the default.
+    /// Legacy member <c>RoleInfo.IsPublic</c>, a <c>Boolean</c> (<c>RoleInfo.vb</c> L248), bound
+    /// by the "Public" template column at <c>roles.ascx</c> L66-L69, which chose between two
+    /// images. Non-nullable on purpose: the column is NOT NULL with a default, so a nullable
+    /// boolean would invent a third state the database cannot hold.
     /// </remarks>
-    // MIGRATION: non-nullable on purpose. The column is NOT NULL with a default of
-    // zero, so the value is always present and a nullable boolean would misstate
-    // the schema and invent a third state the database cannot hold.
-    // MIGRATION: the wire type changes from text to a real boolean. The terminal
-    // listing procedure projected this column as one of the two words True and
-    // False - "case when R.IsPublic = 1 then 'True' else 'False' end" - and the
-    // legacy grid then compared that text against a lower-case literal to pick
-    // which image to show, at roles.ascx lines 68 and 69. That round trip through
-    // text was a workaround for an untyped binding pipeline, and its
-    // case-sensitivity was a latent defect rather than a feature. The primitive
-    // replaces the workaround: this contract carries a boolean and the client
-    // renders it, which removes the comparison entirely instead of preserving a
-    // fragile one.
+    // MIGRATION: the wire type changes from text to a real boolean. The terminal listing procedure
+    // projected this column as the words True and False, and the legacy grid then compared that
+    // text against a lower-case literal to choose an image (roles.ascx L68-L69) - a case-sensitive
+    // comparison that was a latent defect rather than a feature. Carrying a boolean and letting
+    // the client render it removes the comparison instead of preserving a fragile one.
     public bool IsPublic { get; set; }
 
     /// <summary>
     /// Whether the role is granted automatically to every new user of the portal.
     /// </summary>
     /// <remarks>
-    /// Backing column <c>Roles.AutoAssignment bit NOT NULL DEFAULT 0</c>, added
-    /// with its default constraint at <c>01.00.08.SqlDataProvider</c> line 6832
-    /// and re-asserted under qualifier templating at
-    /// <c>03.01.01.SqlDataProvider</c> line 1175, whose line 1181 restores the
-    /// default of zero. Legacy member <c>RoleInfo.AutoAssignment</c>, a
-    /// <c>Boolean</c> at <c>RoleInfo.vb</c> line 263, bound by the "Auto" template
-    /// column at <c>roles.ascx</c> lines 72 to 75, which showed one of two images
-    /// according to the value.
+    /// Backing column <c>Roles.AutoAssignment bit NOT NULL DEFAULT 0</c>, added with its default
+    /// constraint at <c>01.00.08.SqlDataProvider</c> L6832 and re-asserted under qualifier
+    /// templating at <c>03.01.01.SqlDataProvider</c> L1175, whose L1181 restores the default.
+    /// Legacy member <c>RoleInfo.AutoAssignment</c>, a <c>Boolean</c> (<c>RoleInfo.vb</c> L263),
+    /// bound by the "Auto" template column at <c>roles.ascx</c> L72-L75. Non-nullable, and
+    /// text-to-boolean, for exactly the reasons given on <see cref="IsPublic"/>.
     /// </remarks>
-    // MIGRATION: non-nullable, and text-to-boolean, for exactly the reasons given
-    // on the neighbouring flag. The column is NOT NULL with a default of zero, and
-    // the terminal listing procedure projected it as the words True and False in
-    // the same manner, which the legacy grid string-compared in the same way at
-    // roles.ascx lines 74 and 75.
     public bool AutoAssignment { get; set; }
 }

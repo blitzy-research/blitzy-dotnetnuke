@@ -1,0 +1,77 @@
+// A custom element has no intrinsic display, so block flow is declared explicitly.
+// Left inline, the banner's own spacing and wrapping would be computed against an
+// inline box, which only misbehaves once a consumer places it beside other content.
+:host {
+  display: block;
+}
+
+// The live region itself is unstyled on purpose: no padding, no border, no
+// background, and no margin. While it is empty it therefore paints nothing and
+// resolves to zero height, because it is present on every screen whether or not a
+// request has failed. All visible treatment belongs to the inner element, which
+// exists only when there is a problem to show - including the trailing margin, so
+// that an empty banner contributes no spacing either.
+//
+// `display: block` rather than `display: contents`, and the difference matters
+// here specifically. `contents` removes the element's own box, which is exactly
+// what an empty wrapper wants, but it has a documented history of removing the
+// element from the accessibility tree in shipping browser versions - and this
+// element IS the accessibility contract. A wrapper that occupies no space is
+// worthless if the live region it carries has been dropped from the tree, so the
+// safe box model wins over the tidier one.
+//
+// One consumer-facing consequence, stated rather than hidden: a zero-height box is
+// still a box, so placing this component as a direct child of a flex or grid
+// container that declares a gap contributes one gap step even while the banner is
+// empty. Features place it in ordinary block flow, where it costs nothing.
+.error-banner-live {
+  display: block;
+}
+
+.error-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-end: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-danger);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+  color: var(--color-danger);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+}
+
+// MIGRATION: the legacy validation summary rendered its messages in the error
+// colour on the page background, with no border and no surface of its own. The
+// border here is a net addition that groups the messages into one recognisable
+// region; the colour is the measured legacy error value carried across as a token.
+.error-banner__message {
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+  overflow-wrap: break-word;
+}
+
+// The description list drops the browser's default indentation and margins, which
+// would otherwise fight the flex gap that already owns the spacing here.
+.error-banner__fields {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.error-banner__field {
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+.error-banner__detail {
+  // A description detail carries a default start margin in every browser, which is
+  // the indentation that visually associates it with its term. It is replaced with
+  // a token-based inset so the indentation participates in the shared spacing scale
+  // rather than being whatever the user agent chose.
+  margin: 0;
+  margin-inline-start: var(--space-3);
+  overflow-wrap: break-word;
+}

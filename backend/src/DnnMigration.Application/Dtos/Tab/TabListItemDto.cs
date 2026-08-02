@@ -131,7 +131,10 @@ public sealed class TabListItemDto
     /// this type is a read projection, so it declares no validation attribute and no
     /// validator exists for it.
     /// </remarks>
-    public string TabName { get; set; }
+    // MIGRATION: initialised on the same terms as the detail projection's counterpart. This is the
+    // member the legacy page list bound as its display text, so a null here would render as a blank,
+    // unselectable row rather than failing visibly.
+    public string TabName { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the page title, captioned "Page Title" in the legacy administration

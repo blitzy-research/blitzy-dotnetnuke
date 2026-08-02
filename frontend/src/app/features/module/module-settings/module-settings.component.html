@@ -1,0 +1,542 @@
+<!--
+  The module settings screen, replacing Website/admin/Modules/modulesettings.ascx.
+
+  Structure notes that are load-bearing:
+
+    - Seven disclosure regions nested two levels deep, reproducing the legacy section-head hierarchy. The
+      three top-level heads carry --ruled because their legacy counterparts declared includerule="True"; the
+      four nested regions carry --nested on the SECTION, because the legacy indent sat outside the group.
+    - A closed region's body is REMOVED rather than hidden. The [hidden] attribute's user-agent rule loses to
+      any author rule, and .module-settings__body declares display:grid, so hiding would not hide. Removal
+      also keeps the closed content out of the accessibility tree entirely.
+    - aria-controls is deliberately omitted from every head. aria-expanded alone is a complete disclosure
+      pattern, and pointing aria-controls at an element that is not in the document would be worse than
+      omitting it.
+    - Every migrated string is INTERPOLATED from a component constant, never written as template text.
+      Angular compiles templates with preserveWhitespaces disabled, which collapses whitespace runs inside a
+      text node and would silently rewrite the four legacy help strings that carry two spaces after a
+      sentence period. Interpolated values are not collapsed.
+-->
+<app-page-header [title]="heading"></app-page-header>
+
+@if (loading) {
+  <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
+} @else if (settings === null) {
+  <app-empty-state [message]="noModuleMessage"></app-empty-state>
+} @else {
+  <form class="module-settings" [formGroup]="form" (ngSubmit)="onSubmit()">
+    <!-- ============================= Module Settings (top level) ============================= -->
+    <section class="module-settings__section">
+      <button
+        class="module-settings__toggle module-settings__toggle--ruled"
+        type="button"
+        [id]="sectionHeadingId('moduleSettings')"
+        [attr.aria-expanded]="isExpanded('moduleSettings')"
+        (click)="toggle('moduleSettings')"
+      >
+        {{ headings['moduleSettings'] }}
+      </button>
+
+      @if (isExpanded('moduleSettings')) {
+        <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('moduleSettings')">
+          <p class="module-settings__intro">{{ intros['moduleSettings'] }}</p>
+
+          <!-- ------------------------- Basic Settings (nested) ------------------------- -->
+          <section class="module-settings__section module-settings__section--nested">
+            <button
+              class="module-settings__toggle"
+              type="button"
+              [id]="sectionHeadingId('details')"
+              [attr.aria-expanded]="isExpanded('details')"
+              (click)="toggle('details')"
+            >
+              {{ headings['details'] }}
+            </button>
+
+            @if (isExpanded('details')) {
+              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('details')">
+                <div class="module-settings__fields">
+                  <!-- The definition's name is shown, never edited: which definition a module instantiates
+                       is fixed when it is created. Rendered as a description list rather than a disabled
+                       input, because a disabled input suggests an edit that is merely unavailable. -->
+                  <div class="module-settings__field">
+                    <span class="module-settings__label" [id]="labelId('friendlyName')">
+                      {{ labels['friendlyName'] }}
+                    </span>
+                    <div class="module-settings__control">
+                      <span [attr.aria-labelledby]="labelId('friendlyName')">{{ settings.friendlyName }}</span>
+                      <small class="form-help" [id]="hintId('friendlyName')">{{ hints['friendlyName'] }}</small>
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('moduleTitle')">
+                      {{ labels['moduleTitle'] }}
+                      <small class="form-help" [id]="hintId('moduleTitle')">{{ hints['moduleTitle'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="text"
+                        formControlName="moduleTitle"
+                        [id]="controlId('moduleTitle')"
+                        [maxlength]="limits.moduleTitle"
+                        [attr.aria-describedby]="hintId('moduleTitle')"
+                        [attr.aria-invalid]="form.controls.moduleTitle.touched && form.controls.moduleTitle.invalid"
+                      />
+                      @if (form.controls.moduleTitle.touched && form.controls.moduleTitle.hasError('maxlength')) {
+                        <small class="form-error" role="alert" [id]="messageId('moduleTitle')">
+                          {{ moduleTitleTooLongMessage }}
+                        </small>
+                      }
+                    </div>
+                  </div>
+
+                  <!-- The permission grid itself is its own resource with its own screen; the inherit
+                       switch IS a column on the module, so it is kept here. --stacked because the legacy
+                       permissions region occupied the full width rather than a label/field pair. -->
+                  <div class="module-settings__field module-settings__field--stacked">
+                    <span class="module-settings__label" [id]="labelId('permissions')">
+                      {{ labels['permissions'] }}
+                    </span>
+                    <div class="module-settings__control">
+                      <label [for]="controlId('inheritViewPermissions')">
+                        <input
+                          type="checkbox"
+                          formControlName="inheritViewPermissions"
+                          [id]="controlId('inheritViewPermissions')"
+                          [attr.aria-describedby]="hintId('permissions')"
+                        />
+                        {{ labels['inheritViewPermissions'] }}
+                      </label>
+                      <small class="form-help" [id]="hintId('permissions')">{{ hints['permissions'] }}</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          </section>
+
+          <!-- ------------------------- Advanced Settings (nested) ------------------------- -->
+          <section class="module-settings__section module-settings__section--nested">
+            <button
+              class="module-settings__toggle"
+              type="button"
+              [id]="sectionHeadingId('security')"
+              [attr.aria-expanded]="isExpanded('security')"
+              (click)="toggle('security')"
+            >
+              {{ headings['security'] }}
+            </button>
+
+            @if (isExpanded('security')) {
+              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('security')">
+                <div class="module-settings__fields">
+                  <div class="module-settings__field">
+                    <label [for]="controlId('allTabs')">
+                      {{ labels['allTabs'] }}
+                      <small class="form-help" [id]="hintId('allTabs')">{{ hints['allTabs'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="allTabs"
+                        [id]="controlId('allTabs')"
+                        [attr.aria-describedby]="hintId('allTabs')"
+                      />
+                    </div>
+                  </div>
+
+                  <!-- rows="6" reproduces the legacy multi-line height; --stacked because a six-row
+                       control alongside a label track would leave the label stranded at the top. -->
+                  <div class="module-settings__field module-settings__field--stacked">
+                    <label [for]="controlId('header')">
+                      {{ labels['header'] }}
+                      <small class="form-help" [id]="hintId('header')">{{ hints['header'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <textarea
+                        rows="6"
+                        formControlName="header"
+                        [id]="controlId('header')"
+                        [attr.aria-describedby]="hintId('header')"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field module-settings__field--stacked">
+                    <label [for]="controlId('footer')">
+                      {{ labels['footer'] }}
+                      <small class="form-help" [id]="hintId('footer')">{{ hints['footer'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <textarea
+                        rows="6"
+                        formControlName="footer"
+                        [id]="controlId('footer')"
+                        [attr.aria-describedby]="hintId('footer')"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  <!-- A native date control carries its own picker, which is the affordance the legacy
+                       pop-up calendar link provided. -->
+                  <div class="module-settings__field">
+                    <label [for]="controlId('startDate')">
+                      {{ labels['startDate'] }}
+                      <small class="form-help" [id]="hintId('startDate')">{{ hints['startDate'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="date"
+                        formControlName="startDate"
+                        [id]="controlId('startDate')"
+                        [attr.aria-describedby]="hintId('startDate')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('endDate')">
+                      {{ labels['endDate'] }}
+                      <small class="form-help" [id]="hintId('endDate')">{{ hints['endDate'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="date"
+                        formControlName="endDate"
+                        [id]="controlId('endDate')"
+                        [attr.aria-describedby]="hintId('endDate')"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          </section>
+        </div>
+      }
+    </section>
+
+    <!-- ============================== Page Settings (top level) ============================== -->
+    <section class="module-settings__section">
+      <button
+        class="module-settings__toggle module-settings__toggle--ruled"
+        type="button"
+        [id]="sectionHeadingId('pageSettings')"
+        [attr.aria-expanded]="isExpanded('pageSettings')"
+        (click)="toggle('pageSettings')"
+      >
+        {{ headings['pageSettings'] }}
+      </button>
+
+      @if (isExpanded('pageSettings')) {
+        <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('pageSettings')">
+          <p class="module-settings__intro">{{ intros['pageSettings'] }}</p>
+
+          <!-- ------------------------- Basic Settings (nested) ------------------------- -->
+          <section class="module-settings__section module-settings__section--nested">
+            <button
+              class="module-settings__toggle"
+              type="button"
+              [id]="sectionHeadingId('appearance')"
+              [attr.aria-expanded]="isExpanded('appearance')"
+              (click)="toggle('appearance')"
+            >
+              {{ headings['appearance'] }}
+            </button>
+
+            @if (isExpanded('appearance')) {
+              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('appearance')">
+                <div class="module-settings__fields">
+                  <div class="module-settings__field">
+                    <label [for]="controlId('iconFile')">
+                      {{ labels['iconFile'] }}
+                      <small class="form-help" [id]="hintId('iconFile')">{{ hints['iconFile'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="text"
+                        formControlName="iconFile"
+                        [id]="controlId('iconFile')"
+                        [maxlength]="limits.iconFile"
+                        [attr.aria-describedby]="hintId('iconFile')"
+                      />
+                    </div>
+                  </div>
+
+                  <!-- A choice group's visible name is a <label> with NO for attribute; the group is named
+                       through role="radiogroup" + aria-labelledby. Pointing for at the first radio would
+                       name the group by side effect and make clicking its title select an option.
+                       [value] rather than [ngValue]: RadioControlValueAccessor writes the bound value
+                       through unchanged, so the stored string survives. -->
+                  <div class="module-settings__field">
+                    <label [id]="labelId('alignment')">
+                      {{ labels['alignment'] }}
+                      <small class="form-help" [id]="hintId('alignment')">{{ hints['alignment'] }}</small>
+                    </label>
+                    <div
+                      class="module-settings__choices"
+                      role="radiogroup"
+                      [attr.aria-labelledby]="labelId('alignment')"
+                      [attr.aria-describedby]="hintId('alignment')"
+                    >
+                      @for (choice of alignmentChoices; track choice.value) {
+                        <label [for]="choiceId('alignment', $index)">
+                          <input
+                            type="radio"
+                            formControlName="alignment"
+                            [id]="choiceId('alignment', $index)"
+                            [value]="choice.value"
+                          />
+                          {{ choice.label }}
+                        </label>
+                      }
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('color')">
+                      {{ labels['color'] }}
+                      <small class="form-help" [id]="hintId('color')">{{ hints['color'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <!-- Deliberately type="text", not type="color". The column holds whatever the legacy
+                           renderer was given, so a colour picker would refuse values the old site stored. -->
+                      <input
+                        type="text"
+                        formControlName="color"
+                        [id]="controlId('color')"
+                        [maxlength]="limits.color"
+                        [attr.aria-describedby]="hintId('color')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('border')">
+                      {{ labels['border'] }}
+                      <small class="form-help" [id]="hintId('border')">{{ hints['border'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="border"
+                        [id]="controlId('border')"
+                        [maxlength]="limits.border"
+                        [attr.aria-describedby]="hintId('border')"
+                        [attr.aria-invalid]="form.controls.border.touched && form.controls.border.invalid"
+                      />
+                      @if (form.controls.border.touched && form.controls.border.invalid) {
+                        <small class="form-error" role="alert" [id]="messageId('border')">
+                          {{ borderInvalidMessage }}
+                        </small>
+                      }
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [id]="labelId('visibility')">
+                      {{ labels['visibility'] }}
+                      <small class="form-help" [id]="hintId('visibility')">{{ hints['visibility'] }}</small>
+                    </label>
+                    <div
+                      class="module-settings__choices"
+                      role="radiogroup"
+                      [attr.aria-labelledby]="labelId('visibility')"
+                      [attr.aria-describedby]="hintId('visibility')"
+                    >
+                      @for (choice of visibilityChoices; track choice.value) {
+                        <label [for]="choiceId('visibility', $index)">
+                          <input
+                            type="radio"
+                            formControlName="visibility"
+                            [id]="choiceId('visibility', $index)"
+                            [value]="choice.value"
+                          />
+                          {{ choice.label }}
+                        </label>
+                      }
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('displayTitle')">
+                      {{ labels['displayTitle'] }}
+                      <small class="form-help" [id]="hintId('displayTitle')">{{ hints['displayTitle'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="displayTitle"
+                        [id]="controlId('displayTitle')"
+                        [attr.aria-describedby]="hintId('displayTitle')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('displayPrint')">
+                      {{ labels['displayPrint'] }}
+                      <small class="form-help" [id]="hintId('displayPrint')">{{ hints['displayPrint'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="displayPrint"
+                        [id]="controlId('displayPrint')"
+                        [attr.aria-describedby]="hintId('displayPrint')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('displaySyndicate')">
+                      {{ labels['displaySyndicate'] }}
+                      <small class="form-help" [id]="hintId('displaySyndicate')">
+                        {{ hints['displaySyndicate'] }}
+                      </small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="displaySyndicate"
+                        [id]="controlId('displaySyndicate')"
+                        [attr.aria-describedby]="hintId('displaySyndicate')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('cacheTime')">
+                      {{ labels['cacheTime'] }}
+                      <small class="form-help" [id]="hintId('cacheTime')">{{ hints['cacheTime'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        formControlName="cacheTime"
+                        [id]="controlId('cacheTime')"
+                        [attr.aria-describedby]="hintId('cacheTime')"
+                        [attr.aria-invalid]="form.controls.cacheTime.touched && form.controls.cacheTime.invalid"
+                      />
+                      @if (form.controls.cacheTime.touched && form.controls.cacheTime.hasError('min')) {
+                        <small class="form-error" role="alert" [id]="messageId('cacheTime')">
+                          {{ cacheTimeInvalidMessage }}
+                        </small>
+                      }
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          </section>
+
+          <!-- ------------------------- Advanced Settings (nested) ------------------------- -->
+          <section class="module-settings__section module-settings__section--nested">
+            <button
+              class="module-settings__toggle"
+              type="button"
+              [id]="sectionHeadingId('other')"
+              [attr.aria-expanded]="isExpanded('other')"
+              (click)="toggle('other')"
+            >
+              {{ headings['other'] }}
+            </button>
+
+            @if (isExpanded('other')) {
+              <div class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('other')">
+                <div class="module-settings__fields">
+                  <div class="module-settings__field">
+                    <label [for]="controlId('isDefaultModule')">
+                      {{ labels['isDefaultModule'] }}
+                      <small class="form-help" [id]="hintId('isDefaultModule')">
+                        {{ hints['isDefaultModule'] }}
+                      </small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="isDefaultModule"
+                        [id]="controlId('isDefaultModule')"
+                        [attr.aria-describedby]="hintId('isDefaultModule')"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="module-settings__field">
+                    <label [for]="controlId('allModules')">
+                      {{ labels['allModules'] }}
+                      <small class="form-help" [id]="hintId('allModules')">{{ hints['allModules'] }}</small>
+                    </label>
+                    <div class="module-settings__control">
+                      <input
+                        type="checkbox"
+                        formControlName="allModules"
+                        [id]="controlId('allModules')"
+                        [attr.aria-describedby]="hintId('allModules')"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          </section>
+        </div>
+      }
+    </section>
+
+    <!-- ========================= Module Specific Settings (top level) ========================= -->
+    <section class="module-settings__section">
+      <button
+        class="module-settings__toggle module-settings__toggle--ruled"
+        type="button"
+        [id]="sectionHeadingId('specificSettings')"
+        [attr.aria-expanded]="isExpanded('specificSettings')"
+        (click)="toggle('specificSettings')"
+      >
+        {{ headings['specificSettings'] }}
+      </button>
+
+      @if (isExpanded('specificSettings')) {
+        <div
+          class="module-settings__body"
+          role="group"
+          [attr.aria-labelledby]="sectionHeadingId('specificSettings')"
+        >
+          <p class="module-settings__intro">{{ intros['specificSettings'] }}</p>
+
+          <!-- The successor to the legacy per-module settings control panel. A definition that contributes
+               its own settings surface projects it here; the region is always rendered when open so the
+               operator can see that the module has none, which the legacy screen could not show. -->
+          <div class="module-settings__field module-settings__field--stacked">
+            <div class="module-settings__slot">
+              <ng-content select="[moduleSpecificSettings]"></ng-content>
+            </div>
+          </div>
+        </div>
+      }
+    </section>
+
+    <div class="module-settings__actions">
+      <button type="submit" [disabled]="saving">Update</button>
+      <button type="button" (click)="onCancel()">Cancel</button>
+      @if (canDelete) {
+        <button type="button" [disabled]="saving" (click)="requestRemoval()">Delete</button>
+      }
+    </div>
+  </form>
+
+  @if (removalPending) {
+    <app-confirm-dialog
+      [title]="deleteConfirmTitle"
+      [message]="deleteConfirmMessage()"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="confirmRemoval()"
+      (cancel)="abandonRemoval()"
+    ></app-confirm-dialog>
+  }
+}

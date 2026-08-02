@@ -71,7 +71,97 @@ const CHROME_HEADLESS_FLAGS = [
   '--headless=new',
 ];
 
+/**
+ * Candidate filesystem locations of a Chrome or Chromium executable, in probe order.
+ *
+ * MIGRATION: this list exists because the gate command is fixed and cannot name a
+ * binary. `ng test --watch=false --browsers=ChromeHeadless --code-coverage` says
+ * WHICH launcher to use and nothing about where the browser lives, so the only
+ * remaining channel is `process.env.CHROME_BIN`, which karma-chrome-launcher reads.
+ * When it is unset the launcher falls back to its own search, and on a distribution
+ * whose package installs under a name the launcher does not try, that search fails
+ * with `No binary for ChromeHeadless browser on your platform` — a message that
+ * names no path and suggests no remedy.
+ *
+ * The order is deliberate: the Google-branded builds first, because that is what the
+ * verified environment installs and what the migration plan pins; then the two
+ * Debian/Ubuntu Chromium spellings; then the Alpine spellings, which matter because
+ * the container images in `docker/` are Alpine-based and a future container-side test
+ * run would find its browser under exactly those names. `chromium-browser` and
+ * `chromium` are both listed because the two distributions disagree about which is
+ * the executable and which is the wrapper.
+ */
+const CHROME_BINARY_CANDIDATES = [
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/opt/google/chrome/chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/lib/chromium/chromium',
+  '/usr/lib/chromium-browser/chromium-browser',
+];
+
+/**
+ * Resolves the browser executable Karma should launch and publishes it on
+ * `process.env.CHROME_BIN`.
+ *
+ * PRECEDENCE, HIGHEST FIRST:
+ *
+ *   1. `CHROME_BIN` — already set, so an operator or a CI job has made an explicit
+ *      choice. It is returned UNVERIFIED and unmodified. Probing it and silently
+ *      replacing a bad value would be worse than failing: the run would then execute
+ *      against a browser nobody selected, and the specifications would pass or fail
+ *      on the strength of a substitution recorded nowhere.
+ *   2. `CHROME_PATH` — the variable Puppeteer and several CI images set. It is
+ *      honoured because a machine that has one of them configured has already
+ *      answered this question, and ignoring it would mean probing past a correct
+ *      answer.
+ *   3. The candidate list above, first one that exists on disk.
+ *
+ * If nothing resolves, the function returns `undefined` and sets nothing. That is
+ * deliberate: leaving the variable unset hands the decision back to
+ * karma-chrome-launcher's own search, which may well succeed on a platform this list
+ * does not know about. Setting it to a path that does not exist would REPLACE a
+ * recoverable situation with an unrecoverable one, and would do it while looking like
+ * a fix.
+ *
+ * Writing to `process.env` rather than to a launcher's `executablePath` is not a
+ * shortcut — it is the only channel that reaches BOTH custom launchers below without
+ * duplicating the value, and it is the channel karma-chrome-launcher actually reads.
+ */
+function resolveChromeBinary() {
+  const fs = require('fs');
+
+  const configured = process.env.CHROME_BIN;
+  if (configured) {
+    return configured;
+  }
+
+  const puppeteerStyle = process.env.CHROME_PATH;
+  if (puppeteerStyle) {
+    process.env.CHROME_BIN = puppeteerStyle;
+    return puppeteerStyle;
+  }
+
+  for (const candidate of CHROME_BINARY_CANDIDATES) {
+    // `existsSync` and not `accessSync(X_OK)`: the executable bit is not ours to
+    // adjudicate, and a path that exists but is not executable produces a launcher
+    // error naming the path, which is a far more useful failure than skipping it and
+    // reporting that no browser was found anywhere.
+    if (fs.existsSync(candidate)) {
+      process.env.CHROME_BIN = candidate;
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
 module.exports = function (config) {
+  // Resolved before `config.set` so that the value is in place on `process.env`
+  // before Karma instantiates any launcher.
+  resolveChromeBinary();
+
   config.set({
     // Relative paths in this file resolve against the workspace root (`frontend/`).
     basePath: '',
@@ -154,6 +244,51 @@ module.exports = function (config) {
         flags: CHROME_HEADLESS_FLAGS,
       },
     },
+
+    // =========================================================================
+    //  BROWSER RESILIENCE
+    //
+    //  MIGRATION: every value below is a NET ADDITION with no legacy counterpart —
+    //  the legacy tree contains no automated tests of any kind — and every one of
+    //  them exists to convert a SILENT, INTERMITTENT failure into either a
+    //  successful run or an unambiguous message.
+    //
+    //  Karma's defaults were written for a developer's workstation launching a
+    //  browser that is already warm. This harness runs headless Chrome inside a
+    //  container, where the first launch pays for process start-up, and where the
+    //  Angular builder is compiling the whole spec graph concurrently with the
+    //  browser coming up. Both make the defaults too tight, and both fail in the
+    //  same unhelpful way: the run reports a disconnected browser rather than a
+    //  failing specification, so the output names no spec, no file and no cause.
+    //
+    //  These four are the reason a flake is a flake rather than a bug: raising them
+    //  cannot mask a genuine assertion failure, because a failing expectation is
+    //  reported by Jasmine and never reaches the disconnect machinery at all.
+    // =========================================================================
+
+    // How long Karma waits for a launched browser to connect back. The default is 60
+    // seconds, which is ample for a warm browser and not always ample for a cold
+    // container start competing with an in-progress build for CPU.
+    captureTimeout: 120000,
+
+    // How long Karma waits for a browser that has dropped its connection to come
+    // back before declaring it gone. The default is 2 seconds — short enough that a
+    // single long garbage-collection pause or a moment of host contention ends the
+    // run.
+    browserDisconnectTimeout: 30000,
+
+    // How many times a disconnected browser may reconnect before the run is failed.
+    // The default is 0, meaning the first disconnect is fatal. Two retries covers
+    // the transient case without hiding a real one: a browser that is genuinely
+    // crashing crashes on every attempt and the run still fails, only with three
+    // pieces of evidence instead of one.
+    browserDisconnectTolerance: 2,
+
+    // How long a captured browser may report nothing at all before Karma assumes it
+    // has hung. The default is 30 seconds, which a slow first compile can exceed
+    // before a single specification has run — producing a timeout that looks like a
+    // hanging test and is actually a build still in progress.
+    browserNoActivityTimeout: 120000,
 
     // Local development ergonomics only. Neither affects a gate run: `--watch=false`
     // makes the Angular builder set `singleRun` to true for that invocation.

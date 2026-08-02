@@ -322,13 +322,24 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         // MIGRATION: the target stores a one-way hash instead. That concern is owned entirely
         // by Infrastructure/Security/BcryptPasswordHasher.cs, which this file neither
         // references nor duplicates, and the hash is not a column of dbo.Users, so it is
-        // unmapped here with the rest. Existing credentials cannot be verified against a
-        // one-way hash, so the documented path is a re-hash on first successful sign-in with an
-        // administrative reset as the fallback, and password RETRIEVAL is deliberately not
-        // carried forward to any endpoint or screen. The legacy password POLICY is preserved
-        // rather than tightened mid-migration -- release.config:L242 requires a minimum length
-        // of 7, :L243 requires no non-alphanumeric characters and :L241 requires no question
-        // and answer -- because hardening it here would exclude accounts that are valid today.
+        // unmapped here with the rest. Password RETRIEVAL is deliberately not carried forward to
+        // any endpoint or screen. The legacy password POLICY is preserved rather than tightened
+        // mid-migration -- release.config:L242 requires a minimum length of 7, :L243 requires no
+        // non-alphanumeric characters and :L241 requires no question and answer -- because
+        // hardening it here would exclude accounts that are valid today.
+        //
+        // MIGRATION: EXISTING CREDENTIALS ARE MIGRATED BY ADMINISTRATIVE RESET, AND BY NOTHING
+        // ELSE. An earlier revision of this note claimed the documented path was a re-hash on
+        // first successful sign-in with administrative reset as a fallback. THAT CLAIM WAS FALSE
+        // and is removed rather than softened, and THIS FILE IS PART OF THE PROOF: it maps no
+        // credential column at all, so there is nothing for a legacy verifier to read even if one
+        // existed - and none does, because the hasher verifies BCrypt digests only. A first
+        // successful sign-in against a legacy value is therefore impossible, and the sequence the
+        // old note described could never have run. Reinstating it would mean mapping the legacy
+        // reversible material and decrypting it with the key committed at release.config:L89-L93,
+        // which is precisely the arrangement the migration exists to end. Every account that
+        // predates the migration needs an administrative password reset; the reduction is
+        // deliberate and is recorded in MIGRATION_NOTES.md.
         builder.Ignore(u => u.PasswordHash);
         builder.Ignore(u => u.PasswordAnswer);
         builder.Ignore(u => u.PasswordQuestion);

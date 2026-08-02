@@ -5,12 +5,19 @@ namespace DnnMigration.Application.Options;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This type is a configuration record and nothing more: a plain object with no dependency
-/// on the options, configuration, hosting or HTTP abstractions, and no behaviour. It is
+/// This type is a configuration record: a plain object with no dependency
+/// on the options, configuration, hosting or HTTP abstractions. It is
 /// declared here in the Application layer and bound by the Api layer, which is why nothing
-/// in this file reads configuration, validates itself, or registers itself with a service
+/// in this file reads configuration or registers itself with a service
 /// container. The Application layer's composition entry point deliberately accepts no
 /// configuration argument, so it could not bind this type even if that were wanted.
+/// </para>
+/// <para>
+/// It does state its own invariants, through <see cref="Validate"/>, which the Api layer calls
+/// as part of binding so that a misconfigured deployment fails while the host is starting. That
+/// method reaches nothing outside the base class library, so declaring it here costs the layer
+/// no dependency, and declaring each condition beside the value it governs is what keeps a
+/// single rule per setting instead of one per consumer.
 /// </para>
 /// <para>
 /// The three-way boundary. Portal-related state in this solution has three distinct homes,
@@ -87,6 +94,68 @@ public sealed class PortalOptions
     /// constants and hard-coded literals rather than as configuration.
     /// </remarks>
     public const string SectionName = "Portal";
+
+    // ------------------------------------------------------------------------
+    // Bounds and required shapes for the values above, held here beside the
+    // settings they constrain and const rather than configurable. Two of them are
+    // security controls rather than tidiness: a template file name is combined
+    // with a directory, and a home-directory format that loses its placeholder
+    // collapses every tenant into one directory. Enforcement lives in
+    // Api/Extensions/ServiceCollectionExtensions.cs and runs at startup.
+    // ------------------------------------------------------------------------
+
+    /// <summary>
+    /// The substitution placeholder <see cref="HomeDirectoryFormat"/> must
+    /// contain: <c>{0}</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the single most consequential requirement in this type. The format
+    /// is expanded once per portal, and the placeholder is the only part of it
+    /// that differs between portals. A format without it expands to the same
+    /// string for every tenant, so every portal would read and write one shared
+    /// directory - a cross-tenant data exposure produced by a configuration
+    /// typo, with nothing in the running system to signal it. Startup refuses
+    /// such a value instead.
+    /// </remarks>
+    public const string HomeDirectoryPortalPlaceholder = "{0}";
+
+    /// <summary>
+    /// Longest acceptable <see cref="UnauthenticatedRoleName"/> or
+    /// <see cref="AllUsersRoleName"/> value: 50 characters.
+    /// </summary>
+    /// <remarks>
+    /// Not a preference. The terminal legacy schema declares
+    /// <c>Roles.RoleName nvarchar(50) NOT NULL</c>, so a longer configured name
+    /// cannot round-trip: it is either rejected by the database or truncated,
+    /// and a truncated role name silently stops matching the role it was meant
+    /// to denote.
+    /// </remarks>
+    public const int MaximumRoleNameLength = 50;
+
+    /// <summary>
+    /// Longest acceptable <see cref="AdminTemplateFileName"/> or
+    /// <see cref="HomeDirectoryFormat"/> value: 260 characters.
+    /// </summary>
+    /// <remarks>
+    /// Both values become part of a file-system path, and 260 is the classic
+    /// maximum path length - generous for a single path segment or a short
+    /// relative format, and low enough that neither value can be used to build an
+    /// absurd path. It bounds length only; the separate checks that neither value
+    /// is rooted nor contains a parent-directory segment are what make them safe.
+    /// </remarks>
+    public const int MaximumPathValueLength = 260;
+
+    /// <summary>
+    /// The parent-directory segment that neither <see cref="AdminTemplateFileName"/>
+    /// nor <see cref="HomeDirectoryFormat"/> may contain: <c>..</c>.
+    /// </summary>
+    /// <remarks>
+    /// Both values are combined with a directory the application owns, so a
+    /// parent-directory segment would let a configured value address a location
+    /// outside it. Rejecting the segment outright is simpler and safer than
+    /// attempting to normalise the result and then reason about where it landed.
+    /// </remarks>
+    public const string ParentDirectorySegment = "..";
 
     /// <summary>
     /// File name of the administration portal template, which is parsed for every newly
@@ -231,6 +300,210 @@ public sealed class PortalOptions
     /// </para>
     /// </remarks>
     public string AllUsersRoleName { get; set; } = "All Users";
+
+    /// <summary>
+    /// Width of the <c>Roles.RoleName</c> column, which bounds both role-name settings.
+    /// </summary>
+    /// <remarks>
+    /// Measured as <c>[RoleName] [nvarchar] (50) NOT NULL</c> at
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L117</c> and
+    /// carried forward unchanged by both table rebuilds (<c>01.00.04:L1324</c> and
+    /// <c>01.00.05:L2750</c>), with no later altering statement in any of the 88 scripts. Because
+    /// the legacy lookup matches a role by comparing this display name as a string, a configured
+    /// name longer than the column could never match a stored row, so the width is a genuine
+    /// constraint on the setting rather than a formatting preference.
+    /// </remarks>
+    private const int RoleNameMaximumLength = 50;
+
+    /// <summary>
+    /// Reports every way in which the values bound onto this instance are unusable, so that a
+    /// misconfigured deployment fails while the host is starting rather than when the first
+    /// portal is created or the first permission is evaluated.
+    /// </summary>
+    /// <returns>
+    /// One message per failure, each naming the configuration path an operator has to change, or
+    /// an empty collection when the instance is usable.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Every failure is reported rather than only the first, because an operator fixing one setting
+    /// per restart is the outcome a single-failure result produces.
+    /// </para>
+    /// <para>
+    /// The path checks are deliberately narrow and are about CONFIGURATION, not about caller input.
+    /// Both path-shaped settings are composed into a web-relative location, so a rooted path, a
+    /// drive or UNC prefix, or a parent-directory segment in either of them would escape the
+    /// intended root for every portal at once. Validating the request-supplied home directory of an
+    /// individual portal is a separate concern and belongs to the portal request validators.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> Validate()
+    {
+        List<string> failures = [];
+
+        if (string.IsNullOrWhiteSpace(AdminTemplateFileName))
+        {
+            failures.Add(
+                $"{SectionName}:{nameof(AdminTemplateFileName)} is not set. The value selects a "
+                + "behavioural branch during portal creation by exact name comparison, so an empty "
+                + "value matches no template and silently changes which template nodes are "
+                + "honoured.");
+        }
+        else if (ContainsSeparatorOrParentSegment(AdminTemplateFileName))
+        {
+            failures.Add(
+                $"{SectionName}:{nameof(AdminTemplateFileName)} is '{AdminTemplateFileName}', which "
+                + "is a path rather than a bare file name. The value is compared by name against a "
+                + "template file name, so a path both fails that comparison and points outside the "
+                + "template directory.");
+        }
+
+        if (string.IsNullOrWhiteSpace(HomeDirectoryFormat))
+        {
+            failures.Add(
+                $"{SectionName}:{nameof(HomeDirectoryFormat)} is not set. Portals with no stored "
+                + "home directory would then be given an empty one, placing their content at the "
+                + "application root.");
+        }
+        else
+        {
+            if (!HomeDirectoryFormat.Contains(PortalIdPlaceholder, StringComparison.Ordinal))
+            {
+                failures.Add(
+                    $"{SectionName}:{nameof(HomeDirectoryFormat)} is '{HomeDirectoryFormat}', which "
+                    + $"contains no {PortalIdPlaceholder} placeholder. Without it every portal "
+                    + "lacking a stored home directory would be given the same one, so tenants "
+                    + "would share a content directory.");
+            }
+
+            if (ContainsParentSegment(HomeDirectoryFormat) || IsRootedOrQualified(HomeDirectoryFormat))
+            {
+                failures.Add(
+                    $"{SectionName}:{nameof(HomeDirectoryFormat)} is '{HomeDirectoryFormat}', which "
+                    + "is not a plain relative path. The composed value is web-relative and is "
+                    + "combined with the application path, so a rooted path, a drive or UNC prefix, "
+                    + "or a '..' segment would place portal content outside the application.");
+            }
+
+            if (EndsWithSeparator(HomeDirectoryFormat))
+            {
+                failures.Add(
+                    $"{SectionName}:{nameof(HomeDirectoryFormat)} is '{HomeDirectoryFormat}', which "
+                    + "ends with a separator. The legacy call site appends its own, so a trailing "
+                    + "separator here yields a doubled one.");
+            }
+        }
+
+        ValidateRoleName(nameof(UnauthenticatedRoleName), UnauthenticatedRoleName, failures);
+        ValidateRoleName(nameof(AllUsersRoleName), AllUsersRoleName, failures);
+
+        if (!string.IsNullOrWhiteSpace(UnauthenticatedRoleName)
+            && string.Equals(UnauthenticatedRoleName, AllUsersRoleName, StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add(
+                $"{SectionName}:{nameof(UnauthenticatedRoleName)} and "
+                + $"{SectionName}:{nameof(AllUsersRoleName)} are both '{UnauthenticatedRoleName}'. "
+                + "They name two different rows in the Roles table, and the legacy "
+                + "role-name-to-role-id switch reads both arms of the pair, so collapsing them "
+                + "would resolve one role's identifier for the other.");
+        }
+
+        return failures;
+    }
+
+    /// <summary>
+    /// Adds a failure when a role-name setting is absent or wider than the column that stores it.
+    /// </summary>
+    /// <param name="settingName">Name of the setting being checked, for the message.</param>
+    /// <param name="value">The configured value.</param>
+    /// <param name="failures">The collection failures are appended to.</param>
+    private static void ValidateRoleName(
+        string settingName,
+        string value,
+        List<string> failures)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            failures.Add(
+                $"{SectionName}:{settingName} is not set. The value is matched against a role's "
+                + "stored display name, so an empty value matches no role and every permission "
+                + "check that depends on it silently fails to resolve.");
+            return;
+        }
+
+        if (value.Length > RoleNameMaximumLength)
+        {
+            // Every number reaches the message through an invariant conversion first, so the
+            // concatenation below interpolates strings only and cannot pick up a culture.
+            string actual = FormattableString.Invariant($"{value.Length}");
+            string allowed = FormattableString.Invariant($"{RoleNameMaximumLength}");
+
+            failures.Add(
+                $"{SectionName}:{settingName} is {actual} characters long, and the Roles.RoleName "
+                + $"column stores {allowed}. A longer name could never match a stored row.");
+        }
+    }
+
+    /// <summary>
+    /// Whether a value that must be a bare file name contains a directory separator or a
+    /// parent-directory segment.
+    /// </summary>
+    /// <param name="value">The configured value.</param>
+    /// <returns><see langword="true"/> when the value navigates rather than naming.</returns>
+    /// <remarks>
+    /// Both separator forms are checked regardless of the host platform, because the value is
+    /// authored once in configuration and may be composed on Linux or Windows; accepting a
+    /// backslash on Linux merely defers the problem to a Windows deployment. This is the strict
+    /// check, applied only to <see cref="AdminTemplateFileName"/>: any separator at all disqualifies
+    /// a bare file name. <see cref="HomeDirectoryFormat"/> is a path and legitimately contains
+    /// separators, so it is checked by <see cref="ContainsParentSegment"/> instead.
+    /// </remarks>
+    private static bool ContainsSeparatorOrParentSegment(string value) =>
+        value.Contains('/', StringComparison.Ordinal)
+        || value.Contains('\\', StringComparison.Ordinal)
+        || ContainsParentSegment(value);
+
+    /// <summary>
+    /// Whether a configured path contains a parent-directory segment.
+    /// </summary>
+    /// <param name="value">The configured value.</param>
+    /// <returns><see langword="true"/> when any segment is the parent-directory marker.</returns>
+    /// <remarks>
+    /// The comparison is per SEGMENT rather than a substring search, so a legitimate name that
+    /// merely contains two consecutive dots is not rejected while an actual traversal segment is.
+    /// Both separator forms split the value, for the platform reason recorded above.
+    /// </remarks>
+    private static bool ContainsParentSegment(string value) =>
+        value.Split(['/', '\\'], StringSplitOptions.None)
+            .Any(segment => string.Equals(segment, ParentSegment, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Whether a configured path fragment is rooted, drive-qualified or a UNC path.
+    /// </summary>
+    /// <param name="value">The configured value.</param>
+    /// <returns><see langword="true"/> when the value is not purely relative.</returns>
+    private static bool IsRootedOrQualified(string value) =>
+        value.StartsWith('/')
+        || value.StartsWith('\\')
+        || value.Contains(':', StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether a configured path fragment ends with a directory separator.
+    /// </summary>
+    /// <param name="value">The configured value.</param>
+    /// <returns><see langword="true"/> when a separator would be doubled by the caller.</returns>
+    private static bool EndsWithSeparator(string value) =>
+        value.EndsWith('/') || value.EndsWith('\\');
+
+    /// <summary>
+    /// The placeholder <see cref="HomeDirectoryFormat"/> must contain, receiving the portal id.
+    /// </summary>
+    private const string PortalIdPlaceholder = "{0}";
+
+    /// <summary>
+    /// The parent-directory segment neither path-shaped setting may contain.
+    /// </summary>
+    private const string ParentSegment = "..";
 
     // MIGRATION: glbRoleSuperUserName ("Superuser", Globals.vb:L101) is deliberately not
     // carried into this class, because host-level super-user administration is excluded from

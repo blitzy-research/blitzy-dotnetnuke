@@ -264,6 +264,12 @@ public interface IRoleService
     /// public and auto-assignment flags. Preserving the paid-membership fields is a
     /// functional-parity requirement, not an optional extra.
     /// </para>
+    /// <para>
+    /// The page coordinates, the sort field and the filter length are bounded by
+    /// <c>RoleListPagedRequestValidator</c>, whose sortable set is exactly the column set
+    /// measured above. An unrecognised sort field is rejected there rather than forwarded, so
+    /// no caller-supplied field name reaches a store unvetted.
+    /// </para>
     /// </remarks>
     Task<Result<PagedResult<RoleListItemDto>>> ListRolesAsync(
         int portalId,
@@ -450,6 +456,13 @@ public interface IRoleService
     /// may not invent one. The dates therefore travel on the write path only, on the
     /// assignment request, which is where AAP 0.5.1.8 requires them. The reduction is
     /// annotated at the head of this file.
+    /// </para>
+    /// <para>
+    /// The page coordinates, the sort field and the filter length are bounded by
+    /// <c>RoleUserListPagedRequestValidator</c>, whose sortable set is deliberately narrower
+    /// than the account listing's. The two assignment dates are excluded from it because the
+    /// projected item does not carry them, for the reason given above, and the role identifier
+    /// is excluded because the route fixes it for every record on the page.
     /// </para>
     /// </remarks>
     Task<Result<PagedResult<UserListItemDto>>> ListRoleUsersAsync(

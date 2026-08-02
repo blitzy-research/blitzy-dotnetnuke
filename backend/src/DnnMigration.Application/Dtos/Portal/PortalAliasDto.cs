@@ -34,6 +34,13 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// <c>Website/admin/Portal/editportalalias.ascx</c> exposed a single text box (line 7), so these
 /// three members are sufficient for full parity with both screens.
 /// </para>
+/// <para>
+/// <b>This is a response projection.</b> Both alias writes take their own request contracts -
+/// <c>CreatePortalAliasRequest</c> and <c>UpdatePortalAliasRequest</c> - each carrying the host name
+/// alone. That split is why the nullable host name below is safe to keep: it is the faithful
+/// representation of a nullable column on the way out, and no write can be expressed with an absent
+/// alias on the way in.
+/// </para>
 /// </remarks>
 public sealed class PortalAliasDto
 {
@@ -65,9 +72,15 @@ public sealed class PortalAliasDto
     // with a substring predicate, in the GetPortalSettings procedure at
     // Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider lines 4569 to 4600,
     // which wrapped the supplied alias in leading and trailing wildcards. An alias that was a
-    // substring of a different portal's alias could therefore resolve to the wrong tenant. The
-    // replacement compares exactly, in Api/Middleware/PortalAliasResolutionMiddleware.cs. None of
-    // that is implied by this contract, which transports an alias value and no matching rule.
+    // substring of a different portal's alias could therefore resolve to the wrong tenant. That
+    // procedure was dropped at 02.02.00.SqlDataProvider line 267 and the column it read at
+    // 02.02.02.SqlDataProvider lines 3925 to 3926, and the lookups that replaced it inside the
+    // legacy system already compared whole values - GetPortalAlias at 02.02.02.SqlDataProvider lines
+    // 3846 to 3856 and GetPortalByAlias at lines 3930 to 3938. So the replacement in
+    // Api/Middleware/PortalAliasResolutionMiddleware.cs PRESERVES exact matching rather than
+    // introducing it; its actual divergence is that it refuses an ambiguous alias instead of
+    // collapsing candidates with min(PortalId). None of that is implied by this contract, which
+    // transports an alias value and no matching rule.
 
     /// <summary>
     /// Gets or sets the surrogate key identifying this alias row.

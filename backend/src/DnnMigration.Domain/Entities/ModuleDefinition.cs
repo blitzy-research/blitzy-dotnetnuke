@@ -318,7 +318,8 @@ public sealed class ModuleDefinition : Entity<int>
     /// </summary>
     /// <value>
     /// The <see cref="Entities.DesktopModule"/> whose <c>DesktopModuleID</c> equals
-    /// <see cref="DesktopModuleId"/>. Required: every definition has exactly one owning package.
+    /// <see cref="DesktopModuleId"/>, or <see langword="null"/> when the reference has not been loaded.
+    /// Every definition has exactly one owning package, so a null here never means "no package".
     /// </value>
     /// <remarks>
     /// <para>
@@ -330,15 +331,20 @@ public sealed class ModuleDefinition : Entity<int>
     /// <c>IsPremium</c>) are found here.
     /// </para>
     /// <para>
-    /// Not initialised and not nullable, which is the deliberate contract for a required reference
-    /// navigation: it is populated either by the object-relational mapper when the relationship is
-    /// loaded or by the caller that builds a new definition, and a self-assigned empty instance
-    /// would be a lie about which package owns this row. It is consequently unsafe to dereference on
-    /// an entity that was fetched without the relationship included, exactly as for any other
-    /// reference navigation.
+    /// <b>Nullable to express "not loaded", not "no package".</b> The relationship IS required - the
+    /// foreign key column is <c>NOT NULL</c> - but that requirement is carried by
+    /// <see cref="DesktopModuleId"/> and asserted by <c>ModuleDefinitionConfiguration</c>, which is where
+    /// the database can actually enforce it. The navigation itself is unpopulated on any read that did not
+    /// include the relationship, so declaring it non-nullable would state a guarantee the runtime does not
+    /// keep: the reference would be null in exactly the case the annotation promises it cannot be, and
+    /// every caller would be invited to dereference it unguarded. It is nullable for the same reason as
+    /// all twenty-five other reference navigations in this layer - including
+    /// <see cref="Entities.PortalDesktopModule.DesktopModule"/>, whose foreign key is required in exactly
+    /// the same way - so the whole model reads consistently and the compiler's nullable analysis is worth
+    /// trusting. Read <see cref="DesktopModuleId"/> when only the identity is needed.
     /// </para>
     /// </remarks>
-    public DesktopModule DesktopModule { get; set; }
+    public DesktopModule? DesktopModule { get; set; }
 
     /// <summary>
     /// Gets or sets the user-interface controls this definition publishes.

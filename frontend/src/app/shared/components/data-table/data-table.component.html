@@ -1,0 +1,113 @@
+<div class="data-table__container">
+  <table class="data-table">
+    <!--
+      Always present, so the table has an accessible name however it is reached. The
+      visually-hidden treatment keeps it out of the painted output without removing it
+      from the accessibility tree - which `display: none` or `visibility: hidden` would
+      do.
+    -->
+    <caption
+      class="data-table__caption"
+      [class.data-table__caption--hidden]="!captionVisible"
+    >
+      {{ caption }}
+    </caption>
+
+    <thead>
+      <tr>
+        @for (column of columns; track trackByColumnKey($index, column)) {
+          <!--
+            `scope="col"` is what lets assistive technology name a cell by its column
+            when a person reads across a row. `aria-sort` is applied only to a column
+            that offers sorting, and reports `none` for the sortable columns that are
+            not currently sorted.
+          -->
+          <th
+            scope="col"
+            class="data-table__header"
+            [class]="alignClassFor(column)"
+            [attr.aria-sort]="ariaSortFor(column)"
+          >
+            @if (column.sortable) {
+              <!--
+                A real button, with an explicit type so it cannot submit a surrounding
+                form. Native activation covers both Enter and Space and needs no key
+                handling of its own.
+              -->
+              <button
+                class="data-table__sort"
+                type="button"
+                [disabled]="loading"
+                (click)="requestSort(column)"
+              >
+                <span class="data-table__sort-label">{{ column.header }}</span>
+                <!--
+                  Hidden from assistive technology: `aria-sort` on the heading already
+                  conveys the direction, and announcing the glyph as well would state it
+                  twice.
+                -->
+                @if (isSorted(column)) {
+                  <span class="data-table__sort-indicator" aria-hidden="true">{{
+                    sortIndicatorFor(column)
+                  }}</span>
+                }
+              </button>
+            } @else {
+              {{ column.header }}
+            }
+          </th>
+        }
+      </tr>
+    </thead>
+
+    <tbody>
+      @if (loading) {
+        <!--
+          One spanning cell rather than a skeleton of empty cells, so assistive
+          technology reads a single status rather than a row of blanks. The live region
+          announces the transition without moving focus.
+        -->
+        <tr>
+          <td class="data-table__message" [attr.colspan]="columnCount" aria-live="polite">
+            {{ labels.loading }}
+          </td>
+        </tr>
+      } @else if (isEmpty) {
+        <tr>
+          <td class="data-table__message" [attr.colspan]="columnCount">
+            {{ emptyMessage }}
+          </td>
+        </tr>
+      } @else {
+        @for (row of rows; track $index) {
+          <tr class="data-table__row">
+            @for (column of columns; track trackByColumnKey($index, column)) {
+              <td class="data-table__cell" [class]="alignClassFor(column)">
+                @if (selectable && $first) {
+                  <!--
+                    The row's primary action lives in the first cell as a real button.
+                    A clickable `tr` was rejected: it cannot be reached from the keyboard
+                    without putting a tab stop on an element assistive technology does not
+                    announce as actionable, or without overriding the table's own roles
+                    and losing the row-and-column relationships the native element
+                    provides. The button's accessible name is the cell's own text, which
+                    is the record's identifying value.
+                  -->
+                  <button
+                    class="data-table__row-action"
+                    type="button"
+                    (click)="selectRow(row)"
+                  >
+                    {{ cellText(row, column) }}
+                  </button>
+                } @else {
+                  {{ cellText(row, column) }}
+                }
+              </td>
+            }
+          </tr>
+        }
+      }
+    </tbody>
+  </table>
+</div>

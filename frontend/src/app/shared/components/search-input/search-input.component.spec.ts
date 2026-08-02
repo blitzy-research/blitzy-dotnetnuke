@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { ChangeDetectionStrategy, type ChangeDetectorRef, Component } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
@@ -71,6 +71,44 @@ const AT_BOUND_TERM = 'a'.repeat(MAX_TERM_LENGTH);
 const TAB_CHARACTER = '\u0009';
 
 /**
+ * The four code points that sit exactly on the edges of the two ranges the
+ * production policy removes: `\u0000`-`\u001F` (C0) and `\u007F`-`\u009F` (DEL
+ * plus C1).
+ *
+ * Boundaries rather than samples, and that distinction is the whole point. A
+ * regression that narrowed the pattern to the single tab character already
+ * covered above — or that clipped either range by one code point at either end —
+ * would leave every other expectation in this file passing. Each entry is
+ * labelled with its code point so a failure names the character that escaped,
+ * and each is written as an escape so this file stays pure ASCII and the
+ * character is unmistakable to a reader rather than an invisible byte.
+ *
+ * `U+0000` is the low edge of C0 and would arrive from a truncated byte stream;
+ * `U+001F` is its high edge; `U+007F` is DELETE, the low edge of the second
+ * range; and `U+009F` is its high edge, the last code point removed.
+ */
+const CONTROL_CHARACTER_BOUNDARIES: readonly (readonly [string, string])[] = [
+  ['U+0000', '\u0000'],
+  ['U+001F', '\u001F'],
+  ['U+007F', '\u007F'],
+  ['U+009F', '\u009F'],
+];
+
+/**
+ * A no-break space: the code point immediately ABOVE the high edge of the second
+ * removed range.
+ *
+ * The positive control for the boundary cases above. Every one of those proves a
+ * character is removed, and a pattern widened far enough to swallow ordinary text
+ * would satisfy all four of them just as happily as the correct one does. This
+ * character is one code point outside the policy, so it must survive verbatim —
+ * which is what pins the upper edge from the other side. It is also realistic
+ * rather than contrived: a no-break space is genuinely present in pasted text and
+ * genuinely present in name data.
+ */
+const NO_BREAK_SPACE_CHARACTER = '\u00A0';
+
+/**
  * A single astral-plane character, stored as a surrogate *pair* of two UTF-16
  * code units, so its `length` is 2.
  *
@@ -108,6 +146,44 @@ function requireElement<T extends Element>(root: ParentNode, selector: string): 
 
 function textOf(element: Element): string {
   return (element.textContent ?? '').trim();
+}
+
+/**
+ * Lists an element's authored class tokens, with the reactive-forms state classes
+ * filtered out.
+ *
+ * Returned as an exact list rather than probed one token at a time, so an added
+ * stray class fails the expectation instead of slipping past a `contains` check.
+ * The design-system rule this supports is AAP 0.3: the class vocabulary is fixed
+ * and closed, so widening it is a regression and not a detail.
+ *
+ * The `ng-`-prefixed tokens are excluded because the forms directive owns them.
+ * It writes `ng-untouched`, `ng-pristine` and `ng-valid` onto the form-bound field
+ * and rewrites them as the control's state changes, so asserting the raw class
+ * attribute would couple this expectation to validation state it is not about.
+ *
+ * @param element The rendered element to inspect.
+ * @returns The authored class tokens, in document order.
+ */
+function authoredClassTokens(element: Element): string[] {
+  return Array.from(element.classList).filter(
+    (token: string): boolean => !token.startsWith('ng-'),
+  );
+}
+
+/**
+ * Reports the index of a child within its parent's element children.
+ *
+ * Element children only: comment nodes — which the framework emits, and which
+ * this template's own documentation comments become — are not counted, so an
+ * index here means "the nth rendered element" exactly as a reader would expect.
+ *
+ * @param parent The containing element.
+ * @param child The child whose position is wanted.
+ * @returns The zero-based index, or -1 when the child is not a direct child.
+ */
+function childIndexOf(parent: Element, child: Element): number {
+  return Array.from(parent.children).indexOf(child);
 }
 
 function typeInto(field: HTMLInputElement, value: string): void {
@@ -223,15 +299,88 @@ describe('SearchInputComponent', () => {
   }
 
   describe('creation and rendered structure', () => {
-    it('creates and renders a label, a row, a field and a submit control', () => {
+    // REPLACES a single test whose five assertions could not fail. `component` is
+    // assigned in `beforeEach` from a fixture that has already been constructed, so
+    // asserting it is truthy restates the harness rather than the component; and
+    // `requireElement` either throws with a named selector or returns a live
+    // element, so wrapping its result in a truthiness matcher adds nothing the
+    // helper had not already decided. The three tests below assert what that one was
+    // reaching for and could not reach: the exact elements, the exact class
+    // vocabulary AAP 0.3 fixes, the nesting, and the document order.
+
+    it('renders each part of the contract as the exact element and class it names', () => {
       fixture.detectChanges();
       const host: HTMLElement = fixture.nativeElement;
 
-      expect(component).toBeTruthy();
-      expect(requireElement<HTMLLabelElement>(host, LABEL_SELECTOR)).toBeTruthy();
-      expect(requireElement<HTMLElement>(host, ROW_SELECTOR)).toBeTruthy();
-      expect(requireElement<HTMLInputElement>(host, FIELD_SELECTOR)).toBeTruthy();
-      expect(requireElement<HTMLButtonElement>(host, SUBMIT_SELECTOR)).toBeTruthy();
+      const label = requireElement<HTMLLabelElement>(host, LABEL_SELECTOR);
+      const row = requireElement<HTMLElement>(host, ROW_SELECTOR);
+      const control = requireElement<HTMLInputElement>(host, FIELD_SELECTOR);
+      const submit = requireElement<HTMLButtonElement>(host, SUBMIT_SELECTOR);
+
+      // The tag is asserted separately from the class because the selectors above
+      // already constrain the class: matching `label.search-input__label` proves
+      // nothing about the element being a real `<label>` beyond what the selector
+      // demanded, whereas a regression that swapped a `<label>` for a `<span>`
+      // carrying the same class would change the accessible name calculation
+      // entirely and must fail loudly.
+      expect(label.tagName).toBe('LABEL');
+      expect(row.tagName).toBe('DIV');
+      expect(control.tagName).toBe('INPUT');
+      expect(submit.tagName).toBe('BUTTON');
+
+      // Both native types are load-bearing rather than cosmetic. `type="search"` is
+      // what makes the browser's own clear affordance available, and it is also the
+      // reason the component has to suppress a native `search` event at all.
+      // `type="button"` is what keeps the affordance from submitting an ancestor
+      // form.
+      expect(control.type).toBe('search');
+      expect(submit.type).toBe('button');
+
+      // Exact class lists, not `contains` probes: the vocabulary is closed, so an
+      // added class is a design-system regression and has to fail here.
+      expect(authoredClassTokens(label)).toEqual(['search-input__label']);
+      expect(authoredClassTokens(row)).toEqual(['search-input__row']);
+      expect(authoredClassTokens(control)).toEqual(['search-input__field']);
+      expect(authoredClassTokens(submit)).toEqual(['search-input__submit']);
+    });
+
+    it('nests the field and the submit control inside the row, and the label outside it', () => {
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+
+      const label = requireElement<HTMLLabelElement>(host, LABEL_SELECTOR);
+      const row = requireElement<HTMLElement>(host, ROW_SELECTOR);
+      const control = requireElement<HTMLInputElement>(host, FIELD_SELECTOR);
+      const submit = requireElement<HTMLButtonElement>(host, SUBMIT_SELECTOR);
+
+      // The row is a layout container for the two affordances that sit side by
+      // side; the label is a sibling of the row, not a member of it, because it
+      // stacks above both. Hoisting the label into the row would silently change
+      // the flex layout, and burying it deeper would not.
+      expect(row.contains(control)).toBeTrue();
+      expect(row.contains(submit)).toBeTrue();
+      expect(row.contains(label)).toBeFalse();
+      expect(host.contains(label)).toBeTrue();
+    });
+
+    it('renders the label before the row, and the field before the submit control', () => {
+      fixture.detectChanges();
+      const host: HTMLElement = fixture.nativeElement;
+
+      const label = requireElement<HTMLLabelElement>(host, LABEL_SELECTOR);
+      const row = requireElement<HTMLElement>(host, ROW_SELECTOR);
+      const control = requireElement<HTMLInputElement>(host, FIELD_SELECTOR);
+      const submit = requireElement<HTMLButtonElement>(host, SUBMIT_SELECTOR);
+
+      // Document order IS the tab order here, because nothing in this template is
+      // withdrawn from it or reordered by a tab index. A keyboard user therefore
+      // reaches the field before the affordance that acts on it, which is the only
+      // sequence that makes sense; and the label precedes the control it names, as
+      // a visible label above a field must.
+      expect(childIndexOf(host, label)).toBe(0);
+      expect(childIndexOf(host, row)).toBe(1);
+      expect(childIndexOf(row, control)).toBe(0);
+      expect(childIndexOf(row, submit)).toBe(1);
     });
 
     it('renders exactly one field and one submit control', () => {
@@ -767,6 +916,66 @@ describe('SearchInputComponent', () => {
       expect(emitted).toEqual([PADDED_MIXED_CASE_TERM]);
     }));
 
+    it('removes the code points on every edge of both control ranges', fakeAsync(() => {
+      component.debounceMs = SHORT_DEBOUNCE_MS;
+      fixture.detectChanges();
+
+      // The two expectations above pin ONE character, the tab. The production
+      // policy is two whole ranges — `\u0000`-`\u001F` and `\u007F`-`\u009F` — and
+      // a regression that narrowed the pattern to the tab alone, or clipped either
+      // range by a single code point at either end, would leave both of those
+      // expectations green. Testing the four edges is what closes that: each of
+      // them is the first character a narrowing would let through.
+      //
+      // These arrive through `setValue` rather than through the field, and
+      // deliberately so. A single-line control performs its own value
+      // sanitisation, and what it does with a raw NUL or a C1 code point is
+      // engine-dependent, so routing through the field would make this expectation
+      // a measurement of the browser rather than of the component. The component,
+      // not the attribute, is the documented enforcement point, and `setValue` is
+      // the path the production documentation names as the one neither the field's
+      // `maxlength` nor the browser's sanitisation covers.
+      //
+      // Each term carries its own code-point label so the bounded results are all
+      // distinct. Without that they would every one reduce to the same string and
+      // the duplicate guard — correctly — would swallow every emission after the
+      // first, leaving three of the four edges unmeasured.
+      for (const [codePointLabel, character] of CONTROL_CHARACTER_BOUNDARIES) {
+        const marker = codePointLabel.slice('U+'.length);
+
+        component.term.setValue(`${PLAIN_TERM}${character}${marker}`);
+        tick(SHORT_DEBOUNCE_MS);
+
+        expect(emitted.at(-1))
+          .withContext(`${codePointLabel} must be stripped before the term is emitted`)
+          .toBe(`${PLAIN_TERM}${marker}`);
+      }
+
+      // Every edge produced an emission of its own, so none was absorbed by the
+      // duplicate guard and silently left unasserted.
+      expect(emitted.length).toBe(CONTROL_CHARACTER_BOUNDARIES.length);
+    }));
+
+    it('leaves a no-break space intact, one code point above the removed range', fakeAsync(() => {
+      component.debounceMs = SHORT_DEBOUNCE_MS;
+      fixture.detectChanges();
+
+      // The positive control for the four edges above. Each of those proves a
+      // character is removed, and a pattern widened far enough to swallow ordinary
+      // text would satisfy all four just as happily as the correct one does. This
+      // character sits at `\u00A0`, exactly one code point above the high edge at
+      // `\u009F`, so it pins that edge from the other side — and it is realistic
+      // rather than contrived, being genuinely present in pasted text and in name
+      // data.
+      const termCarryingNoBreakSpace = `${PLAIN_TERM}${NO_BREAK_SPACE_CHARACTER}${NEXT_TERM}`;
+
+      component.term.setValue(termCarryingNoBreakSpace);
+      tick(SHORT_DEBOUNCE_MS);
+
+      expect(emitted).toEqual([termCarryingNoBreakSpace]);
+      expect(emitted[0].length).toBe(termCarryingNoBreakSpace.length);
+    }));
+
     it('leaves a term carrying neither a control character nor excess length untouched', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
@@ -990,6 +1199,91 @@ describe('SearchInputComponent', () => {
       // case; the clock is advanced afterwards to prove nothing arrives late.
       expect(emitted).toEqual([]);
     }));
+
+    // The expectation above covers ONE of the three things `ngOnInit` wires: the
+    // debounced `valueChanges` subscription. Two more outlive a naive teardown and
+    // are covered below — the `statusChanges` subscription that marks the view for
+    // check, and the capture-phase native `search` listener registered directly on
+    // the host element. Neither is reachable through the emitted terms, so neither
+    // could have been observed by the expectation above however it were extended.
+
+    it('stops marking the destroyed view for check when the control status changes', () => {
+      fixture.detectChanges();
+
+      // The subscription's only effect is a call to the injected change detector,
+      // so that call is the observable. The reference is reached through a cast
+      // because the component keeps it private, which is correct — it is an
+      // implementation detail of `OnPush` and no consumer should touch it.
+      //
+      // It has to be THIS reference and not `fixture.componentRef.changeDetectorRef`:
+      // the fixture's own change detector wraps the root view that hosts the
+      // component, a different view from the one the component injects, so a spy
+      // installed there would never see this call at all and the expectation would
+      // pass vacuously.
+      const injectedChangeDetector = (
+        component as unknown as { readonly changeDetectorRef: ChangeDetectorRef }
+      ).changeDetectorRef;
+      const markForCheck = spyOn(injectedChangeDetector, 'markForCheck');
+
+      // Alive first, so the expectation below is known to be capable of failing.
+      // Availability changes from outside the binding graph — a consumer calling
+      // `term.disable()` — which is exactly why `OnPush` needs the explicit mark.
+      component.term.disable();
+
+      expect(markForCheck)
+        .withContext('a live component must mark its view when the control status changes')
+        .toHaveBeenCalled();
+
+      fixture.destroy();
+
+      // Anything the framework's own teardown did is discarded here. The question
+      // is only whether a status change occurring AFTER destruction still reaches
+      // the destroyed view, which is the leak `takeUntilDestroyed` exists to close.
+      markForCheck.calls.reset();
+
+      component.term.enable();
+
+      expect(markForCheck)
+        .withContext('a destroyed component must not mark its view for check')
+        .not.toHaveBeenCalled();
+    });
+
+    it('removes the native search suppressor from its host element once destroyed', () => {
+      fixture.detectChanges();
+
+      const host: HTMLElement = fixture.nativeElement;
+      const reachedTheConsumer: string[] = [];
+      host.addEventListener('search', (): void => {
+        reachedTheConsumer.push('search');
+      });
+
+      // While alive, the event is dispatched from the FIELD so it descends through
+      // the host: that is the real shape, since Blink and WebKit fire this event on
+      // the `<input type="search">` itself. The component's listener is registered
+      // in the capture phase and therefore runs while the event is still
+      // descending — strictly before this bubble-phase listener, by the ordering the
+      // DOM specification guarantees rather than by registration order — and
+      // `stopImmediatePropagation` halts it there.
+      field().dispatchEvent(new Event('search', { bubbles: true }));
+
+      expect(reachedTheConsumer)
+        .withContext('a live component must swallow the native search event')
+        .toEqual([]);
+
+      fixture.destroy();
+
+      // Dispatched on the retained HOST rather than on the field, because whether
+      // the field is still attached after view destruction is the framework's
+      // business and not this component's contract. The host is the element the
+      // suppressor was registered on, so it is the element whose cleanliness is in
+      // question — and a suppressor still attached there would halt this event at
+      // the target just as it halted the one above.
+      host.dispatchEvent(new Event('search', { bubbles: true }));
+
+      expect(reachedTheConsumer)
+        .withContext('a destroyed component must leave no listener on its former host')
+        .toEqual(['search']);
+    });
   });
 
   // =========================================================================
@@ -1411,14 +1705,18 @@ describe('SearchInputComponent within a consuming form', () => {
       .toBeTrue();
   });
 
-  it('never lets an Enter press reach the wrapping form as a submission', () => {
-    pressEnterCancelable(formField());
-    hostFixture.detectChanges();
-
-    expect(host.submitCount)
-      .withContext('the wrapping form must not attempt to submit when the user filters')
-      .toBe(0);
-  });
+  // REMOVED: a test that pressed Enter and then asserted `submitCount` was zero.
+  // It could not fail. Implicit submission is triggered only by a TRUSTED key
+  // event, and `dispatchEvent` produces an untrusted one, so no synthetic Enter
+  // reaches the form as a submission whether or not the component cancels
+  // anything — the assertion read as a guarantee while measuring the test runner.
+  // The expectation above keeps the honest observable in a runner, the
+  // cancellation state itself, and it does fail when the suppression is removed.
+  // The same vacuous assertion is removed from the Enter test below for the same
+  // reason. Verification with a trusted event belongs to browser runtime coverage,
+  // and `submitCount` remains genuinely load-bearing in the click test further
+  // down: `HTMLElement.click()` DOES run a button's activation behaviour, so a
+  // button that lost `type="button"` really would submit there.
 
   it('still emits the term exactly once on Enter inside a form', fakeAsync(() => {
     // The fix must not have cost the feature it was protecting. Typing starts the
@@ -1429,7 +1727,6 @@ describe('SearchInputComponent within a consuming form', () => {
     tick(SHORT_DEBOUNCE_MS);
 
     expect(host.received).toEqual([PLAIN_TERM]);
-    expect(host.submitCount).toBe(0);
   }));
 
   it('keeps the submit affordance non-submitting inside a form', () => {

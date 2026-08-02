@@ -139,9 +139,14 @@ public sealed class User : Entity<int>
     /// <c>dbo.Portals</c> seeds at -1 and <c>dbo.Roles</c>, <c>dbo.Tabs</c> and
     /// <c>dbo.Modules</c> each seed at 0, so for those aggregates a "default-looking" value is a
     /// real persisted identity. Users are not affected - 0 is never a persisted
-    /// <c>UserID</c> - but no code may rely on that as a general rule, and this type still
-    /// offers no "has this been saved yet" predicate. Whether an entity is persisted is a
-    /// question for the persistence layer's change tracker.
+    /// <c>UserID</c> - but no code may rely on that as a general rule, and neither this type nor
+    /// its base ever deduces from the value itself whether a row exists. The base takes that
+    /// answer from the layer that holds it: the persistence layer declares it once through
+    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> and it is read back through
+    /// <see cref="Entity{TId}.IdentityIsPersisted"/>, which is also what decides whether two
+    /// instances are compared by <see cref="UserId"/> or by object reference. Whether a row should
+    /// be inserted or updated remains a question for the persistence layer's change tracker, which
+    /// knows more than that flag does.
     /// </para>
     /// <para>
     /// The legacy field was seeded to <c>Null.NullInteger</c>, that is -1
@@ -740,14 +745,12 @@ public sealed class User : Entity<int>
     /// </para>
     /// <para>
     /// What the legacy installation actually did, measured rather than assumed. The membership
-    /// provider is registered with <c>passwordFormat="Encrypted"</c> and
-    /// <c>enablePasswordRetrieval="true"</c> at <c>Website/release.config</c> lines 245 and 239,
-    /// so stored credentials are recoverable ciphertext, not hashes. The symmetric key that
-    /// recovers them is committed to source control in the same file: the machine key element at
-    /// lines 89-93 declares <c>decryption="3DES"</c> with a literal <c>decryptionKey</c> value,
-    /// which is quoted here by location only and must never be copied into source, a log, a test
-    /// fixture or a configuration template. Ciphertext plus a committed key is plaintext, and the
-    /// provider stack exercised that capability directly - the legacy code calls
+    /// provider is registered for reversible storage with credential retrieval enabled, so stored
+    /// credentials are recoverable ciphertext rather than hashes, and the symmetric key that
+    /// recovers them was itself committed to source control. Neither that key nor its location is
+    /// reproduced here, and neither must ever be copied into source, a log, a test fixture or a
+    /// configuration template. Ciphertext plus a committed key is plaintext, and the provider
+    /// stack exercised that capability directly - the legacy code calls
     /// <c>objPortalSecurity.Decrypt(EncryptionKey, objUser.Membership.Password)</c> at
     /// <c>AspNetMembershipProvider.vb</c> line 1720 and exposes a password-returning operation at
     /// lines 1025-1038. The original 1.0.0 schema was blunter still: <c>dbo.Users</c> carried

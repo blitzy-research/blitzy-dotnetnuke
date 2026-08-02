@@ -1,73 +1,3 @@
-/**
- * Specification for `PageHeaderComponent` — the page title and action bar of the
- * in-repository shared component library (AAP 0.3.2, row 2).
- *
- * PROJECT STANDARDS: `review_rules` reports that NO user-specified rules exist
- * for this project, and completeness is established by the RANGES read rather
- * than by the number of calls: the default window, `[1, -1]`, `[2, -1]` and
- * `[250, 500]` all return the same single line, and the last two begin past
- * line 1, so a document with a body would have returned different text for
- * them. No rules document and no coding-standards document is assumed, invented
- * or implied here. This file instead holds to the AAP's own normative sections,
- * which AAP 0.8.2 gives rule-force, and to the enterprise baseline of AAP
- * 0.8.3 — strict typing with no escape hatches. The precedence order applied
- * throughout is AAP 0.3.5: design-system compliance, then visual continuity,
- * then accessibility, then responsive behaviour, then code quality.
- *
- * // MIGRATION: This specification is NET-NEW and has NO PREDECESSOR TO PORT.
- * The legacy tree contains ZERO automated tests of any kind (AAP 0.5.1.5: "The
- * legacy tree contains no automated tests of any kind, so every test file is a
- * CREATE"), so nothing here is a translation of an existing check. Its
- * assertions deliberately encode three divergences from measured legacy
- * behaviour:
- *
- *   (i)   NO LANDMARK IS EMITTED. The legacy title block was a plain `<div>` —
- *         `Website/controls/sectionheadcontrol.ascx` L2 opens `<div>`, L3 holds
- *         `<asp:imagebutton id="imgIcon" ... tabIndex="-1">` and L4 holds
- *         `<asp:label id="lblTitle" runat="server" enableviewstate="False">`.
- *         The target emits no banner, main, navigation or contentinfo landmark
- *         either, because landmarks belong exclusively to the application shell
- *         under `layout/`. This is continuity of markup semantics reached by a
- *         deliberate decision rather than by accident, and it is asserted below
- *         so that it cannot regress silently.
- *
- *   (ii)  THE TITLE IS PROMOTED to a real `<h1>`. Measured baseline across the
- *         39 in-scope admin `.ascx` files: heading elements `<h1>`–`<h6>` = 0,
- *         `aria-*` attributes = 0, `role=` attributes = 0, `<header>` elements
- *         = 0. The promotion is size-neutral, so it costs no visual change.
- *
- *   (iii) TITLE AND SUBTITLE ARE PLAIN TEXT ONLY, never markup. The legacy
- *         wording source cannot be trusted as markup: of the in-scope resource
- *         values, 76 contain an HTML tag and 29 begin with a leading `<br>`,
- *         and the decisive case is a value carrying a live Google syndication
- *         `<script>` block whose source is the remote host
- *         pagead2.googlesyndication.com — invisible to a naive search because
- *         the tags are stored HTML-escaped.
- *
- * The repository-root migration notes document is owned by another agent and is
- * deliberately NOT edited from here; these divergences are reported instead.
- *
- * HARNESS NOTES (AAP 0.9.2 resolved the test-runner choice in favour of Karma
- * with Jasmine, because Gate 4's command is
- * `ng test --watch=false --browsers=ChromeHeadless --code-coverage` and the
- * rejected alternative would have made that mandated command invalid. That
- * alternative is absent from the pinned 21-package surface and is therefore not
- * importable even by accident):
- *
- *   - The component under test is standalone, so it is registered through
- *     `imports`. A declaration array is neither used nor available.
- *   - NO providers are registered, and the array is omitted entirely. The
- *     component injects nothing, holds no state, performs no I/O and reads no
- *     ambient route or configuration value, so there is nothing to provide and
- *     nothing to verify afterwards. The deprecated HTTP and router testing
- *     modules are absent for the same reason.
- *   - No effect-flushing call appears anywhere. The component holds no signal
- *     state and registers no reactive effect, so flushing would be decoration.
- *     For the record, the installed `@angular/core` 19.2.25 exposes
- *     `TestBed.flushEffects()` and exposes no `TestBed.tick()` member — checked
- *     against the installed type definitions rather than assumed.
- *   - No URL of any kind appears, so there is no absolute-address hazard.
- */
 
 import { Component, Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -94,8 +24,8 @@ const HEADING_TAG_NAMES: readonly string[] = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'
  * wrapper. The token itself is declared in the global stylesheet, which a
  * component-level test does not load, so a value has to be supplied locally for
  * the flex gap under measurement to resolve to anything at all. The specific
- * number is immaterial — the expectation compares two measured heights rather
- * than asserting this figure — it only has to be large enough that a residual gap
+ * number is immaterial - the expectation compares two measured heights rather
+ * than asserting this figure - it only has to be large enough that a residual gap
  * would be unmistakable.
  */
 const MEASURED_GAP_PX = 16;
@@ -103,11 +33,10 @@ const MEASURED_GAP_PX = 16;
 /**
  * Landmark selectors this component must NEVER emit.
  *
- * Semantic landmarks belong exclusively to `frontend/src/app/layout/**`, where
- * the application shell owns them together with the routed outlet. This
- * component always renders inside the main region, so a second banner landmark
- * would be an accessibility defect rather than an improvement, and none of the
- * nine components in this shared library may emit one.
+ * Semantic landmarks belong exclusively to the application shell, which owns them
+ * together with the routed outlet. This component always renders inside the main
+ * region, so a second banner landmark would be an accessibility defect rather
+ * than an improvement, and no component in this shared library may emit one.
  */
 const FORBIDDEN_LANDMARK_SELECTORS: readonly string[] = [
   'header',
@@ -365,16 +294,14 @@ describe('PageHeaderComponent', () => {
 
       expect(actionLabelsOf(root)).toEqual([]);
 
-      // Collapse is asserted as COMPUTED GEOMETRY, not merely as DOM sanity. An
-      // earlier revision of this spec asserted only the latter, on the stated
-      // reasoning that an actions wrapper carrying no padding, border or
-      // background occupies no space — which is true of the wrapper's own box and
-      // does not follow for the header, because the space-4 gap belongs to the
-      // flex CONTAINER and is generated between adjacent items regardless of
-      // their size. A zero-sized item is still an item, so the empty wrapper was
-      // emitting a full gap after the title on every one of the 29 measured
-      // screens that carry no action. Nothing short of a resolved `display`
-      // detects that, which is why it is checked here directly.
+      // Collapse is asserted as COMPUTED GEOMETRY, not merely as DOM sanity, and
+      // this is the mechanism the next several expectations all turn on: the
+      // `--space-4` gap belongs to the flex CONTAINER and is generated between
+      // adjacent items regardless of their size. A zero-sized item is still an
+      // item, so an actions wrapper carrying no padding, border or background
+      // still emits a full gap after the title on every screen that projects no
+      // action. Nothing short of a resolved `display` detects that, which is why
+      // it is checked here directly.
       const actions = root.querySelector('.page-header__actions');
       expect(actions).not.toBeNull();
       if (actions === null) {
@@ -383,14 +310,13 @@ describe('PageHeaderComponent', () => {
 
       // The wrapper is ALWAYS emitted, so its emptiness is the precondition the
       // stylesheet rule keys on. Asserting an absence of buttons alone would pass
-      // with the full gap still intact, which is exactly the false confidence
-      // being removed here.
+      // with the full gap still intact.
       expect(actions.matches(':empty')).toBeTrue();
 
-      // The mechanism: the stylesheet suppresses the empty wrapper outright, so
-      // it leaves the flex formatting context and contributes no gap. Asserted as
+      // The mechanism: the stylesheet suppresses the empty wrapper outright, so it
+      // leaves the flex formatting context and contributes no gap. Asserted as
       // "generates no box" rather than as a measured dimension, because the box
-      // count is what determines whether the parent counts it as an item — and
+      // count is what determines whether the parent counts it as an item - and
       // because `display: none` is a literal keyword in the rule rather than a
       // design token, this assertion is independent of the global token
       // stylesheet, which is not this component's contract to uphold.
@@ -407,15 +333,14 @@ describe('PageHeaderComponent', () => {
     });
 
     it('keeps the action area laid out whenever any action is projected', () => {
-      // POSITIVE CONTROL for the suppression above, and the reason it is not
-      // vacuous. Without this, the previous test would pass just as happily
-      // against a stylesheet that suppressed the wrapper UNCONDITIONALLY — which
-      // would hide every action on every screen while looking, in that one test,
-      // like a clean collapse.
-      // Typed as the framework's own component type rather than inferred: the
-      // two hosts declare different string-literal title types, so an inferred
-      // union is not assignable to a single component type. Widening here is
-      // honest — the loop needs nothing from either instance.
+      // POSITIVE CONTROL for the suppression above. Without this, the previous
+      // test would pass just as happily against a stylesheet that suppressed the
+      // wrapper UNCONDITIONALLY - which would hide every action on every screen
+      // while looking, in that one test, like a clean collapse.
+      // Typed as the framework's own component type rather than inferred: the two
+      // hosts declare different string-literal title types, so an inferred union
+      // is not assignable to a single component type. Widening is honest here -
+      // the loop needs nothing from either instance.
       const actionCarryingHosts: readonly Type<unknown>[] = [
         ThreeActionHostComponent,
         FiveActionHostComponent,
@@ -446,17 +371,13 @@ describe('PageHeaderComponent', () => {
     });
 
     it('removes the action wrapper from layout when no action is projected', () => {
-      // The regression this guards against is specific and was measured, not
-      // imagined: the wrapper is a flex ITEM of `.page-header`, and a flex
-      // container allocates its `gap` between adjacent items whether or not
-      // either item holds any content. An empty-but-present wrapper therefore
-      // still pushed a full `--space-4` of dead space beneath the title on the 29
-      // in-scope screens that project no action.
-      //
-      // Sizing to zero cannot fix that, because the gap is allocated for the
-      // item's existence rather than for its size. Only removing the box from
-      // layout removes the gap, which is what the stylesheet's `:empty` rule
-      // does — and computed geometry is the only honest way to assert it.
+      // The regression this guards against is specific: an empty-but-present
+      // wrapper is a flex ITEM, so it still pushed a full `--space-4` of dead
+      // space beneath the title. Sizing to zero cannot fix that, because the gap
+      // is allocated for the item's existence rather than for its size. Only
+      // removing the box from layout removes the gap, which is what the
+      // stylesheet's `:empty` rule does - and computed geometry is the only honest
+      // way to assert it.
       const hostFixture = TestBed.createComponent(ZeroActionHostComponent);
       hostFixture.detectChanges();
 
@@ -494,18 +415,18 @@ describe('PageHeaderComponent', () => {
     });
 
     it('leaves no residual gap beneath the title when no action is projected', () => {
-      // This is the measured symptom the collapse rule exists to remove, asserted
-      // as real geometry: an empty-but-present wrapper made the header one whole
-      // spacing step taller than the content it actually rendered.
+      // The symptom the collapse rule exists to remove, asserted as real geometry:
+      // an empty-but-present wrapper made the header one whole spacing step taller
+      // than the content it actually rendered.
       //
       // The spacing token is supplied on the host here rather than relied upon.
       // The component's gap is declared as `gap: var(--space-4)`, and the custom
       // property that resolves it lives in the GLOBAL token stylesheet, which a
       // component-level test does not load. Without the token the gap would
-      // compute to `normal` — that is, to zero — and this expectation would pass
-      // whether or not the wrapper occupied a slot, which would make it decorative
-      // rather than load-bearing. Declaring the token locally reproduces the
-      // runtime cascade for the one property under measurement, and nothing else.
+      // compute to `normal` - that is, to zero - and this expectation would pass
+      // whether or not the wrapper occupied a slot, making it decorative rather
+      // than load-bearing. Declaring the token locally reproduces the runtime
+      // cascade for the one property under measurement, and nothing else.
       const hostFixture = TestBed.createComponent(ZeroActionHostComponent);
       hostFixture.detectChanges();
 
@@ -631,13 +552,6 @@ describe('PageHeaderComponent', () => {
       fixture = TestBed.createComponent(PageHeaderComponent);
     });
 
-    // REPLACES a bare fixture-construction truthiness assertion. That assertion
-    // proved only that the harness could instantiate the class — a fact every
-    // other test in this file already depends on, and one that cannot fail on its
-    // own without failing everything else first. The two tests below assert the
-    // closed contracts the paired template and stylesheet state verbatim and
-    // that nothing else here covers: the exact class vocabulary, and the promise
-    // that this template contributes no styling of its own.
     it('emits only the five class names its stylesheet declares, and no modifier', () => {
       fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.componentRef.setInput('subtitle', SUBTITLE_BASIC_SETTINGS);
@@ -653,10 +567,10 @@ describe('PageHeaderComponent', () => {
 
       // The class-name contract is stated verbatim and identically in both the
       // template header and the stylesheet header: the block plus exactly four
-      // elements, "nothing else is emitted and no modifier class exists, because
-      // the component declares no variants". Restated here as an independent
-      // literal set so that adding a sixth class — or a `--modifier` the
-      // stylesheet has no rule for — fails rather than passing unnoticed.
+      // elements, nothing else emitted and no modifier class, because the
+      // component declares no variants. Restated here as an independent literal
+      // set so that adding a fifth element class - or a `--modifier` the
+      // stylesheet has no rule for - fails rather than passing unnoticed.
       expect(Array.from(rendered).sort()).toEqual([
         'page-header',
         'page-header__actions',
@@ -665,7 +579,6 @@ describe('PageHeaderComponent', () => {
         'page-header__title',
       ]);
 
-      // A modifier would mean a variant, and this component declares none.
       for (const token of rendered) {
         expect(token.includes('--'))
           .withContext(`"${token}" is a modifier, and this component declares no variants`)
@@ -680,17 +593,19 @@ describe('PageHeaderComponent', () => {
 
       const root: HTMLElement = fixture.nativeElement;
 
-      // Every value the selectors resolve to must be a design token, which is
-      // only enforceable if the markup cannot smuggle a literal past the
-      // stylesheet. An inline style attribute would do exactly that, and an
-      // identifier would give a consumer a scope-piercing hook that bypasses the
-      // component's own encapsulation.
+      // Every value the selectors resolve to must be a design token, which is only
+      // enforceable if the markup cannot smuggle a literal past the stylesheet. An
+      // inline style attribute would do exactly that, and an identifier would give
+      // a consumer a scope-piercing hook that bypasses the component's own
+      // encapsulation.
       expect(root.querySelectorAll('[style]').length).toBe(0);
       expect(root.querySelectorAll('[id]').length).toBe(0);
 
       // The legacy admin markup carried its layout in table attributes of exactly
-      // this kind — measured across the in-scope screens — so their absence is a
-      // migration guarantee rather than a stylistic preference.
+      // this kind, so their absence is a migration guarantee rather than a
+      // stylistic preference - as is the absence of any table element at all,
+      // since the title block is a flex layout rather than the legacy nested-table
+      // arrangement it replaces.
       for (const attribute of [
         'align',
         'valign',
@@ -707,8 +622,6 @@ describe('PageHeaderComponent', () => {
           .toBe(0);
       }
 
-      // And no table element either: the title block is a flex layout, not the
-      // legacy nested-table arrangement it replaces.
       expect(root.querySelectorAll('table').length).toBe(0);
     });
 
@@ -731,19 +644,17 @@ describe('PageHeaderComponent', () => {
       fixture.componentRef.setInput('title', TITLE_PORTALS);
       fixture.detectChanges();
 
-      // Reading both members from a spec is itself part of the proof that they
-      // are public. The stronger, compile-time half of that proof is the host
+      // Reading both members from a spec is itself part of the proof that they are
+      // public. The stronger, compile-time half of that proof is the host
       // component above, which binds `[title]` AND `[subtitle]` from a template:
       // `strictInputAccessModifiers` is enabled, so a `private` or `protected`
       // input would break this file's own compilation.
       //
-      // `title` is asserted here as a SUPPLIED value rather than as a default.
-      // An earlier revision of this spec asserted that it defaulted to the empty
-      // string, which documented the very defect the component now forbids: the
-      // heading is emitted unconditionally, so an empty default meant an unnamed
-      // <h1> was a legal, silent state. There is no default to assert now.
-      // `subtitle` genuinely is optional — it renders nothing when absent — so
-      // its undefined default is still the correct expectation.
+      // `title` is asserted as a SUPPLIED value rather than as a default, because
+      // it HAS no default: the heading is emitted unconditionally, so a default of
+      // the empty string would make an unnamed <h1> a legal, silent state.
+      // `subtitle` genuinely is optional - it renders nothing when absent - so its
+      // undefined default is still the correct expectation.
       expect(fixture.componentInstance.title).toBe(TITLE_PORTALS);
       expect(fixture.componentInstance.subtitle).toBeUndefined();
     });
@@ -751,9 +662,9 @@ describe('PageHeaderComponent', () => {
     it('normalises surrounding white space out of a supplied title', () => {
       // Normalisation, not validation: HTML collapses leading and trailing white
       // space, so a padded title always rendered identically. Trimming makes a
-      // whitespace-only title indistinguishable from an empty one so that both
-      // hit the rejection below — without it, `' '` would satisfy a length
-      // check and still produce an unnamed heading.
+      // whitespace-only title indistinguishable from an empty one so that both hit
+      // the rejection below - without it, `' '` would satisfy a length check and
+      // still produce an unnamed heading.
       fixture.componentRef.setInput('title', `  ${TITLE_PORTALS}\n`);
       fixture.detectChanges();
 
@@ -762,16 +673,90 @@ describe('PageHeaderComponent', () => {
 
     it('rejects a blank title rather than rendering an unnamed heading', () => {
       // The component emits the page's single <h1> unconditionally, so a blank
-      // title yields a heading with no accessible name — announced as a heading
+      // title yields a heading with no accessible name - announced as a heading
       // and then silent, and an unlabelled top-level entry in the document
       // outline. Omission is already a compile-time error because the input is
-      // required; this covers the case the compiler cannot see, a bound value
-      // that is present but empty at runtime.
+      // required; this covers the case the compiler cannot see, a bound value that
+      // is present but empty at runtime.
       for (const blank of ['', ' ', '\t', '\n', '   \n  ']) {
         expect(() =>
           fixture.componentRef.setInput('title', blank),
         ).toThrowError(/must be a non-blank string/);
       }
+    });
+
+    it('rejects a title erased to null or undefined for the same reason', () => {
+      // The three blank cases above all arrive as strings, so the transform's
+      // declared parameter type is honest for every one of them. These two are
+      // the cases the type system cannot reach at all, and they are reachable
+      // in production for three separate reasons the component's own
+      // documentation names: a value bound through `[title]="portal.name"`
+      // type-checks against a nullable field and still delivers null at
+      // runtime; an `any`-typed binding erases the parameter type entirely; and
+      // a component created imperatively — exactly as this fixture is — is not
+      // covered by the template type checker at all. `ComponentRef.setInput`
+      // accepts `unknown`, so neither value needs a cast to be delivered here:
+      // the erasure is genuine rather than staged.
+      //
+      // What matters is not merely that the assignment fails, but WHICH failure
+      // it produces. Without the transform's leading nullish coalesce these
+      // values would reach `.trim()` directly and throw a TypeError naming
+      // neither this component nor this input — a diagnostic that sends the
+      // reader to the framework instead of to the call site that supplied the
+      // value. The regular expression below is therefore doing discriminating
+      // work: a raw `.trim()` failure could not satisfy it.
+      for (const erased of [null, undefined]) {
+        expect(() => fixture.componentRef.setInput('title', erased)).toThrowError(
+          /must be a non-blank string/,
+        );
+      }
+    });
+
+    it('reports a nullish title as a deliberate rejection, never a type error', () => {
+      // The assertion above matches on message text; this one settles the
+      // identity of the thrown value, which message matching alone cannot. A
+      // TypeError IS an Error, so `toBeInstanceOf(Error)` would hold for the
+      // unguarded `.trim()` failure too. Comparing the constructor exactly is
+      // what separates "this component rejected the value on purpose" from
+      // "the runtime tripped over it", and the two demand different responses
+      // from whoever reads the stack trace.
+      let thrown: unknown = undefined;
+
+      try {
+        fixture.componentRef.setInput('title', null);
+      } catch (error: unknown) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).constructor).toBe(Error);
+
+      // And it is self-locating: the message names the component and the input,
+      // so a consumer who sees it in a console needs no further context to find
+      // the offending binding.
+      expect((thrown as Error).message).toContain('PageHeaderComponent');
+      expect((thrown as Error).message).toContain('`title`');
+    });
+
+    it('leaves an accepted title intact when a later nullish assignment is rejected', () => {
+      // A transform that threw AFTER assigning would leave the component
+      // holding a value its own contract forbids, and the unnamed heading this
+      // whole guard exists to prevent would render on the very next change
+      // detection. Rejection therefore has to be total: the previously accepted
+      // title must still be the rendered one.
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.detectChanges();
+
+      expect(() => fixture.componentRef.setInput('title', null)).toThrow();
+
+      fixture.detectChanges();
+
+      const root: HTMLElement = fixture.nativeElement;
+      const heading = root.querySelector('h1');
+
+      expect(fixture.componentInstance.title).toBe(TITLE_PORTALS);
+      expect(heading).not.toBeNull();
+      expect(heading?.textContent?.trim()).toBe(TITLE_PORTALS);
     });
 
     it('strips the colliding global title attribute from its host element', () => {

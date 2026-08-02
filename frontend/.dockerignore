@@ -1,14 +1,14 @@
-# Build-context hygiene for a frontend-rooted context only. The shipped images
-# both build from the repository root, so the root .dockerignore is what Docker
+# Build-context hygiene for a frontend-rooted context only. Both shipped images
+# build from the repository root, so the root .dockerignore is what Docker
 # consults for them; this list applies when a build is invoked against this
 # directory instead.
 #
 # Because it is not load-bearing for the shipped images, an over-exclusion here
 # fails silently and late. Only generated, transient and machine-local material
 # is listed: nothing that `npm ci`, `ng build` or `ng test` reads may be added,
-# and version-control patterns are enumerated rather than globbed so that no
-# `.git*` wildcard can reach an asset under public/. There are no negation
-# entries, so no later line can shadow an earlier one.
+# and version-control patterns are enumerated rather than globbed so no `.git*`
+# wildcard can reach an asset under public/. There are no negation entries, so
+# no later line can shadow an earlier one.
 
 # Installed dependencies - the single most important entry. The frontend image
 # runs `npm ci` inside its build stage, so a host tree copied in would ship
@@ -56,20 +56,17 @@ yarn-error.log*
 # -----------------------------------------------------------------------------
 # Machine-local environment overrides and credentials.
 #
-# Matched by FAMILY, never by enumerated suffix. An earlier revision listed
-# `.env`, `.env.local` and `.env.*.local` individually, which left
-# `.env.production` and `.env.development` - the two most common deployment
-# overrides - free to be copied into an image layer, and covered only two of the
-# credential containers. `**/.env*` now closes the whole family at every depth,
-# matching the repository-root .dockerignore that governs the context
+# Matched by FAMILY, never by enumerated suffix: `**/.env*` closes the whole
+# family at every depth, including `.env.production` and `.env.development`,
+# and mirrors the repository-root .dockerignore that governs the context
 # docker/frontend.Dockerfile actually builds from.
 #
-# NOTE: the workspace's real, committed configuration lives in src/environments/
-# (environment.ts and environment.development.ts, per AAP 0.4.1.2) and is NOT
-# matched by anything here. `**/.env*` requires a basename beginning with a
-# literal dot, and `environment.ts` / `environment.development.ts` do not, so
-# the production build keeps every file it needs. Every other pattern in this
-# group is keyed to a credential extension that no workspace source file uses.
+# The workspace's real committed configuration lives in src/environments/
+# (environment.ts and environment.development.ts) and is deliberately NOT
+# matched: `**/.env*` requires a basename beginning with a literal dot, which
+# those files do not have, so the production build keeps every file it needs.
+# Every other pattern in this group is keyed to a credential extension that no
+# workspace source file uses.
 # -----------------------------------------------------------------------------
 .env*
 *.pem
@@ -91,8 +88,7 @@ yarn-error.log*
 **/*.ppk
 
 # -----------------------------------------------------------------------------
-# Deliberately NOT excluded: .editorconfig, README.md and this file itself.
-# Each is a few hundred bytes, sending them costs nothing measurable, and
-# every additional entry here is one more chance to silently drop something
-# a frontend-rooted build needs. Clarity is worth more than a minimal context.
+# .editorconfig, README.md and this file itself stay in the context. Every
+# additional entry here is one more chance to silently drop something a
+# frontend-rooted build needs.
 # -----------------------------------------------------------------------------

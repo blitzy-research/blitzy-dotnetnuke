@@ -1,0 +1,154 @@
+# blitzy-dotnetnuke
+
+This repository holds the DotNetNuke 4.9.0 content-management platform and its
+migration onto a modern, containerised two-tier stack. The two live **side by
+side**: nothing in the legacy application has been removed, so it remains
+buildable and deployable exactly as it was.
+
+| Tree | Contents | Status |
+| --- | --- | --- |
+| `Library/`, `Website/` | The original VB.NET / .NET Framework 2.0 ASP.NET Web Forms application, its 88-script SQL Server DDL chain and its configuration | **Read-only reference.** Never edited by the migration |
+| `DotNetNuke.sln`, `DotNetNuke_VS2008.sln` | The two legacy solution files | **Read-only reference** |
+| `backend/` | A C# 12 / .NET 8 ASP.NET Core Web API in six projects, persisting through Entity Framework Core 8 against the existing, unaltered SQL Server schema | Migration target |
+| `frontend/` | An Angular 19 single-page administration console built from standalone components and signals | Migration target |
+| `docker/` | Two Linux Alpine images and the Compose file that runs them | Migration target |
+| `docs/`, `mkdocs.yml` | The published documentation site | Unmodified |
+| `MIGRATION_NOTES.md` | Every deliberate behavioural difference the migration introduces, with its legacy citation | Required reading before deploying |
+
+## Prerequisites
+
+| Tool | Version | Why this version |
+| --- | --- | --- |
+| .NET SDK | **8.0.4xx** | `backend/global.json` pins the SDK band with `rollForward: latestFeature`. Every `Microsoft.*` package is pinned to the 8.0.29 runtime band |
+| Node.js | **20.x** (`>=20.20.2 <21`) | `frontend/.nvmrc` and the `engines` block in `frontend/package.json`. Matches the `node:20-alpine` build stage |
+| npm | **>=10.8.2** | Ships with the pinned Node |
+| Google Chrome | any recent stable | The front-end test run drives it headless. Set `CHROME_BIN` if it is not on the default path |
+| SQL Server | 2019 or later | The API maps to the existing DotNetNuke schema. A container is sufficient for local work |
+| Docker Engine + Compose v2 | recent | Only needed to build and run the containerised topology |
+
+## Backend
+
+All commands run from `backend/`.
+
+```bash
+dotnet restore
+dotnet build --configuration Release --warnaserror     # must produce 0 warnings and 0 errors
+dotnet test  --configuration Release                   # unit and integration suites
+dotnet test  --configuration Release --filter "Category=Integration"
+```
+
+`--warnaserror` is not optional in this solution. `backend/Directory.Build.props`
+enables nullable reference types, treats warnings as errors for every project, and
+suppresses exactly two diagnostics, both documented in that file.
+
+### Solution layout
+
+```
+backend/
+  src/DnnMigration.Domain/          entities, enums, value objects, repository and service abstractions
+  src/DnnMigration.Application/     services, DTOs, hand-written mappers, FluentValidation validators
+  src/DnnMigration.Infrastructure/  DnnDbContext, Fluent configurations, repositories, security services
+  src/DnnMigration.Api/             host, controllers, middleware, authorisation policies
+  tests/DnnMigration.UnitTests/
+  tests/DnnMigration.IntegrationTests/
+```
+
+The reference graph points inward only and is enforced by the compiler:
+`Domain` references nothing and takes no third-party package, `Application`
+references `Domain`, `Infrastructure` references `Application`, and `Api`
+references `Application` and `Infrastructure`. A layering violation is a build
+failure rather than a review comment.
+
+### Configuration
+
+Configuration is read from `appsettings.json`, the environment overlay, and then
+the environment itself. Every key is overridable with the standard double-underscore
+form, which is how the container supplies them.
+
+| Key | Environment form | Notes |
+| --- | --- | --- |
+| `ConnectionStrings:Default` | `ConnectionStrings__Default` | The existing DotNetNuke database. Replaces the legacy `SiteSqlServer` connection string |
+| `Jwt:Secret` | `Jwt__Secret` | **At least 32 bytes, or the host refuses to start.** Never committed: the Production overlay leaves it blank and the Development overlay carries a clearly labelled development-only value |
+| `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpirationMinutes` | `Jwt__…` | Access tokens are deliberately short-lived; see `MIGRATION_NOTES.md` on sign-out |
+| `Cors:AllowedOrigins` | `Cors__AllowedOrigins__0` | A named policy restricted to the front-end origin |
+
+### Running locally
+
+```bash
+ConnectionStrings__Default='Server=localhost,1433;Database=DotNetNuke;User Id=…;Password=…;TrustServerCertificate=True;Encrypt=True' \
+  dotnet run --project src/DnnMigration.Api
+```
+
+`GET /health` is anonymous and reports the database. `/swagger` serves the
+generated OpenAPI document in the Development environment. Every other endpoint
+lives under `/api/v1/` and requires a bearer token.
+
+### Database
+
+The schema is **externally owned and is never generated from the model.** The
+`InitialCreate` migration is intentionally empty: applying it seeds the migrations
+history table without touching a single existing object. `EnsureCreated` must not be
+used, because the terminal schema depends on `aspnet_*` membership objects that the
+legacy DDL chain only ever alters and never creates. The reasoning is recorded in
+`MIGRATION_NOTES.md`.
+
+## Frontend
+
+All commands run from `frontend/`.
+
+```bash
+npm ci                                                  # requires the committed package-lock.json
+npx ng build --configuration production                 # emits dist/dnn-migration/browser/
+npx ng test --watch=false --browsers=ChromeHeadless --code-coverage
+```
+
+`karma.conf.js` declares a no-sandbox headless launcher, without which the test run
+cannot start inside a container. The production build emits to
+`dist/dnn-migration/browser/`, which is the exact path `docker/frontend.Dockerfile`
+copies.
+
+The production API base URL is the **relative** path `/api/v1`. The reverse proxy
+serves the application and proxies `/api/` to the API, so the browser reaches both
+through one origin; an absolute URL would resolve only inside the container network.
+
+A dependency audit is deliberately **not** part of the build. A freshly scaffolded
+Angular 19 workspace reports advisories before a line of application code exists,
+almost all of them in build-toolchain packages that never reach the browser bundle;
+the one runtime advisory concerns a hydration path this application does not
+install. The reasoning is recorded in `MIGRATION_NOTES.md`.
+
+## Containers
+
+```bash
+cp docker/.env.example docker/.env      # then fill in the values
+docker compose -f docker/docker-compose.yml --env-file docker/.env build
+docker compose -f docker/docker-compose.yml --env-file docker/.env up -d
+curl -f http://localhost:8080/health
+curl -f http://localhost:4200
+docker compose -f docker/docker-compose.yml --env-file docker/.env down
+```
+
+The API image runs as a non-root user and exposes port 8080; the front-end image
+serves the built bundle from nginx on port 80, published as 4200. The front-end
+service will not start until the API reports healthy.
+
+> **Before deploying, read the deployment entry in `MIGRATION_NOTES.md`.** The
+> mandated Alpine runtime base image runs in globalisation-invariant mode, and the
+> SQL Server client library refuses to open a connection in that mode. The remedy is
+> two lines in the runtime stage of `docker/api.Dockerfile`; the container artefacts
+> are delivered verbatim as specified, so the change is documented rather than
+> pre-applied.
+
+## Contributing to the migration
+
+- `Library/` and `Website/` are authoritative inputs and are never edited. The
+  business rules, column names, validation rules and wording in the target are
+  derived from them and cite them.
+- Every deliberate behavioural difference belongs in `MIGRATION_NOTES.md` and is
+  annotated at the point of departure with a `// MIGRATION:` comment.
+  `MIGRATION_NOTES.md` is append-only.
+- No business logic in a controller; no data access outside a repository; no entity
+  crosses the API boundary.
+- Every style value in the front end resolves to a design token in
+  `frontend/src/styles/_tokens.scss`. The only literals permitted are `0`, `none`,
+  `auto`, `inherit`, `currentColor` and `transparent`.

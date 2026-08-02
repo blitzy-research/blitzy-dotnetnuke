@@ -7,17 +7,30 @@
   display: contents;
 }
 
-// The dialog panel. Overrides the four user-agent defaults that would otherwise
-// bypass the token vocabulary: the default border, the default inner padding, and
-// the system canvas background and text colour. Setting the colour also gives
+// The dialog frame. Overrides the user-agent defaults that would otherwise bypass
+// the token vocabulary: the default border, the default inner padding, and the
+// system canvas background and text colour. Setting the colour also gives
 // currentColor a defined basis for any projected content.
 //
+// MIGRATION: the user-agent padding is zeroed here rather than replaced here, and
+// the visible inset is carried by `.confirm-dialog__panel` instead. That split is
+// functional, not stylistic. A modal `<dialog>` paints its `::backdrop` as its own
+// pseudo-element, so the platform attributes a click on the backdrop to the
+// `<dialog>` element - and it attributes a click on any part of the dialog's own box
+// that no child covers to exactly the same element. Padding on this element would
+// therefore be a strip that reports an identical event target to the backdrop,
+// making the empty space beside the title dismiss a destructive confirmation. With
+// the inset moved to a child, the dialog's content box is fully covered and only the
+// border remains, which the class's pointer-geometry test resolves. The legacy
+// confirmation was a full page postback with no dismissible overlay, so this
+// structure diverges from no measured legacy behaviour.
+//
 // The two viewport caps are the whole responsive story and need no breakpoint;
-// border-box sizing is required for them to hold, since the panel carries padding
-// and a border. Nothing here positions the panel or declares a stacking index:
-// showModal() promotes it to the top layer, which paints above every positioned
-// element regardless of index, and the user agent supplies the modal with fixed
-// positioning, a full-viewport inset and centring margins already.
+// border-box sizing is required for them to hold, since this element carries a
+// border and bounds a padded child. Nothing here positions the dialog or declares a
+// stacking index: showModal() promotes it to the top layer, which paints above every
+// positioned element regardless of index, and the user agent supplies the modal with
+// fixed positioning, a full-viewport inset and centring margins already.
 //
 // The border resolves to the brand colour rather than to either border token,
 // because both of those fall below the contrast threshold for a boundary that has
@@ -26,7 +39,7 @@
   box-sizing: border-box;
   max-inline-size: var(--dialog-max-inline-size);
   max-block-size: var(--dialog-max-block-size);
-  padding: var(--space-6);
+  padding: 0;
   border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-lg);
   background-color: var(--color-background);
@@ -35,18 +48,35 @@
   font-family: var(--font-family-base);
 
   // The flex container is scoped to the open state deliberately. A closed dialog
-  // is hidden by the user-agent rule `dialog:not([open])`, whose specificity is
-  // one attribute plus one type; emulated view encapsulation rewrites the block
-  // selector above with a content attribute, giving it one class plus one
-  // attribute, which outranks that rule. An unconditional `display` here would
-  // therefore defeat the platform's own hiding and leave the dialog rendered
-  // while closed. Attaching it to `[open]` also makes it stop matching the moment
-  // the dialog closes.
+  // is hidden by the user-agent rule `dialog:not([open])`. Any author `display`
+  // declaration outranks a user-agent one outright, whatever its specificity, so an
+  // unconditional `display` here would defeat the platform's own hiding and leave
+  // the dialog rendered while closed. Attaching it to `[open]` also makes it stop
+  // matching the moment the dialog closes.
+  //
+  // No gap is declared: this container now has exactly one child, so a gap could
+  // never apply. The rhythm between the title, message and action row belongs to
+  // the panel, which is the element that actually has siblings to separate.
   &[open] {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
   }
+}
+
+// The padded interior, and the element that makes the frame above click-safe. It is
+// a flex column so the message can be the single scrolling region while the action
+// row stays pinned below it, and it owns the vertical rhythm between the three
+// regions. The flexible basis paired with a zero block minimum is what lets it be
+// bounded by the frame's height cap instead of overflowing it; without the explicit
+// minimum a flex child refuses to shrink below its content size, and the message's
+// own scrolling would never engage.
+.confirm-dialog__panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  gap: var(--space-4);
+  padding: var(--space-6);
 }
 
 // The heading margin is zeroed because the panel's gap owns the vertical rhythm.
@@ -65,11 +95,13 @@
 }
 
 // The message is the region that scrolls. Scrolling lives here rather than on the
-// panel so that a long message can never push the action row out of view, and so
-// the panel's height cap is what bounds it. A flex child will not shrink below its
-// content size without an explicit zero minimum in the block axis, so that is set
-// alongside the flexible basis. The user agent's own overflow handling on the
-// panel is left untouched as a last-resort fallback rather than suppressed.
+// panel so that a long message can never push the action row out of view, and the
+// frame's height cap is what ultimately bounds it - the cap constrains the panel,
+// and the panel constrains this. A flex child will not shrink below its content size
+// without an explicit zero minimum in the block axis, so that is set alongside the
+// flexible basis, at both levels of the chain. The user agent's own overflow
+// handling on the dialog element is left untouched as a last-resort fallback rather
+// than suppressed.
 //
 // Contained scroll chaining stops a completed scroll gesture inside the modal from
 // scrolling the page behind it.

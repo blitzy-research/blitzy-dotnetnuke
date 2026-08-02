@@ -1,29 +1,18 @@
-// =============================================================================
-//  loading-spinner.component.scss — async progress indicator
-// =============================================================================
-//  Owns every dimension and colour of the shared loading indicator, styling
-//  exactly the sibling template: the host, its decorative `indicator` glyph and
-//  its optional `label` text. Consumes spacing, border and typography tokens
-//  only; every value is a token, an intrinsic unit, pure geometry or one of the
-//  six permitted literals. Token values are named, never restated, so the token
-//  partial stays their one home.
+// Async progress indicator. Owns every dimension and colour of the shared loading indicator, styling
+// exactly the sibling template: the host, its decorative indicator glyph and its optional label text.
+// Token values are named, never restated, so the token partial stays their one home.
 //
-//  The indicator is STATIC — an indeterminate glyph, not a rotating one. The two
-//  design-system gaps that decide this are reported in full at the `.indicator`
-//  rule below rather than worked around, so nothing here is a silent compromise.
+// The indicator is STATIC - an indeterminate glyph, not a rotating one. The two design-system constraints
+// that decide that are set out at the `.indicator` rule below.
 //
-//  It `@use`s nothing. The component is non-interactive, its label is visible
-//  text and it contains no at-rule, so it needs neither the focus-ring mixin nor
-//  the visually-hidden mixin nor a breakpoint — and Sass modules are per-file, so
-//  importing a partial it does not consume would only add a load with no effect.
+// It `@use`s nothing. The component is non-interactive, its label is visible text and it contains no
+// at-rule, so it needs neither the focus-ring mixin nor the visually-hidden mixin nor a breakpoint - and
+// Sass modules are per-file, so importing a partial it does not consume would add a load with no effect.
 //
-// MIGRATION: net-new affordance, no legacy ancestor. The legacy portal was
-//  full-page-postback Web Forms, so the browser's page-load indicator WAS the
-//  spinner: zero spinner/progress/loading/throbber/busy selectors across
-//  default.css (136 rule bodies) and portal.css (80, all empty), and zero
-//  UpdatePanel/UpdateProgress/ScriptManager/AsyncPostBack across the five
-//  in-scope admin trees. No legacy class name or raster icon is referenced.
-// =============================================================================
+// MIGRATION: no legacy ancestor. The legacy portal was full-page-postback Web Forms, so the browser's own
+// page-load indicator WAS the spinner: neither legacy stylesheet carries a spinner, progress or busy
+// selector, and the in-scope admin trees contain no partial-postback progress control. No legacy class
+// name or raster icon is referenced.
 
 :host {
   display: inline-flex;
@@ -32,62 +21,47 @@
   vertical-align: middle;
 }
 
-// There is no size-token group, so the spacing scale doubles as the size scale.
-// The base is the medium step, which also covers a missing `data-size`: an
-// attribute binding is dropped on a nullish value, and a dimensionless glyph would
-// be invisible.
+// There is no size-token group, so the spacing scale doubles as the size scale. The base is the medium
+// step, which also covers a missing `data-size`: an attribute binding is dropped on a nullish value, and a
+// dimensionless glyph would be invisible.
 .indicator {
   box-sizing: border-box;
   flex: none;
   inline-size: var(--space-6);
   block-size: var(--space-6);
 
-  // GEOMETRY, not a design value: 50% turns a square into a circle; a radius
-  // token would round the corners into a squircle.
+  // A half-length is what turns a square into a circle; a radius token would round the corners into a
+  // squircle instead. The token vocabulary carries no value for this.
   border-radius: 50%;
 
   border-width: var(--border-width);
   border-style: var(--border-style);
   border-color: var(--color-border);
 
-  // The accent arc inherits from context rather than naming a colour, so the
-  // indicator tints itself to whatever text it sits beside.
+  // The accent arc inherits from context rather than naming a colour, so the indicator tints itself to
+  // whatever text it sits beside.
   border-block-start-color: currentColor;
 
-  // MIGRATION: the indicator does NOT rotate, and the omission is a reported
-  //  design-system gap rather than an oversight. There is no duration token to
-  //  animate with: the token partial declares no motion group at all, and it
-  //  cannot be substituted for — a spacing token is a length, so
-  //  `animation-duration: var(--space-4)` is invalid CSS, and scaling an
-  //  unrelated token by a multiplier would smuggle the real design decision (the
-  //  multiplier) outside the sole token owner, which is exactly the hardcoded
-  //  value the design system forbids. `loading-spinner` is the one genuine
-  //  consumer a duration token would have, so the gap is reported for the token
-  //  partial's owner to act on; it is not this file's to fix.
+  // MIGRATION: the indicator does NOT rotate, and two design-system constraints decide it rather than
+  // preference. First, there is no duration token to animate with - the token partial declares no motion
+  // group at all - and it cannot be substituted for, because a spacing token is a length, so an
+  // animation duration named from one is invalid CSS, while scaling an unrelated token by a multiplier
+  // would put the real design decision, the multiplier, outside the sole token owner. Second, the shared
+  // mixin surface is closed at the responsive and accessibility members and exports no reduced-motion
+  // guard, and a component stylesheet may not author a raw media query of its own, the reduced-motion
+  // feature query included. Animating without that guard would impose movement on a reader who has asked
+  // their system for less, so the query is not written and the motion is not introduced.
   //
-  // MIGRATION: the reduced-motion guard is the second half of the same gap. The
-  //  shared mixin surface is closed at the responsive and accessibility members
-  //  and exports no motion guard, and a component stylesheet may not author a raw
-  //  media query of its own — the reduced-motion feature query included.
-  //  Design-system compliance outranks the accessibility heuristic in the plan's
-  //  own precedence order, so the query is not written; the static presentation
-  //  honours a reduced-motion preference inherently, for every reader, with no
-  //  query at all.
-  //
-  // MIGRATION: nothing is lost by degrading. `transform` and `rotate` measure
-  //  zero occurrences in BOTH legacy stylesheets, as do `animation`, `@keyframes`
-  //  and `transition` — the legacy design had no motion vocabulary whatsoever, so
-  //  a static indicator diverges from it in nothing. A circular glyph with one
-  //  accented arc, beside visible label text inside the host's polite live
-  //  region, is a complete indeterminate progress affordance for sighted and
-  //  assistive-technology readers alike.
+  // Nothing is lost by degrading: the legacy design had no motion vocabulary whatsoever, so a static
+  // indicator diverges from it in nothing, and the static presentation honours a reduced-motion preference
+  // inherently, for every reader, with no query at all. A circular glyph with one accented arc, beside
+  // visible label text inside the host's polite live region, is a complete indeterminate progress
+  // affordance for sighted and assistive-technology readers alike.
 }
 
-// The three fixed size states, each declared explicitly so the vocabulary the
-// component's TypeScript exposes — small, medium, large — is legible one-for-one
-// in the stylesheet. Medium repeats the base dimensions on purpose: the base rule
-// above carries them so the glyph is never dimensionless (a nullish `size` drops
-// the host attribute entirely, and a dimensionless glyph is invisible), while the
+// The three fixed size states, each declared explicitly so the vocabulary the component's TypeScript
+// exposes - small, medium, large - is legible one-for-one in the stylesheet. Medium repeats the base
+// dimensions on purpose: the base rule above carries them so the glyph is never dimensionless, while the
 // selector below states the size state in the same form as its two siblings.
 :host([data-size='small']) .indicator {
   inline-size: var(--space-4);

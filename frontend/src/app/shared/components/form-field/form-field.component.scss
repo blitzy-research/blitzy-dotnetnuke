@@ -1,0 +1,103 @@
+@use '../../../../styles/mixins' as mx;
+
+// A custom element has no intrinsic display, so block flow is declared explicitly.
+:host {
+  display: block;
+}
+
+// Stacked label, control, help and error. A column with a gap rather than margins on
+// each child, so the spacing between the four parts is declared once and cannot be
+// doubled by a child that brings its own margin.
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-block-end: var(--space-4);
+}
+
+// MIGRATION: the legacy label rule declared bold weight on the base font stack, and
+// that weight is carried across. The colour is left to inherit, exactly as the legacy
+// rule did, so a label sits in the surrounding text colour rather than the brand
+// colour - which is reserved for headings and links.
+.form-field__label {
+  display: block;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+}
+
+// The marker is separated from the label text by a token-based inset rather than by a
+// space character in the markup. A literal space would be collapsed by the template
+// compiler and could not be adjusted.
+.form-field__required {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger);
+}
+
+.form-field__control {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+// MIGRATION: the legacy help rule rendered its text one step smaller than body text
+// in the muted colour, and both are carried across as tokens.
+.form-field__help {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+}
+
+// MIGRATION: the legacy validators rendered their messages in the error colour at
+// body size. The colour is the measured legacy error value carried across as a token.
+// Bold weight is a net addition, so the message is distinguishable from the help text
+// directly above it without introducing a second colour.
+.form-field__error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+}
+
+// Above the breakpoint the label sits beside its control, which is the arrangement the
+// legacy admin screens used - a two-column table of label and field. Below it, the
+// stacked arrangement above applies unchanged, authored mobile-first.
+//
+// A grid rather than a row flex container, because only a grid can align the labels of
+// several sibling fields to one column edge; a flex row would size each label to its
+// own text and leave the controls ragged.
+@include mx.respond-above('md') {
+  .form-field {
+    display: grid;
+    // The label column resolves to the shared token, never to a literal: the width
+    // is the measured legacy label-cell width and belongs to the vocabulary, so a
+    // second form surface agrees with this one instead of choosing its own. Paired
+    // with `minmax(0, …)` so the column yields rather than overflowing on a narrow
+    // viewport, and with `1fr` for the control column, which is a fraction of the
+    // remaining space rather than a dimension and so has no token to resolve to.
+    grid-template-columns: minmax(0, var(--field-label-inline-size)) minmax(0, 1fr);
+    column-gap: var(--space-4);
+    align-items: baseline;
+  }
+
+  // The label occupies the first column of the first row; the control the second.
+  .form-field__label {
+    grid-column: 1;
+  }
+
+  .form-field__control {
+    grid-column: 2;
+  }
+
+  // Help and error text align under the control rather than under the label, because
+  // they describe the control. Placing them in the first column would read as though
+  // they described the label.
+  .form-field__help,
+  .form-field__error {
+    grid-column: 2;
+  }
+}

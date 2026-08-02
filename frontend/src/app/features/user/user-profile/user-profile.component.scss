@@ -1,4 +1,46 @@
 // =============================================================================
+//  COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+//
+//  This stylesheet is reached through `styleUrl` on its paired component, so it
+//  is compiled by `ng build` and by `ng test`, ships inside this screen's lazy
+//  chunk, and IS measured against the `anyComponentStyle` budget that
+//  `angular.json` caps at 8 kB as an ERROR. All three companions exist:
+//
+//      user-profile.component.ts          present
+//      user-profile.component.html        present
+//      user-profile.component.spec.ts     present
+//
+//  The screen this styles is the route /users/:userId/profile, declared as a
+//  `loadComponent` entry in `src/app/app.routes.ts`.
+//
+//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
+//  encapsulation with the component's own content attribute, so a class name
+//  that drifts does not error — it silently matches nothing and the screen
+//  renders unstyled. The template emits exactly this vocabulary, and every
+//  entry below was checked against the template rather than assumed:
+//
+//      .user-profile
+//      .user-profile__groups
+//      .user-profile__group
+//      .user-profile__toggle
+//      .user-profile__toggle-icon
+//      .user-profile__toggle[aria-expanded='true'] .user-profile__toggle-icon
+//      .user-profile__fields
+//      .user-profile__visibility
+//      .user-profile__values
+//      .user-profile__value
+//      .user-profile__actions
+//
+//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
+//  carries nine shared components — page header, data table, pagination, form
+//  field, search input, confirm dialog, error banner, loading spinner and empty
+//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
+//  and the wire models under `core/models/`. It carries no user.service.ts and
+//  no signal store, so this component performs no HTTP: its data arrives through
+//  inputs and its intent leaves through outputs. That seam is what makes every
+//  branch below directly testable from the paired specification, with no HTTP
+//  testing controller involved.
+// =============================================================================
 //  user-profile.component.scss — the dynamic profile editor, both of its modes
 // =============================================================================
 //
@@ -191,6 +233,75 @@
   // control's border and background, and this include guarantees the indicator
   // survives that regardless of which element the template settles on.
   @include mx.focus-ring;
+
+  // ---------------------------------------------------------------------------
+  //  INTERACTION STATES — restated here because this component SUPPRESSES the
+  //  global ones, and suppression without replacement is what leaves a control
+  //  with no visible response at all.
+  //
+  //  The three declarations above are the cause, not incidental: `color: inherit`
+  //  weighs (0,1,0) and the global `button:hover` / `button:active` rules weigh
+  //  (0,1,1). One class outranks one type selector, so every global state rule
+  //  for this control is already losing before a pointer arrives — the ink cannot
+  //  change on hover because `inherit` wins, and the press tint cannot appear
+  //  because `background-color: transparent` wins. Restating the states inside
+  //  the component is therefore the only place they can take effect.
+  //
+  //  Hover carries a NON-COLOUR cue as well as a colour one, and here that is not
+  //  belt-and-braces either: this control's resting ink is `inherit`, so a
+  //  hover that changed only the colour would be a change from an unknown
+  //  starting value to a known one, and against a heading that already renders in
+  //  the brand ink it could resolve to no perceptible change whatever. The
+  //  underline is independent of whatever the inherited colour turns out to be.
+  // ---------------------------------------------------------------------------
+
+  // MIGRATION: the legacy category head had no hover, press or unavailable
+  // treatment to measure, because it was not an interactive control at all — the
+  // section-head icon button carried `tabIndex="-1"` and the head itself was
+  // plain text. Rendering it as a real button, recorded above as a deliberate
+  // keyboard-operability gain, creates an affordance the legacy portal never had,
+  // and an affordance that responds to no interaction is a worse outcome than the
+  // static text it replaced. These states are therefore net-new by necessity and
+  // are drawn entirely from the shared vocabulary rather than invented here.
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  // Press. Distinct from hover by channel as well as by value: hover moves the ink
+  // and adds the underline, press adds the fill and leaves both standing.
+  &:enabled:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable, native form. The muted ink is the vocabulary's own disabled ink
+  // and clears 4.5:1 on the surrounding surface on its own, so it needs no
+  // inactive-component exemption; the cursor is the second, non-colour cue; and
+  // the underline is explicitly cleared so an unavailable control cannot keep a
+  // link-like affordance it can no longer honour.
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — looks and is announced as unavailable while staying
+  // focusable and in the tab order. No `cursor` and no `:hover` hold accompany
+  // it, matching the global layer's documented reasoning: an element receiving no
+  // pointer events resolves no cursor and can never become a hit-test target, so
+  // both would be unmatchable dead weight.
+  //
+  // CONSUMER OBLIGATION — `pointer-events` guards the pointer and nothing else.
+  // This control stays keyboard-operable by design, so the component that sets
+  // `aria-disabled` MUST also guard the click, Enter and Space paths. Where
+  // focusability is not actually required, prefer the native `disabled`
+  // attribute, which closes every path at once.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    pointer-events: none;
+  }
 }
 
 // The indicator is an inline SVG supplied by the template, sized from the type

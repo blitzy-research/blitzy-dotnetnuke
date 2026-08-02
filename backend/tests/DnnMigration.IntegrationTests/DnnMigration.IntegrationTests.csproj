@@ -23,6 +23,26 @@
     provider may be applied to a single DbContextOptions, so a fixture must remove
     the existing provider registration before adding its own rather than layering
     one on top.
+
+    THE PACKAGE LIST BELOW IS CLOSED AT TEN AND MUST STAY THERE. It is the set AAP
+    0.6.1 approves for this project, and a package that merely looks necessary is
+    not thereby approved. The SQLite native bundle is the specific trap: nothing
+    named SQLitePCLRaw appears here, and nothing should. Sqlite needs a native
+    e_sqlite3 provider to run at all, but Microsoft.EntityFrameworkCore.Sqlite
+    already declares SQLitePCLRaw.bundle_e_sqlite3 as a direct dependency and
+    therefore supplies both the bundle and its per-platform native asset
+    transitively - verified in this project's own restore graph, where the bundle
+    and the runtime-targeted e_sqlite3 library both resolve without being named
+    here.
+
+    An earlier revision pinned that bundle directly, which was worse than merely
+    redundant. A direct PackageReference wins version resolution outright, so the
+    pin silently overrode the version EF Core had selected and moved the native
+    provider off the line the EF Core 8.0.29 band was tested against. Leaving it
+    out keeps the native provider on whatever version EF Core asks for, which is
+    the only version the ORM guarantees against. If a native-load failure ever
+    needs addressing, fix it by aligning the EF Core version rather than by pinning
+    the bundle underneath it.
   -->
 
   <PropertyGroup>
@@ -40,13 +60,25 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+  </ItemGroup>
+
+  <!--
+    The two schema scripts are embedded rather than copied so that the suite carries its
+    own database definition inside the test assembly and cannot be run against a
+    half-provisioned directory. DnnSchema.sql holds the mapped legacy tables;
+    MembershipSchema.sql holds the external aspnet_* objects that no mapped entity type
+    describes and that AAP 0.7.1.3 shows the legacy DDL chain only ever ALTERs.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Schema\DnnSchema.sql" />
+    <EmbeddedResource Include="Schema\MembershipSchema.sql" />
+    <EmbeddedResource Include="Schema\HostSettingsSchema.sql" />
   </ItemGroup>
 
   <!--

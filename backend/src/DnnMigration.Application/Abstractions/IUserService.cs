@@ -28,13 +28,11 @@
 // MIGRATION: (04) Credential retrieval is NOT carried forward. GetPassword L433 is dropped
 // MIGRATION:      outright and no member returns, echoes or reconstructs a credential. The
 // MIGRATION:      legacy store made that possible: the original table held the credential in
-// MIGRATION:      clear text as [Password] nvarchar(20) NOT NULL, inside the CREATE TABLE at
-// MIGRATION:      Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider
-// MIGRATION:      L97-L110, and the later membership store was configured reversible with
-// MIGRATION:      passwordFormat="Encrypted" plus enablePasswordRetrieval="true" at
-// MIGRATION:      Website/release.config L236-L246, over a Triple-DES machine key committed to
-// MIGRATION:      source control at L89-L93. That key's value is deliberately not reproduced
-// MIGRATION:      anywhere in this tree. Recovery is one-way hashing plus administrative reset.
+// MIGRATION:      clear text as [Password] nvarchar(20) NOT NULL in the baseline schema, and the
+// MIGRATION:      later membership store was configured for reversible storage with retrieval
+// MIGRATION:      enabled, over signing material held in source control. Neither that material
+// MIGRATION:      nor its location is reproduced anywhere in this tree. Recovery here is one-way
+// MIGRATION:      hashing plus administrative reset.
 //
 // MIGRATION: (05) ResetPassword L906 returned the new credential as its value. The reset path
 // MIGRATION:      here returns Task<Result> and never a credential.
@@ -55,10 +53,20 @@
 // MIGRATION:      because a generated credential has to be transmitted to be useful and that
 // MIGRATION:      reintroduces exactly the disclosure item (04) removes.
 //
-// MIGRATION: (08) This contract owns the administrative-reset half of the credential migration
-// MIGRATION:      path. AAP 0.7.5.5 prescribes re-hashing on first successful sign-in with
-// MIGRATION:      administrative reset as the fallback; the sign-in half belongs to the sibling
-// MIGRATION:      authentication contract and is not duplicated here.
+// MIGRATION: (08) THIS CONTRACT OWNS THE WHOLE OF THE CREDENTIAL MIGRATION PATH, NOT HALF OF IT.
+// MIGRATION:      AAP 0.7.5.5 prescribes re-hashing on first successful sign-in with administrative
+// MIGRATION:      reset as the fallback, and an earlier revision of this note therefore described
+// MIGRATION:      the reset as one half of a two-part path. THE OTHER HALF DOES NOT EXIST AND
+// MIGRATION:      CANNOT BE BUILT WITHIN THIS PLAN: re-hashing on first sign-in requires verifying
+// MIGRATION:      a credential held under the legacy reversible scheme, which means mapping the
+// MIGRATION:      legacy membership store and decrypting it with the key committed at
+// MIGRATION:      Website/release.config:L89-L93 - and the same AAP section forbids reproducing
+// MIGRATION:      reversible storage, while the file inventories at 0.4.1.1 and 0.5.1.3 name no
+// MIGRATION:      verifier, no legacy credential entity and no credential column. The plan's own
+// MIGRATION:      fallback branch consequently applies universally, so administrative reset is the
+// MIGRATION:      only route by which a pre-existing account regains access. The sibling
+// MIGRATION:      authentication contract verifies BCrypt digests only and performs no upgrade.
+// MIGRATION:      The divergence is recorded in MIGRATION_NOTES.md.
 //
 // MIGRATION: (09) GetCurrentUserInfo L381 resolved the caller from ambient per-request state and
 // MIGRATION:      is NOT here. The sibling ICurrentUser abstraction in this folder replaces it.
@@ -225,7 +233,12 @@ namespace DnnMigration.Application.Abstractions;
 /// error. That applies to every single-item read below and, most consequentially, to the
 /// membership settings read, whose legacy predecessor genuinely returned nothing when the User
 /// Accounts module was not installed. A caller distinguishes the two by testing the value for
-/// <see langword="null"/> after confirming success, and typically maps it to a 404.
+/// <see langword="null"/> after confirming success, and typically maps it to a 404. Every read
+/// that can answer "absent" is therefore typed with a nullable payload,
+/// <c>Result&lt;TDto?&gt;</c>, so the compiler holds the contract this paragraph states rather
+/// than leaving it to prose. A create or an update keeps a non-nullable payload, because it
+/// either produced a record or failed, and the collection reads keep one too, because they
+/// promise an empty sequence rather than an absent one.
 /// </para>
 /// <para>
 /// <b>Failure code vocabulary.</b> Codes are lower-case, dot-separated and stable, because a
@@ -302,7 +315,7 @@ public interface IUserService
     /// A successful result carrying the requested page, which is an empty page - never a failure
     /// and never a <see langword="null"/> value - when no account matches or when the tenant
     /// holds no accounts at all. Documented failure codes are
-    /// <c>user.list.filter-conflict</c>, when more than one of the account-name,
+    /// <c>user.list.filter-invalid</c>, when more than one of the account-name,
     /// electronic-mail and profile-property filters is supplied, or when only one half of the
     /// profile-property pair is supplied; and <c>user.list.unknown-profile-property</c>, when
     /// the named profile property is not defined for the tenant.
@@ -334,6 +347,14 @@ public interface IUserService
     /// <see cref="UserListItemDto"/>. Note that the address and telephone columns that grid
     /// displayed are profile values rather than account columns, which is why they arrive
     /// through the list projection rather than through a filter.
+    /// </para>
+    /// <para>
+    /// The page coordinates, the sort field and the paging contract's own free-text filter are
+    /// bounded by <c>UserListPagedRequestValidator</c>, whose sortable set is the set of columns
+    /// the legacy account grid bound. Three of that grid's header names differ from the
+    /// projection's property names and the projection's are authoritative, because they are what
+    /// a caller reads back. The four filter arguments declared on this member are distinct from
+    /// that free-text filter and are bounded by this member's own implementation.
     /// </para>
     /// </remarks>
     Task<Result<PagedResult<UserListItemDto>>> ListUsersAsync(
@@ -387,7 +408,11 @@ public interface IUserService
     /// <see cref="UserDetailDto"/>, so that member needs no counterpart either.
     /// </para>
     /// </remarks>
-    Task<Result<UserDetailDto>> GetUserAsync(
+    // MIGRATION: the payload is nullable because this read can legitimately answer "absent",
+    // which the returns clause above has always stated. Declaring it non-nullable made the
+    // compiler contradict the contract: a caller acting on the documented null had to defeat
+    // the annotation to do so, and an implementation returning one did the same.
+    Task<Result<UserDetailDto?>> GetUserAsync(
         int portalId,
         int userId,
         CancellationToken cancellationToken = default);
@@ -552,6 +577,15 @@ public interface IUserService
     /// so the audit intent survives the change of mechanism.
     /// </para>
     /// <para>
+    /// <b>Deletion must also revoke every refresh token the account held</b>, through
+    /// <see cref="ITokenService.RevokeAllRefreshTokensAsync"/>, within the same unit of work as the
+    /// rest of the cascade. A refresh token outliving the account it names is the worst of the three
+    /// cases this obligation covers: the account is gone, so nothing remains that an administrator
+    /// could inspect or disable, and yet the token would still be exchanged for access tokens
+    /// asserting an identity that no longer exists. Revoking is therefore part of deleting rather
+    /// than a follow-up to it.
+    /// </para>
+    /// <para>
     /// There is deliberately no bulk counterpart. The legacy surface offered three of them plus
     /// an unapproved-account sweep, none of which has an endpoint in the target API, and a
     /// reachable member that erases every account in a tenant would be a defect rather than a
@@ -607,12 +641,34 @@ public interface IUserService
     /// surface.
     /// </para>
     /// <para>
-    /// This member owns the administrative-reset half of the credential migration path: legacy
-    /// credentials were held reversibly and cannot be verified against a one-way hash, so an
-    /// account is re-hashed on its first successful sign-in - the sibling authentication
-    /// contract's half - and an administrator resets it here when that never happens. Two
-    /// members of the legacy status enumeration, both concerning the recovery answer and
-    /// question, are unreachable here because that pair is omitted.
+    /// This member owns THE WHOLE of the credential migration path rather than half of it.
+    /// Legacy credentials were held reversibly and cannot be verified against a one-way hash,
+    /// and no component in this solution can verify one - so the first-sign-in re-hash that
+    /// AAP 0.7.5.5 envisages has no implementation and, per that same section, may not be given
+    /// one. An administrative reset performed through this member is therefore the ONLY way a
+    /// pre-existing account regains access, which makes this member load-bearing for the
+    /// migration rather than a fallback within it. See migration note (08) at the head of this
+    /// file for the full reasoning. Two members of the legacy status enumeration, both
+    /// concerning the recovery answer and question, are unreachable here because that pair is
+    /// omitted.
+    /// </para>
+    /// <para>
+    /// <b>A successful change must revoke every refresh token the account holds</b>, through
+    /// <see cref="ITokenService.RevokeAllRefreshTokensAsync"/>, in the same request. This is an
+    /// obligation on the implementation rather than an option: a credential that has been changed
+    /// because it may have been compromised, or reset because its holder lost it, is of no use to
+    /// whoever had it - but a refresh token issued under the old credential keeps yielding new access
+    /// tokens indefinitely, so a change that left one exchangeable would not end the very session it
+    /// was performed to end. The revocation applies to the whole account, not to the caller's own
+    /// session, so an administrative reset ends the sessions of the account being reset. Access
+    /// tokens already issued cannot be recalled and are not attempted; the window they leave is
+    /// bounded by their own short lifetime, and no successor follows them.
+    /// </para>
+    /// <para>
+    /// This has no legacy counterpart, because the legacy credential change had nothing to revoke.
+    /// <c>UserController.vb</c> L103 changed the stored credential and returned, leaving the forms
+    /// ticket the browser already held entirely untouched and valid for the remainder of its
+    /// configured window. Ending the sessions is net-new strengthening, recorded as such.
     /// </para>
     /// <para>
     /// No validation predicate is exposed. The legacy surface offered one at L1067 and called it
@@ -696,6 +752,19 @@ public interface IUserService
     /// caller.
     /// </para>
     /// <para>
+    /// <b>Withdrawing an approval must revoke every refresh token the account holds</b>, through
+    /// <see cref="ITokenService.RevokeAllRefreshTokensAsync"/>, in the same request. Withdrawal ends
+    /// the account's right to sign in, and an account that may not sign in must not retain the means
+    /// to keep obtaining access tokens: a refresh token issued while the approval stood would go on
+    /// yielding them, so the withdrawal would take effect for new sign-ins and not for the session
+    /// already running. Granting an approval revokes nothing, because it takes nothing away.
+    /// </para>
+    /// <para>
+    /// This too is net-new. <c>Website/admin/Users/Membership.ascx.vb</c> L243 cleared the flag and
+    /// persisted the account, and the forms ticket the withdrawn account's browser held stayed valid
+    /// for the rest of its window - the legacy screen had no mechanism with which to end it.
+    /// </para>
+    /// <para>
     /// This transition is deliberately absent from <see cref="UpdateUserAsync"/>. The legacy
     /// screen gated each direction on current state at L143 and L144 and refused all of them for
     /// the acting administrator's own account at L135, and folding an approval flag into an
@@ -769,7 +838,12 @@ public interface IUserService
     /// migration plan folds together.
     /// </para>
     /// </remarks>
-    Task<Result<MembershipSettingsDto>> GetMembershipSettingsAsync(
+    // MIGRATION: nullable for the reason the returns clause gives, which is the most
+    // consequential instance of it on this contract: the legacy reader assigned its result only
+    // inside a not-nothing guard, so an installation without the User Accounts module yielded
+    // nothing and the screens fell back to their defaults. The annotation is what stops a
+    // caller treating that documented absence as impossible.
+    Task<Result<MembershipSettingsDto?>> GetMembershipSettingsAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
@@ -834,7 +908,11 @@ public interface IUserService
     /// difference is observable by any client that renders the field.
     /// </para>
     /// </remarks>
-    Task<Result<UserProfileDto>> GetProfileAsync(
+    // MIGRATION: nullable to match the returns clause, which distinguishes two absences that
+    // must not be conflated - an account that does not exist, reported as a null payload, and a
+    // defined property the account has never filled in, which is present in the projection with
+    // an absent value so a client can render the whole form from one read.
+    Task<Result<UserProfileDto?>> GetProfileAsync(
         int portalId,
         int userId,
         CancellationToken cancellationToken = default);
@@ -925,7 +1003,10 @@ public interface IUserService
     /// definition identifier and the tenant identifier, so tenant scoping is preserved exactly
     /// rather than added.
     /// </remarks>
-    Task<Result<ProfilePropertyDefinitionDto>> GetProfilePropertyDefinitionAsync(
+    // MIGRATION: nullable to match the returns clause. Note the deliberate asymmetry with the
+    // listing member above and the create and update members below, all of which keep a
+    // non-nullable payload: a list promises an empty sequence and a write promises a record.
+    Task<Result<ProfilePropertyDefinitionDto?>> GetProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken = default);

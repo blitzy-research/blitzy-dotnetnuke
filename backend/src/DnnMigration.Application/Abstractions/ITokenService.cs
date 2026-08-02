@@ -1,11 +1,11 @@
 using DnnMigration.Application.Dtos.Auth;
 using DnnMigration.Domain.Common;
 
-// MIGRATION: this contract is net-new. The legacy application shipped no token service and no
+// MIGRATION: nothing here is ported. The legacy application shipped no token service and no
 // abstraction resembling one, so an implementer must not search the VB.NET trees for a
 // predecessor to transliterate - there is none. What it displaces is the .NET Framework 2.0
-// membership-and-cookie chain declared in Website/release.config: the machine-key element at
-// L89-L93 and the SqlMembershipProvider registration at L217-L246. That chain is replaced
+// membership-and-cookie chain, whose signing material and provider registration both lived in the
+// legacy web configuration and are not reproduced here. That chain is replaced
 // wholesale rather than ported. The mechanics live in Infrastructure/Security/, in the JWT token
 // service and its refresh-token store, and this project deliberately cannot see either: the
 // application layer declares exactly one project reference, to the domain layer, so the JWT
@@ -43,10 +43,11 @@ using DnnMigration.Domain.Common;
 // answer, a signing key or a secret of any kind, and every one of those exclusions is
 // deliberate. Credential handling belongs to the domain layer's hasher abstraction and is
 // orchestrated by the sign-in service, so this contract is reached only once a credential has
-// already been accepted. The legacy store was reversible by design: Website/release.config
-// L89-L93 commits a 3DES decryption key directly into source control, and L217-L246 registers
-// the membership provider with a reversible storage format and credential retrieval enabled, so
-// anything held could be recovered in clear text. One-way BCrypt hashing replaces that store,
+// already been accepted. The legacy store was reversible by design — its membership provider was
+// registered with a reversible storage format and credential retrieval enabled, over signing
+// material held in source control — so anything held could be recovered in clear text. Neither
+// that material nor its location is reproduced anywhere in this tree. One-way BCrypt hashing
+// replaces that store,
 // and the signing secret behind the tokens described below reaches the implementation only
 // through bound configuration - never as a parameter, never as a return value, never in a log.
 
@@ -92,6 +93,46 @@ namespace DnnMigration.Application.Abstractions;
 /// call, or delegate to a store that does, and must hold no scoped instance in a field.
 /// </para>
 /// <para>
+/// Refresh state, and the one thing this contract does <b>not</b> promise about it. Refresh tokens
+/// are server-side state: the implementation records one entry per issued token, holds only a
+/// one-way digest of the value, and treats its own record as authoritative for whether a presented
+/// token may be exchanged. What this contract does not promise is <em>where</em> that state lives
+/// or how long it survives, because that is a property of the deployment rather than of the
+/// abstraction. The implementation shipped in this solution keeps the state in the process, which
+/// has two consequences a deployment must plan around: a restart discards every outstanding refresh
+/// token, so every caller signs in again; and two replicas do not see each other's state, so a
+/// token issued by one cannot be exchanged at the other and a revocation performed on one does not
+/// reach the other. That implementation is therefore suitable for a single-instance deployment
+/// only. A deployment that needs either property supplies a durable, shared implementation of these
+/// four members in its place — nothing on this surface changes when it does, which is what makes
+/// the substitution possible. An earlier revision of this paragraph asserted durable storage
+/// outright; THAT CLAIM WAS FALSE of the implementation that satisfies it, and stating a
+/// requirement as a delivered guarantee is the more dangerous of the two mistakes, because it stops
+/// anyone planning for it.
+/// </para>
+/// <para>
+/// Why the narrower statement is the correct one rather than a concession. This solution's own
+/// deployment descriptor, <c>docker/docker-compose.yml</c>, declares a single API service with no
+/// replica or scale declaration of any kind, so rotation held in the process <em>is</em> rotation
+/// suitable for the deployment being targeted. Making it durable would mean persisting token state,
+/// and the only persistence this solution has is the existing SQL Server schema, which it is
+/// forbidden to alter: the plan's data-model rule holds the schema immutable, its twenty-one-entity
+/// inventory contains no token or credential entity, and its configuration inventory contains no
+/// mapping for one. A durable store therefore cannot be built here without breaking the rule that
+/// governs the whole migration, which is why the contract is made accurate instead of the
+/// implementation being made to promise something it may not deliver. Supplying that durable store
+/// is a deployment decision with its own persistence, not a gap in this layer.
+/// </para>
+/// <para>
+/// Session length is bounded absolutely, not by idleness. A refresh token family receives one
+/// absolute deadline when the first token of it is issued, and exchanging a token does not move
+/// that deadline: the successor inherits it. A session therefore ends at a determined instant
+/// however continuously it is used, and a caller wanting to continue past it authenticates again.
+/// This is a security property rather than an implementation note — a deadline that each exchange
+/// pushed further out would never be reached by a token that kept being exchanged, including one
+/// being exchanged by a thief.
+/// </para>
+/// <para>
 /// Configuration. The signing secret, issuer, audience, access-token lifetime and refresh-token
 /// lifetime arrive through the bound JWT options class in the application layer's Options folder,
 /// populated by the Api layer from <c>appsettings.json</c> under the settled keys
@@ -119,8 +160,20 @@ namespace DnnMigration.Application.Abstractions;
 /// unknown, already used, revoked or past its absolute expiry is refused - never honoured "just
 /// this once". Because the rotated access token is minted afresh, a role or permission change
 /// takes effect at the next exchange rather than at the next sign-in; an implementation must
-/// re-read the caller's current roles and permission keys for the new token rather than copying
-/// the entries of the token being replaced.
+/// re-read the caller's current roles, permission keys and host-level flag for the new token rather
+/// than copying the entries of the token being replaced.
+/// </para>
+/// <para>
+/// What rotation may change, and what it may never change. Exchanging a token proves possession of
+/// something issued to one caller in one tenant, and nothing about that proof can license
+/// describing the successor as belonging to anybody else. The subject identifier, the portal
+/// identifier and the sign-in name are therefore taken from the implementation's own record of the
+/// token being exchanged, never from anything the caller supplies alongside it - and there is no
+/// parameter on <see cref="RefreshAsync"/> through which they could be supplied, which is the point.
+/// The three mutable authority facts are the opposite case: they must be re-read, and re-read from
+/// authoritative storage rather than from anything the request carried. An implementation that
+/// forwarded role names arriving on the wire would hand a caller whatever authority it cared to
+/// name, and no check inside a token store could detect it.
 /// </para>
 /// <para>
 /// Why no read-or-validate member exists. Inspecting or validating an access token is
@@ -148,13 +201,21 @@ namespace DnnMigration.Application.Abstractions;
 /// </para>
 /// <para>
 /// Implementer's checklist. Store a refresh token as a one-way hash of the value handed to the
-/// caller, never in clear text, so that a compromised store yields nothing replayable. Give every
-/// refresh token an absolute expiry as well as a used marker, so rotation cannot extend a session
-/// indefinitely. Generate token values from a cryptographically secure random source, never from a
-/// counter, a timestamp or a hash of caller data. Emit no token value and no secret to any log,
-/// metric, trace or exception message - record the user identifier and the outcome code instead.
-/// Read the current instant through the injected clock. Honour the cancellation token on every
-/// store round trip. Keep no per-caller state in a field.
+/// caller, never in clear text, so that a compromised store yields nothing replayable. Fix one
+/// absolute expiry when a family is created, share it across every successor, and never recompute
+/// it on exchange, so rotation cannot extend a session; keep a used marker per token alongside it,
+/// so a replay is still recognised. Remove state that can no longer be acted on - once a family has
+/// passed its deadline nothing in it can be exchanged and nothing in it remains to protect, so
+/// retaining it grows the store without bounding it; do that removal on the operations that caused
+/// the growth, with a ceiling on how much any one of them pays for. Support revoking every family a
+/// caller holds in one indivisible step, because a credential change that revoked them one at a
+/// time would leave a window in which an exchange could mint a successor into a family it had not
+/// reached yet. Make the amount of state held observable, since a store of credentials must not
+/// report on itself by logging. Generate token values from a cryptographically secure random source,
+/// never from a counter, a timestamp or a hash of caller data. Emit no token value and no secret to
+/// any log, metric, trace or exception message - record the user identifier and the outcome code
+/// instead. Read the current instant through the injected clock. Honour the cancellation token on
+/// every store round trip. Keep no per-caller state in a field.
 /// </para>
 /// </remarks>
 public interface ITokenService
@@ -178,12 +239,20 @@ public interface ITokenService
     /// runs, the credential decision has already been taken elsewhere.
     /// </para>
     /// <para>
-    /// The implementation writes exactly one refresh-token record per call and returns the pair
-    /// only once that record is durably stored, because a pair whose refresh half was never
-    /// recorded would appear to work and then fail at the caller's first exchange. It attaches no
+    /// The implementation writes exactly one refresh-token record per call and returns the pair only
+    /// once that record is in place, because a pair whose refresh half was never recorded would
+    /// appear to work and then fail at the caller's first exchange. "In place" means recorded in
+    /// whichever store the deployment supplied, with the durability that store has and no more: read
+    /// the paragraph on refresh state above before assuming it survives a restart. It attaches no
     /// advisory reason of its own: the weak-credential advisories the legacy sign-in flow reported
     /// as LOGIN_INSECUREADMINPASSWORD and LOGIN_INSECUREHOSTPASSWORD are the sign-in service's to
     /// propagate onto its own outcome, not this service's to discover.
+    /// </para>
+    /// <para>
+    /// This call also fixes the absolute deadline of the session it begins. Every refresh token that
+    /// later descends from the one issued here inherits that deadline unchanged, so the last instant
+    /// at which this caller can obtain a new access token without authenticating again is already
+    /// determined before this member returns.
     /// </para>
     /// </remarks>
     /// <param name="userId">
@@ -225,7 +294,11 @@ public interface ITokenService
     /// access token, the refresh token and the access token's absolute expiry. The single expected
     /// failure is code <c>TOKEN_STORE_UNAVAILABLE</c>, reported when the refresh-token record
     /// could not be persisted; no pair is returned in that case, because handing a caller a
-    /// refresh token that was never recorded would defer the failure to its first exchange.
+    /// refresh token that was never recorded would defer the failure to its first exchange. The
+    /// code is part of this contract for the benefit of a store whose write can fail - a durable one
+    /// reached over a network. A store held in the process has no failing write and so never reports
+    /// it, which is why the code must be handled rather than relied upon: whether it can occur at
+    /// all is a property of the store the deployment supplied.
     /// </returns>
     Task<Result<LoginResponse>> IssueTokensAsync(
         int userId,
@@ -248,11 +321,20 @@ public interface ITokenService
     /// same value cannot both be honoured.
     /// </para>
     /// <para>
-    /// The new access token is minted from the caller's <em>current</em> roles and permission keys,
-    /// re-read for this exchange, not copied from the token being replaced. A role granted or
+    /// The new access token is minted from the caller's <em>current</em> roles, permission keys and
+    /// host-level flag, re-read from authoritative storage for this exchange, not copied from the
+    /// token being replaced and not taken from anything the request carried. A role granted or
     /// withdrawn since the last exchange therefore takes effect within one access-token lifetime
     /// instead of persisting until the caller signs in again. Because the implementation is a
-    /// singleton, that re-read must happen through a scope resolved for this call.
+    /// singleton, that re-read must happen through a scope resolved for this call. The identifier the
+    /// authority is read for is the one recorded against the presented token, which the
+    /// implementation knows and this member's caller does not have to supply - and cannot.
+    /// </para>
+    /// <para>
+    /// The exchange does not extend the session. The successor's own deadline is the one fixed when
+    /// the family began, so a caller that exchanges continuously still reaches that deadline and
+    /// authenticates again there. Only the access token's expiry moves forward, and the value carried
+    /// back describes that expiry rather than the session's.
     /// </para>
     /// <para>
     /// Re-presentation of an already-used token is the signature of a stolen token: the legitimate
@@ -261,6 +343,16 @@ public interface ITokenService
     /// <see cref="RevokeAllRefreshTokensAsync"/> does, before reporting the failure - the correct
     /// response to a suspected theft is to end every session, not merely to decline this one
     /// exchange.
+    /// </para>
+    /// <para>
+    /// That reach is precisely why the revoked condition is evaluated before the already-used one,
+    /// and why the order given below is not interchangeable. Ending every session revokes the
+    /// replayed record along with the rest, so a third and a fourth presentation of the same value
+    /// land on the revoked arm and change nothing: the theft response fires once and then falls
+    /// quiet. Were the already-used condition evaluated first instead, a single copied value would
+    /// become a reusable instrument for ending whatever sessions its owner had opened since, which
+    /// hands a means of permanently signing somebody off to exactly the party who should not hold
+    /// one.
     /// </para>
     /// <para>
     /// Failure here is reported in full detail because the caller is asking for a new pair and the
@@ -284,13 +376,15 @@ public interface ITokenService
     /// failures are reported as a failed result with one of these codes, evaluated in exactly this
     /// order so that two implementations agree on which one applies:
     /// <c>REFRESH_TOKEN_NOTFOUND</c> when no record matches the presented value, whether because it
-    /// was never issued or because an expired record has since been pruned;
-    /// <c>REFRESH_TOKEN_ALREADYUSED</c> when the record exists and has already been exchanged, which
-    /// is also what triggers the family-wide revocation described above;
+    /// was never issued or because a record that had reached its end has since been pruned;
     /// <c>REFRESH_TOKEN_REVOKED</c> when the record was explicitly revoked by a sign-out, an
     /// administrative reset or a previous theft response;
-    /// <c>REFRESH_TOKEN_EXPIRED</c> when the record is unused and unrevoked but its absolute expiry
-    /// has passed; and <c>TOKEN_STORE_UNAVAILABLE</c> when the rotated pair could not be persisted.
+    /// <c>REFRESH_TOKEN_ALREADYUSED</c> when the record exists, has not been revoked, and has
+    /// already been exchanged, which is also what triggers the revocation of every refresh token
+    /// the same user holds, as described above;
+    /// <c>REFRESH_TOKEN_EXPIRED</c> when the record is unused and unrevoked but the deadline of the
+    /// chain it belongs to has passed;
+    /// and <c>TOKEN_STORE_UNAVAILABLE</c> when the rotated pair could not be persisted.
     /// None of these is thrown - each is an expected outcome the caller is required to handle.
     /// </returns>
     Task<Result<LoginResponse>> RefreshAsync(
@@ -344,11 +438,31 @@ public interface ITokenService
     /// <para>
     /// This member exists because rotation requires it, not as a convenience. Detecting that a
     /// single-use refresh token has been presented twice is a theft signal, and the required
-    /// response is to revoke the whole family rather than just the replayed value - so
-    /// <see cref="RefreshAsync"/> needs this operation to exist in order to behave correctly. It
-    /// serves a second, documented purpose: after an administrative credential reset, outstanding
-    /// refresh tokens must stop being exchangeable, otherwise a reset would leave a compromised
-    /// session alive for as long as the client kept rotating.
+    /// response is the reach this member describes: every refresh token the user holds, not the
+    /// replayed value alone and not merely the chain it belongs to. Revoking only that chain would
+    /// end one session while leaving every other session the same user had opened untouched, and
+    /// nothing about a value having been copied says the rest were not copied with it - so
+    /// <see cref="RefreshAsync"/> needs this operation, at exactly this width, in order to behave
+    /// correctly. It serves a second, documented purpose: after an administrative credential
+    /// reset, outstanding refresh tokens must stop being exchangeable, otherwise a reset would
+    /// leave a compromised session alive for as long as the client kept rotating.
+    /// </para>
+    /// <para>
+    /// <b>Its callers are named, and they are obligations rather than options.</b> Every service
+    /// operation that ends an account's right to sign in, or that changes the credential by which it
+    /// does so, must call this member as part of the same request: a self-service credential change,
+    /// an administrative reset, the withdrawal of an approval and the deletion of an account. Each
+    /// of those leaves an account that may no longer authenticate, and each would otherwise leave it
+    /// holding the means to keep obtaining new access tokens regardless. The obligation is restated
+    /// on those operations in the user-service contract so that it cannot be met by accident on one
+    /// path and missed on another.
+    /// </para>
+    /// <para>
+    /// <b>Indivisible across the whole account.</b> Every family belonging to the user is revoked in
+    /// one step, not one family at a time. Revoking them serially would leave a window in which a
+    /// concurrent exchange could mint a successor into a family the operation had not reached yet,
+    /// and that successor would outlive the revocation entirely - which is exactly the outcome the
+    /// member exists to prevent.
     /// </para>
     /// <para>
     /// It is <b>not</b> a way to revoke access tokens, which cannot be revoked at all. Every access
@@ -379,3 +493,62 @@ public interface ITokenService
         int userId,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// The claim vocabulary shared by whatever mints an access token and whatever reads one.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This lives beside <see cref="ITokenService"/> rather than beside either implementation because it is
+/// part of the contract, not of a particular realisation of it. The claim names an access token carries
+/// are observable output: the layer that signs a token and the layer that projects an authenticated
+/// principal back into <see cref="ICurrentUser"/> must agree on them exactly, and a disagreement is
+/// silent - a mis-spelled claim name does not fail to compile and does not throw. It presents as a caller
+/// who authenticates successfully and then appears to belong to no portal and hold no permission, which
+/// is indistinguishable from a legitimate authorisation denial. Declaring the vocabulary once, on the
+/// abstraction both sides already depend on, removes the opportunity.
+/// </para>
+/// <para>
+/// The three registered names are spelled here rather than taken from a token library so that the wire
+/// format is fixed by this contract and does not shift when a library renames its own constants between
+/// major versions - which the underlying library has done.
+/// </para>
+/// <para>
+/// Roles are deliberately absent from this list. They are emitted under the framework's own role claim
+/// type so that <c>[Authorize(Roles = ...)]</c>, <c>RequireRole</c> and every framework role check work
+/// with no mapping step; introducing a bespoke role claim name here would break all three.
+/// </para>
+/// </remarks>
+public static class DnnClaimTypes
+{
+    /// <summary>The tenant the token was issued for.</summary>
+    /// <remarks>
+    /// Both -1 and 0 are legitimate portal identifiers, so a reader must not treat either as "absent".
+    /// </remarks>
+    public const string PortalId = "portal_id";
+
+    /// <summary>Whether the account is an installation-wide superuser.</summary>
+    /// <remarks>
+    /// Informational only. It reports what the account is; it never settles an access-control question,
+    /// which is decided server-side on every request.
+    /// </remarks>
+    public const string SuperUser = "is_superuser";
+
+    /// <summary>One permission key the caller holds.</summary>
+    /// <remarks>
+    /// Emitted once per key, never as a delimited list. MIGRATION: the legacy representation was a single
+    /// semicolon-delimited string built with a leading delimiter, which is why every legacy consumer had
+    /// to guard an empty first element.
+    /// </remarks>
+    public const string Permission = "permission";
+
+    /// <summary>The token's subject - the authenticated account's identifier.</summary>
+    public const string Subject = "sub";
+
+    /// <summary>A unique identifier for one particular token.</summary>
+    public const string JwtId = "jti";
+
+    /// <summary>The caller's sign-in name.</summary>
+    public const string UniqueName = "unique_name";
+}
+

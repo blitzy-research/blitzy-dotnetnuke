@@ -1,0 +1,80 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+}
+
+.pagination {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-start: var(--space-4);
+
+  @include mx.respond-above('md') {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+// MIGRATION: the legacy grid footer rendered its pager text one step below body size
+// on the grid's surface colour. The size is carried across; the surface is not, because
+// the pager here sits outside the table rather than inside its final row.
+.pagination__status {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+}
+
+.pagination__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+// MIGRATION: the legacy pager rendered its page steps as text links in the brand
+// colour. They are buttons here, because they perform an action on the current page
+// rather than navigating to a new address - a link that does not go anywhere is a
+// documented accessibility defect. The brand colour and the absence of a filled
+// background preserve the legacy appearance.
+.pagination__button {
+  min-inline-size: var(--space-7);
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-background);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-none);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-border-strong);
+    color: var(--color-primary-hover);
+  }
+
+  // The shared focus mixin is included rather than an outline being declared here, so
+  // the indicator matches every other focusable element and cannot drift. Suppressing
+  // the outline is never an option.
+  @include mx.focus-ring;
+
+  // A disabled step is dimmed and shows the default cursor. It is left in the document
+  // rather than removed, so the control's width does not change as a person pages
+  // through - a pager that reflows under the pointer causes mis-clicks.
+  &:disabled {
+    color: var(--color-text-muted);
+    cursor: default;
+  }
+}
+
+.pagination__position {
+  padding-inline: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-height-base);
+}

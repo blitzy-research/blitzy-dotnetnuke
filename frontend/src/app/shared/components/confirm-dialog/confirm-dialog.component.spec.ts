@@ -90,7 +90,7 @@
 //
 
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
-import { Component, type Type } from '@angular/core';
+import { ChangeDetectionStrategy, Component, type Type } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 
@@ -132,6 +132,7 @@ const CANCEL_LABEL = 'Cancel';
 // Selectors
 // ---------------------------------------------------------------------------
 
+const PANEL_SELECTOR = '.confirm-dialog__panel';
 const TITLE_SELECTOR = '.confirm-dialog__title';
 const MESSAGE_SELECTOR = '.confirm-dialog__message';
 const ACTIONS_SELECTOR = '.confirm-dialog__actions';
@@ -218,6 +219,17 @@ const LEADING_BREAK_PAYLOAD = '<br>Deleted';
  * `valPassword.ErrorMessage = "<br/>" + …`.
  */
 const ACCUMULATED_BREAK_PAYLOAD = '<br><br/><br><br/><br><br>Portal name contains invalid characters';
+
+/**
+ * Values that are present but carry no announceable name.
+ *
+ * Both forms have to be covered, and covering only the empty one is the specific
+ * gap that made this a finding: a length check alone accepts `'   '`, which the
+ * accessible-name computation collapses to exactly the same nothing as `''`. The tab
+ * and newline are included because resource-sourced wording arrives from `.resx`
+ * values that can hold either.
+ */
+const BLANK_NAMES: readonly string[] = ['', '   ', '\t', '\n', ' \t\n '];
 
 // ---------------------------------------------------------------------------
 // Narrowing helpers
@@ -348,6 +360,19 @@ function pressKey(target: EventTarget, key: string, shiftKey = false): KeyboardE
 /** Dispatches a bubbling click, for the paths a `.click()` call cannot reach. */
 function dispatchClick(target: EventTarget): void {
   target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
+/**
+ * Dispatches a bubbling click carrying viewport coordinates.
+ *
+ * Coordinates are the only thing that can separate a backdrop click from a click on
+ * the dialog's own frame, because the platform reports the SAME event target for
+ * both. A test that omits them is really asserting against the coordinate defaults
+ * of zero, which happens to sit outside a centred modal but says so only by
+ * accident; these expectations state the position they mean.
+ */
+function dispatchClickAt(target: EventTarget, clientX: number, clientY: number): void {
+  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX, clientY }));
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +528,77 @@ class FullyBoundHostComponent {
 
 
 // ---------------------------------------------------------------------------
+// Contract-violating templates
+// ---------------------------------------------------------------------------
+//
+// Both classes below SUBCLASS the component under test and supply a template that
+// breaks the published template contract in one specific way. That is the only way
+// to reach the two fallbacks the component declares, and it is a faithful way
+// rather than a contrived one, because those fallbacks exist for precisely this
+// situation: `resolveInitialFocusTarget` documents that "a renamed reference
+// yields nothing from the query, with no compile-time signal", which is a defect
+// the framework cannot report and the compiler cannot catch. Removing the element
+// from the rendered DOM would NOT do: `@ViewChild` resolves against the template's
+// recorded nodes rather than by walking the document, so a detached button still
+// satisfies the query.
+//
+// Subclassing is what makes the inherited view queries run against a different
+// template while the lifecycle logic under test stays byte-identical. Angular
+// copies inputs, outputs, host bindings and view queries from the superclass
+// definition onto the subclass, so the only thing that differs is the markup.
+
+/**
+ * A template whose cancelling affordance has LOST its `#cancelButton` reference.
+ *
+ * The `@ViewChild` query therefore resolves to nothing and
+ * `resolveInitialFocusTarget` falls through to the first keyboard-focusable
+ * descendant. Cancel is still rendered FIRST, which is the condition the component
+ * documents as making that fallback safe - so this proves the degradation is
+ * graceful rather than merely non-fatal.
+ */
+@Component({
+  selector: 'app-reference-free-dialog',
+  standalone: true,
+  imports: [],
+  template: `
+    <dialog #dialogElement class="confirm-dialog">
+      <button id="unreferenced-cancel" type="button">Cancel</button>
+      <button id="unreferenced-confirm" type="button">Delete</button>
+    </dialog>
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class ReferenceFreeDialogComponent extends ConfirmDialogComponent {}
+
+/**
+ * A template offering NO keyboard-focusable content at all.
+ *
+ * The reference query resolves to nothing and the structural fallback finds
+ * nothing either, because the only candidate is `disabled` and so is rejected by
+ * the tabbability filter. `resolveInitialFocusTarget` therefore returns
+ * `undefined`, which is the one lifecycle path where the component opens the dialog
+ * and then deliberately places no focus.
+ *
+ * A disabled affordance is used rather than an empty dialog because it leaves
+ * something concrete to spy on: the assertion becomes "this element was never
+ * focused" rather than the unfalsifiable "nothing happened".
+ */
+@Component({
+  selector: 'app-focus-target-free-dialog',
+  standalone: true,
+  imports: [],
+  template: `
+    <dialog #dialogElement class="confirm-dialog">
+      <p>No affordance here can take focus.</p>
+      <button id="inert-affordance" type="button" disabled>Delete</button>
+    </dialog>
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class FocusTargetFreeDialogComponent extends ConfirmDialogComponent {}
+
+
+// ---------------------------------------------------------------------------
 // Specification
 // ---------------------------------------------------------------------------
 
@@ -544,6 +640,8 @@ describe('ConfirmDialogComponent', () => {
         BareDangerAttributeHostComponent,
         StaticTitleAttributeHostComponent,
         FullyBoundHostComponent,
+        ReferenceFreeDialogComponent,
+        FocusTargetFreeDialogComponent,
       ],
       // The real client is registered FIRST and the testing backend SECOND, which
       // is the documented order: the testing backend replaces the real backend's
@@ -1359,17 +1457,85 @@ describe('ConfirmDialogComponent', () => {
   describe('dismissals the platform originates', () => {
     it('cancels when a click lands on the backdrop', () => {
       // A modal `<dialog>` paints its own backdrop, and a click there reports the
-      // DIALOG as the target while a click on its content reports that content - so
-      // comparing the two is an exact test rather than a heuristic. A backdrop click
-      // can only ever cancel: a destructive action must not follow the least
-      // deliberate gesture available.
+      // DIALOG as the target. Comparing the target is therefore NECESSARY but not
+      // SUFFICIENT: it rejects every click on a descendant, yet a click on the
+      // dialog's own frame reports the very same target as the backdrop does, so the
+      // pointer position is what actually separates the two. A backdrop click can
+      // only ever cancel: a destructive action must not follow the least deliberate
+      // gesture available.
       const fixture = createDialog();
       const outcomes = observeOutcomes(fixture);
+      const dialog = dialogOf(fixture);
+      const bounds = dialog.getBoundingClientRect();
+      const outsideX = bounds.left - 5;
+      const outsideY = bounds.top - 5;
 
-      dispatchClick(dialogOf(fixture));
+      // Self-validating. A dialog that measured zero would make every point "outside"
+      // and this expectation would pass for the wrong reason, so the real box is
+      // asserted first and the point is then checked against all four edges.
+      expect(bounds.width).toBeGreaterThan(0);
+      expect(bounds.height).toBeGreaterThan(0);
+      expect(outsideX < bounds.left || outsideX > bounds.right).toBeTrue();
+      expect(outsideY < bounds.top || outsideY > bounds.bottom).toBeTrue();
+
+      dispatchClickAt(dialog, outsideX, outsideY);
 
       expect(outcomes.cancelled()).toBe(1);
       expect(outcomes.confirmed()).toBe(0);
+    });
+
+    it('never settles for a click on the dialog frame inside its own bounds', () => {
+      // THE F1 REGRESSION GUARD. This is the case a target-only test cannot see. The
+      // platform attributes a click on the dialog's own box - its border, and any
+      // inset that were left on it - to the DIALOG, exactly as it attributes a
+      // backdrop click. Under a target-only test both look identical, so clicking
+      // beside the title dismissed a destructive confirmation. Two independent
+      // safeguards now prevent it: the panel wrapper covers the dialog's content box
+      // so there is no inset to hit, and this geometry check keeps anything within
+      // the dialog's bounds on the non-dismissing side.
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+      const dialog = dialogOf(fixture);
+      const bounds = dialog.getBoundingClientRect();
+
+      // A real, laid-out modal, or the comparison below would be vacuous.
+      expect(bounds.width).toBeGreaterThan(0);
+      expect(bounds.height).toBeGreaterThan(0);
+
+      // Points just inside each edge, and the centre - all reported as the dialog.
+      const insidePoints: readonly (readonly [number, number])[] = [
+        [bounds.left + 1, bounds.top + 1],
+        [bounds.right - 1, bounds.top + 1],
+        [bounds.left + 1, bounds.bottom - 1],
+        [bounds.right - 1, bounds.bottom - 1],
+        [bounds.left + bounds.width / 2, bounds.top + bounds.height / 2],
+      ];
+
+      for (const [clientX, clientY] of insidePoints) {
+        dispatchClickAt(dialog, clientX, clientY);
+      }
+
+      expect(outcomes.cancelled()).toBe(0);
+      expect(outcomes.confirmed()).toBe(0);
+    });
+
+    it('wraps the dialog content in a panel that carries the inset', () => {
+      // The structural half of the F1 fix, asserted rather than assumed. The dialog
+      // must have exactly ONE element child, and the three content regions must live
+      // inside it - otherwise the inset is back on the dialog and back to reporting
+      // the dialog as a click target.
+      const fixture = createDialog();
+      const dialog = dialogOf(fixture);
+      const panel = requireElement(dialog, PANEL_SELECTOR);
+
+      expect(dialog.children.length).toBe(1);
+      expect(dialog.children[0]).toBe(panel);
+
+      for (const selector of [TITLE_SELECTOR, MESSAGE_SELECTOR, ACTIONS_SELECTOR]) {
+        expect(panel.contains(requireElement(dialog, selector)))
+          .withContext(`${selector} must sit inside the panel, not beside it`)
+          .toBeTrue();
+      }
     });
 
     it('never settles for a click on content inside the panel', () => {
@@ -1398,6 +1564,82 @@ describe('ConfirmDialogComponent', () => {
 
       expect(outcomes.cancelled()).toBe(1);
       expect(outcomes.confirmed()).toBe(0);
+    });
+
+    it('suppresses the default action of the element\u2019s own cancel event', () => {
+      // THE POINT THIS EXISTS TO MAKE. The user agent's default action for `cancel`
+      // is to CLOSE the element, and the class's settlement contract is that
+      // neither output closes the dialog - teardown belongs to the consumer. So
+      // emitting `cancel` is only half of what the handler owes: it must also stop
+      // the browser acting on the same event. Counting outputs cannot see that, and
+      // a handler that emitted correctly while letting the default run would leave
+      // the element closed underneath a component that was still mounted.
+      //
+      // The event is RETAINED rather than dispatched inline, because
+      // `defaultPrevented` is the only observable the suppression leaves behind.
+      const fixture = createDialog();
+      const cancelRequest = new Event('cancel', { bubbles: false, cancelable: true });
+
+      dialogOf(fixture).dispatchEvent(cancelRequest);
+
+      expect(cancelRequest.defaultPrevented).toBeTrue();
+    });
+
+    it('stays open after the element raises its own cancel event', () => {
+      // The other half of the same contract, asserted independently of the flag: a
+      // dismissal the platform originates announces the user's intent to this
+      // component and changes nothing else. The consumer unmounts in response to
+      // the output, and that unmount is what closes the dialog.
+      const fixture = createDialog();
+      const dialog = dialogOf(fixture);
+
+      dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }));
+
+      expect(dialog.open).toBeTrue();
+    });
+
+    it('emits exactly once for a single cancel event and never confirms', () => {
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+      const dialog = dialogOf(fixture);
+
+      dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }));
+
+      expect(outcomes.cancelled()).toBe(1);
+      expect(outcomes.confirmed()).toBe(0);
+      expect(dialog.open).toBeTrue();
+    });
+
+    it('suppresses the default action even after it has already settled', () => {
+      // The emit-once guard returns early on a second dismissal, so suppression has
+      // to happen BEFORE that guard is consulted. Were the order reversed, a second
+      // `Escape` on a settled dialog would fall through to the browser and close an
+      // element whose own affordances had already gone inert - the one state the
+      // class documents as unrecoverable.
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+      const dialog = dialogOf(fixture);
+
+      dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }));
+      const secondRequest = new Event('cancel', { bubbles: false, cancelable: true });
+      dialog.dispatchEvent(secondRequest);
+
+      expect(secondRequest.defaultPrevented).toBeTrue();
+      expect(outcomes.cancelled()).toBe(1);
+      expect(dialog.open).toBeTrue();
+    });
+
+    it('suppresses the default action of a real Escape press as well', () => {
+      // The sibling suppression, recorded here beside the one above so the pair is
+      // visible in one place: `Escape` is the user agent's other route to closing a
+      // modal `<dialog>`, and both routes have to be closed for the settlement
+      // contract to hold.
+      const fixture = createDialog();
+
+      const escape = pressKey(cancelButtonOf(fixture), 'Escape');
+
+      expect(escape.defaultPrevented).toBeTrue();
+      expect(dialogOf(fixture).open).toBeTrue();
     });
   });
 
@@ -1481,6 +1723,50 @@ describe('ConfirmDialogComponent', () => {
 
       expect(renderedTextOf(named)).toContain(SCRIPT_PAYLOAD);
       expect(named.querySelector('script')).toBeNull();
+    });
+
+    // THE F2 GUARDS. A resolvable reference to an EMPTY node is worse than no
+    // reference at all, because it suppresses the fallback the browser would
+    // otherwise compute and leaves the dialog announced as nothing. Both of these
+    // inputs are accessible names, so blank is never a legitimate value for either -
+    // unlike `message`, which is a description and may legitimately be empty, as the
+    // sentinel expectation above asserts.
+    BLANK_NAMES.forEach((blank: string): void => {
+      // Rendered into each name so a failure identifies WHICH blank form broke,
+      // and so the five cases cannot collide into one repeated spec name.
+      const described = blank.length === 0 ? 'the empty string' : `the blank value ${JSON.stringify(blank)}`;
+
+      it(`falls back to the default title for ${described}`, () => {
+        const fixture = createDialog({ title: blank });
+        const root = rootOf(fixture);
+        const named = requireReferencedElement(root, requireAttribute(dialogOf(fixture), 'aria-labelledby'));
+
+        expect(renderedTextOf(named).trim()).toBe(DEFAULT_TITLE);
+        expect(renderedTextOf(named).trim().length).toBeGreaterThan(0);
+      });
+
+      it(`falls back to the default confirm label for ${described}`, () => {
+        // The severity glyph beside the label is `aria-hidden`, precisely so it
+        // cannot act as a naming source - which leaves a blank label with nothing at
+        // all to fall back on. An unnamed destructive button is the worst outcome
+        // this component could produce.
+        const fixture = createDialog({ confirmLabel: blank, danger: true });
+
+        expect(directTextOf(confirmButtonOf(fixture))).toBe(DEFAULT_CONFIRM_LABEL);
+        expect(renderedTextOf(confirmButtonOf(fixture)).trim().length).toBeGreaterThan(0);
+      });
+    });
+
+    it('trims surrounding whitespace from both accessible names without altering the words', () => {
+      // Trimming is not cosmetic: the accessible-name computation already collapses
+      // surrounding white space, so a padded value and a trimmed one are announced
+      // identically. Normalising on the way in is what makes `'   '` and `''`
+      // indistinguishable to the guard above, as they already are to a screen reader.
+      const fixture = createDialog({ title: '  Delete role  ', confirmLabel: '  Delete  ' });
+      const root = rootOf(fixture);
+
+      expect(renderedTextOf(requireElement(root, TITLE_SELECTOR)).trim()).toBe('Delete role');
+      expect(directTextOf(confirmButtonOf(fixture))).toBe('Delete');
     });
   });
 
@@ -1865,10 +2151,22 @@ describe('ConfirmDialogComponent', () => {
       // focused, and the body is not a useful restoration target - focusing it is
       // indistinguishable from focusing nothing. That case is reported as absent so
       // restoration is skipped rather than performed as a misleading no-op.
+      //
+      // THE SPY IS THE POINT, AND IT IS INSTALLED BEFORE CONSTRUCTION. The invoker
+      // is captured in a field initialiser, so construction is the moment the
+      // decision is taken; a spy installed afterwards would observe teardown
+      // without ever having been able to influence what teardown had to work with.
+      // Without it this specification would pass unchanged against a component that
+      // captured the body and dutifully focused it on the way out - no throw, and
+      // the dialog still closes - which is exactly the misleading no-op the
+      // component documents itself as refusing to perform.
       const focusedBeforehand = document.activeElement;
       if (focusedBeforehand instanceof HTMLElement) {
         focusedBeforehand.blur();
       }
+      expect(document.activeElement).toBe(document.body);
+
+      const bodyRestoreAttempt = spyOn(document.body, 'focus');
 
       const fixture = createDialog();
       const dialog = dialogOf(fixture);
@@ -1879,6 +2177,7 @@ describe('ConfirmDialogComponent', () => {
         fixture.destroy();
       }).not.toThrow();
       expect(dialog.open).toBeFalse();
+      expect(bodyRestoreAttempt).not.toHaveBeenCalled();
     });
   });
 
@@ -2054,6 +2353,107 @@ describe('ConfirmDialogComponent', () => {
       expect(event.defaultPrevented).toBeTrue();
       expect(outcomes.cancelled()).toBe(1);
       expect(outcomes.confirmed()).toBe(0);
+    });
+
+    it('does not try to reopen a dialog that is already open', () => {
+      // `showModal()` raises `InvalidStateError` on an element that is already open,
+      // which is why the component tests `open` before calling it. In production
+      // that state can only arise from a template that violates the contract by
+      // carrying a static `open` attribute - a defect another specification in this
+      // suite guards against directly - but the value of the check is that it holds
+      // whatever the cause, so the state is produced here directly.
+      //
+      // The spy deliberately does NOT call through: were the guard broken, the
+      // failure should be reported as an unexpected call rather than as an
+      // `InvalidStateError` raised somewhere inside change detection.
+      const fixture = createUninitialisedDialog();
+      const dialog = dialogOf(fixture);
+
+      dialog.showModal();
+      expect(dialog.open).toBeTrue();
+
+      const reopen = spyOn(dialog, 'showModal');
+
+      expect((): void => {
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      expect(reopen).not.toHaveBeenCalled();
+      expect(dialog.open).toBeTrue();
+    });
+
+    it('still places focus on the cancelling affordance when the dialog was already open', () => {
+      // The complement of the expectation above, and the reason the component skips
+      // only the OPENING rather than returning early: focus placement is what keeps
+      // a stray `Enter` from deleting anything, so it has to run on this path too.
+      // Focus is deliberately parked on the DESTRUCTIVE affordance first - the
+      // browser's own dialog focusing steps would otherwise have already left it on
+      // the cancelling one, and the expectation would prove nothing.
+      const fixture = createUninitialisedDialog();
+      const dialog = dialogOf(fixture);
+      const [cancelButton, confirmButton] = buttonsOf(fixture);
+
+      dialog.showModal();
+      confirmButton.focus();
+      expect(document.activeElement).toBe(confirmButton);
+
+      fixture.detectChanges();
+
+      expect(document.activeElement).toBe(cancelButton);
+    });
+
+    it('opens and places no focus when the template offers nothing focusable', () => {
+      // The one lifecycle path where the component opens the dialog and then places
+      // no focus at all, reached through a template whose only affordance is
+      // `disabled` and is therefore rejected by the tabbability filter. Opening must
+      // still succeed: a confirmation that failed to appear because it had nothing
+      // to focus would be strictly worse than one nobody can tab into.
+      const fixture = TestBed.createComponent(FocusTargetFreeDialogComponent);
+      fixtures.push(fixture);
+      const dialog = requireDialog(rootOf(fixture));
+      const inertAffordance = requireElement(dialog, '#inert-affordance');
+
+      const focusAttempt = spyOn(inertAffordance, 'focus');
+
+      expect((): void => {
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      expect(dialog.open).toBeTrue();
+      expect(dialog.matches(':modal')).toBeTrue();
+      // A disabled affordance is not a legitimate focus target, and the component
+      // must not reach for it merely because it is the only candidate present.
+      expect(focusAttempt).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the first focusable element when the cancel reference is missing', () => {
+      // A renamed template reference yields nothing from the view query with no
+      // compile-time signal, which is the defect the structural fallback exists for.
+      // Here the reference is gone while the markup is otherwise intact, so the
+      // fallback runs and has real candidates to choose from.
+      const fixture = TestBed.createComponent(ReferenceFreeDialogComponent);
+      fixtures.push(fixture);
+      const dialog = requireDialog(rootOf(fixture));
+
+      fixture.detectChanges();
+
+      expect(dialog.open).toBeTrue();
+      expect(document.activeElement).toBe(requireElement(dialog, '#unreferenced-cancel'));
+    });
+
+    it('never lands on the destructive affordance when that fallback runs', () => {
+      // The safety guarantee restated for the degraded path, because this is the
+      // only route on which the component chooses a focus target by POSITION rather
+      // than by name. Document order is what makes that choice safe, and the
+      // template contract's cancel-before-confirm requirement is what guarantees the
+      // order - so a template that reversed the two would surface here.
+      const fixture = TestBed.createComponent(ReferenceFreeDialogComponent);
+      fixtures.push(fixture);
+      const dialog = requireDialog(rootOf(fixture));
+
+      fixture.detectChanges();
+
+      expect(document.activeElement).not.toBe(requireElement(dialog, '#unreferenced-confirm'));
     });
   });
 

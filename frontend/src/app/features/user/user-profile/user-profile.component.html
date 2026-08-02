@@ -1,0 +1,167 @@
+<!--
+  The dynamic profile editor.
+
+  The loading and empty branches render directly on the host, whose stylesheet declares
+  the same grid flow as `.user-profile`; the two content branches render that class on
+  the element that also carries the form, so the action row and the group stack sit in
+  one rhythm without an extra wrapper. The stylesheet's own commentary anticipates
+  exactly this — it states that both selectors carry the same flow "whether the regions
+  sit directly on the host or inside one wrapper element".
+-->
+<!-- The screen title comes from the shared page header, which the stylesheet names as
+     its owner and deliberately does not style. It is rendered outside the branch below
+     so the operator keeps their bearings while the profile is still being fetched. -->
+<app-page-header [title]="heading" [subtitle]="subheading" />
+
+@if (loading) {
+  <app-loading-spinner label="Loading profile…" />
+} @else if (!hasProperties) {
+  <app-empty-state
+    message="This site declares no visible profile properties, so there is nothing to edit."
+  />
+} @else if (mode === 'view') {
+  <div class="user-profile">
+    <div class="user-profile__groups">
+      @for (category of categories; track category.key) {
+        <fieldset class="user-profile__group">
+          <legend>
+            <button
+              type="button"
+              class="user-profile__toggle"
+              [attr.aria-expanded]="!isCollapsed(category.key)"
+              (click)="toggleCategory(category.key)"
+            >
+              <!-- A geometric marker rather than a raster asset: no legacy image is
+                   carried across, and the quarter turn that indicates the expanded
+                   state is applied by the stylesheet through `aria-expanded`, so the
+                   affordance and the announcement can never disagree. -->
+              <svg
+                class="user-profile__toggle-icon"
+                viewBox="0 0 8 8"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+              </svg>
+              {{ category.heading }}
+            </button>
+          </legend>
+
+          @if (!isCollapsed(category.key)) {
+            <!-- A description list, so the association between a property name and its
+                 value is structural and survives with no styling at all. -->
+            <dl class="user-profile__values">
+              @for (value of category.values; track value.definition.propertyDefinitionId) {
+                <dt>{{ value.definition.propertyName }}</dt>
+                <dd class="user-profile__value">{{ displayValue(value) }}</dd>
+              }
+            </dl>
+          }
+        </fieldset>
+      }
+    </div>
+  </div>
+} @else {
+  <form class="user-profile" [formGroup]="form" (ngSubmit)="onSubmit()">
+    <div class="user-profile__groups">
+      @for (category of categories; track category.key) {
+        <fieldset class="user-profile__group">
+          <legend>
+            <button
+              type="button"
+              class="user-profile__toggle"
+              [attr.aria-expanded]="!isCollapsed(category.key)"
+              (click)="toggleCategory(category.key)"
+            >
+              <svg
+                class="user-profile__toggle-icon"
+                viewBox="0 0 8 8"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+              </svg>
+              {{ category.heading }}
+            </button>
+          </legend>
+
+          <!-- A collapsed stack is REMOVED, not hidden: the user agent's
+               `[hidden] { display: none }` is weaker than any author rule, and
+               `.user-profile__fields` declares `display: grid`, so a hidden stack would
+               stay visible. -->
+          @if (!isCollapsed(category.key)) {
+            <div class="user-profile__fields">
+              @for (value of category.values; track value.definition.propertyDefinitionId) {
+                <div>
+                  <label [for]="controlId(value)">
+                    {{ value.definition.propertyName }}
+                    @if (value.definition.required) {
+                      <!-- The glyph is decoration; the requirement itself is announced by
+                           `aria-required` on the control, so the marker is hidden from
+                           assistive technology rather than read out as punctuation. -->
+                      <span class="form-required" aria-hidden="true">*</span>
+                    }
+                  </label>
+
+                  @if (valueControl(value); as control) {
+                    @if (isMultiline(value)) {
+                      <textarea
+                        [id]="controlId(value)"
+                        rows="4"
+                        [formControl]="control"
+                        [attr.maxlength]="value.definition.length > 0 ? value.definition.length : null"
+                        [attr.aria-required]="value.definition.required ? 'true' : null"
+                        [attr.aria-invalid]="messageFor(value) ? 'true' : null"
+                        [attr.aria-describedby]="messageFor(value) ? messageId(value) : null"
+                      ></textarea>
+                    } @else {
+                      <input
+                        type="text"
+                        [id]="controlId(value)"
+                        [formControl]="control"
+                        [attr.maxlength]="value.definition.length > 0 ? value.definition.length : null"
+                        [attr.aria-required]="value.definition.required ? 'true' : null"
+                        [attr.aria-invalid]="messageFor(value) ? 'true' : null"
+                        [attr.aria-describedby]="messageFor(value) ? messageId(value) : null"
+                      />
+                    }
+                  }
+
+                  @if (messageFor(value); as message) {
+                    <p class="form-error" [id]="messageId(value)">{{ message }}</p>
+                  }
+
+                  @if (manageVisibility) {
+                    @if (visibilityControl(value); as visibility) {
+                      <div class="user-profile__visibility">
+                        <label [for]="visibilityId(value)">Visible to</label>
+                        <!-- `ngValue` rather than `value`: the control holds a number and
+                             a plain `value` binding would write the option back as a
+                             string, so the submitted visibility would no longer match
+                             the codes the API declares. -->
+                        <select [id]="visibilityId(value)" [formControl]="visibility">
+                          @for (option of visibilityOptions; track option.code) {
+                            <option [ngValue]="option.code">{{ option.label }}</option>
+                          }
+                        </select>
+                      </div>
+                    }
+                  }
+                </div>
+              }
+            </div>
+          }
+        </fieldset>
+      }
+    </div>
+
+    @if (showActions) {
+      <div class="user-profile__actions">
+        <button type="submit" [disabled]="saving">
+          {{ saving ? 'Saving…' : 'Update' }}
+        </button>
+        <button type="button" [disabled]="saving" (click)="onReset()">Cancel</button>
+      </div>
+    }
+  </form>
+}

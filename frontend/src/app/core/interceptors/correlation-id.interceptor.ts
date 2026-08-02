@@ -38,11 +38,21 @@ import type { HttpInterceptorFn } from '@angular/common/http';
  * its own, so the header is the only place the identifier appears on a successful
  * response.
  *
- * ## A caller-supplied header is never overwritten
+ * ## A caller-supplied header is preserved when the server would honour it
  *
- * A request that already carries the header is forwarded untouched. That is what
- * lets a retry re-send the original request and be recognised as the same logical
- * operation as the first attempt rather than as a second, unrelated one.
+ * A request that already carries a *usable* identifier is forwarded untouched. That
+ * is what lets a retry re-send the original request and be recognised as the same
+ * logical operation as the first attempt rather than as a second, unrelated one.
+ *
+ * Presence alone is not enough to earn that pass-through, because presence alone
+ * does not achieve it. The server keeps an inbound identifier only when it is a
+ * single header line, non-blank, no longer than its length bound and printable
+ * US-ASCII throughout; anything else it discards and replaces with one of its own.
+ * Forwarding a value that fails those clauses would therefore not preserve the
+ * caller's identifier at all - the caller would simply lose it further downstream,
+ * and the browser would hold an identifier that appears in no server log line.
+ * Validating here against the same clauses is what makes the pass-through mean what
+ * it claims: an identifier that survives is one both sides will actually use.
  *
  * ## What it deliberately does not do
  *
@@ -157,14 +167,82 @@ function newCorrelationId(): string {
 }
 
 /**
+ * The greatest number of characters the server accepts in an inbound identifier.
+ *
+ * Mirrors the bound the API's correlation-id middleware declares. Counting is by
+ * UTF-16 code unit on both sides, so the two measurements agree exactly, including
+ * for characters outside the basic multilingual plane, which each occupy two units.
+ */
+const MAX_CORRELATION_ID_LENGTH = 128;
+
+/**
+ * The lowest character code the server accepts, `0x20` (space).
+ *
+ * Anything below it is a C0 control character. Carriage return and line feed are
+ * the two that matter most: an identifier carrying either could split one header
+ * line into several, so excluding the whole range below space closes that class of
+ * response-splitting and log-forging problem rather than naming its members.
+ */
+const LOWEST_ACCEPTED_CHARACTER_CODE = 0x20;
+
+/**
+ * The highest character code the server accepts, `0x7e` (tilde).
+ *
+ * Above it lie the C1 controls and the whole of non-ASCII. Header values have no
+ * reliable encoding negotiation, so a non-ASCII identifier cannot be relied upon to
+ * arrive as it left.
+ */
+const HIGHEST_ACCEPTED_CHARACTER_CODE = 0x7e;
+
+/**
+ * Reports whether an inbound identifier is one the server will keep.
+ *
+ * The three clauses and their order mirror the API's own validation exactly, so
+ * that this side never forwards a value the other side would reject:
+ *
+ * 1. Not blank. A value of only whitespace is rejected even though space itself is
+ *    an accepted character, because it names nothing.
+ * 2. Within the length bound. Measured on the value as received, not on a trimmed
+ *    copy, because the server measures it that way too.
+ * 3. Printable US-ASCII throughout.
+ *
+ * The value is deliberately *not* trimmed or otherwise repaired. The server keeps a
+ * usable value verbatim, so silently rewriting it here would make the browser and
+ * the server disagree about the identifier for the same request - the precise
+ * failure this whole mechanism exists to prevent.
+ *
+ * @param candidate The single inbound header value.
+ * @returns `true` when every clause passes.
+ */
+function isUsableCorrelationId(candidate: string): boolean {
+  if (candidate.trim().length === 0) {
+    return false;
+  }
+
+  if (candidate.length > MAX_CORRELATION_ID_LENGTH) {
+    return false;
+  }
+
+  for (let index = 0; index < candidate.length; index += 1) {
+    const code = candidate.charCodeAt(index);
+
+    if (code < LOWEST_ACCEPTED_CHARACTER_CODE || code > HIGHEST_ACCEPTED_CHARACTER_CODE) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Attaches {@link CORRELATION_ID_HEADER} to every outbound request that does not
- * already carry it.
+ * already carry a usable identifier.
  *
  * Registered first in the interceptor chain. See the file header for why that
  * position is load-bearing and for how the identifier travels back.
  */
 export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
-  // MIGRATION: net-new cross-cutting concern with no legacy predecessor, and the
+  // MIGRATION: a cross-cutting concern with no legacy predecessor, and the
   // absence is measured rather than assumed. A case-insensitive search for
   // `correlation`, `x-request-id` and `requestid` across the five in-scope
   // `Library/Components` domain trees, `Website/admin` and the legacy web
@@ -191,13 +269,31 @@ export const correlationIdInterceptor: HttpInterceptorFn = (req, next) => {
   // operation across two identifiers in the logs - defeating the purpose of having
   // the identifier at all. The original request object is forwarded rather than
   // cloned, so a retry re-sends byte-identical headers.
-  if (req.headers.has(CORRELATION_ID_HEADER)) {
+  //
+  // Preservation is conditional on the value being one the server will honour, and
+  // that condition is what makes the preservation real rather than nominal. Presence
+  // is necessary but not sufficient: an identifier that is repeated across several
+  // header lines, blank, over the length bound, or carrying a control or non-ASCII
+  // character is discarded by the server and replaced with one of its own. Passing
+  // such a value through would preserve nothing - it would leave the browser holding
+  // an identifier that appears in no server log line, which is indistinguishable
+  // from having no identifier at all and is strictly worse than stamping a fresh
+  // usable one. Every value the pass-through is actually meant to protect - a single
+  // printable identifier within the bound, such as the one a retry re-sends - still
+  // takes this branch and is still forwarded on the original, un-cloned request.
+  const inbound = req.headers.getAll(CORRELATION_ID_HEADER);
+
+  if (inbound !== null && inbound.length === 1 && isUsableCorrelationId(inbound[0])) {
     return next(req);
   }
 
   // `HttpHeaders` is immutable, so the header is applied by cloning. `setHeaders`
   // adds this one name and copies everything else across untouched; the method,
   // URL, params and body are carried over unchanged.
+  //
+  // `setHeaders` *replaces* the named header rather than appending to it, which is
+  // what the repeated-header case needs: however many lines arrived, exactly one
+  // leaves. An append would have preserved the ambiguity the server rejects.
   const stamped = req.clone({
     setHeaders: { [CORRELATION_ID_HEADER]: newCorrelationId() },
   });

@@ -1,5 +1,5 @@
-using System.Text.RegularExpressions;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.ValueObjects;
 using FluentValidation;
 
 namespace DnnMigration.Application.Validation;
@@ -111,7 +111,7 @@ namespace DnnMigration.Application.Validation;
 //
 // MIGRATION: Email is capped at 256, not at the 100 of the original baseline column. This is the
 // destructive-chain trap in its sharpest form. Users.Email began as nvarchar(100) NOT NULL at
-// 01.00.00.SqlDataProvider:L107, was dropped from the table altogether at 02.02.01:L51-L52 when
+// 01.00.00.SqlDataProvider:L107, was dropped from the table altogether at 02.02.01:L50-L51 when
 // credentials moved into the externally installed membership store, and was re-created at
 // 03.00.13:L109-L110 as Email nvarchar(256) NULL, immediately populated from that store. No
 // ALTER COLUMN in any of the 88 scripts touches it afterwards, so 256 is terminal. Two independent
@@ -188,17 +188,12 @@ namespace DnnMigration.Application.Validation;
 // reflective property editor rather than declared in markup: Website/admin/Users/User.ascx is 79
 // lines and hosts a single propertyeditorcontrol at L6, and the sibling grids manageusers.ascx and
 // users.ascx declare no validator at all. Every conversion in this file is consequently explicit
-// and total. The limits are integer literals rather than parsed configuration, the pattern is a
-// compile-time constant, the messages are constants, and nothing is coerced at run time - so there
-// is no implicit narrowing left for which a behavioural difference could arise.
+// and total. The limits are integer literals rather than parsed configuration, the address shape
+// check delegates to a single strongly typed authority rather than to a pattern assembled here, the
+// messages are constants, and nothing is coerced at run time - so there is no implicit narrowing
+// left for which a behavioural difference could arise.
 public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 {
-    /// <summary>
-    /// The legacy email pattern, reproduced character for character from
-    /// <c>glbEmailRegEx</c> at <c>Library/Components/Shared/Globals.vb:L132</c>.
-    /// </summary>
-    private const string LegacyEmailPattern = @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b";
-
     /// <summary>Verbatim wording of <c>UserInfo_FirstName.Required</c>, <c>User.ascx.resx:L157</c>.</summary>
     private const string FirstNameRequiredMessage = "First name is required";
 
@@ -225,34 +220,53 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
     private const string InvalidEmailMessage =
         "The email address specified is invalid.  Please specify a valid email address.";
 
-    /// <summary>
-    /// Upper bound on how long the pattern may spend on one candidate address, so that a
-    /// pathological input cannot turn matching into a denial-of-service vector.
-    /// </summary>
-    private static readonly TimeSpan EmailPatternMatchTimeout = TimeSpan.FromMilliseconds(250);
-
-    // MIGRATION: The pattern is preserved exactly as measured, with two properties that a
-    // modernising hand would quietly change. Its top-level-domain segment is bounded at two to
-    // four letters, so addresses ending in a longer domain are rejected exactly as they were
-    // before; widening it would accept accounts the legacy application refused. And it is bounded
-    // by word boundaries rather than anchored to the whole subject, so it is applied as an
-    // unanchored search. That reproduces Website/Install/WizardUser.ascx.vb:L153, which tests the
-    // same constant with an unanchored match, and it is also the looser of the two legacy
-    // behaviours - a Web Forms expression validator would have demanded a whole-subject match -
-    // so it cannot reject an address that is accepted today. Anchoring to the whole subject would
-    // be a tightening and is not applied.
+    // MIGRATION: THE EMAIL CEILING IS THE TERMINAL COLUMN WIDTH, AND IT IS NAMED RATHER THAN
+    // RESTATED. Users.Email lives twice in the upgrade chain: the original nvarchar(100) NOT NULL
+    // at 01.00.00.SqlDataProvider:L107 was DROPPED outright by the nine-column drop at
+    // 02.02.01.SqlDataProvider:L50-L51, and the column in force today was ADDED as
+    // nvarchar(256) NULL at 03.00.13.SqlDataProvider:L109-L110 and back-filled from the membership
+    // store at L113-L117. No later script alters it, and the procedure parameters at
+    // 03.02.03.SqlDataProvider:L659 and 04.00.04.SqlDataProvider:L704 agree at 256. This value
+    // previously appeared here as a bare literal while the create path named a constant of 100, so
+    // the two paths accepted different addresses AND cited different widths; a restated number is
+    // exactly how that drift began, so the number is declared once per validator with its
+    // provenance attached and the two now agree by inspection.
     //
-    // MIGRATION: The pattern is applied as the fixed shipped constant. The legacy screen replaced
-    // it at run time from the portal's Security_EmailValidation setting whenever that setting was
-    // present, at Website/admin/Users/User.ascx.vb:L408-L411. Reading a portal setting is data
-    // access, which a validator does not perform, so the divergence is bounded and named here
-    // instead. It is narrower than it first appears: UserModuleBase.vb:L168 seeds that very
-    // setting from this same constant, so behaviour differs only for an installation whose
-    // administrator replaced the default.
-    private static readonly Regex LegacyEmailExpression = new(
-        LegacyEmailPattern,
-        RegexOptions.CultureInvariant,
-        EmailPatternMatchTimeout);
+    // Requiredness does NOT come from the column, which is nullable. It comes from the screen -
+    // UserInfo_Email.Required at User.ascx.resx:L163, rendered by a required-field validator - and
+    // is therefore an API-level rule that must not be relaxed by appealing to the schema.
+    private const int EmailMaximumLength = 256;
+
+    // MIGRATION: THIS FILE NO LONGER DECLARES AN EMAIL PATTERN, AND THAT IS THE FIX RATHER THAN A
+    // simplification. A local copy of glbEmailRegEx from
+    // Library/Components/Shared/Globals.vb:L132 used to live here, and a second copy lived in
+    // Validation/CreateUserRequestValidator.cs. Two copies of one rule is precisely how the create
+    // and update paths came to accept different addresses - the two also disagreed about the
+    // column width - so both copies are deleted and both validators now call the single authority,
+    // Domain/ValueObjects/EmailAddress.cs. That type transcribes the legacy pattern clause by
+    // clause, including the non-obvious leading word-boundary consequence, and records every
+    // deliberate departure from it in its own audit trail.
+    //
+    // Two properties of the deleted local copy are worth naming, because delegating changes both:
+    //   - It was applied as an UNANCHORED search, so an address embedded in surrounding text
+    //     satisfied it. The authority checks the whole value. That reproduces the ASP.NET
+    //     expression validator the legacy screen actually used, which accepts a value only when
+    //     the match spans all of it, so whole-value checking is a RESTORATION rather than a
+    //     tightening. The unanchored test at Website/Install/WizardUser.ascx.vb:L153 belongs to
+    //     the installer wizard, which this migration excludes, so it is not the behaviour a user
+    //     update path should have been reproducing.
+    //   - Its final domain label was bounded at two to four letters, rejecting every modern
+    //     suffix longer than four characters. That cap is removed at the authority and replaced by
+    //     bounded, standards-based label checks; the divergence is documented there and in
+    //     MIGRATION_NOTES.md.
+    //
+    // MIGRATION: The rule remains the fixed shipped shape rather than a per-portal one. The legacy
+    // screen replaced the pattern at run time from the portal's Security_EmailValidation setting
+    // whenever that setting was present, at Website/admin/Users/User.ascx.vb:L408-L411. Reading a
+    // portal setting is data access, which a validator does not perform, so the divergence is
+    // bounded and named here instead. It is narrower than it first appears: UserModuleBase.vb:L168
+    // seeds that very setting from the same shipped constant, so behaviour differs only for an
+    // installation whose administrator replaced the default.
 
     /// <summary>
     /// Initialises a new instance of the <see cref="UpdateUserRequestValidator"/> class and
@@ -288,15 +302,28 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
             .NotEmpty().WithMessage(DisplayNameRequiredMessage)
             .MaximumLength(128);
 
-        // Users.Email - nvarchar(256), terminal at 03.00.13.SqlDataProvider:L110; MaxLength(256),
+        // Users.Email - nvarchar(256) NULL, terminal at 03.00.13.SqlDataProvider:L109-110, which
+        // ADDS a replacement column after the nine-column drop at 02.02.01:L50-51 removed the
+        // original nvarchar(100) NOT NULL one; corroborated by @Email nvarchar(256) on the terminal
+        // AddUser at 04.00.04:L704, and mapped at that width and nullability by
+        // Infrastructure/Persistence/Configurations/UserConfiguration.cs. MaxLength(256),
         // Required(True) and the pattern attribute at UserInfo.vb:L121-L122; required-message at
-        // User.ascx.resx:L163. Stopping at the first failure keeps an omitted address reporting
-        // only that it is required, which is how the legacy screen behaved: its expression
-        // validator treated blank input as valid and deferred to the required check.
+        // User.ascx.resx:L163.
+        //
+        // MIGRATION: requiredness here is an API-LEVEL rule and is NOT a restatement of the
+        // column's nullability. The column permits null; the legacy screen did not, and the
+        // screen's rule is what an update request must satisfy. It is called out as an intentional
+        // API limit so nobody later relaxes it by appealing to the schema.
+        //
+        // Stopping at the first failure keeps an omitted address reporting only that it is
+        // required, which is how the legacy screen behaved: its expression validator treated blank
+        // input as valid and deferred to the required check. The shape check delegates to the
+        // single authority; see the note above the constants for why no pattern is declared here.
         RuleFor(request => request.Email)
             .Cascade(CascadeMode.Stop)
             .NotEmpty().WithMessage(EmailRequiredMessage)
-            .MaximumLength(256)
-            .Matches(LegacyEmailExpression).WithMessage(InvalidEmailMessage);
+            .MaximumLength(EmailMaximumLength).WithMessage(InvalidEmailMessage)
+            .Must(candidate => EmailAddress.TryCreate(candidate, out _))
+                .WithMessage(InvalidEmailMessage);
     }
 }

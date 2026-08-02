@@ -1,8 +1,54 @@
 // =============================================================================
+//  COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+//
+//  This stylesheet is reached through `styleUrl` on its paired component, so it
+//  is compiled by `ng build` and by `ng test`, ships inside this screen's lazy
+//  chunk, and IS measured against the `anyComponentStyle` budget that
+//  `angular.json` caps at 8 kB as an ERROR. All three companions exist:
+//
+//      module-settings.component.ts       present
+//      module-settings.component.html     present
+//      module-settings.component.spec.ts  present
+//
+//  The screen this styles is the route /modules/:moduleId/settings, declared as a
+//  `loadComponent` entry in `src/app/app.routes.ts`.
+//
+//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
+//  encapsulation with the component's own content attribute, so a class name
+//  that drifts does not error — it silently matches nothing and the screen
+//  renders unstyled. The template emits exactly this vocabulary, and every
+//  entry below was checked against the template rather than assumed:
+//
+//      .module-settings
+//      .module-settings__intro
+//      .module-settings__section
+//      .module-settings__section--nested
+//      .module-settings__toggle
+//      .module-settings__toggle--ruled
+//      .module-settings__body
+//      .module-settings__fields
+//      .module-settings__field
+//      .module-settings__field--stacked
+//      .module-settings__control
+//      .module-settings__choices
+//      .module-settings__slot
+//      .module-settings__actions
+//
+//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
+//  carries nine shared components — page header, data table, pagination, form
+//  field, search input, confirm dialog, error banner, loading spinner and empty
+//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
+//  and the wire models under `core/models/`. It carries no module.service.ts and
+//  no signal store, so this component performs no HTTP: its data arrives through
+//  inputs and its intent leaves through outputs. That seam is what makes every
+//  branch below directly testable from the paired specification, with no HTTP
+//  testing controller involved.
+// =============================================================================
 //  module-settings.component.scss
-//  Per-instance module settings screen — route ':moduleId/settings', the
-//  loadComponent child of MODULE_ROUTES mounted at 'modules', guarded by
-//  permissionGuard with the ModuleEdit permission.
+//  Per-instance module settings screen — the `loadComponent` route
+//  'modules/:moduleId/settings' in src/app/app.routes.ts. No route guard is
+//  attached: this workspace carries no guard, and element-level gating is the
+//  `hasPermission` directive's job rather than the router's.
 // =============================================================================
 //
 //  WHAT THIS FILE OWNS, AND THE MUCH LARGER SET IT DOES NOT
@@ -193,7 +239,17 @@
   // exposure is bounded to a single inherited colour change that a real tap
   // immediately supersedes with the focus ring, so the consequence is cosmetic
   // and self-correcting.
-  &:hover {
+  //
+  // Guarded on the two unavailable attributes rather than on `:enabled`, and the
+  // choice is forced rather than stylistic. This file documents above that the
+  // target template may render this head either as a native disclosure summary or
+  // as a heading-wrapped button, and `:enabled` matches NEITHER a `<summary>` nor
+  // any element outside the form-control set — so an `:enabled:hover` rule here
+  // would silently resolve to no hover at all on one of the two shapes the
+  // template is free to choose. The attribute form matches both, and it also
+  // covers `<button disabled>`, because a disabled button carries the `[disabled]`
+  // attribute as well as matching the pseudo-class.
+  &:not([disabled]):not([aria-disabled='true']):hover {
     color: var(--color-primary-hover);
   }
 
@@ -205,6 +261,47 @@
   // the keyboard-focus pseudo-class, so a mouse press never draws it, and
   // nothing in this file suppresses an outline.
   @include mx.focus-ring;
+
+  // ---------------------------------------------------------------------------
+  //  PRESS AND UNAVAILABLE — the two states this head previously had no
+  //  treatment for. Every selector below carries the same element-agnostic
+  //  attribute guard as the hover above, for the same reason: the template may
+  //  settle on a `<summary>`, and a pseudo-class from the form-control set would
+  //  quietly not apply to it.
+  // ---------------------------------------------------------------------------
+
+  // Press. The fill is the vocabulary's press signal, and the radius is included
+  // deliberately rather than inherited: this rule sets `border: 0` and
+  // `padding-inline: 0` above, so the head spans the full inline size of its
+  // section, and an unrounded tint across that whole width reads as a selected row
+  // in a grid rather than as a control being pressed. The radius contains it.
+  &:not([disabled]):not([aria-disabled='true']):active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable, native form. Matched by attribute rather than by `:disabled` so a
+  // non-button shape is covered too. The muted ink clears 4.5:1 against the
+  // section surface unaided, and the cursor is the second, non-colour cue.
+  &[disabled] {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — stays focusable and in the tab order so a keyboard
+  // user can still reach it and hear it announced as unavailable. No `cursor` and
+  // no `:hover` hold, matching the global layer: an element receiving no pointer
+  // events resolves no cursor and can never be a hit-test target.
+  //
+  // CONSUMER OBLIGATION — `pointer-events` guards the pointer only. CSS cannot
+  // suppress keyboard activation, so the component setting `aria-disabled` MUST
+  // also guard the click, Enter and Space paths; on a `<summary>` it must
+  // additionally prevent the native toggle, which no CSS property can inhibit.
+  // Where focusability is not required, prefer native `disabled` on a button.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    pointer-events: none;
+  }
 }
 
 // MIGRATION: the legacy head control emitted a separate no-shade rule element

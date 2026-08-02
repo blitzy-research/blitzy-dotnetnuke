@@ -1,8 +1,7 @@
 <!--
-  No landmark element, and deliberately not a section either: a section maps to a
-  region landmark once it carries an accessible name and to a nameless region
-  otherwise, so both spellings would add a landmark to a screen that already has
-  one, wherever a list renders this in place of its table.
+  No landmark element, and deliberately not a section either: a section maps to a region
+  landmark once it carries an accessible name and to a nameless region otherwise, so both
+  spellings would add a second landmark to a screen that already has one.
 -->
 <div class="empty-state">
 
@@ -20,28 +19,26 @@
   </span>
 
   <!--
-    Level two rather than one: the page-header component owns the page-level
-    heading, so a level-one heading here would give every screen pairing the two a
-    second one. Standing alone it leaves a level-two heading with none above it —
-    a heading-order nicety, and the lesser of the two defects.
+    Level two rather than one: the page-header component owns the page-level heading, so a
+    level-one heading here would give every screen pairing the two a second one. Standing
+    alone it leaves a level-two heading with none above it - the lesser of the two defects.
   -->
   <h2 class="empty-state__title">Nothing to Display</h2>
 
   <!--
-    The only interpolation here, and it sits in a real text element so the sentence
-    is exposed as content rather than as decoration. Interpolation escapes by
-    default, which is what makes untrusted wording safe to render. No live-region
-    or alert semantics: an empty state is steady-state content rather than a
-    change, so announcing it would interrupt without informing.
+    The only interpolation here, and it sits in a real text element so the sentence is
+    exposed as content rather than as decoration. Interpolation escapes by default, which is
+    what makes untrusted wording safe to render. No live-region or alert semantics: an empty
+    state is steady-state content rather than a change, so announcing it would interrupt
+    without informing.
   -->
   <p class="empty-state__message">{{ message }}</p>
 
   <!--
-    The action is the caller's to supply, which keeps this component free of any
-    assumption about what it does or whether the current user may perform it. The
-    wrapper is unconditional and the stylesheet owns collapsing it when nothing is
-    projected; guarding it here would need a content query on a class whose public
-    surface is closed, and would duplicate a decision made there.
+    The action is the caller's to supply, which keeps this component free of any assumption
+    about what it does or whether the current user may perform it. The wrapper is
+    unconditional and the stylesheet owns collapsing it when nothing is projected; guarding
+    it here would need a content query and would duplicate a decision made there.
   -->
   <div class="empty-state__actions">
     <ng-content />

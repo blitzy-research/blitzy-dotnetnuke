@@ -1,73 +1,45 @@
 namespace DnnMigration.Domain.Enums;
 
 /// <summary>
-/// Reports the outcome of an attempt to create a user, or to attach an existing
-/// user to a portal.
+/// Reports the outcome of an attempt to create a user, or to attach an existing user to a portal.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Ported member-for-member from the legacy VB.NET enumeration
-/// <c>DotNetNuke.Security.Membership.UserCreateStatus</c>. Every name and every
-/// ordinal crosses over unchanged: nothing was added, removed, renamed,
-/// reordered or renumbered. The ordinals are stated explicitly and preserved
-/// deliberately, so a value that the legacy application already persisted,
-/// logged or exchanged keeps exactly its original meaning here.
+/// Ported member for member from the legacy <c>DotNetNuke.Security.Membership.UserCreateStatus</c>:
+/// every name and ordinal crosses over unchanged, and the ordinals are stated explicitly so that a
+/// value the legacy application already persisted, logged or exchanged keeps its original meaning.
 /// </para>
 /// <para>
-/// The zero value is <b>not</b> success.
-/// <see cref="UserCreateStatus.AddUser"/> occupies ordinal zero, so
-/// <c>default(UserCreateStatus)</c> evaluates to
-/// <see cref="UserCreateStatus.AddUser"/> and never to
-/// <see cref="UserCreateStatus.Success"/>, which sits at ordinal thirteen. An
-/// unassigned or default-initialised value therefore carries no indication that
-/// anything succeeded. Callers must compare against
-/// <see cref="UserCreateStatus.Success"/> explicitly and must never infer
-/// success from a zero test, a falsiness test, or the absence of a value.
+/// The zero value is not success. <see cref="AddUser"/> occupies ordinal zero, so
+/// <c>default(UserCreateStatus)</c> evaluates to <see cref="AddUser"/> and never to
+/// <see cref="Success"/> at ordinal thirteen. A caller must compare against <see cref="Success"/>
+/// explicitly and must never infer success from a zero or falsiness test.
 /// </para>
 /// <para>
-/// This enumeration is the failure-reason channel of the
-/// <c>Result&lt;T&gt;</c> returned by user-creation operations. The legacy code
-/// reported its outcome by mutating a <c>ByRef</c> argument passed alongside the
-/// return value; that idiom is retired, and no <c>out</c> or <c>ref</c>
-/// parameter appears in any public API of the migrated system. The outcome
-/// travels as the reason carried by the result instead.
-/// </para>
-/// <para>
-/// The members are mutually exclusive outcomes, not combinable bit positions.
-/// Exactly one of them describes any single attempt, and the values must never
-/// be combined with a bitwise operator.
+/// This enumeration is the failure-reason channel of the <c>Result&lt;T&gt;</c> returned by
+/// user-creation operations; the legacy <c>ByRef</c> status argument is retired and no <c>out</c> or
+/// <c>ref</c> parameter appears in any public API. The members are mutually exclusive outcomes, not
+/// combinable bit positions, and must never be combined with a bitwise operator.
 /// </para>
 /// </remarks>
 public enum UserCreateStatus
 {
     /// <summary>
-    /// The attempt is to create the user account itself, as distinct from
-    /// attaching an already-existing account to a portal. This is an operation
-    /// marker recording what was attempted, not an error, and not a report of
-    /// success.
+    /// The attempt is to create the user account itself, as distinct from attaching an existing
+    /// account to a portal. This is an operation marker recording what was attempted - neither an
+    /// error nor a report of success - and, holding ordinal zero, it is the value produced by
+    /// <c>default(UserCreateStatus)</c>.
     /// </summary>
-    /// <remarks>
-    /// This member holds ordinal zero and is consequently the value produced by
-    /// <c>default(UserCreateStatus)</c>. See the remarks on the enumeration
-    /// itself: a default-initialised value means "user creation was the
-    /// operation", never "the operation succeeded".
-    /// </remarks>
     AddUser = 0,
 
-    // MIGRATION: UsernameAlreadyExists, DuplicateUserName (ordinal 5) and
-    // InvalidUserName (ordinal 11) are three distinct members with overlapping
-    // meaning in the legacy enumeration. The overlap is inherited: the
-    // Duplicate/Invalid pair mirrors the vocabulary of the ASP.NET membership
-    // creation-status enumeration that the legacy provider wrapped, while
-    // UsernameAlreadyExists is DotNetNuke's own addition. All three are
-    // RETAINED AS-IS and deliberately NOT consolidated, per Minimal Change
-    // Clause item 1: business rules are extracted exactly, with no
-    // opportunistic optimisation, and an apparent legacy defect is annotated in
-    // place rather than corrected. Collapsing them would silently change the
-    // outcome reported to any caller that distinguishes them.
+    // MIGRATION: UsernameAlreadyExists, DuplicateUserName (ordinal 5) and InvalidUserName (ordinal 11)
+    // are three distinct members with overlapping meaning. The overlap is inherited: the
+    // Duplicate/Invalid pair mirrors the ASP.NET membership creation-status vocabulary the legacy
+    // provider wrapped, while UsernameAlreadyExists is DotNetNuke's own addition. All three are
+    // retained as-is and deliberately not consolidated, because collapsing them would silently
+    // change the outcome reported to any caller that distinguishes them.
     /// <summary>
-    /// The requested user name is already taken. Reported by the DotNetNuke
-    /// user-management path.
+    /// The requested user name is already taken. Reported by the DotNetNuke user-management path.
     /// </summary>
     UsernameAlreadyExists = 1,
 

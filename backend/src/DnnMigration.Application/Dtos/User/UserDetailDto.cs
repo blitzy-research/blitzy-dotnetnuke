@@ -181,27 +181,40 @@ public sealed class UserDetailDto
     /// The user's given name, from <c>Users.FirstName</c>.
     /// </summary>
     /// <remarks>
-    /// <c>nvarchar(50) NOT NULL</c> (01.00.00.SqlDataProvider L99), so
-    /// this member is non-nullable and defaults to the empty string. Note the
-    /// deliberate asymmetry with <see cref="LastName"/>, which the same
-    /// original statement declares nullable; the difference is real schema and
-    /// is preserved rather than tidied away.
+    /// <c>nvarchar(50) NOT NULL</c>, unchanged in width and nullability from its
+    /// original declaration at 01.00.00.SqlDataProvider L99 through both table
+    /// rebuilds, so this member is non-nullable and defaults to the empty string.
+    /// <see cref="LastName"/> reaches the same terminal shape by a different
+    /// route: the baseline declared it nullable and a later rebuild promoted it.
+    /// An earlier revision of this remark read only the baseline and therefore
+    /// described the pair as permanently asymmetric.
     /// </remarks>
     public string FirstName { get; set; } = string.Empty;
 
+    // MIGRATION: the terminal nullability of this column is NOT the nullability of the baseline
+    // script. 01.00.00.SqlDataProvider:L100 declares [LastName] [nvarchar] (50) NULL, but the
+    // 01.00.05 rebuild through Tmp_Users re-declares it LastName nvarchar(50) NOT NULL at
+    // 01.00.05:L18, drops the real table at 01.00.05:L54 and renames the copy into place at
+    // 01.00.05:L57; the 01.00.06 rebuild preserves NOT NULL at 01.00.06:L186 and repeats the
+    // drop-and-rename at 01.00.06:L227 and L230. No ALTER COLUMN in any of the 88 scripts touches
+    // the column afterwards, so nvarchar(50) NOT NULL is terminal and the baseline asymmetry with
+    // FirstName no longer exists. An earlier revision of this member read only the baseline,
+    // declared this "the one genuinely nullable name column", and typed it as nullable.
     /// <summary>
-    /// The user's family name, from <c>Users.LastName</c>, or
-    /// <see langword="null"/> when the record carries none.
+    /// The user's family name, from <c>Users.LastName</c>.
     /// </summary>
     /// <remarks>
-    /// <c>nvarchar(50) NULL</c> (01.00.00.SqlDataProvider L100). This is
-    /// the one genuinely nullable name column: <see cref="FirstName"/> is
-    /// declared <c>NOT NULL</c> in the very same
-    /// <c>CREATE TABLE</c> statement. Both legacy classes decorated the
-    /// pair identically, which is exactly why the schema rather than the
-    /// attributes is the authority here.
+    /// Terminal schema <c>nvarchar(50) NOT NULL</c>, promoted from the baseline
+    /// <c>NULL</c> at 01.00.00.SqlDataProvider L100 by the <c>01.00.05</c> rebuild
+    /// (L18) and preserved by the <c>01.00.06</c> rebuild (L186). The width agrees
+    /// with the legacy <c>MaxLength(50)</c> attribute at <c>UserInfo.vb:L178</c>,
+    /// and the terminal <c>UpdateUser</c> procedure declares
+    /// <c>@LastName nvarchar(50)</c> (04.00.04.SqlDataProvider L1077). Because the
+    /// column is not nullable, absent text is the empty string -- the legacy
+    /// <c>NullString</c> sentinel -- and never a null reference, which is the same
+    /// treatment <see cref="FirstName"/> receives.
     /// </remarks>
-    public string? LastName { get; set; }
+    public string LastName { get; set; } = string.Empty;
 
     /// <summary>
     /// The user's presentation name, from <c>Users.DisplayName</c>.
@@ -240,21 +253,41 @@ public sealed class UserDetailDto
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>nvarchar(100) NOT NULL</c> (01.00.00.SqlDataProvider L107), so
-    /// this member is non-nullable and defaults to the empty string. Unlike
+    /// Terminal schema is <c>Email nvarchar(256) NULL</c>. Unlike
     /// <see cref="Username"/> it carries <b>no unique constraint</b>, which
     /// matches the legacy membership provider being registered with
     /// <c>requiresUniqueEmail="false"</c>: two accounts may legitimately
     /// share an address.
     /// </para>
     /// <para>
-    /// MIGRATION: <b>a width collision resolved in favour of the schema.</b>
-    /// The legacy class decorated this property with
-    /// <c>MaxLength(256)</c> (UserInfo.vb L121-L123) while the column has
-    /// only ever been <c>nvarchar(100)</c>. The attribute drove a
-    /// presentation-layer property editor, not the database, so the effective
-    /// legacy limit was always 100 and anything longer would have failed on
-    /// write. <b>The validators must use 100, not 256.</b>
+    /// MIGRATION: <b>the terminal width is 256, and it is not the baseline width.</b>
+    /// The column is created as <c>nvarchar(100) NOT NULL</c>
+    /// (01.00.00.SqlDataProvider L107), DROPPED outright by 02.02.01.SqlDataProvider
+    /// L50-51 in the statement that also removes Street, City, Region, PostalCode,
+    /// Country, Password, Unit and Telephone, and then re-added as
+    /// <c>nvarchar(256) NULL</c> by 03.00.13.SqlDataProvider L109-110, which
+    /// back-fills it from <c>dbo.aspnet_Membership.Email</c>. Nothing afterwards
+    /// narrows it. <b>The validators must use 256.</b>
+    /// </para>
+    /// <para>
+    /// MIGRATION: there is consequently <b>no width collision to resolve.</b> An
+    /// earlier revision of this remark read the baseline as terminal and concluded
+    /// that the legacy <c>MaxLength(256)</c> editor attribute
+    /// (UserInfo.vb L121-L123) exceeded the column, instructing validators to use
+    /// 100. Once the whole chain is replayed the attribute and the terminal column
+    /// AGREE at 256, and enforcing 100 would have refused addresses the store
+    /// already holds - every row populated by the 03.00.13 back-fill came from a
+    /// 256-wide source column.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the terminal column is nullable while this member is not, and that
+    /// asymmetry is deliberate rather than an oversight. Absence has always been
+    /// externally observable as the empty string: the legacy property was declared
+    /// required, and every legacy read passed through the sentinel translation in
+    /// <c>Library/Components/Shared/Null.vb</c>, where the null string sentinel IS
+    /// <see cref="string.Empty"/> rather than a null. Emitting a null here would
+    /// silently change an observable value, so the sentinel is preserved at this
+    /// boundary while the domain entity models the column honestly as nullable.
     /// </para>
     /// <para>
     /// MIGRATION: as with the username, the legacy surface exposed this value

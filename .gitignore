@@ -1,12 +1,10 @@
 # Root ignore rules. backend/ and frontend/ are the new trees; Library/ and
 # Website/ are read-only legacy inputs that must stay fully tracked. Two
-# consequences shape the rules below and must be preserved:
-#
-#   * the legacy trees commit their pre-built bin/ assemblies, so build-output
-#     patterns are followed by explicit directory negations;
-#   * patterns whose names collide with legacy directories (packages/, logs/)
-#     are anchored with a leading slash, because git folds case wherever
-#     core.ignorecase is true and a bare rule would swallow tracked sources.
+# consequences must be preserved: the legacy trees commit their pre-built bin/
+# assemblies, so build-output patterns are followed by explicit directory
+# negations; and patterns colliding with legacy directory names (packages/,
+# logs/) carry a leading slash, because git folds case wherever core.ignorecase
+# is true and a bare rule would swallow tracked sources.
 
 # -----------------------------------------------------------------------------
 # Build output — required exclusions
@@ -20,10 +18,10 @@ coverage/
 # -----------------------------------------------------------------------------
 # Legacy committed binaries — DO NOT ignore
 #
-# Source-less reference assemblies that the legacy build links against by
-# HintPath. The negations re-include the DIRECTORIES themselves: git cannot
-# re-include a file whose parent directory is excluded, so `!Website/bin/**`
-# would not work. They must stay AFTER `[Bb]in/` — the last match wins.
+# Source-less reference assemblies the legacy build links against by HintPath.
+# The negations re-include the DIRECTORIES themselves, because git cannot
+# re-include a file whose parent directory is excluded: `!Website/bin/**` would
+# not work. They must stay AFTER `[Bb]in/` — the last match wins.
 # -----------------------------------------------------------------------------
 !Website/bin/
 !Library/**/bin/
@@ -47,7 +45,7 @@ msbuild.log
 artifacts/
 project.lock.json
 
-# The `coverage*` globs use a single wildcard so they catch coverlet's default
+# Single wildcard on the `coverage*` globs, so they catch coverlet's default
 # names and its format-qualified ones alike.
 TestResults/
 [Tt]est[Rr]esult*/
@@ -66,9 +64,9 @@ coverage*.info
 .nuget/packages/
 
 # The packages.config-era restore folder, anchored to the backend solution: an
-# un-anchored `packages/` rule also matches legacy source directories on a
+# un-anchored `packages/` also matches legacy source directories on a
 # case-insensitive clone. PackageReference restores into the global cache, so
-# this folder should never appear at all and the rule is only a guard.
+# this folder should never appear and the rule is only a guard.
 /backend/packages/*
 !/backend/packages/build/
 
@@ -79,7 +77,7 @@ coverage*.info
 # Node / Angular
 #
 # frontend/package-lock.json must never be ignored: `npm ci` fails outright
-# without a committed lockfile. Do not add `package-lock.json` or `*-lock.json`.
+# without a committed lockfile. Never add `package-lock.json` or `*-lock.json`.
 # -----------------------------------------------------------------------------
 .angular/
 npm-debug.log*
@@ -97,8 +95,8 @@ speed-measure-plugin*.json
 # -----------------------------------------------------------------------------
 # Runtime log directories
 #
-# Anchored for the same reason as the NuGet rule: a bare `logs/` would match a
-# legacy directory that has tracked files.
+# Anchored for the same case-folding reason as the NuGet rule above: a bare
+# `logs/` would match a legacy directory that has tracked files.
 # -----------------------------------------------------------------------------
 /backend/logs/
 /frontend/logs/
@@ -125,8 +123,7 @@ Desktop.ini
 # Secrets and local environment overrides
 #
 # Real credentials never enter source control. appsettings.json and its
-# environment overlays are tracked configuration; only *.local.json overlays
-# are ignored.
+# environment overlays are tracked configuration; only *.local.json is ignored.
 # -----------------------------------------------------------------------------
 
 # Every machine-local environment override, at any depth: .env, .env.local,
@@ -165,3 +162,14 @@ id_ed25519.*
 # Public keys are not secrets, and the `id_*.*` globs above would otherwise
 # swallow the `.pub` half of every SSH key pair.
 !*.pub
+
+# -----------------------------------------------------------------------------
+# Validation evidence produced by the browser automation harness.
+# -----------------------------------------------------------------------------
+# Screenshots, screen recordings and filmstrips written into the working tree by
+# the runtime-validation tooling. They are evidence for a review, not sources the
+# application builds from, and they are large binaries: a single run of the shell
+# checks produced fifteen PNG and WebM files totalling several megabytes. Ignored
+# so that a routine `git add` cannot pull a run's artefacts into history, where
+# they would be permanent and would never be read again.
+blitzy/

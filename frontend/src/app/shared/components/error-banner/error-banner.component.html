@@ -1,0 +1,40 @@
+<!--
+  A PERSISTENT live region. The wrapper is always present and only its contents
+  change, because a region inserted at the same moment as its first message is
+  announced inconsistently across screen readers - and the first message is the one
+  that matters.
+
+  `role="alert"` conveys the semantics; `aria-live` and `aria-atomic` are stated
+  explicitly rather than left to the role's implicit values, so the announcement
+  behaviour is visible to a reader of this template and cannot change with a
+  browser's role mapping. `aria-atomic` makes the whole banner one announcement
+  rather than a stream of fragments as the message and each field group appear.
+-->
+<div class="error-banner-live" role="alert" aria-live="assertive" aria-atomic="true">
+  @if (hasProblem()) {
+    <div class="error-banner">
+      <!--
+        The summary is a paragraph, not a heading. It is transient page state rather
+        than a section of the document, so putting it in the outline would add and
+        remove an entry every time a request failed.
+      -->
+      <p class="error-banner__message">{{ message() }}</p>
+
+      @if (hasFieldErrors()) {
+        <!--
+          A description list pairs each field with its messages, which is exactly the
+          name-to-values relationship the data has. A flat unordered list would lose
+          which message belongs to which field once a field has more than one.
+        -->
+        <dl class="error-banner__fields">
+          @for (group of fieldErrors(); track trackByField($index, group)) {
+            <dt class="error-banner__field">{{ labelFor(group.field) }}</dt>
+            @for (fieldMessage of group.messages; track fieldMessage) {
+              <dd class="error-banner__detail">{{ fieldMessage }}</dd>
+            }
+          }
+        </dl>
+      }
+    </div>
+  }
+</div>

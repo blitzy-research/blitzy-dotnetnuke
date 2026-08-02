@@ -1,7 +1,11 @@
 using System.Reflection;
 using Asp.Versioning;
 using Asp.Versioning.ApiExplorer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using Swashbuckle.AspNetCore.SwaggerGen;
@@ -131,6 +135,18 @@ public static class SwaggerExtensions
     /// </summary>
     private const string DocumentationRoutePrefix = "swagger";
 
+    /// <summary>
+    /// Configuration key a deployment must set to <see langword="true"/> before the
+    /// interactive console is published outside development: <c>Swagger:Enabled</c>.
+    /// </summary>
+    /// <remarks>
+    /// Public so that a deployment's configuration, and any test asserting the default
+    /// is off, can name the key rather than repeat the string. The key's presence is
+    /// never sufficient on its own - see
+    /// <see cref="UseSwaggerDocumentation(IApplicationBuilder, IWebHostEnvironment, IConfiguration)"/>.
+    /// </remarks>
+    public const string EnabledSectionName = "Swagger:Enabled";
+
     /// <summary>Title shown on every generated document and in the console tab.</summary>
     private const string DocumentTitle = "DnnMigration API";
 
@@ -189,9 +205,22 @@ public static class SwaggerExtensions
             {
                 options.DefaultApiVersion = new ApiVersion(DefaultMajorVersion, DefaultMinorVersion);
 
-                // A request that names no version is answered by the default one, so
-                // an unversioned caller is served rather than rejected.
-                options.AssumeDefaultVersionWhenUnspecified = true;
+                // MIGRATION: DIVERGENCE. This was true, so a request that named no version
+                // was answered by the default one. Combined with UrlSegmentApiVersionReader,
+                // which is the only reader configured, that is incoherent: the version is a
+                // path SEGMENT, so a request without it is a request to a different address,
+                // not the same address with a field left blank. Accepting it means the
+                // application answers both /api/v1/portals and /api/portals, and the second
+                // form is silently pinned to whatever DefaultApiVersion happens to be. Every
+                // such caller is then broken by the arrival of v2 - the retirement they were
+                // never told about, because ReportApiVersions can only describe the version a
+                // request actually named.
+                //
+                // False makes the segment mandatory: an address without it does not match, and
+                // the caller is told so immediately instead of being bound to a default they
+                // did not choose. DefaultApiVersion is retained because the explorer uses it to
+                // name the document, not to fill in a missing segment.
+                options.AssumeDefaultVersionWhenUnspecified = false;
 
                 // Advertise the supported and deprecated versions on every response,
                 // which lets a client discover a retirement without reading the docs.
@@ -215,7 +244,17 @@ public static class SwaggerExtensions
         services.AddSwaggerGen(options =>
         {
             options.AddSecurityDefinition(BearerSecuritySchemeName, CreateBearerScheme());
-            options.AddSecurityRequirement(CreateBearerRequirement());
+
+            // MIGRATION: DIVERGENCE. AddSecurityRequirement was called here, which applies the
+            // bearer requirement to the WHOLE DOCUMENT - every operation, including the ones
+            // that must be reachable without a token. The login and refresh endpoints are the
+            // ones a caller has no token yet to call, and /health is probed by the container
+            // orchestrator with no credential at all, so documenting them as requiring a
+            // bearer token described the opposite of the contract and made the console send an
+            // Authorization header where none belongs. The requirement is now attached per
+            // operation by AuthorizationOperationFilter, which reads the same [AllowAnonymous]
+            // the runtime reads.
+            options.OperationFilter<AuthorizationOperationFilter>();
 
             // Reflects the solution-wide nullable annotations into the schema's own
             // nullability flags. This is a schema-shape concern only; it changes no
@@ -235,14 +274,27 @@ public static class SwaggerExtensions
     }
 
     /// <summary>
-    /// Mounts the OpenAPI document endpoints and the interactive console, but only
-    /// while running in the development environment.
+    /// Mounts the OpenAPI document endpoints and the interactive console while running
+    /// in the development environment, and leaves the pipeline untouched everywhere
+    /// else.
     /// </summary>
     /// <remarks>
-    /// An interactive console is a diagnostic surface, so it is not published on a
-    /// production port by default. Use
-    /// <see cref="UseSwaggerDocumentation(IApplicationBuilder, bool)"/> when the
-    /// decision should come from configuration instead of from the environment name.
+    /// <para>
+    /// An interactive console is a diagnostic surface, and one published on a
+    /// production port is an unauthenticated, machine-readable description of every
+    /// endpoint, parameter and error shape this application accepts. This overload
+    /// therefore has no way to publish it outside development: the decision is the
+    /// environment name and nothing else, so no caller can widen it.
+    /// </para>
+    /// <para>
+    /// A deployment that genuinely needs the console outside development uses
+    /// <see cref="UseSwaggerDocumentation(IApplicationBuilder, IWebHostEnvironment, IConfiguration)"/>,
+    /// which requires an explicit configuration opt-in and restricts the console to
+    /// authenticated callers. There is deliberately no overload that takes the decision
+    /// as a plain argument - such a parameter records the answer without recording
+    /// where it came from, which is what allowed production exposure to be one
+    /// <see langword="true"/> away.
+    /// </para>
     /// </remarks>
     /// <param name="app">The pipeline being composed.</param>
     /// <param name="environment">
@@ -262,26 +314,98 @@ public static class SwaggerExtensions
         ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(environment);
 
-        return app.UseSwaggerDocumentation(environment.IsDevelopment());
+        return environment.IsDevelopment() ? Mount(app) : app;
     }
 
     /// <summary>
-    /// Mounts the OpenAPI document endpoints and the interactive console when
-    /// <paramref name="enabled"/> is <see langword="true"/>.
+    /// Mounts the OpenAPI document endpoints and the interactive console, publishing
+    /// them unconditionally in development and, outside development, only when a
+    /// deployment has explicitly opted in - and then only to authenticated callers.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This addition is purely additive with respect to the surrounding pipeline: it
-    /// introduces no ordering requirement, replaces no stage, and attaches no
-    /// authorisation metadata to the endpoints it adds, so the composed order of the
-    /// application's own stages is unaffected wherever this call is placed among them.
+    /// The default is off. Absent configuration, a blank value, or any value other
+    /// than a parsable <see langword="true"/> all leave the console unpublished, so
+    /// exposure outside development is always the result of a deliberate, recorded
+    /// decision in a deployment's own configuration.
     /// </para>
     /// <para>
-    /// When <paramref name="enabled"/> is <see langword="false"/> the pipeline is
-    /// returned exactly as supplied. Nothing else in the application depends on this
-    /// call, so a switched-off console cannot prevent the application from starting or
-    /// from answering its health endpoint - the condition a container orchestrator
-    /// waits on before starting anything downstream.
+    /// <b>Opting in does not make the console public.</b> Outside development the
+    /// mounted stages run only for a caller who has already authenticated. An
+    /// anonymous request is passed straight through untouched, and is then refused
+    /// downstream on exactly the same terms as any other address that matches no
+    /// endpoint - so the response distinguishes neither a console that is switched off
+    /// from one that is switched on, nor either from a path that was never served at
+    /// all. This gate is written explicitly because the document endpoints are
+    /// middleware rather than routed endpoints: they carry no authorisation metadata,
+    /// so neither an authorisation attribute nor a fallback policy can be attached to
+    /// them.
+    /// </para>
+    /// <para>
+    /// <b>Ordering requirements, and there are two.</b> This overload must be placed
+    /// after the authentication stage, because outside development its gate reads the
+    /// authenticated caller; placed earlier the gate would see every caller as
+    /// anonymous and the console would never appear, which fails safe but looks like a
+    /// broken opt-in. It must also be placed before the authorisation stage, because
+    /// the mounted stages answer the request themselves and an authorisation stage
+    /// carrying a fallback policy would otherwise refuse the console before it was
+    /// reached - including in development, where the gate is absent.
+    /// </para>
+    /// <para>
+    /// Authentication is the floor, not the whole control. A console reachable by any
+    /// authenticated caller still describes the entire API to the least privileged
+    /// account, so a deployment that opts in should also restrict the route at its
+    /// reverse proxy or network boundary.
+    /// </para>
+    /// </remarks>
+    /// <param name="app">The pipeline being composed.</param>
+    /// <param name="environment">
+    /// Environment used to decide whether the opt-in is even consulted.
+    /// </param>
+    /// <param name="configuration">
+    /// Configuration read for <see cref="EnabledSectionName"/> outside development.
+    /// </param>
+    /// <returns>
+    /// The same <paramref name="app"/> instance, so calls can be chained.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="app"/>, <paramref name="environment"/> or
+    /// <paramref name="configuration"/> is <see langword="null"/>.
+    /// </exception>
+    public static IApplicationBuilder UseSwaggerDocumentation(
+        this IApplicationBuilder app,
+        IWebHostEnvironment environment,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (environment.IsDevelopment())
+        {
+            return Mount(app);
+        }
+
+        if (!configuration.GetValue<bool>(EnabledSectionName))
+        {
+            return app;
+        }
+
+        return app.UseWhen(
+            static context => context.User.Identity?.IsAuthenticated == true,
+            branch => Mount(branch));
+    }
+
+    /// <summary>
+    /// Mounts the document endpoints and the interactive console into the supplied
+    /// pipeline, unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Private on purpose. Every decision about <em>whether</em> the console is
+    /// published belongs to one of the two public overloads above, so that the answer
+    /// is always traceable to an environment name or to a named configuration value.
+    /// This method only knows <em>how</em>.
     /// </para>
     /// <para>
     /// The listed documents are taken from the versions discovered at runtime, so a
@@ -291,25 +415,11 @@ public static class SwaggerExtensions
     /// </para>
     /// </remarks>
     /// <param name="app">The pipeline being composed.</param>
-    /// <param name="enabled">
-    /// <see langword="true"/> to publish the document endpoints and the console;
-    /// <see langword="false"/> to leave the pipeline untouched.
-    /// </param>
     /// <returns>
     /// The same <paramref name="app"/> instance, so calls can be chained.
     /// </returns>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="app"/> is <see langword="null"/>.
-    /// </exception>
-    public static IApplicationBuilder UseSwaggerDocumentation(this IApplicationBuilder app, bool enabled)
+    private static IApplicationBuilder Mount(IApplicationBuilder app)
     {
-        ArgumentNullException.ThrowIfNull(app);
-
-        if (!enabled)
-        {
-            return app;
-        }
-
         app.UseSwagger();
 
         app.UseSwaggerUI(options =>
@@ -508,6 +618,98 @@ public static class SwaggerExtensions
                     DefaultDocumentName,
                     CreateDocumentInfo(DefaultDocumentName, isDeprecated: false));
             }
+        }
+    }
+
+    /// <summary>
+    /// Publishes the bearer requirement on the operations that actually enforce it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The document's security requirement is deliberately not declared globally. This filter
+    /// decides per operation, from the same metadata the authorization middleware uses, so the
+    /// document cannot come to disagree with the runtime: an endpoint that stops requiring a
+    /// token stops advertising one in the same edit, with nothing here to keep in step.
+    /// </para>
+    /// <para>
+    /// The test is for the ABSENCE of <see cref="Microsoft.AspNetCore.Authorization.IAllowAnonymous"/>
+    /// rather than the presence of an authorization attribute. That is the conservative
+    /// direction: an operation whose protection comes from a source this filter cannot see - a
+    /// fallback policy, a convention, a requirement applied to a whole branch of the route
+    /// table - is still documented as needing a token, whereas testing for the presence of an
+    /// attribute would have quietly published such an operation as open. Being wrong towards
+    /// "a token is needed" costs a reader one redundant header; being wrong the other way
+    /// publishes a false contract.
+    /// </para>
+    /// <para>
+    /// Endpoint metadata is read rather than the attributes of the method and its declaring
+    /// type, because metadata is the merged view the framework itself resolves - it already
+    /// accounts for an attribute inherited from the controller and for one contributed by a
+    /// convention. Where no endpoint metadata is available the method and its declaring type
+    /// are inspected directly, so a document generated outside a running endpoint graph is
+    /// still described correctly.
+    /// </para>
+    /// </remarks>
+    private sealed class AuthorizationOperationFilter : IOperationFilter
+    {
+        /// <summary>
+        /// Adds the bearer requirement to <paramref name="operation"/> unless the operation
+        /// allows anonymous access.
+        /// </summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="operation"/> or <paramref name="context"/> is
+        /// <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentNullException.ThrowIfNull(context);
+
+            if (AllowsAnonymous(context))
+            {
+                return;
+            }
+
+            operation.Security.Add(CreateBearerRequirement());
+        }
+
+        /// <summary>
+        /// Reports whether the described operation permits an unauthenticated caller.
+        /// </summary>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <returns>
+        /// <see langword="true"/> when anonymous access is allowed; otherwise
+        /// <see langword="false"/>.
+        /// </returns>
+        private static bool AllowsAnonymous(OperationFilterContext context)
+        {
+            IList<object>? metadata = context.ApiDescription.ActionDescriptor.EndpointMetadata;
+
+            if (metadata is not null)
+            {
+                return metadata.OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>().Any();
+            }
+
+            MethodInfo? method = context.MethodInfo;
+
+            if (method is null)
+            {
+                // Nothing to inspect, so the conservative answer applies and the operation is
+                // documented as requiring a token.
+                return false;
+            }
+
+            return method
+                       .GetCustomAttributes(inherit: true)
+                       .OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>()
+                       .Any()
+                   || (method.DeclaringType?
+                           .GetCustomAttributes(inherit: true)
+                           .OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>()
+                           .Any()
+                       ?? false);
         }
     }
 }

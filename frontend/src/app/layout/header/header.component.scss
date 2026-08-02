@@ -1,7 +1,5 @@
-// =============================================================================
 //  header.component.scss
 //  Application header — the administration shell's single banner band
-// =============================================================================
 //
 //  ROLE
 //  ----
@@ -20,7 +18,6 @@
 //  no track sizing appears anywhere below.
 //
 //  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
-//  ------------------------------------------------
 //  The project rules document was paged five times, four of those windows opening
 //  beyond its first line, and every window reported that no user rules were
 //  provided. That absence is NOT treated as licence to lower the bar and no rule
@@ -32,7 +29,6 @@
 //  the token wins and the divergence is annotated rather than absorbed.
 //
 //  ZERO HARDCODED VALUES
-//  ---------------------
 //  Every property value below resolves either to a design token declared in
 //  src/styles/_tokens.scss or to one of the six literals the plan permits — `0`,
 //  `none`, `auto`, `inherit`, `currentColor`, `transparent`. `flex`, `block`,
@@ -44,7 +40,6 @@
 //  anywhere in this file.
 //
 //  SELECTOR CONTRACT — shared with header.component.html
-//  ---------------------------------------------------
 //  Emulated view encapsulation rewrites every selector below with this
 //  component's own content attribute, so all of them are confined to this
 //  component: they cannot reach the shell's other bands, and they cannot reach a
@@ -65,7 +60,6 @@
 //  buttons or focus indication.
 //
 //  WHY THE HOST IS A BLOCK AND NOT `display: contents`
-//  --------------------------------------------------
 //  The shell places this component as a named grid area, and its intended markup
 //  is `<app-header class="shell__header">`. The host element is therefore the grid
 //  ITEM, and a grid item with `display: contents` is removed from the grid, which
@@ -112,7 +106,6 @@
 //  the skin's chrome appears here.
 //
 //  MEASURED PROVENANCE — the two in-scope visual sources
-//  ----------------------------------------------------
 //  Website/Portals/_default/default.css   1030 lines
 //  Website/Portals/_default/portal.css     275 lines, 80 rule bodies, ALL EMPTY
 //
@@ -223,10 +216,15 @@
 //  separately in default.css from L475 onward which the legacy chrome deliberately
 //  did not use. Promoting it would be an unrequested visual change.
 //
-//  ⚠ MIGRATION: THE GLOBAL ANCHOR HOVER IS DELIBERATELY OVERRIDDEN HERE
-//  -------------------------------------------------------------------
-//  This is the one place where this file contradicts a global default, and it does
-//  so to RESTORE measured legacy behaviour rather than to depart from it.
+//  ⚠ MIGRATION: THE CHROME ANCHOR NOW CARRIES A HOVER THE LEGACY BAND DID NOT
+//  --------------------------------------------------------------------------
+//  This band's anchors and buttons declare a full interaction-state vocabulary
+//  below — hover, press and unavailable — and doing so is a DELIBERATE DIVERGENCE
+//  from measured legacy behaviour. The measurement that argued the other way is
+//  preserved verbatim underneath, because it is real and remains the reason the
+//  divergence has to be recorded rather than assumed; only the conclusion drawn
+//  from it has changed.
+//
 //  src/styles/_reset.scss L66-L78 gives every anchor in the application a hover
 //  treatment — `a:hover { color: var(--color-primary-hover); text-decoration:
 //  underline; }` — which is the correct default for body and feature content,
@@ -243,18 +241,38 @@
 //  token vocabulary carries as --color-danger, the very role it also uses for
 //  error text.
 //
-//  Adopting the global hover inside the banner would therefore import a treatment
-//  the legacy chrome explicitly did not have. The rest-state declarations are
-//  restated on the hover state below so the band is genuinely static under a
-//  pointer. The override is achieved purely by specificity — this component's
-//  scoped selector is more specific than the global element selector — so no
-//  importance flag is used, and none is permitted. The sibling search-input
-//  component's submit control DOES move to --color-primary-hover, correctly: that
-//  control carries the legacy admin action-link semantics, not chrome semantics,
-//  and the difference between the two is measured rather than stylistic.
+//  WHY THE MEASUREMENT NO LONGER DECIDES THE OUTCOME
+//  Reproducing that measurement literally meant restating the rest-state
+//  declarations on the hover state, which left the band genuinely static under a
+//  pointer — and that is the defect, not the fidelity. A control that renders with
+//  `cursor: pointer` and answers a pointer with no change of any kind gives the
+//  reader two contradictory signals, and the cursor is the one that is easiest to
+//  miss: it is a single shared indicator far from the element, it is absent on
+//  touch entirely, and it is the first thing a magnified or high-contrast
+//  presentation loses. An interactive element has to confirm interactivity in the
+//  element itself.
+//
+//  The precedence that settles it is the design system's, not aesthetics: a
+//  complete interaction-state vocabulary is a design-system obligation, and it
+//  outranks visual continuity with the legacy portal. Nothing in the plan carves
+//  out the header band from that obligation, so the absence of a legacy hover is
+//  not a licence to ship a control with no hover — it is only a reason to record
+//  the difference here, which is what this note does.
+//
+//  The divergence is held to the minimum that discharges the obligation. The
+//  legacy REST ink is unchanged, so the band still looks exactly as measured until
+//  a pointer arrives; the hover ink is the token whose declared role is the hover
+//  companion to the brand colour, NOT the legacy generic anchor's red, which the
+//  token vocabulary carries under the danger role and which would mean "destructive"
+//  on a sign-out control; and the underline is carried as a NON-COLOUR cue so the
+//  state does not rest on hue alone.
+//
+//  No importance flag is used anywhere in this file, and none is permitted; every
+//  interaction below resolves by specificity alone. The sibling search-input
+//  component's submit control moves to the same hover token, which is now a
+//  consistency rather than the documented exception it once was.
 //
 //  REPORTED GAPS — named rather than worked around
-//  ----------------------------------------------
 //  MIGRATION: no motion appears in this file, and that is a REPORTED GAP as well
 //  as the faithful choice. src/styles/_mixins.scss closes its exported surface at
 //  the responsive and accessibility members and states that a consumer needing any
@@ -275,7 +293,6 @@
 //  the gap in the mixin surface is moot here rather than merely tolerated.
 //
 //  ACCESSIBILITY
-//  -------------
 //  MIGRATION: the entire focus layer is a PURE NET ADDITION. `:focus` and
 //  `outline` each occur ZERO times across both legacy reference stylesheets, so
 //  the legacy application declared no focus styling whatsoever and there is no
@@ -327,7 +344,6 @@
 //  with no legacy antecedent. It is obtained exclusively by including the shared
 //  breakpoint mixin, never by writing a query, so the step is declared once for
 //  the whole workspace and cannot drift.
-// =============================================================================
 
 // Three levels from this stylesheet to `src/`, derived by counting directories:
 // header -> layout -> app -> src. The workspace configures no Sass load path —
@@ -343,14 +359,11 @@
 // global block, which is why they need no compile-time import here.
 @use '../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
 //  Host — the shell's banner grid item
-// -----------------------------------------------------------------------------
 :host {
   display: block;
 }
 
-// -----------------------------------------------------------------------------
 //  The band
 //
 //  Flexbox, not Grid: the band arranges items along one axis, and the shell above
@@ -366,7 +379,6 @@
 //  exactly the combination that overflows — the legacy `.ControlPanel` paired
 //  `width: 100%` with four borders and depended on the quirks box model to survive
 //  it. Border-box sizing is inherited globally from _reset.scss in any case.
-// -----------------------------------------------------------------------------
 header {
   display: flex;
   flex-direction: column;
@@ -390,7 +402,6 @@ header {
   }
 }
 
-// -----------------------------------------------------------------------------
 //  Every anchor in the band — the chrome-link treatment
 //
 //  Attached to the element type rather than to a class so that the treatment holds
@@ -407,20 +418,58 @@ header {
 //  because the point is to pin the colour, not to inherit whatever a future rule
 //  might set. The full rationale, with the measured line numbers for all four
 //  legacy states and for the contrasting generic anchor, is in the header above.
-// -----------------------------------------------------------------------------
 header a {
   color: var(--color-primary);
   text-decoration: none;
 
   @include mx.focus-ring;
 
+  // MIGRATION: hover diverges from the measured legacy chrome anchor, which
+  // declared all four states byte-identically and therefore had no hover at all.
+  // The full reasoning, and the measurement it overrides, are recorded in the
+  // block above. The ink is the token whose role is the hover companion to the
+  // brand colour — deliberately NOT the legacy generic anchor's error hue, which
+  // this vocabulary carries under the danger role — and the underline is the non-colour
+  // cue, so the state survives a colour-vision deficiency and a monochrome
+  // rendering alike.
   &:hover {
-    color: var(--color-primary);
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  // Press. An anchor cannot match `:enabled`, so the state is declared bare and
+  // the unavailable rule below is ordered to win instead — see the note there.
+  // Distinct from hover by channel as well as value: hover moves the ink and adds
+  // the underline, press adds the fill and leaves both standing, so the two
+  // compose rather than one masking the other.
+  &:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable. Only the ARIA form exists here: `disabled` is not a valid
+  // attribute on an anchor and `:disabled` can never match one, so this is the
+  // whole of the unavailable contract for a chrome link. The underline is cleared
+  // explicitly so a link that can no longer be followed stops advertising itself
+  // as followable.
+  //
+  // ORDERING IS LOAD-BEARING. `header a[aria-disabled='true']` weighs (0,1,2) and
+  // so does `header a:hover` — an attribute and a pseudo-class count in the same
+  // column — so source order alone decides, and this rule must stay LAST for the
+  // unavailable state to survive a pointer. `pointer-events: none` already stops
+  // the pointer reaching the element, which is why no `:hover` hold is nested
+  // here, matching the global layer's documented reasoning.
+  //
+  // CONSUMER OBLIGATION — `pointer-events` guards the pointer only, and this
+  // control stays focusable by design. CSS cannot stop Enter activating a focused
+  // anchor, so the component MUST also remove `href` or guard the activation path.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
     text-decoration: none;
+    pointer-events: none;
   }
 }
 
-// -----------------------------------------------------------------------------
 //  The identity affordance
 //
 //  Sized one ramp step below the page title so the banner reads as identity
@@ -430,14 +479,12 @@ header a {
 //  band wider than its track, and `break-word` restores a break opportunity inside
 //  an unbroken string — a portal alias or a host name has none. Type, ink and
 //  decoration all arrive from the rules above, so nothing is restated here.
-// -----------------------------------------------------------------------------
 .app-header__brand {
   min-inline-size: 0;
   font-size: var(--font-size-xl);
   overflow-wrap: break-word;
 }
 
-// -----------------------------------------------------------------------------
 //  The session cluster
 //
 //  Wraps rather than overflows, because the signed-in name is arbitrary-length
@@ -464,7 +511,6 @@ header a {
 //  layout the inline axis is the cross axis, so an automatic inline margin there
 //  would shunt the cluster to the far edge of a narrow band instead of leaving it
 //  aligned with the identity affordance above it.
-// -----------------------------------------------------------------------------
 .app-header__actions {
   display: flex;
   flex-wrap: wrap;
@@ -480,7 +526,6 @@ header a {
   }
 }
 
-// -----------------------------------------------------------------------------
 //  The signed-in user's display name
 //
 //  Declares only the two defensive properties. Its type and ink are inherited from
@@ -493,13 +538,11 @@ header a {
 //  normal weight, say — would be an invented visual change rather than a measured
 //  one. What distinguishes it from the control beside it is structural — it is
 //  static text, not a button — rather than chromatic.
-// -----------------------------------------------------------------------------
 .app-header__user {
   min-inline-size: 0;
   overflow-wrap: break-word;
 }
 
-// -----------------------------------------------------------------------------
 //  Every button in the band — the text-link control treatment
 //
 //  Attached to the element type for the same reason as the anchor rule above. The
@@ -535,7 +578,6 @@ header a {
 //  while a sign-out request is in flight. Its ink measures 4.73:1 against the
 //  band, so it clears AA outright and needs no inactive-component exemption, and
 //  the cursor gives the state a second, non-colour cue.
-// -----------------------------------------------------------------------------
 header button {
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
@@ -547,13 +589,55 @@ header button {
 
   @include mx.focus-ring;
 
-  &:hover {
-    color: var(--color-primary);
-    text-decoration: none;
+  // MIGRATION: hover diverges from the measured legacy chrome link button, for the
+  // reasons recorded in the block above and with the same ink and the same
+  // non-colour cue as the sibling anchor, so the two session controls in the band
+  // answer a pointer identically.
+  //
+  // Guarded on `:enabled`, and the guard is load-bearing rather than defensive:
+  // `header button:hover` weighs (0,1,2) against this rule's own `&:disabled`
+  // (0,1,2), so a bare hover declared first would be overridden by the disabled
+  // rule — but only for the properties the disabled rule happens to restate. It
+  // sets no `text-decoration`, so a bare hover would leave an unavailable control
+  // underlined as though it were still a live affordance. `:enabled` cannot match a
+  // disabled button at all, so the boundary is structural and no ordering
+  // convention has to hold it.
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
   }
 
+  // Press. The fill is the vocabulary's press signal; the radius contains it,
+  // because this rule sets `border: none` and the tint would otherwise sit as a
+  // hard-edged rectangle in a band that has no other square-cornered element.
+  &:enabled:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable, native form — genuine rather than speculative: the control is
+  // disabled while a sign-out request is in flight. The ink measures 4.73:1
+  // against the band, so it clears AA outright and needs no inactive-component
+  // exemption, and the cursor is the second, non-colour cue. The underline is
+  // cleared explicitly so no hover residue can outlive the state change.
   &:disabled {
     color: var(--color-text-muted);
+    text-decoration: none;
     cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — focusable and announced rather than absent, for a
+  // keyboard or assistive-technology user. No `cursor` and no `:hover` hold, for
+  // the reason the global layer documents: an element receiving no pointer events
+  // resolves no cursor and can never be a hit-test target.
+  //
+  // CONSUMER OBLIGATION — `pointer-events` guards the pointer only. The component
+  // MUST also guard the click, Enter and Space paths. Where focusability is not
+  // required, prefer the native `disabled` attribute used immediately above, which
+  // closes every path at once.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    pointer-events: none;
   }
 }

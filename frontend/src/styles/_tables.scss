@@ -1,14 +1,8 @@
-// Bare-element table presentation plus the data-grid conventions the shared
-// data-table composes from: cells, row states, the sortable column header, an
-// in-table placeholder row, an opt-in horizontal scroll region and an opt-in
-// sticky head. Row-state and sort hooks are ARIA attributes rather than classes,
-// so a state cannot be painted without also being announced.
+// Bare-element table presentation plus the data-grid conventions the shared data-table composes
+// from. Row-state and sort hooks are ARIA attributes rather than classes, so a state cannot be
+// painted without also being announced.
 
 @use 'mixins' as mx;
-
-// =============================================================================
-//  THE TABLE ELEMENT
-// =============================================================================
 
 table {
   inline-size: 100%;
@@ -28,24 +22,19 @@ table {
 
   font-family: var(--font-family-base);
 
-  // The dense grid step. Body cells inherit it from here; the head and foot take
-  // one step up in their own rule below, so the two governs disjoint element
-  // sets rather than competing. Unlike an absolute pixel size, every step of this
-  // ramp is relative to the browser's base size, so a reader who raises their
-  // font preference now scales the whole grid.
+  // The dense grid step. Body cells inherit it from here and the head and foot take one step up in
+  // their own rule below, so the two govern disjoint element sets rather than competing. Every step
+  // of the ramp is relative to the browser's base size, so a reader who raises their font
+  // preference scales the whole grid. Naming a line height alongside it makes row height
+  // predictable instead of engine-dependent.
   font-size: var(--font-size-sm);
 
-  // Naming a line height makes row height predictable instead of
-  // engine-dependent.
   line-height: var(--line-height-tight);
 
-  // The legacy grid item rule at default.css 156-163 sets the body text colour.
-  // That colour is the user agent's own default, which the document baseline in
-  // _reset.scss deliberately leaves in place rather than restating as a tenth
-  // palette entry, so the row inherits it. `inherit` is one of the literals the
-  // design-system convention permits, and the rendered result is identical to
-  // the measured legacy value. Declaring it rather than omitting it keeps the row
-  // independent of any colour a future ancestor rule might introduce.
+  // `inherit` rather than a palette entry: body text has no declared colour, so the row inherits
+  // the user agent default and renders identically to the measured legacy value. Declaring it
+  // rather than omitting it keeps the row independent of any colour a future ancestor might
+  // introduce.
   color: inherit;
 
   // The inherited default for body content. The logical keyword rather than a
@@ -53,10 +42,6 @@ table {
   // mode.
   text-align: start;
 }
-
-// =============================================================================
-//  CAPTION
-// =============================================================================
 
 caption {
   caption-side: top;
@@ -77,14 +62,10 @@ caption[data-visually-hidden] {
   @include mx.visually-hidden;
 }
 
-// =============================================================================
-//  SECTIONS — HEAD AND FOOT
-// =============================================================================
-
-// Declaring the size on the SECTION rather than on the cell is what makes a row
-// header inside the body come out at body size: it inherits from the table, not
-// from here. That is the correct result — a row header sits among the data it
-// labels — and it falls out of the structure instead of needing a second rule.
+// Declaring the size on the SECTION rather than on the cell is what makes a row header inside the
+// body come out at body size: it inherits from the table, not from here. That is the correct result,
+// since a row header sits among the data it labels, and it falls out of the structure instead of
+// needing a second rule.
 thead,
 tfoot {
   font-size: var(--font-size-lg);
@@ -92,28 +73,20 @@ tfoot {
 }
 
 tfoot {
-  // MIGRATION: this declaration is newly visible through no change of value. The
-  // page background is the same colour, so a footer painted with it used to be
-  // indistinguishable from the page behind it; it becomes meaningful only because
-  // the zebra stripe below now paints alternate body rows a different surface,
-  // giving the footer something to be distinct from.
+  // MIGRATION: newly visible through no change of value. The page background is the same colour, so
+  // a footer painted with it used to be indistinguishable from the page behind it; it becomes
+  // meaningful only because the zebra stripe below paints alternate body rows a different surface.
   background-color: var(--color-background);
 }
 
-// =============================================================================
-//  CELLS
-// =============================================================================
-
 th,
 td {
-  // One step, uniformly. The grids being replaced disagreed with one another on
-  // cell padding; normalising removes an inconsistency rather than introducing
-  // one.
+  // One step, uniformly, because the grids being replaced disagreed with one another on cell
+  // padding; normalising removes an inconsistency rather than introducing one. Top alignment keeps a
+  // short cell level with a tall neighbour.
   padding-block: var(--space-1);
   padding-inline: var(--space-1);
 
-  // A short cell stays level with a tall neighbour instead of floating in the
-  // middle of it.
   vertical-align: top;
 
   // CELLS REFLOW, THEY DO NOT TRUNCATE, and no truncation hook is offered. Grid
@@ -136,37 +109,26 @@ th {
   color: var(--color-primary);
 }
 
-// Both alignments are written out explicitly rather than left to inheritance, and
-// that is deliberate rather than verbose: the table above sets start alignment,
-// which every cell inherits, but the browser's own stylesheet targets the header
-// cell element directly and a direct rule outranks an inherited value. Naming
-// both removes the dependency on a browser default.
+// Both alignments are written out explicitly rather than left to inheritance, and that is deliberate
+// rather than verbose: the table above sets start alignment, which every cell inherits, but the
+// browser's own stylesheet targets the header cell element directly and a direct rule outranks an
+// inherited value. Naming both removes the dependency on a browser default. Per-column alignment is
+// left to a component-scoped rule the header inherits from, so no global modifier class is spent
+// on it.
 th[scope='col'] {
   text-align: center;
 }
 
-// A row header labels the row it sits in, so it aligns with the data beside it.
 th[scope='row'] {
   text-align: start;
 }
 
-// Per-column alignment is met by a component-scoped rule the header inherits
-// from, so no global modifier class is spent on it.
-
-// =============================================================================
-//  ROW STATES
-// =============================================================================
-
-// MIGRATION: the alternating row is distinguished by its background rather than
-// by its text colour. The grid this replaces recoloured every second row's TEXT
-// with the hue reserved for error messages and left both backgrounds identical,
-// so removing the recolour removes the only distinction there was; the stripe is
-// its functional replacement, and it leaves the text colour exactly as the normal
-// row sets it.
-//
-// Only the body is striped. The head and foot are separate sections and are not
-// matched by this rule, which is the correct result: a striped header row would
-// compete with the header's own treatment.
+// MIGRATION: the alternating row is distinguished by its background rather than by its text colour.
+// The grid this replaces recoloured every second row's TEXT with the hue reserved for error
+// messages and left both backgrounds identical, so the stripe is the functional replacement for the
+// only distinction there was, and it leaves the text colour exactly as the normal row sets it.
+// Only the body is striped: the head and foot are separate sections and are not matched by this
+// rule, which is correct, since a striped header row would compete with the header's own treatment.
 tbody > tr:nth-child(even) {
   background-color: var(--color-surface);
 }
@@ -195,10 +157,6 @@ tbody > tr[aria-selected] {
   @include mx.focus-ring;
 }
 
-// =============================================================================
-//  SORTABLE COLUMN HEADER
-// =============================================================================
-
 // Keyed to the sort state for the same reason the selected row is: a header that
 // looks sortable but does not announce its direction is unusable with a screen
 // reader, and tying the appearance to the attribute stops the two drifting apart.
@@ -206,10 +164,9 @@ th[aria-sort] {
   cursor: pointer;
 }
 
-// SUPPLEMENTARY to the direction indicator the component draws, never a
-// replacement for it: a tint says "this column" but cannot say "ascending", and
-// direction must not be carried by colour. The head is not striped, so this tint
-// has nothing to collide with.
+// SUPPLEMENTARY to the direction indicator the component draws, never a replacement for it: a tint
+// says "this column" but cannot say "ascending", and direction must not be carried by colour. The
+// head is not striped, so this tint has nothing to collide with.
 th[aria-sort='ascending'],
 th[aria-sort='descending'] {
   background-color: var(--color-surface);
@@ -227,11 +184,10 @@ th[aria-sort] > button {
   padding: 0;
   cursor: pointer;
 
-  // Inline-level on purpose. An inline-level box is positioned by the text
-  // alignment of the cell around it, so the button lands centred under a column
-  // header and at the start edge under a header a component has re-aligned,
-  // without this file having to restate either alignment. The gap reserves room
-  // for the component's direction indicator beside the label.
+  // Inline-level on purpose. An inline-level box is positioned by the text alignment of the cell
+  // around it, so the button lands centred under a column header and at the start edge under a
+  // header a component has re-aligned, without this file restating either alignment. The gap
+  // reserves room for the component's direction indicator beside the label.
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -239,10 +195,6 @@ th[aria-sort] > button {
 
   @include mx.focus-ring;
 }
-
-// =============================================================================
-//  IN-TABLE PLACEHOLDER ROW
-// =============================================================================
 
 // A single spanning cell carrying a zero-result or still-loading message while the
 // table's structure stays on screen, so the reader keeps the column headings as
@@ -259,19 +211,12 @@ td[data-placeholder] {
   text-align: center;
 }
 
-// =============================================================================
-//  HORIZONTAL SCROLL REGION
-// =============================================================================
-
 // An admin grid has many columns and cannot always fit. Scrolling the region
 // rather than the page keeps the surrounding layout intact, and the automatic
 // value means no scrollbar appears at all when the table already fits. The
 // breakpoint comes from a mixin: no raw media feature query appears in this file,
 // and a custom property is not evaluated inside one in any case.
 [data-table-scroll] {
-  // The logical form of this property is not yet reliably supported across the
-  // browsers this build targets, so the physical axis is named. It is an axis,
-  // not a design value, so there is no token for it either way.
   overflow-x: auto;
 
   // Stops a horizontal swipe that reaches the end of the grid from continuing
@@ -296,21 +241,15 @@ td[data-placeholder] {
   }
 }
 
-// =============================================================================
-//  OPT-IN STICKY HEADER
-// =============================================================================
-
-// Opt-in rather than automatic: it is only correct inside a scrolling region or a
-// tall page, and a global default would apply it to short tables that gain
-// nothing.
+// Opt-in rather than automatic: it is only correct inside a scrolling region or a tall page, and a
+// global default would apply it to short tables that gain nothing.
 //
-// The header must be OPAQUE to work — a see-through sticky header lets body rows
-// scroll through it and makes both layers unreadable at once — so the page
-// background value is named rather than left transparent.
+// The header must be OPAQUE to work - a see-through sticky header lets body rows scroll through it
+// and makes both layers unreadable at once - so the page background value is named rather than left
+// transparent.
 //
-// Sticky positioning is applied to the header CELL rather than to the head
-// section, because the collapsed border model does not make the section itself a
-// positionable box in every engine.
+// Sticky positioning is applied to the header CELL rather than to the head section, because the
+// collapsed border model leaves the section without a box of its own to position.
 table[data-sticky-head] thead th {
   position: sticky;
   inset-block-start: 0;
@@ -319,20 +258,13 @@ table[data-sticky-head] thead th {
   box-shadow: var(--elevation-1);
 }
 
-// =============================================================================
-//  DELIBERATE OMISSIONS — recorded because an absent rule leaves no site to
-//  annotate, and an undocumented absence reads as an oversight
-// =============================================================================
-
 // No pager styling. A pager is a SIBLING of the table and not part of it, so no
 // rule here reaches inside a table to style one, and the shared pagination
 // component must not be rendered into a foot row.
 
-// No row hover, and the omission is principled. A hover rule on a touch device
-// sticks to the last-tapped element until something else is tapped, so it needs a
-// hover-capability query — and _mixins.scss, the only file permitted a raw media
-// feature query, exposes no such guard. Emitting no rule beats emitting an
-// unguarded one, and the pointer and focus ring above already tell the reader
-// which rows and headers are interactive. If hover styling is wanted, add a guard
-// mixin to _mixins.scss and include it here rather than writing a query in this
-// file.
+// No row hover, and the omission is principled. A hover rule on a touch device sticks to the
+// last-tapped element until something else is tapped, so it needs a hover-capability query - and
+// _mixins.scss, the only file permitted a raw media feature query, exposes no such guard. Emitting
+// no rule beats emitting an unguarded one, and the pointer and focus ring above already tell the
+// reader which rows and headers are interactive. If hover styling is wanted, add a guard mixin to
+// _mixins.scss and include it here rather than writing a query in this file.

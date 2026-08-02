@@ -3,9 +3,9 @@
     <h1 class="page-header__title">{{ title }}</h1>
 
     <!--
-      A truthiness guard rather than a presence check: an empty or omitted value
-      renders nothing at all, instead of a blank paragraph that would occupy
-      vertical space and add an empty node to the accessibility tree.
+      A truthiness guard rather than a presence check: an empty or omitted value renders
+      nothing at all, instead of a blank paragraph that would occupy vertical space and add
+      an empty node to the accessibility tree.
     -->
     @if (subtitle) {
       <p class="page-header__subtitle">{{ subtitle }}</p>
@@ -13,186 +13,103 @@
   </div>
 
   <!--
-    MIGRATION: the slot holds N actions, not one, and collapses to nothing at
-    zero. Measured across the 37 in-scope resource files: 19 action-suffixed
-    keys spread over exactly 8 screens, distribution {1 action: 4 screens, 3: 2,
-    4: 1, 5: 1} - so half the action-carrying screens carry more than one, and
-    the measured maximum is FIVE, on the manage-users screen ('Manage Roles for
-    this User', 'Add New User', "Manage User's Profile", "Manage User's
-    Password", 'Manage Profile Properties'). The portals screen carries three
-    ('Add New Portal', 'Export Portal Template', 'Delete Expired Portals'). One
-    unnamed slot therefore covers every case: nothing is enumerated, counted or
-    capped, no selector is used, no content query is declared and no third input
-    is added. Collapse-at-zero is achieved entirely in the stylesheet, and the
-    slot deliberately stays on its own line here because the mechanism depends on
-    it: the paired stylesheet suppresses this wrapper with an empty-element
-    selector, and that selector tolerates a comment child - the compiler's own
-    projection anchor - but not a space-only text child, which the compiler
-    strips by default. Nothing conditional is introduced in this template. The
-    wrapper is always emitted and the stylesheet decides whether it generates a
-    box, which keeps the markup free of layout logic.
+    THE SLOT HOLDS N ACTIONS, NOT ONE, and collapses to nothing at zero. Half the legacy
+    action-carrying screens carried more than one action and the maximum was five, so one
+    unnamed slot covers every case: nothing is enumerated, counted or capped, no selector is
+    used, no content query is declared and no third input is added. The wrapper is always
+    emitted and the stylesheet decides whether it generates a box, which keeps this markup
+    free of layout logic.
 
-    CORRECTED ON MEASUREMENT: an earlier reading of this file claimed collapse
-    needed no empty-element selector, on the grounds that a wrapper with no
-    padding, border or background occupies no space. That reasoning does not hold
-    in this layout, and the reason is the parent rather than this element. The
-    enclosing block is a flex container declaring a gap, and a flex gap applies
-    BETWEEN ITEMS regardless of whether an item has any size - so the 29 of 37
-    in-scope screens that project no action were paying a phantom gap beneath the
-    title. Only removing the wrapper from the flex formatting context suppresses
-    it, which no amount of zeroed padding can do. The corrected mechanism is
-    verified by its own assertion in the paired specification rather than argued
-    for here.
+    THE SLOT MUST STAY ON ITS OWN LINE. The paired stylesheet suppresses this wrapper with an
+    empty-element selector, and that selector tolerates a comment child - the compiler's own
+    projection anchor - but not a space-only text child, which the compiler strips by default.
 
-    MIGRATION: provenance of the slot. The action-suffixed resource keys were
-    literally the command names of the legacy skin container's action buttons,
-    so this slot replaces that container action row exactly.
+    An empty-element selector is genuinely required, because a wrapper with no padding, border
+    or background does not come free here: the enclosing block is a flex container declaring a
+    gap, and a flex gap applies BETWEEN ITEMS regardless of whether an item has any size, so
+    most screens - which project no action at all - would pay a phantom gap beneath the title.
+    Only removing the wrapper from the flex formatting context suppresses that, which no
+    amount of zeroed padding can do.
 
-    MIGRATION: three affordances are deliberately kept apart, because conflating
-    them is the obvious mistake here. (a) Page-level actions - the
-    action-suffixed keys above - project into this slot. (b) An in-page form
-    action bar does NOT: editroles.ascx L178-L190 is a plain paragraph holding
-    four link buttons in the legacy admin text-link action class - Update,
-    Cancel, Delete and Manage Users, the first three declaring no border - and
-    that bar belongs to the consuming feature's own form footer. The same
-    pattern occurs in 11 of the 39 in-scope screens at exact attribute case,
-    34 references in total, concentrated in the site-settings screen (13) and
-    the manage-pages screen (7). (c) Per-row grid commands do NOT either:
-    portals.ascx L21 and L22 declare image command columns for Edit and Delete
-    keyed on the portal identifier, and those belong to the shared data table,
-    as does the letter-filter repeater at portals.ascx L4-L11. This component
-    must not become a form-footer component and must not grow row commands.
+    MIGRATION: THREE AFFORDANCES ARE DELIBERATELY KEPT APART, because conflating them is the
+    obvious mistake here. Page-level actions project into this slot. An in-page form action
+    bar does NOT - it belongs to the consuming feature's own form footer. Per-row grid
+    commands do NOT either - they belong to the shared data table, as does a letter-filter
+    strip. This component must not become a form-footer component and must not grow row
+    commands.
 
-    MIGRATION: the legacy separators become spacing tokens, never
-    non-breaking-space text nodes. Measured: editroles.ascx L181, L184 and L187
-    are literal non-breaking-space text nodes on their own lines between the four
-    link buttons, portals.ascx L8 separates each letter-filter link with two of
-    them, and the legacy skin container prefixes its title skin-object with one.
-    Spacing here is a gap declared once in the stylesheet against the shared
-    spacing scale, so it is inspectable and adjustable rather than smuggled into
-    the markup as content.
+    MIGRATION: the legacy separators become spacing tokens, never non-breaking-space text
+    nodes. Spacing here is a gap declared once in the stylesheet against the shared spacing
+    scale, so it is inspectable and adjustable rather than smuggled into the markup as content.
 
-    MIGRATION: the legacy admin action affordance is retained as a text link and
-    is NOT promoted to a filled button. A filled-button class existed separately
-    in default.css from L475 onward and the admin action bars deliberately did
-    not use it, so promoting them would be an unrequested visual change. The
-    appearance of the actions is delegated to the consumer, because projected
-    content keeps the style scoping of the component that declares it - this
-    component therefore cannot and must not style what it hosts, and neither
-    deep-descendant piercing nor disabling the per-component scoping is
-    acceptable. One measured collision is recorded rather than absorbed: the
-    legacy hover colour of that text-link class (default.css L462-466) is the
-    very same value the token vocabulary assigns to the danger role, which it
-    also uses for error text, so action hover resolves to the primary-hover
-    token instead.
+    MIGRATION: the legacy admin action affordance is retained as a text link and is NOT
+    promoted to a filled button - a filled-button class existed separately in the legacy
+    stylesheet and the admin action bars deliberately did not use it, so promoting them would
+    be an unrequested visual change. The appearance of the actions is delegated to the
+    consumer, because projected content keeps the style scoping of the component that declares
+    it; this component therefore cannot and must not style what it hosts, and neither
+    deep-descendant piercing nor disabling the per-component scoping is acceptable. One
+    collision matters: the legacy hover colour of that text-link class is the very same value
+    the token vocabulary assigns to the danger role, which it also uses for error text, so
+    action hover resolves to the primary-hover token instead.
 
-    MIGRATION: every action must carry a discernible accessible name, and this
-    is a legacy-wide gap rather than a one-off. Positive precedent: roles.ascx
-    L11 gives its edit image both an alternate text and a resource key, and the
-    portals resource file carries the richer wording 'Edit this Portal'.
-    Negative precedent, measured: roles.ascx L13 declares its delete image
-    button with NEITHER an alternate text nor a resource key, and the portals
-    resource file has no delete wording key at all among its 17 entries even
-    though portals.ascx L22 renders a delete action - so the word 'Delete' has
-    to be authored directly, and the gap is recorded here. The same defect class
-    recurs at roles.ascx L68-L69 and L74-L75 and at users.ascx L76-L77, where
-    images carry no alternate text whatsoever. Because the actions are projected
-    by the feature, this is a documented obligation on consumers rather than
-    something this template can enforce - stated plainly rather than pretended
-    otherwise. What this template does guarantee is that it wraps the projected
-    actions in a plain container that suppresses no accessible name, and that it
-    invents no ARIA: no toolbar role is applied, because a toolbar role imposes
-    arrow-key management obligations that neither this component nor the
-    projected actions implement, and declaring ARIA that is not implemented is
-    worse than declaring none. Visible focus indication for those actions is a
-    focus-visible concern of the stylesheets, never an outline suppression.
+    MIGRATION: EVERY ACTION MUST CARRY A DISCERNIBLE ACCESSIBLE NAME. The legacy screens were
+    inconsistent - some image actions carried both alternate text and a resource key while
+    others carried neither - so wording sometimes has to be authored directly. Because the
+    actions are projected by the feature, this is an obligation on consumers rather than
+    something this template can enforce. What this template does guarantee is that it wraps
+    the projected actions in a plain container that suppresses no accessible name, and that it
+    invents no ARIA: no toolbar role is applied, because a toolbar role imposes arrow-key
+    management obligations that neither this component nor the projected actions implement, and
+    declaring ARIA that is not implemented is worse than declaring none. Visible focus
+    indication for those actions is a focus-visible concern of the stylesheets, never an
+    outline suppression.
 
-    MIGRATION: raster action icons are replaced by text, inline SVG or CSS. The
-    twelve legacy assets involved - the edit, delete, save, refresh, up, down,
-    checked, unchecked, help, users, security-roles and search images under
-    Website/images - have no target equivalent, and the only static asset this
-    workspace ships is a favicon, so no component may reference an image asset.
+    MIGRATION: raster action icons are replaced by text, inline SVG or CSS. The legacy image
+    assets have no target equivalent and the only static asset this workspace ships is a
+    favicon, so no component may reference an image asset.
 
-    MIGRATION: wording resolution rule - the resource value wins WHERE THE KEY
-    EXISTS, and where the key is absent the markup text attribute is the only
-    wording available and must be authored directly with the gap recorded. The
-    edit-roles resource file proves both halves at once, across its 42 parsed
-    entries: the manage key carries the richer 'Manage Users in this Role'
-    against the markup's "Manage Users", while the update, cancel and delete
-    keys are absent from that file entirely. Two validator messages are exactly
-    swapped between markup and resource file, with the declared comparison
-    operator as arbiter - editroles.ascx L112-L114 reads "... Greater Than or
-    Equal to Zero" in markup but declares a strictly-greater operator, while
-    L126-L128 reads "... Greater Than Zero" in markup but declares a
-    greater-or-equal operator; in both cases the resource wording matches the
-    operator, which is what makes the resource file authoritative. Those
-    validator keys carry the ordinary value suffix, not an error-message suffix.
+    MIGRATION: wording resolution rule - the resource value wins WHERE THE KEY EXISTS, because
+    where markup text and resource wording disagreed the resource wording was the one that
+    matched the declared behaviour. Where the key is absent the markup text is the only wording
+    available and must be authored directly.
 
-    MIGRATION: the wording source cannot be trusted as markup, so both inputs
-    are rendered as plain text through interpolation only - never through a
-    raw-HTML property binding, never through a sanitiser bypass, never through
-    a trusted-HTML wrapper type, and never by smuggling markup through an
-    attribute binding. Measured across the 37 in-scope resource files: 76 values
-    contain an HTML tag and 29 of them open with a line-break tag, including all
-    nine validator messages on the edit-roles screen, which is layout smuggled
-    into a string. The per-value tag histogram is line-break 39, paragraph 24,
-    level-1 heading 21, bold 10, anchor 5, list-item 3, span 2, list 2, script
-    1, level-3 heading 1, level-4 heading 1 and strong 1. The decisive proof is
-    a single 344-character value on the portal site-settings screen, keyed
-    Advertising, carrying a live advertising script tag whose source is a remote
-    third-party host - a value invisible to a naive search because the tags are
-    stored HTML-escaped. The portals screen's module-help value similarly opens
-    with a heading tag followed by a paragraph tag. DENOMINATOR HONESTY: those
-    files yield 1211 raw textual data-entry occurrences against 1111 parsed
-    data elements, the gap of 100 being entries sitting inside XML comments,
-    which a parser drops; a circulating figure of 1182 is a partial parse
-    between the two. The count of 76 HTML-bearing values is unanimous across all
-    three readings. Where a screen genuinely needs rich introductory content,
-    the feature re-authors it as real template markup - it is never injected.
+    MIGRATION: THE WORDING SOURCE CANNOT BE TRUSTED AS MARKUP, so both inputs are rendered as
+    plain text through interpolation only - never through a raw-HTML property binding, never
+    through a sanitiser bypass, never through a trusted-HTML wrapper type, and never by
+    smuggling markup through an attribute binding. A substantial minority of legacy resource
+    values contain HTML tags, many opening with a line-break or heading tag, and at least one
+    carries a live advertising script sourced from a remote third-party host - invisible to a
+    naive search because the tags are stored HTML-escaped. Where a screen genuinely needs rich
+    introductory content, the feature re-authors it as real template markup; it is never
+    injected.
 
-    MIGRATION: localisation is not ported. No translation runtime is present in
-    the pinned dependency surface and no message-tagging attribute or
-    message-tagging helper is used anywhere; user-facing strings are authored
-    directly into templates, and the 37 resource files informed wording only.
+    MIGRATION: localisation is not ported. No translation runtime is present in the pinned
+    dependency surface and no message-tagging attribute or helper is used anywhere; user-facing
+    strings are authored directly into templates, and the legacy resource files informed
+    wording only.
 
-    MIGRATION: the legacy collapsible-section affordance is NOT this component's
-    concern, permanently and by design rather than deferred. The legacy
-    section-head control appears on 9 of the in-scope screens (41 opening tags:
-    module settings, signup, site settings, edit roles, manage pages, recycle
-    bin, password, user settings and bulk email). Its section attribute names a
-    target element identifier, which is the legacy equivalent of an aria-controls
-    reference - proven because editroles.ascx L11-L12 targets "tblBasic" and
-    L68-L70 targets "tblAdvanced", and real elements bearing exactly those two
-    identifiers exist at L13-L14 and L71-L72 - and its expanded attribute is
-    false on the advanced block, meaning collapsed by default. A keyboard
-    reachable disclosure carrying aria-expanded and aria-controls is therefore a
-    faithful translation rather than an invention, and the legacy toggle's
-    negative tab index (sectionheadcontrol.ascx L3) is an accessibility defect to
-    reverse, not to reproduce. That disclosure belongs to the FEATURE screens as
-    a grouped field set with a caption, or as a native details-and-summary
-    disclosure where collapse is genuinely required. This component grows no
-    toggle, gains no third input and does not become a section component,
-    because the shared inventory is closed at ten - the nine components plus the
-    permission directive.
-    REPORTED, NOT ACTED UPON: the planned global layout stylesheet's brief
-    misattributes this disclosure fix to page-header. It is recorded here and
-    left alone.
+    MIGRATION: THE LEGACY COLLAPSIBLE-SECTION AFFORDANCE IS NOT THIS COMPONENT'S CONCERN,
+    permanently and by design rather than deferred. The legacy section-head control named a
+    target element identifier, which is the legacy equivalent of an `aria-controls` reference,
+    and marked its advanced block collapsed by default - so a keyboard-reachable disclosure
+    carrying `aria-expanded` and `aria-controls` is a faithful translation rather than an
+    invention, and the legacy toggle's negative tab index is an accessibility defect to
+    reverse, not to reproduce. That disclosure belongs to the FEATURE screens, as a grouped
+    field set with a caption or as a native details-and-summary disclosure where collapse is
+    genuinely required. This component grows no toggle, gains no third input and does not
+    become a section component.
 
-    MIGRATION: the legacy title block also drew a horizontal-rule element
-    beneath the title - sectionheadcontrol.ascx L6-L8 emits one inside a panel,
-    gated by an include-rule attribute that both edit-roles section heads set to
-    true. No rule element is emitted here. A separator, where the design calls
-    for one, is a border declared against the token vocabulary in the paired
-    stylesheet, because a rule drawn in markup is presentation masquerading as
-    content and cannot respond to the surrounding layout.
+    MIGRATION: the legacy title block also drew a horizontal-rule element beneath the title.
+    No rule element is emitted here. A separator, where the design calls for one, is a border
+    declared against the token vocabulary in the paired stylesheet, because a rule drawn in
+    markup is presentation masquerading as content and cannot respond to the surrounding
+    layout.
 
-    MIGRATION: section-level introductory text is a distinct layer and is not a
-    page-header concern. editroles.ascx L17-L18 and L75-L76 place their
-    supporting sentences inside the grouped block they describe, not beside the
-    page title, so the target equivalent is a paragraph inside the feature's own
-    grouped field set. Noted for the record: the legacy naming of that pair is
-    inconsistent - one key is suffixed as a description and the other as help,
-    for the same role on the same screen.
+    MIGRATION: section-level introductory text is a distinct layer and is not a page-header
+    concern. The legacy screens placed their supporting sentences inside the grouped block they
+    described rather than beside the page title, so the target equivalent is a paragraph inside
+    the feature's own grouped field set.
   -->
   <div class="page-header__actions">
     <ng-content />

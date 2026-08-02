@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DotNetNuke Administration</title>
+
+    <!--
+      The document base, required by the Angular router: every route the router
+      builds is resolved against it. It is deliberately the site root, because
+      docker/nginx.conf serves the bundle from the server root and falls back to
+      this document for every unmatched path (`try_files $uri $uri/ /index.html`),
+      which is what allows a deep link such as /portals/0/settings to be reached
+      directly rather than only by navigating from the root.
+    -->
+    <base href="/" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <!--
+      Referrer policy is declared in the document rather than left to the default
+      so that a navigation away from an administration screen cannot leak a path
+      that carries a tenant, account or page identifier to a third-party origin.
+      The remaining security headers - content security policy, frame options,
+      content-type options - are deliberately NOT declared here: they belong on
+      the HTTP response, which the reverse proxy owns, and a meta element cannot
+      express several of them at all (frame-ancestors and X-Frame-Options are
+      ignored when delivered by meta).
+    -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  </head>
+
+  <!--
+    No class, no inline style and no theme attribute on the body element. The
+    body box is owned entirely by src/styles/_reset.scss, and the application
+    shell's grid is owned by the .shell rule in src/styles/_layout.scss, which
+    the shell component carries on its own host element. Declaring anything here
+    would put a second, competing definition of the page frame outside the
+    stylesheet layer that owns it.
+  -->
+  <body>
+    <!--
+      The single application root. AppComponent's selector.
+
+      The element is deliberately EMPTY: no spinner, no skeleton and no
+      "JavaScript is required" fallback is placed inside it. Angular replaces the
+      element's content on bootstrap, so anything written here would be visible
+      only for the interval before the bundle executes, and the production build
+      is a single hashed bundle served from the same origin with a one-year
+      immutable cache - an interval too short to be worth a second, unstyled
+      rendering path that no specification could then cover.
+    -->
+    <app-root></app-root>
+  </body>
+</html>

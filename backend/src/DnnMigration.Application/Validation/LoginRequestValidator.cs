@@ -51,11 +51,16 @@ namespace DnnMigration.Application.Validation;
 public class LoginRequestValidator : AbstractValidator<LoginRequest>
 {
     /// <summary>
-    /// Upper bound applied to <see cref="LoginRequest.Username"/>, taken from
-    /// the terminal width of the stored sign-in-name column rather than from the
-    /// first width the schema history mentions.
+    /// Upper bound applied to <see cref="LoginRequest.Username"/>, taken from the
+    /// terminal width of <c>dbo.Users.Username</c>, which is
+    /// <c>nvarchar(100) NOT NULL</c>.
     /// </summary>
-    private const int UsernameMaximumLength = 256;
+    /// <remarks>
+    /// The figure is the width of the DotNetNuke user table specifically, not of the
+    /// externally installed ASP.NET membership table, which is wider. The two are
+    /// separate stores and only the narrower one bounds what this application can hold.
+    /// </remarks>
+    private const int UsernameMaximumLength = 100;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="LoginRequestValidator"/>
@@ -68,8 +73,8 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
     /// </remarks>
     public LoginRequestValidator()
     {
-        // MIGRATION: Requiring a sign-in name is NET-NEW, and it is a
-        // TIGHTENING. The legacy screen validated nothing at all: a census of
+        // MIGRATION: Requiring a sign-in name has no legacy counterpart, and it
+        // is a TIGHTENING. The legacy screen validated nothing at all: a census of
         // Website/DesktopModules/AuthenticationServices/DNN/Login.ascx -- 37
         // lines in total -- finds zero declarative validators of any kind, and
         // the only emptiness test in the 204-line code-behind sits at L126,
@@ -83,25 +88,65 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
         // here removes a pointless round trip, and it narrows the surface
         // available for credential guessing.
         //
-        // MIGRATION: The ceiling is NET-NEW as well -- the markup sets no length
-        // limit on the sign-in box at L10 -- and its value is taken from the
-        // TERMINAL schema, not from the first script that mentions the column.
-        // 01.00.06.SqlDataProvider:L197 introduces the column at 100
-        // characters, but 03.02.03.SqlDataProvider:L2185 and L2384 and then
-        // 04.00.04.SqlDataProvider:L2253 and L2451 widen it to 256, and the
-        // externally installed membership table agrees at InstallCommon.sql:L169
-        // with the same 256. Bounding at 100 would invent a restriction 156
-        // characters tighter than the schema permits and would refuse names the
-        // store is able to hold, so the terminal 256 is the only defensible
-        // figure. A longer name cannot exist in either store, so rejecting it
-        // here can never turn a successful sign-in into a failing one.
+        // MIGRATION: The ceiling is NET-NEW -- the markup sets no length limit on
+        // the sign-in box at L10 -- and its value is the TERMINAL width of
+        // dbo.Users.Username, which is nvarchar(100) NOT NULL.
+        //
+        // That width was established by measurement and the whole history is short.
+        // The column does not exist in the baseline table at all: the first
+        // Tmp_Users rebuild (01.00.05.SqlDataProvider:L14) has no Username column,
+        // and its data copy at L40 does not mention one. The second rebuild
+        // introduces it -- 01.00.06.SqlDataProvider:L182 creates Tmp_Users with
+        // Username nvarchar(100) NOT NULL at L197, drops the real table at L227 and
+        // renames the replacement over it at L230. After that the ONLY statement in
+        // any of the eighty-eight scripts that touches this column is
+        // 03.00.09.SqlDataProvider:L420 and L422, which drop and re-create
+        // IX_{objectQualifier}Users as UNIQUE NONCLUSTERED over ([Username]) --
+        // a uniqueness constraint, not a width change. No ALTER COLUMN ever widens
+        // it, so 100 is terminal.
+        //
+        // MIGRATION: the terminal stored procedures corroborate that width three
+        // times over. In the last script of the chain every parameter that carries a
+        // dbo.Users username is declared nvarchar(100):
+        // {objectQualifier}AddUserRole (04.00.04.SqlDataProvider:L496) at L579,
+        // {objectQualifier}AddUser (L696) at L699, and
+        // {objectQualifier}GetUserByUsername (L1054) at L1057. A procedure parameter
+        // is not evidence about a column on its own -- @DisplayName is declared
+        // nvarchar(100) against a nvarchar(128) column in the same procedures -- but
+        // three parameters agreeing with the measured column width, and none
+        // disagreeing, is corroboration rather than assumption.
+        //
+        // MIGRATION: an earlier revision of this file bounded the rule at 256 and
+        // cited 03.02.03.SqlDataProvider:L2185 and L2384 with
+        // 04.00.04.SqlDataProvider:L2253 and L2451 as widening the column. Those
+        // four lines do not touch dbo.Users. Each declares a Username column on a
+        // TEMPORARY working table created by the profile and application-transfer
+        // upgrade steps -- {objectQualifier}FlatProfile (03.02.03:L2182,
+        // 04.00.04:L2250) and {objectQualifier}TransferredUsers (03.02.03:L2382,
+        // 04.00.04:L2449) -- and those tables are nvarchar(256) NULL, which is not
+        // even the nullability of the column being described. The citation is
+        // corrected here rather than silently dropped, because a plausible-looking
+        // reference to the wrong table is what let the wrong bound stand.
+        //
+        // MIGRATION: InstallCommon.sql:L169 genuinely is nvarchar(256), but it
+        // declares dbo.aspnet_Users.UserName (table created at L166) -- the
+        // EXTERNALLY installed ASP.NET membership store, which the upgrade scripts
+        // only ever ALTER and never create. It is a different table in a different
+        // store, and it does not govern what dbo.Users can hold. Sign-in resolves
+        // against dbo.Users, whose Username column is both narrower and unique, so
+        // 100 is the operative bound.
+        //
+        // MIGRATION: because no row in dbo.Users can carry a name longer than 100
+        // characters, rejecting a longer one here can never turn a successful
+        // sign-in into a failing one -- it converts a guaranteed-miss lookup into a
+        // 400 without a round trip.
         RuleFor(request => request.Username)
             .NotEmpty()
             .WithMessage("A username is required.")
             .MaximumLength(UsernameMaximumLength)
             .WithMessage("A username cannot be longer than {MaxLength} characters.");
 
-        // MIGRATION: Requiring a password is NET-NEW and a TIGHTENING for the
+        // MIGRATION: Requiring a password likewise has no counterpart, and tightens for the
         // same reason, and with the same consequence, as the sign-in name
         // above: L164 applied no guard, so an empty password used to yield an
         // authentication failure and now yields a malformed-request failure,
@@ -121,18 +166,41 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
         // validators and to the password-policy option type under
         // Application/Options.
         //
-        // MIGRATION: There is deliberately no upper bound on the password
-        // either. The legacy column grew from 20 characters at
-        // 01.00.00.SqlDataProvider:L104 to 50 at 01.00.06.SqlDataProvider:L192
-        // and then stopped holding the credential at all once it moved to the
-        // externally installed membership tables, so no measured limit on a
-        // SUBMITTED password exists anywhere in the sources. LoginRequest
-        // already records that same decision on its Password member, for that
-        // same reason, and the two must not disagree. Bounding the size of a
-        // request body is a transport concern the Api host already covers.
+        // MIGRATION: There IS an upper bound on the password, it is NET-NEW, and
+        // it is a deliberate tightening. No measured limit on a SUBMITTED
+        // password exists anywhere in the legacy sources -- the column grew from
+        // 20 characters at 01.00.00.SqlDataProvider:L104 to 50 at
+        // 01.00.06.SqlDataProvider:L192 and then stopped holding the credential
+        // at all once it moved to the externally installed membership tables --
+        // so this bound is introduced rather than ported, and it is recorded in
+        // MIGRATION_NOTES.md as such.
+        //
+        // It is introduced because this is an UNAUTHENTICATED endpoint that hands
+        // whatever it receives to a deliberately expensive one-way hash. Without a
+        // ceiling, the size of that work is chosen by the caller, and no amount of
+        // request-body limiting at the host makes a single field bounded. The
+        // companion control is request rate limiting on this endpoint, configured
+        // in Api/Extensions/RateLimitingExtensions.cs; the two address different
+        // halves of the same problem and neither substitutes for the other.
+        //
+        // The number, the unit and the wording all come from
+        // Validation/CredentialBounds.cs and are not restated here. That is the
+        // point of the type: the sign-in, registration, password-change and
+        // portal-creation paths all measure the same quantity the same way, so a
+        // caller cannot find one entry point that omits the check. The unit is
+        // UTF-8 BYTES rather than characters because that is what the hashing
+        // algorithm consumes. LoginRequest's Password member records the identical
+        // decision, and the two must not disagree.
+        //
+        // The bound is generous enough that no credential a person chooses can
+        // reach it, so it locks nobody out -- which is what makes it compatible
+        // with the deliberate absence of a lower bound directly above.
         RuleFor(request => request.Password)
+            .Cascade(CascadeMode.Stop)
             .NotEmpty()
-            .WithMessage("A password is required.");
+            .WithMessage("A password is required.")
+            .Must(CredentialBounds.IsWithinMaximumByteLength)
+            .WithMessage(CredentialBounds.MaximumByteLengthMessage);
 
         // MIGRATION: The verification code stays optional, reproducing the
         // two-round-trip reveal at Login.ascx.vb:L168-L185, and an absent code
@@ -156,17 +224,22 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
         // into the membership provider, and no column for it appears anywhere in
         // the 88-script schema chain, so any pattern asserted here would be
         // invented rather than migrated.
+        // MIGRATION: the member this rule guards has exactly one consumer, and it is named here
+        // so that the shape check and the decision that uses it stay legible together:
+        // IAuthService.LoginAsync reads the code, recomposes the value the legacy provider
+        // compared against at AspNetMembershipProvider.vb:L1468, and reports
+        // VERIFICATION_REQUIRED or VERIFICATION_CODE_INVALID accordingly. This validator can
+        // therefore refuse a malformed submission without ever needing to know what a valid
+        // code looks like, which is why it asserts no pattern.
         RuleFor(request => request.VerificationCode)
             .NotEmpty()
             .WithMessage("A verification code, when supplied, must contain at least one non-whitespace character.")
             .When(request => !string.IsNullOrEmpty(request.VerificationCode));
 
-        // --------------------------------------------------------------------
         // Deliberate divergences that carry no rule. Recorded here under Rule T5
         // so that each absence reads as a documented decision rather than as an
         // omission, and cited by file and line wherever naming the thing would
         // defeat the point of having left it behind.
-        // --------------------------------------------------------------------
 
         // MIGRATION: The image-based human-verification challenge is dropped, so
         // no rule guards it and the contract carries no member for it.

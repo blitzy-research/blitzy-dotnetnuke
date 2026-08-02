@@ -1,10 +1,8 @@
-# EditorConfig for the dnn-migration workspace. Editor-facing only: no step of
-# the frontend build reads this file, so nothing declared here can affect a build
-# or a test run. The values are the Angular CLI conventions.
+# EditorConfig for the dnn-migration workspace: the Angular CLI conventions,
+# editor-facing only. No step of the frontend build or test run reads this file.
 #
-# `root = true` stops EditorConfig resolution from walking upward out of
-# frontend/, which keeps these conventions from reaching the read-only legacy
-# trees and keeps anything declared above from reaching this workspace.
+# `root = true` stops resolution walking upward out of frontend/, keeping these
+# conventions out of the read-only legacy trees and anything above out of here.
 
 root = true
 

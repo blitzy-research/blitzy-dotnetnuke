@@ -5,14 +5,14 @@
 # even one notch above `suggestion` fails the build rather than showing a
 # squiggle, and the compiler-warning suppression list is bounded and must not be
 # widened to rescue it. Every preference and severity below is therefore held at
-# `suggestion` or `silent`: guidance here is advisory, and correctness is
-# enforced by the compiler, the nullable context and the project reference
-# graph. When a build reports a style diagnostic, fix the code.
+# `suggestion` or `silent`, never higher: guidance here is advisory, and
+# correctness is enforced by the compiler, the nullable context and the project
+# reference graph. When a build reports a style diagnostic, fix the code.
 #
 # The file must stay at backend/ with `root = true`. EditorConfig resolution
 # walks upward and stops at the first root, so a copy at the repository root
-# would also govern the legacy VB.NET trees and the stray legacy .NET Framework
-# project under Library/.
+# would also govern the read-only legacy VB.NET trees and the legacy .NET
+# Framework project under Library/.
 root = true
 
 [*]
@@ -175,12 +175,12 @@ dotnet_style_operator_placement_when_wrapping = beginning_of_line
 # ==============================================================================
 # ANALYSER SEVERITIES - EVERY ONE HELD ADVISORY
 #
-# Only rules with no corresponding preference option above are pinned here, and
-# each is pinned explicitly rather than left to an SDK default that could change.
+# Only rules with no corresponding preference option above are pinned here, each
+# explicitly rather than left to an SDK default that could change.
 # ==============================================================================
 
 # IDE0005 (unnecessary using directive) only reports during a build when XML
-# documentation generation is on, which it is for every project here, so a single
+# documentation generation is on, which it is for every project here, so one
 # leftover import would otherwise block delivery. Authors remove unused imports.
 dotnet_diagnostic.IDE0005.severity = suggestion
 
@@ -299,12 +299,9 @@ dotnet_naming_rule.locals_are_camel_case.severity = suggestion
 # ==============================================================================
 # PROJECT AND BUILD FILES
 #
-# Two-space indentation, matching backend/Directory.Build.props and the six
-# project files already in place. `.sln` is deliberately NOT part of this glob:
-# a solution file is tab-indented by its own format convention and therefore
-# gets its own section immediately below. No `.config` glob appears here either:
-# legacy configuration files live under Website/, are read-only reference
-# inputs, and are outside this file's reach in any case.
+# Two-space indentation, matching backend/Directory.Build.props and the project
+# files. `.sln` is deliberately NOT part of this glob: a solution file is
+# tab-indented by its own format convention and gets its own section below.
 # ==============================================================================
 [*.{csproj,props,targets}]
 indent_size = 2
@@ -313,28 +310,18 @@ indent_size = 2
 # THE SOLUTION FILE - AN EXPLICIT, DELIBERATE EXCEPTION
 #
 # backend/DnnMigration.sln indents its section bodies with TABS, because that is
-# the solution-file format's own convention - the two legacy solutions at the
-# repository root are tab-indented as well. Forcing the `[*]` space policy onto
-# it would fight every tool that rewrites the file, so the exception is declared
-# here explicitly instead of being left as a silent contradiction between this
-# file and the artefact it governs.
+# the solution-file format's own convention. Forcing the `[*]` space policy onto
+# it would fight every tool that rewrites the file.
 #
-# Every OTHER setting in the `[*]` block is honoured exactly, which is a
-# deliberate narrowing of the conventional Visual Studio form:
-#
-#   charset = utf-8 (no BOM)  ->  the file carries NO byte-order mark
-#   end_of_line = lf          ->  LF, never CRLF
-#
-# LF-without-BOM is a fully supported form for a solution file - MSBuild, the
-# dotnet CLI and Visual Studio all parse it, and `dotnet sln list` resolves all
-# six projects from it - and it is required here for two concrete reasons:
+# Every OTHER `[*]` setting is honoured exactly, so the file carries no
+# byte-order mark and uses LF rather than CRLF - a narrowing of the conventional
+# Visual Studio form, required for two concrete reasons:
 #
 #   1. `git diff --check` treats a CR at end of line as trailing whitespace, so
 #      a CRLF solution turns every one of its own lines into a whitespace error
 #      and the repository's diff hygiene could never be clean.
-#   2. The API image builds on mcr.microsoft.com/dotnet/sdk:8.0-alpine and runs
-#      on aspnet:8.0-alpine, and the Docker build context carries this file, so
-#      it is kept in the same Linux form as the rest of the backend tree.
+#   2. The Docker build context carries this file, so it is kept in the same
+#      Linux form as the rest of the backend tree.
 # ==============================================================================
 [*.sln]
 charset = utf-8
@@ -347,8 +334,8 @@ tab_width = 4
 # ==============================================================================
 # JSON AND YAML
 #
-# Covers the three appsettings overlays, launchSettings.json and global.json
-# under backend/, all of which are two-space by convention.
+# Two-space by convention, covering the appsettings overlays, launchSettings.json
+# and global.json under backend/.
 # ==============================================================================
 [*.{json,yml,yaml}]
 indent_size = 2

@@ -4,106 +4,93 @@ using Microsoft.Extensions.Primitives;
 namespace DnnMigration.Api.Middleware;
 
 /// <summary>
-/// Gives every request a correlation identifier, publishes it to the rest of the
-/// request through <see cref="HttpContext.Items"/> and
-/// <see cref="HttpContext.TraceIdentifier"/>, carries it on the ambient logging
-/// scope, and echoes it back on the response as the <c>X-Correlation-Id</c>
-/// header.
+/// Gives every request a correlation identifier, publishes it through
+/// <see cref="HttpContext.Items"/> and <see cref="HttpContext.TraceIdentifier"/>, carries it on the
+/// ambient logging scope, and echoes it back on the response as the <c>X-Correlation-Id</c> header.
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the server half of a closed loop. The client half is the Angular
-/// single-page application's correlation-id HTTP interceptor, which sends the same
-/// header on every outbound call. A request that arrives carrying a usable
-/// identifier keeps it, so one identifier spans the browser, this API and every
-/// log line either of them produces; a request that does not gets one generated
-/// here.
+/// <b>The server half of a closed loop.</b> The client half is the single-page application's
+/// correlation-id HTTP interceptor, which sends the same header on every outbound call. A request
+/// arriving with a usable identifier keeps it, so one identifier spans the browser, this API and
+/// every log line either produces.
 /// </para>
 /// <para>
-/// Pipeline position is fixed. This middleware runs second, immediately after the
-/// global exception handler and immediately before request logging. Running
-/// before request logging is what makes every log line carry the identifier;
-/// running inside the exception handler is what makes an RFC 7807
-/// <c>ProblemDetails</c> error response carry the header as well, because the
-/// response header is registered as a callback with
-/// <see cref="HttpResponse.OnStarting(Func{Task})"/> before the pipeline
-/// continues rather than assigned after it returns. By the time control comes back
-/// from the pipeline the response has usually already started, and a direct
-/// assignment at that point is silently discarded.
+/// <b>Pipeline position is fixed and must be honoured:</b> immediately after the global exception
+/// handler and immediately before request logging. Running before request logging is what makes
+/// every log line carry the identifier; running inside the exception handler is what makes an
+/// RFC 7807 <c>ProblemDetails</c> error response carry the header, because it is registered as an
+/// <see cref="HttpResponse.OnStarting(Func{Task})"/> callback before the pipeline continues rather
+/// than assigned after it returns. By the time control returns the response has usually already
+/// started, and a direct assignment at that point is silently discarded.
 /// </para>
 /// <para>
-/// An inbound header value is caller-controlled data that flows straight into a
-/// log sink and back onto a response, so it is treated as untrusted input and
-/// validated before it is trusted. A value that fails validation is replaced with
-/// a freshly generated identifier: it is never repaired, never echoed, and never
-/// answered with a rejection status, because a correlation identifier is a
-/// diagnostic aid and refusing the request over one would be a denial of service
-/// that the caller controls.
+/// <b>An inbound value is untrusted input.</b> It flows straight into a log sink and back onto a
+/// response, so it is validated before it is trusted. A value that fails validation is replaced
+/// with a freshly generated identifier: never repaired, never echoed, and never answered with a
+/// rejection status, because a correlation identifier is a diagnostic aid and refusing the request
+/// over one would be a denial of service the caller controls.
 /// </para>
 /// <para>
-/// The type is registered with <c>UseMiddleware&lt;CorrelationIdMiddleware&gt;()</c>,
-/// which activates one instance for the lifetime of the application. It therefore
-/// holds nothing request-scoped: its only dependencies are the pipeline
-/// continuation and a logger, both safe to hold for that lifetime. Per-request
-/// state lives on the <see cref="HttpContext"/> passed to
-/// <see cref="InvokeAsync(HttpContext)"/> and nowhere else.
+/// <b>One instance serves the whole application.</b> Registration through
+/// <c>UseMiddleware&lt;CorrelationIdMiddleware&gt;()</c> activates a single instance for the
+/// application's lifetime, so this type must hold nothing request-scoped. Its only dependencies are
+/// the pipeline continuation and a logger, both safe to hold for that lifetime; per-request state
+/// lives on the <see cref="HttpContext"/> passed to <see cref="InvokeAsync(HttpContext)"/> and
+/// nowhere else.
 /// </para>
 /// </remarks>
 public sealed class CorrelationIdMiddleware
 {
     /// <summary>
-    /// The name of the HTTP header, read on the request and written on the
-    /// response, that carries the correlation identifier.
+    /// The name of the HTTP header, read on the request and written on the response, that carries
+    /// the correlation identifier.
     /// </summary>
     /// <remarks>
-    /// The spelling is contractual and shared with the single-page application's
-    /// HTTP interceptor and with the cross-origin policy that exposes the header to
-    /// the browser. HTTP header names are compared case-insensitively, so casing is
-    /// immaterial, but a different spelling is not: it would silently break the
-    /// loop, because each side would look for a header the other never sends.
-    /// Consumers reference this constant instead of repeating the literal.
+    /// The spelling is contractual: it is shared with the single-page application's HTTP
+    /// interceptor, and the cross-origin policy must expose this header for the browser to read it.
+    /// Header names compare case-insensitively, so casing is immaterial, but a different spelling is
+    /// not - it would silently break the loop, each side looking for a header the other never
+    /// sends. Consumers reference this constant rather than repeating the literal.
     /// </remarks>
     public const string HeaderName = "X-Correlation-Id";
 
     /// <summary>
-    /// The <see cref="HttpContext.Items"/> key under which the resolved
-    /// correlation identifier is published for the remainder of the request.
+    /// The <see cref="HttpContext.Items"/> key under which the resolved correlation identifier is
+    /// published for the remainder of the request.
     /// </summary>
     /// <remarks>
-    /// The stored value is always a non-empty <see cref="string"/>. Downstream
-    /// components read it from here rather than re-reading and re-validating the
-    /// request header, so they observe the validated identifier rather than
-    /// whatever the caller sent. The key is namespaced to keep it distinct from
-    /// keys owned by the framework or by other components sharing the dictionary.
+    /// The stored value is always a non-empty <see cref="string"/>. Downstream components read it
+    /// from here rather than re-reading and re-validating the request header, so they observe the
+    /// validated identifier rather than whatever the caller sent. The key is namespaced to stay
+    /// distinct from keys owned by the framework or by anything else sharing the dictionary.
     /// </remarks>
     public const string ItemKey = "DnnMigration.CorrelationId";
 
     /// <summary>
-    /// The structured-logging property name under which the correlation identifier
-    /// is pushed onto the ambient logging scope.
+    /// The structured-logging property name under which the identifier joins the ambient scope.
     /// </summary>
     private const string ScopePropertyName = "CorrelationId";
 
     /// <summary>
-    /// The greatest length, in characters, at which an inbound header value is
-    /// still trusted.
+    /// The greatest length, in characters, at which an inbound header value is still trusted.
     /// </summary>
     /// <remarks>
-    /// A generated identifier is 32 characters, so this leaves generous room for a
-    /// caller's own scheme while keeping an oversized header from being copied onto
-    /// every log line the request produces.
+    /// A generated identifier is 32 characters, so this leaves generous room for a caller's own
+    /// scheme while keeping an oversized header from being copied onto every log line the request
+    /// produces.
     /// </remarks>
     private const int MaxLength = 128;
 
     /// <summary>
-    /// The lowest character accepted in an inbound identifier: the space, the first
-    /// printable character in US-ASCII.
+    /// The lowest character accepted in an inbound identifier: the space, the first printable
+    /// character in US-ASCII.
     /// </summary>
     private const char LowestAcceptedCharacter = ' ';
 
     /// <summary>
-    /// The highest character accepted in an inbound identifier: the tilde, the last
-    /// printable character in US-ASCII.
+    /// The highest character accepted in an inbound identifier: the tilde, the last printable
+    /// character in US-ASCII.
     /// </summary>
     private const char HighestAcceptedCharacter = '~';
 
@@ -111,17 +98,12 @@ public sealed class CorrelationIdMiddleware
     private readonly ILogger<CorrelationIdMiddleware> _logger;
 
     /// <summary>
-    /// Initialises a new instance of the <see cref="CorrelationIdMiddleware"/>
-    /// class.
+    /// Initialises a new instance of the <see cref="CorrelationIdMiddleware"/> class.
     /// </summary>
     /// <param name="next">The next component in the request pipeline.</param>
-    /// <param name="logger">
-    /// The logger used to open the correlation scope that downstream components log
-    /// within.
-    /// </param>
+    /// <param name="logger">The logger whose scope downstream components log within.</param>
     /// <exception cref="ArgumentNullException">
-    /// <paramref name="next"/> or <paramref name="logger"/> is
-    /// <see langword="null"/>.
+    /// <paramref name="next"/> or <paramref name="logger"/> is <see langword="null"/>.
     /// </exception>
     public CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
     {
@@ -133,15 +115,11 @@ public sealed class CorrelationIdMiddleware
     }
 
     /// <summary>
-    /// Resolves the correlation identifier for the current request, publishes it,
-    /// arranges for it to be echoed on the response, and runs the remainder of the
-    /// pipeline inside a logging scope that carries it.
+    /// Resolves the identifier for the current request, publishes it, arranges for it to be echoed
+    /// on the response, and runs the remainder of the pipeline inside a scope that carries it.
     /// </summary>
     /// <param name="context">The context of the request being processed.</param>
-    /// <returns>
-    /// A task that completes when the remainder of the pipeline has finished
-    /// handling the request.
-    /// </returns>
+    /// <returns>A task that completes when the remainder of the pipeline has finished.</returns>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="context"/> is <see langword="null"/>.
     /// </exception>
@@ -149,14 +127,6 @@ public sealed class CorrelationIdMiddleware
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        // MIGRATION: net-new cross-cutting concern with no legacy predecessor.
-        // DotNetNuke 4.9.0 on .NET Framework 2.0 had no correlation-identifier
-        // concept at all: its audit records carry a portal name, a user name and a
-        // user id and nothing that ties two entries to the same request, so no
-        // behaviour is being preserved here. The eight HTTP modules and seven
-        // handlers the legacy application registered in configuration collapse into
-        // one explicit ASP.NET Core pipeline with no per-request ambient identity of
-        // its own, and this middleware supplies that identity.
         string correlationId = Resolve(context);
 
         // Publish before the pipeline continues, so every downstream component -
@@ -199,16 +169,15 @@ public sealed class CorrelationIdMiddleware
     }
 
     /// <summary>
-    /// Reads the inbound <see cref="HeaderName"/> header and returns either the
-    /// value it carries, when that value can be trusted, or a freshly generated
-    /// identifier.
+    /// Reads the inbound <see cref="HeaderName"/> header and returns either the value it carries,
+    /// when that value can be trusted, or a freshly generated identifier.
     /// </summary>
     /// <param name="context">The context of the request being processed.</param>
     /// <returns>
-    /// The correlation identifier for the request: never <see langword="null"/> and
-    /// never empty. A generated identifier is a <see cref="Guid"/> formatted with
-    /// <c>"N"</c>, giving 32 hexadecimal characters with no hyphens or braces, which
-    /// is safe to place in a header, a URL and a log line without escaping.
+    /// The correlation identifier for the request: never <see langword="null"/> and never empty. A
+    /// generated identifier is a <see cref="Guid"/> formatted with <c>"N"</c>, giving 32 hexadecimal
+    /// characters with no hyphens or braces, which is safe in a header, a URL and a log line
+    /// without escaping.
     /// </returns>
     private string Resolve(HttpContext context)
     {
@@ -245,24 +214,22 @@ public sealed class CorrelationIdMiddleware
     }
 
     /// <summary>
-    /// Decides whether an inbound header value may be trusted as this request's
-    /// correlation identifier.
+    /// Decides whether an inbound header value may be trusted as this request's correlation
+    /// identifier.
     /// </summary>
     /// <param name="candidate">
-    /// The raw inbound header value, which may be <see langword="null"/> when the
-    /// header was absent or repeated.
+    /// The raw inbound header value, which may be <see langword="null"/> when the header was absent
+    /// or repeated.
     /// </param>
     /// <returns>
-    /// <see langword="true"/> when <paramref name="candidate"/> holds something
-    /// other than whitespace, is no longer than <see cref="MaxLength"/> characters,
-    /// and consists entirely of printable US-ASCII; otherwise
-    /// <see langword="false"/>.
+    /// <see langword="true"/> when <paramref name="candidate"/> holds something other than
+    /// whitespace, is no longer than <see cref="MaxLength"/> characters, and consists entirely of
+    /// printable US-ASCII; otherwise <see langword="false"/>. The nullable-state annotation is what
+    /// lets both this method and its caller treat an accepted value as non-null without a
+    /// suppression.
     /// </returns>
     private static bool IsUsable([NotNullWhen(true)] string? candidate)
     {
-        // Covers a missing header, an empty value and a value made only of
-        // whitespace in one test, and its annotation is what lets the compiler treat
-        // the value as non-null for the rest of the method and at the call site.
         if (string.IsNullOrWhiteSpace(candidate))
         {
             return false;

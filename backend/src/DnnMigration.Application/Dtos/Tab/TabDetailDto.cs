@@ -228,7 +228,12 @@ public sealed class TabDetailDto
     /// documentation only, because this type is a read projection and declares no validation
     /// attribute.
     /// </remarks>
-    public string TabName { get; set; }
+    // MIGRATION: initialised rather than left to the global CS8618 suppression, which exists for
+    // ORM-materialised entities backed by a NOT NULL column that rejects a null loudly. This type is
+    // built by a hand-written mapper with no such backstop, so an unset member would present a null
+    // through a non-nullable contract. The update request that pairs with this projection initialises
+    // its own copy of this member for the same reason.
+    public string TabName { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets a value indicating whether this page appears in the navigation menu.

@@ -13,12 +13,21 @@ namespace DnnMigration.Application.Options;
 /// <remarks>
 /// <para>
 /// This type is a deliberately minimal, dependency-free plain object: it declares primitives
-/// only, carries no attributes, and holds no behaviour. The Application project references the
+/// only and carries no attributes. The Application project references the
 /// Domain project and nothing else, so nothing declared here may reach the configuration,
 /// hosting or dependency-injection abstractions that perform the binding. Those live in the Api
 /// layer, which owns the binding call; the Application layer's own service-registration entry
 /// point deliberately accepts no configuration object and therefore cannot bind this class.
 /// Declaring the shape here and binding it there is the arrangement the migration plan mandates.
+/// </para>
+/// <para>
+/// The one exception to "no behaviour" is <see cref="Validate"/>, which reports this object's own
+/// invariants and reaches nothing outside the base class library. It is declared here rather than
+/// at either consumer because there are TWO consumers -- the Api's start-up options validation and
+/// the Infrastructure cache service -- and an earlier arrangement in which each stated its own rule
+/// let the two disagree: the documentation on the multiplier below described any integer as
+/// legitimate while the cache service rejected everything outside the legacy four. One rule,
+/// declared beside the value it governs and consumed by both, is what prevents that recurring.
 /// </para>
 /// <para>
 /// Scope note - legacy cache keys and per-entity base lifetimes are deliberately absent.
@@ -52,6 +61,40 @@ public sealed class CachingOptions
     /// <c>Caching:PerformanceMultiplier</c>.
     /// </remarks>
     public const string SectionName = "Caching";
+
+    // ------------------------------------------------------------------------
+    // Bounds on the multiplier below, held here beside the setting and const
+    // rather than configurable. Enforcement lives in
+    // Api/Extensions/ServiceCollectionExtensions.cs and runs at startup.
+    // ------------------------------------------------------------------------
+
+    /// <summary>
+    /// Smallest acceptable <see cref="PerformanceMultiplier"/> value: <c>0</c>.
+    /// </summary>
+    /// <remarks>
+    /// Zero rather than one, and deliberately so: zero is a legitimate,
+    /// legacy-sanctioned setting that disables caching, as the guidance on
+    /// <see cref="PerformanceMultiplier"/> records. What zero must not become is
+    /// negative - a negative multiplier yields a negative expiry, which no cache
+    /// entry can carry and which several measured legacy call sites would read as
+    /// "caching disabled" only by accident of a greater-than-zero guard.
+    /// </remarks>
+    public const int MinimumPerformanceMultiplier = 0;
+
+    /// <summary>
+    /// Largest acceptable <see cref="PerformanceMultiplier"/> value: 1440.
+    /// </summary>
+    /// <remarks>
+    /// Read it as "at most one day of extra lifetime for every minute of base
+    /// lifetime". That is already two hundred and forty times the largest value
+    /// the legacy enumeration offered, so it constrains nothing a deployment would
+    /// plausibly choose, while making it impossible for the product of a base
+    /// lifetime and this multiplier to overflow the interval type the callers
+    /// build from it. An unbounded multiplier would turn a mistyped configuration
+    /// value into either indefinitely stale data or an arithmetic failure on the
+    /// first cache write.
+    /// </remarks>
+    public const int MaximumPerformanceMultiplier = 1440;
 
     // MIGRATION: One legacy site uses this value as the WHOLE expiry rather than as a
     // multiplier - Library/Components/Users/UserController.vb:L665. That behaviour is preserved
@@ -102,10 +145,26 @@ public sealed class CachingOptions
     /// apply differently. The cache abstraction likewise takes an already-computed duration.
     /// </para>
     /// <para>
-    /// Deliberately an integer rather than an enumeration. The value arrives from configuration
-    /// as an integer, and a deployment may legitimately choose a multiplier outside the legacy
-    /// four; an enumeration would either reject such a value or silently accept an undefined
+    /// Deliberately an integer rather than an enumeration, and the accepted range is genuinely
+    /// wider than the legacy four. The legacy reader cast an arbitrary host-settings integer
+    /// straight to the enumeration -
+    /// <c>CType(Convert.ToInt32(...), PerformanceSettings)</c> at
+    /// Library/Components/Shared/Globals.vb:L229 - and a Visual Basic conversion to an
+    /// enumeration is unchecked, so a stored <c>4</c> produced a multiplier of <c>4</c> and
+    /// scaled every lifetime accordingly. Rejecting such a value would therefore be a
+    /// TIGHTENING of a configuration the legacy installation accepted, which the Minimal Change
+    /// Clause forbids. An enumeration would either reject it or silently admit an undefined
     /// member, so the primitive is modelled directly.
+    /// </para>
+    /// <para>
+    /// The single boundary is that the value may not be NEGATIVE, and
+    /// <see cref="Validate"/> is the one place that boundary is stated. A negative multiplier
+    /// yields a negative product, which every guarded legacy site
+    /// (<c>If timeOut &gt; 0</c>) could only ever have interpreted as "no caching", while an
+    /// unguarded target site would hand a negative duration to the cache and fail mid-request.
+    /// Turning that into a start-up failure loses no legacy outcome, because <c>0</c> expresses
+    /// "no caching" exactly and unambiguously; the divergence is recorded in
+    /// MIGRATION_NOTES.md rather than absorbed silently.
     /// </para>
     /// <para>
     /// Not every legacy cache write applied this multiplier - the host-settings cache in
@@ -131,4 +190,48 @@ public sealed class CachingOptions
     /// Library/Components/Modules/ModuleController.vb:L998, L1052, L1264 and L1355.
     /// </example>
     public int PerformanceMultiplier { get; set; } = 3;
+
+    /// <summary>
+    /// Reports every way in which the values bound onto this instance are unusable, so that a
+    /// misconfigured deployment fails while the host is starting rather than midway through a
+    /// request.
+    /// </summary>
+    /// <returns>
+    /// One message per failure, each naming the configuration path an operator has to change, or
+    /// an empty collection when the instance is usable.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The collection shape is deliberate: options validation has to report EVERY failure at once,
+    /// because an operator fixing one setting per restart is the outcome a single-failure result
+    /// produces. It also keeps this class free of any dependency - the return type and the
+    /// messages use base-class-library types only, so binding, hosting and validation packages all
+    /// stay in the Api layer where the migration plan places them.
+    /// </para>
+    /// <para>
+    /// This method deliberately does NOT reject a multiplier outside the legacy four. The reason,
+    /// with the measurement behind it, is recorded on
+    /// <see cref="PerformanceMultiplier"/>; enforcing the closed set here would tighten a
+    /// configuration the legacy installation accepted.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> Validate()
+    {
+        List<string> failures = [];
+
+        if (PerformanceMultiplier < 0)
+        {
+            // Every number reaches the message through an invariant conversion first, so the
+            // concatenation below interpolates strings only and cannot pick up a culture.
+            string configured = FormattableString.Invariant($"{PerformanceMultiplier}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(PerformanceMultiplier)} is {configured}, which is "
+                + "negative. A negative multiplier produces a negative cache lifetime, which no "
+                + "legacy configuration could produce and which the cache cannot honour. Use 0 to "
+                + "disable caching.");
+        }
+
+        return failures;
+    }
 }

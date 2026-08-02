@@ -99,7 +99,13 @@ public sealed class ModuleDefinitionDto
     /// Non-nullable because the column is; the maximum length is documented here only, since
     /// constraint enforcement is the responsibility of the validation layer and of the database.
     /// </remarks>
-    public string FriendlyName { get; set; }
+    // MIGRATION: initialised rather than left to the global CS8618 suppression. That suppression
+    // exists for ORM-materialised entities, which the database populates and whose required columns
+    // reject a null loudly if it does not. A DTO has neither property: it is constructed by a
+    // hand-written mapper with no constraint behind it, so an unset member here would surface a null
+    // through a non-nullable contract and defer the fault to whichever client dereferenced it. The
+    // initialiser is therefore correct in this layer even though the entities deliberately omit it.
+    public string FriendlyName { get; set; } = string.Empty;
 
     /// <summary>
     /// The identifier of the desktop module that owns this definition, mapped from
@@ -184,7 +190,10 @@ public sealed class ModuleDefinitionDto
     /// value, in the form <c>content.&lt;cleaned module name&gt;.&lt;extension&gt;</c>.
     /// </para>
     /// </remarks>
-    public string ModuleName { get; set; }
+    // MIGRATION: initialised on the same terms as FriendlyName above. This member matters more than
+    // most, because the legacy export and import routines composed payload file names from it, so a
+    // null reaching a consumer that builds a name from it would fail far from its cause.
+    public string ModuleName { get; set; } = string.Empty;
 
     /// <summary>
     /// A human-readable description of the owning desktop module, mapped from

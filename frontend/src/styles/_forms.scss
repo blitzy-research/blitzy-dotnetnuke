@@ -6,9 +6,7 @@
 
 @use 'mixins' as mx;
 
-// =============================================================================
 //  1. FORM GROUPING — fieldset and legend
-// =============================================================================
 
 fieldset {
   // The user agent applies `min-inline-size: min-content` to every fieldset.
@@ -40,9 +38,7 @@ legend {
   color: var(--color-primary);
 }
 
-// =============================================================================
 //  2. LABELS
-// =============================================================================
 
 // Styled as a genuine element and never as a class on a `<div>`, so the native
 // `for` association — and the click-to-focus behaviour it brings — keeps working.
@@ -84,9 +80,7 @@ label:has(input[type='radio']) {
   color: var(--color-primary-hover);
 }
 
-// =============================================================================
 //  3. TEXT-ENTRY CONTROLS — input, select, textarea
-// =============================================================================
 //
 //  The selector is an EXCLUSION rather than a list of the text types on purpose:
 //  an `<input>` with no `type` attribute defaults to text and would be missed by
@@ -201,9 +195,7 @@ select[multiple] {
   line-height: var(--line-height-base);
 }
 
-// =============================================================================
 //  4. CHOICE CONTROLS — checkbox and radio
-// =============================================================================
 
 // Native controls, kept native. The accent property tints the browser's own
 // checkbox and radio, which gives them the right identity without replacing the
@@ -222,9 +214,7 @@ input[type='radio'] {
   cursor: pointer;
 }
 
-// =============================================================================
 //  5. ACTIONS — button
-// =============================================================================
 
 // An element that performs an action rather than navigating must be a `<button>`:
 // a link is announced as a link, is activated by Enter but not Space, and offers a
@@ -272,9 +262,7 @@ button {
   }
 }
 
-// =============================================================================
 //  6. FOCUS — a visible ring on every focusable control
-// =============================================================================
 
 // Every input type is included, not just the text kinds — a checkbox, a radio, a
 // file picker and a range slider are all focusable and all need the ring, and the
@@ -291,9 +279,7 @@ button {
   @include mx.focus-ring;
 }
 
-// =============================================================================
 //  7. STATE — invalid
-// =============================================================================
 
 // The hook is `aria-invalid`, deliberately NOT the native `:invalid`
 // pseudo-class. `:invalid` matches an empty required field from the very first
@@ -340,9 +326,7 @@ textarea[aria-invalid='true'] {
   overflow-wrap: break-word;
 }
 
-// =============================================================================
 //  8. STATE — disabled and read-only
-// =============================================================================
 
 // The rendered contrast here is low, and it is never the sole indicator: the
 // native `disabled` attribute always accompanies it, so assistive technology and
@@ -420,9 +404,7 @@ textarea[readonly] {
   }
 }
 
-// =============================================================================
 //  9. HELP REGION
-// =============================================================================
 
 // A sibling block rendered below the label in normal flow — not a tooltip, not a
 // popover and not an overlay — so it never obscures anything and needs no
@@ -449,33 +431,36 @@ textarea[readonly] {
   // what `currentColor` on the border above resolves through.
   color: inherit;
 
-  // MIGRATION: the surface is the neutral secondary surface, where the legacy
-  // help panel measured pale yellow. This is the one visible colour change in
-  // this file that is NOT an accessibility correction, so it is recorded plainly:
-  // the panel shifts from pale yellow to light grey.
+  // MIGRATION: the surface is the measured legacy pale yellow, carried across as
+  // the dedicated hint-surface token rather than approximated by the neutral
+  // secondary surface. The measured value is the `background-color` declared at
+  // default.css L438, inside the same `.Help` rule that supplies this block's
+  // border, inset and type; reproducing three of those four and substituting the
+  // fourth would have been the one arbitrary choice in the whole translation.
   //
-  // The colour vocabulary is closed at nine members and pale yellow is not one of
-  // them. Of the nine, this is the only semantically correct choice — the
-  // vocabulary designates it as the secondary surface, which is exactly what a
-  // help panel is, and the only other pale candidate is reserved for the selected
-  // grid row and would misread as a selection. Declaring a tenth entry for one
-  // rule was the alternative, and it would have left the vocabulary open.
+  // The fill is not decoration here. It is the only device the legacy stylesheet
+  // has for marking a region as advisory rather than as content, and it is the
+  // channel that survives when the border is the thing a reader overlooks — a
+  // boundary says "separate region", a wash says "different kind of region". A
+  // neutral grey reads as chrome, which is precisely the wrong reading for guidance
+  // attached to a field the user is filling in.
   //
-  // Nothing legible is lost: inherited black on this surface measures 18.10 to 1,
-  // against 20.02 to 1 on the yellow it replaces, so both clear AA and AAA
-  // comfortably. The panel also keeps its full border, its inset and its own
-  // block placement, so it still reads as a distinct region rather than as body
-  // copy — the boundary, not the fill, is what separated it.
-  background-color: var(--color-surface);
+  // The token, not the literal, is what makes this compliant: a hex value may not
+  // be written here, so _tokens.scss declares it once as the tenth and final member
+  // of the colour vocabulary, with the provenance and the closure argument recorded
+  // on the declaration itself.
+  //
+  // Legibility improves rather than degrades: inherited black measures 20.02 to 1
+  // on this surface against 18.10 to 1 on the grey it replaces, so the restoration
+  // is an accessibility gain as well as a fidelity one.
+  background-color: var(--color-surface-hint);
 
   // Help text is authored prose of arbitrary length and may contain a long path
   // or URL, so it wraps rather than overflowing its field row.
   overflow-wrap: break-word;
 }
 
-// =============================================================================
 //  10. RESPONSIVE BEHAVIOUR — deliberately none
-// =============================================================================
 //
 //  Everything above is element-level presentation — type step, colour, boundary,
 //  inset, state — and none of it has a viewport-dependent correct answer. What

@@ -1,72 +1,42 @@
 namespace DnnMigration.Domain.Abstractions.Services;
 
-// MIGRATION: This contract is net-new. AAP 0.5.1.1 lists the Domain Abstractions/Services
-// MIGRATION: contracts as CREATE with no one-to-one legacy predecessor: the VB.NET source had
-// MIGRATION: no time abstraction whatsoever, so there is nothing here to translate line for
-// MIGRATION: line. The interface exists to give that missing seam a name.
+// MIGRATION: server-local clock to UTC. The legacy code read the web server's local clock;
+// the canonical site is Library/Components/Security/Roles/RoleController.vb:L496, which
+// derives a role expiry from Date.Today(). This contract speaks UTC only, so a date-only
+// value derived from it can differ by one calendar day from the legacy figure according to
+// the host's offset and the moment of evaluation.
 //
-// MIGRATION: DIVERGENCE, server-local to UTC. The legacy code reads the web server's LOCAL
-// MIGRATION: clock. The canonical measured site is
-// MIGRATION: Library/Components/Security/Roles/RoleController.vb:L496,
-// MIGRATION:     userRole.ExpiryDate = DateAdd(DateInterval.Day, -1, Date.Today())
-// MIGRATION: in which Date.Today() is the host machine's local calendar date. The same
-// MIGRATION: method also reads the bare VB Now at L505, L530, L533 and L534, which binds
-// MIGRATION: through the Imports Microsoft.VisualBasic at L25 and is likewise server-local.
-// MIGRATION: This contract speaks UTC only, so a date-only value computed from it CAN differ
-// MIGRATION: by one calendar day from the legacy figure, according to the host's time-zone
-// MIGRATION: offset and the moment of evaluation. That is a deliberate, documented
-// MIGRATION: divergence rather than an accident, and MIGRATION_NOTES.md records it.
-//
-// MIGRATION: There is deliberately no Today member. A caller needing a calendar date derives
-// MIGRATION: it as UtcNow.Date, which keeps one instant source for the whole solution and
-// MIGRATION: makes the UTC basis of every derived date visible at the point of use.
-//
-// MIGRATION: The legacy absent-date sentinel is Date.MinValue, published as Null.NullDate by
-// MIGRATION: Library/Components/Shared/Null.vb L66-L70, and it is NOT reproduced here.
-// MIGRATION: UtcNow is non-nullable because an instant always exists; domain models express
-// MIGRATION: an absent date as a nullable DateTime, and preserving the legacy sentinel where
-// MIGRATION: it is externally observable belongs to the DTO and API boundary (AAP Rule T7).
+// MIGRATION: the legacy absent-date sentinel (Date.MinValue, published as Null.NullDate) is
+// not reproduced. UtcNow is non-nullable because an instant always exists; an absent date is
+// a nullable DateTime, and sentinel semantics survive only where a wire contract is
+// externally observable, at the DTO and API boundary.
 
 /// <summary>
-/// Supplies the present instant to the DnnMigration backend, and is the only sanctioned
-/// source of it.
+/// Supplies the present instant, and is the only sanctioned source of it for the backend.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Sole sanctioned source. Business code in the Domain, Application and Infrastructure
-/// layers obtains the present instant through an injected <see cref="IClock"/>. Reading the
-/// machine clock directly — <c>DateTime.Now</c>, <c>DateTime.UtcNow</c>, or any
-/// offset-bearing equivalent — is forbidden in those layers, because an ambient read cannot
-/// be substituted by a test and so makes every time-dependent business rule
-/// non-deterministic. The legacy VB.NET code had no time abstraction at all, which is
-/// precisely the weakness this contract removes.
+/// Domain, Application and Infrastructure code obtains the present instant through an injected
+/// <see cref="IClock"/>. A direct machine-clock read cannot be substituted by a test, which is
+/// what makes a time-dependent business rule non-deterministic; the legacy VB.NET code had no
+/// time abstraction at all.
 /// </para>
 /// <para>
-/// Coordinated Universal Time only. <see cref="UtcNow"/> always speaks UTC. A caller that
-/// needs a calendar date derives it as <c>UtcNow.Date</c>; a caller that needs to present a
-/// local time converts at the presentation boundary, never here. There is deliberately no
-/// <c>Today</c> member, no local-time member and no offset-bearing member: every
-/// time-dependent behaviour measured in the legacy trees is expressible through UTC, so a
-/// second member would be speculation rather than a requirement.
+/// There is deliberately no <c>Today</c>, local-time or offset-bearing member. A caller needing
+/// a calendar date derives <c>UtcNow.Date</c> and a caller needing local time converts at the
+/// presentation boundary, which keeps one instant source for the solution and makes the UTC
+/// basis of every derived value visible at the point of use.
 /// </para>
 /// <para>
-/// Implementation and lifetime. <c>Infrastructure/Services/SystemClock.cs</c> provides the
-/// production implementation and is registered with the dependency-injection container as a
-/// singleton (AAP 0.4.3). The contract holds no mutable state, so one shared instance is
-/// safe to reuse across requests. Consumers acquire it by constructor injection only; there
-/// is no ambient accessor to reach for, which is the point of AAP Rule T8. A test supplies
-/// its own implementation — one that is fixed, or that advances under the test's control —
-/// rather than widening this contract, which is why the surface below exposes no member for
-/// adjusting the value it yields.
+/// An implementation is expected to hold no mutable state, to be registered as a singleton and
+/// to be acquired by constructor injection rather than through an ambient accessor. A test
+/// supplies its own implementation instead of widening this contract, which is why no member for
+/// adjusting the yielded value is declared.
 /// </para>
 /// <para>
-/// Why entities do not stamp themselves. <c>Common/AuditableEntity.cs</c> deliberately
-/// contains no <c>DateTime.Now</c> or <c>DateTime.UtcNow</c> call. Stamping
-/// <c>CreatedDate</c> and <c>LastUpdatedDate</c> is the Application service layer's
-/// responsibility, performed with an injected <see cref="IClock"/>. A self-stamping entity
-/// would have to reach for a clock itself, and the Domain layer references nothing
-/// (AAP Rule T1), so it has no way to acquire one. This contract is what makes that
-/// prohibition workable.
+/// Entities do not stamp themselves: the Domain layer references nothing and so cannot acquire a
+/// clock. Stamping <c>CreatedDate</c> and <c>LastUpdatedDate</c> is an Application service's
+/// responsibility, performed with an injected <see cref="IClock"/>.
 /// </para>
 /// </remarks>
 public interface IClock
@@ -76,14 +46,12 @@ public interface IClock
     /// </summary>
     /// <value>
     /// A <see cref="DateTime"/> whose <see cref="DateTime.Kind"/> is
-    /// <see cref="DateTimeKind.Utc"/>. The value is always a genuine reading: it is never
-    /// absent and never stands in for a missing date.
+    /// <see cref="DateTimeKind.Utc"/>. The value is always a genuine reading and never stands in
+    /// for a missing date.
     /// </value>
     /// <remarks>
-    /// The synchronous shape is deliberate, not an oversight. Reading a clock is a pure
-    /// in-process operation that performs no I/O, so the solution-wide rule that I/O-bound
-    /// members must be awaitable (AAP Rule T6) does not apply. Do not reshape this member
-    /// into an awaitable form.
+    /// Synchronous by design: reading a clock performs no I/O, so the solution-wide rule that
+    /// I/O-bound members be awaitable does not apply. Do not reshape this member.
     /// </remarks>
     DateTime UtcNow { get; }
 }

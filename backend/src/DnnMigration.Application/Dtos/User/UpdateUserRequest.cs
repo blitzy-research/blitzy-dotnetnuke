@@ -52,15 +52,36 @@ namespace DnnMigration.Application.Dtos.User;
 /// and break round-trip fidelity for the integration suite that posts this shape.
 /// </para>
 /// <para>
-/// Where the schema disagrees with the legacy class, the schema wins. Three such disagreements
-/// were measured and all three are resolved toward the column definition. First,
-/// <c>UserInfo.vb:L121</c> declares <c>MaxLength(256)</c> on <c>Email</c> while the column is
-/// <c>nvarchar(100)</c>, so 100 governs. Second, <c>UserInfo.vb:L178</c> declares
-/// <c>Required(True)</c> on <c>LastName</c> while the column permits NULL, so the member is
-/// optional. Third, the terminal procedure's own parameters are wider than the columns they feed
-/// (<c>Email</c> declared at 256 and <c>DisplayName</c> at 100 against columns of 100 and 128),
-/// which independently confirms that a declaration upstream of the table is not evidence about
-/// the table. <c>FirstName</c> and <c>DisplayName</c> show no disagreement.
+/// Where the schema disagrees with the legacy class, the schema wins -- but the schema means the
+/// CUMULATIVE TERMINAL schema, obtained by replaying all 88 upgrade scripts, and not the baseline
+/// script read on its own. An earlier revision of this remark recorded three disagreements against
+/// the baseline; replaying the chain dissolves two of them and leaves one.
+/// <list type="bullet">
+/// <item>
+/// <description>
+/// <c>Email</c>: not a disagreement. <c>UserInfo.vb:L121</c> declares <c>MaxLength(256)</c>, and
+/// the terminal column is <c>nvarchar(256) NULL</c> -- the baseline's 100 was dropped outright at
+/// <c>02.02.01:L50-51</c> and re-added at 256 by <c>03.00.13:L109-110</c>. Both agree at 256.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <c>LastName</c>: not a disagreement. <c>UserInfo.vb:L178</c> declares <c>Required(True)</c>,
+/// and the terminal column is <c>NOT NULL</c> -- the baseline's <c>NULL</c> was promoted by the
+/// <c>01.00.05</c> rebuild (<c>L18</c>) and held by the <c>01.00.06</c> rebuild (<c>L186</c>).
+/// Both agree that a value is required.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <c>DisplayName</c>: a real disagreement, and the schema governs. The terminal
+/// <c>UpdateUser</c> procedure declares <c>@DisplayName nvarchar(100)</c> against a column of
+/// <c>nvarchar(128)</c>, which independently confirms that a declaration upstream of the table is
+/// not evidence about the table. The bound is the column's 128.
+/// </description>
+/// </item>
+/// </list>
+/// <c>FirstName</c> shows no disagreement at any point in the chain.
 /// </para>
 /// <para>
 /// Validation lives elsewhere. This type is an inert transport shape and deliberately carries no
@@ -207,22 +228,35 @@ public class UpdateUserRequest
     public string FirstName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the user's family name, which may legitimately be absent.
+    /// Gets or sets the user's family name.
     /// </summary>
     /// <value>
-    /// The family name, or <c>null</c> when the caller supplies none.
+    /// The family name. Defaults to the empty string, not <c>null</c>.
     /// </value>
     /// <remarks>
-    /// Backed by <c>Users.LastName</c>, measured as <c>nvarchar(50) NULL</c> at
-    /// <c>01.00.00.SqlDataProvider:L100</c>. This member is nullable while <c>FirstName</c> is
-    /// not, and that asymmetry is real rather than untidy: the two columns were declared one line
-    /// apart with different nullability and the difference has survived the whole upgrade chain.
-    /// It is preserved deliberately. Note the disagreement it resolves: <c>UserInfo.vb:L178</c>
-    /// declares <c>Required(True)</c>, but the column permits NULL, and the schema is the
-    /// authority. For the validator author: optional, maximum length 50 when present, and no
-    /// required check.
+    /// Backed by <c>Users.LastName</c>, whose terminal declaration is
+    /// <c>nvarchar(50) NOT NULL</c>. For the validator author: required, maximum length 50.
+    /// <para>
+    /// The nullability has to be read as a chain rather than from the baseline. The column is
+    /// declared <c>[LastName] [nvarchar] (50) NULL</c> at
+    /// <c>01.00.00.SqlDataProvider:L100</c>, one line below a <c>NOT NULL</c>
+    /// <c>FirstName</c>, but the <c>01.00.05</c> rebuild through <c>Tmp_Users</c> re-declares it
+    /// <c>LastName nvarchar(50) NOT NULL</c> (<c>01.00.05:L18</c>) and drops and renames the real
+    /// table over it (<c>01.00.05:L54</c>, <c>L57</c>); the <c>01.00.06</c> rebuild preserves
+    /// <c>NOT NULL</c> (<c>01.00.06:L186</c>, with the same drop and rename at <c>L227</c> and
+    /// <c>L230</c>). No <c>ALTER COLUMN</c> touches it afterwards, so the baseline asymmetry with
+    /// <c>FirstName</c> does not survive the chain. An earlier revision of this remark cited the
+    /// baseline alone, described the asymmetry as surviving the whole upgrade chain, and made the
+    /// member optional.
+    /// </para>
+    /// <para>
+    /// There is consequently no disagreement to resolve: <c>UserInfo.vb:L178</c>'s
+    /// <c>Required(True)</c>, the terminal column, the persistence configuration's
+    /// <c>IsRequired()</c> and the terminal <c>UpdateUser</c> parameter
+    /// <c>@LastName nvarchar(50)</c> (<c>04.00.04.SqlDataProvider:L1077</c>) all agree.
+    /// </para>
     /// </remarks>
-    public string? LastName { get; set; }
+    public string LastName { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the name shown to other users in place of the sign-in name.
@@ -253,18 +287,37 @@ public class UpdateUserRequest
     /// The email address. Defaults to the empty string, not <c>null</c>.
     /// </value>
     /// <remarks>
-    /// Backed by <c>Users.Email</c>, measured as <c>nvarchar(100) NOT NULL</c> at
-    /// <c>01.00.00.SqlDataProvider:L107</c>, and assigned by the terminal <c>UpdateUser</c>
-    /// procedure. For the validator author: required, maximum length 100, and not unique. The
-    /// length resolves a disagreement in favour of the schema, since <c>UserInfo.vb:L121</c>
-    /// declares <c>MaxLength(256)</c> against a column of 100; the terminal procedure's own
-    /// parameter is likewise declared at 256, and neither overrides the table. Uniqueness is not
-    /// enforced anywhere, by measurement rather than by preference. The pattern the legacy screen
-    /// applied is the constant <c>glbEmailRegEx</c> at
-    /// <c>Library/Components/Shared/Globals.vb:L132</c>, namely
-    /// <c>\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b</c>, and it is recorded here for
-    /// reference only, unencoded and unenforced, because a portal-level
-    /// <c>Security_EmailValidation</c> setting supersedes it at runtime.
+    /// <para>
+    /// Backed by <c>Users.Email</c>, measured as <c>nvarchar(256) NULL</c> at
+    /// <c>03.00.13.SqlDataProvider:L109-110</c>, and assigned by the terminal <c>UpdateUser</c>
+    /// procedure. For the validator author: required, maximum length 256, and not unique.
+    /// </para>
+    /// <para>
+    /// THE WIDTH IS 256, AND AN EARLIER REVISION OF THIS REMARK SAID 100. The
+    /// <c>nvarchar(100) NOT NULL</c> column at <c>01.00.00.SqlDataProvider:L107</c> was REMOVED by
+    /// the nine-column drop at <c>02.02.01:L50-51</c> and replaced by the nullable
+    /// <c>nvarchar(256)</c> one cited above, which nothing later alters; the terminal
+    /// <c>@Email nvarchar(256)</c> parameter at <c>04.00.04:L704</c> and
+    /// <c>UserInfo.vb:L121</c>'s <c>MaxLength(256)</c> both AGREE with it. There was no
+    /// disagreement to resolve - only a superseded column being cited as though it were current.
+    /// </para>
+    /// <para>
+    /// Requiredness is an API-LEVEL rule, not the column's nullability: the column permits an
+    /// absent address, and the legacy screen's <c>Required(True)</c> is what an update request
+    /// must satisfy. Uniqueness is not enforced anywhere, by measurement rather than by
+    /// preference.
+    /// </para>
+    /// <para>
+    /// The address SHAPE rule is not reproduced here and is no longer quoted here either. It lives
+    /// once, in <see cref="Domain.ValueObjects.EmailAddress"/>, which transcribes the legacy
+    /// constant <c>glbEmailRegEx</c> from <c>Library/Components/Shared/Globals.vb:L132</c> clause
+    /// by clause and records its two deliberate departures - notably that the legacy
+    /// four-character cap on the final domain label is replaced by bounded, standards-derived
+    /// label checks. The validator calls that type. What remains unenforced is the PER-PORTAL
+    /// override: the legacy screen replaced the shipped pattern from a
+    /// <c>Security_EmailValidation</c> setting at runtime, and reading a portal setting is data
+    /// access that a validator does not perform.
+    /// </para>
     /// </remarks>
     public string Email { get; set; } = string.Empty;
 }

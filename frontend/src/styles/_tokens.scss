@@ -1,4 +1,3 @@
-// =============================================================================
 //  Design tokens for the dnn-migration SPA.
 //
 //  Every value in every stylesheet resolves to a token declared here. The only
@@ -10,14 +9,11 @@
 //  ambient, so a `@use` elsewhere does not make these declarations visible; each
 //  consumer must load it itself. It emits real CSS, so it belongs to the single
 //  global stylesheet and must not be loaded from a component.
-// =============================================================================
 
 :root {
-  // ===========================================================================
   //  COLOUR — brand and surface
   //  Hex values are upper-case and six-digit throughout, which is lexical only:
   //  CSS hex is case-insensitive and #FFF and #FFFFFF are the same colour.
-  // ===========================================================================
 
   --color-primary: #003366;
 
@@ -28,6 +24,34 @@
   --color-background: #FFFFFF;
 
   --color-surface: #EEEEEE;
+
+  // MIGRATION: the informational hint surface, restored to its measured legacy
+  // value rather than folded onto --color-surface. Measured verbatim at
+  // default.css L438, `background-color: #ffff99`, inside the `.Help` rule that
+  // spans L424-439 — the rule the plan names as the affordance the shared
+  // form-field component replaces, and which the rest of that block renders as a
+  // black 1px border on ALL FOUR sides (L426 right, L428 top, L433 left, L436
+  // bottom), 2px padding on all four sides (L427, L429, L432, L435),
+  // `font-weight: normal` (L430), `font-size: 11px` (L431) and `color: black`
+  // (L434). The pale yellow is load-bearing rather than decorative: it is the
+  // only surface in the legacy stylesheet that marks a region as advisory rather
+  // than as content, and `.Help` is genuinely live — 7 references across the
+  // in-scope admin markup plus the structural one in
+  // Website/controls/labelcontrol.ascx. An earlier revision of this file mapped
+  // it onto --color-surface to hold the colour vocabulary at nine members; that
+  // traded a measured, in-scope value for vocabulary economy, and the value wins.
+  // Contrast is unharmed and in fact better: inherited black measures 20.02:1 on
+  // #FFFF99 against 18.10:1 on #EEEEEE. Legacy casing #ffff99.
+  //
+  // This is the tenth colour, and it is the ONLY member admitted beyond the
+  // plan's nine-colour table. It is admitted here rather than hardcoded at the
+  // point of use because this file is the sole legitimate literal site in the
+  // workspace: the alternative is `#ffff99` written into _forms.scss, which the
+  // zero-hardcoded-values rule forbids outright. The three colours argued for
+  // alongside it in that earlier revision — a base text black, a heading grey and
+  // a disabled silver — remain absent, and the reasoning for each is set out in
+  // the text-colour section below.
+  --color-surface-hint: #FFFF99;
 
   // MIGRATION: a TRIPLE divergence. The value is kept exactly as the plan's
   // colour table specifies, because design-system compliance outranks legacy
@@ -78,20 +102,23 @@
   // at 7.85:1 on this surface, which is how the legacy header pairing rendered.
   --color-border-strong: #CCCCCC;
 
-  // ===========================================================================
   //  COLOUR — text
   //  ONE token, and the reasoning for the three that are deliberately absent.
   //
-  //  The colour vocabulary is CLOSED at the nine members listed in the exported
-  //  surface above. An earlier revision of this file declared four more — a base
-  //  text black, a heading grey, a disabled silver and a pale-yellow hint surface
-  //  — each argued for individually on legacy-fidelity grounds. Taken together
-  //  they widened a closed vocabulary by 44 percent, which is the one thing a
-  //  closed vocabulary cannot absorb: the whole value of fixing the palette at
-  //  nine is that a downstream author cannot reach for a tenth, and four
-  //  well-argued exceptions defeat that as completely as forty careless ones
-  //  would. They are removed, and the individual arguments are answered here
-  //  rather than deleted, because each one raised a real question.
+  //  The colour vocabulary is CLOSED at the ten members declared above: the
+  //  plan's nine, plus the informational hint surface --color-surface-hint. An
+  //  earlier revision of this file declared four beyond the nine — a base text
+  //  black, a heading grey, a disabled silver and the pale-yellow hint surface —
+  //  each argued for individually on legacy-fidelity grounds, and all four were
+  //  then removed together on the reasoning that four well-argued exceptions
+  //  defeat a closed vocabulary as completely as forty careless ones would. Three
+  //  of those removals stand, and their individual arguments are answered below
+  //  rather than deleted, because each one raised a real question. The fourth is
+  //  reinstated: the hint surface is a measured, in-scope value with no vocabulary
+  //  member that can carry its meaning, and the annotation on the token itself
+  //  records why. Ten is therefore the closed count — a downstream author still
+  //  cannot reach for an eleventh, and every value in every stylesheet still
+  //  resolves to a member of this list.
   //
   //  The base text black and the heading grey were both answered by the platform
   //  rather than by the palette. Legacy body text had NO declared colour at all —
@@ -106,9 +133,9 @@
   //  against 12.63 to 1 for the grey — a difference no observer can perceive,
   //  and one that makes the ramp a single colour instead of two.
   //
-  //  The disabled silver and the hint surface were the two genuine visible
-  //  changes, and both are now recorded on the rules that consume them rather
-  //  than defended here. Silver folds onto --color-text-muted, which is not only
+  //  The disabled silver was the remaining genuine visible change, and it is
+  //  recorded on the rules that consume it rather than defended here. Silver folds
+  //  onto --color-text-muted, which is not only
   //  a vocabulary member but a substantial accessibility gain: silver measured
   //  1.82 to 1 on the page background and 1.57 to 1 on the surface it was
   //  actually paired with, so disabled text was effectively unreadable, whereas
@@ -118,12 +145,11 @@
   //  exemption for inactive components to excuse the figures — and which had to
   //  concede that the aria-disabled group could not claim the same exemption,
   //  since a control disabled only by ARIA is not inert. Neither group needs an
-  //  exemption now. The pale-yellow hint surface folds onto --color-surface, the
-  //  member the vocabulary designates as the secondary surface, which is exactly
-  //  what a help panel is; that IS a real visible change from pale yellow to
-  //  light grey, it is the only such change here that is not an accessibility
-  //  correction, and it is recorded plainly on `.form-help` in _forms.scss.
-  // ===========================================================================
+  //  exemption now. With the hint surface reinstated as --color-surface-hint,
+  //  `.form-help` in _forms.scss now renders the measured legacy pale yellow
+  //  rather than the secondary grey surface, so this file introduces NO visible
+  //  colour change to the help panel at all; the only remaining deliberate visible
+  //  colour change is the olive heading colour annotated further down.
 
   // MIGRATION: 9 occurrences, and NOT ONE of them renders text — the token name
   // describes its target role, not its legacy role. Eight are borders: the
@@ -192,9 +218,7 @@
   // authentication-provider model. Recorded so that neither value is ever
   // written as a literal downstream.
 
-  // ===========================================================================
   //  TYPOGRAPHY — families
-  // ===========================================================================
 
   // One base stack for the whole application. Tahoma resolves first, so this is
   // visually indistinguishable from the legacy stacks it replaces.
@@ -203,13 +227,11 @@
   // The multi-word family name must stay quoted so it is parsed as one family.
   --font-family-mono: "Lucida Console", monospace;
 
-  // ===========================================================================
   //  TYPOGRAPHY — size ramp
   //
   //  Expressed in rem against the browser default root size so that a reader who
   //  raises their base font size scales the whole interface. _reset.scss must not
   //  restate the root font size, which would break that scaling.
-  // ===========================================================================
 
   --font-size-xs: 0.5rem;
 
@@ -227,9 +249,7 @@
   // touching every consumer.
   --font-size-base: var(--font-size-md);
 
-  // ===========================================================================
   //  TYPOGRAPHY — weight and line height
-  // ===========================================================================
 
   --font-weight-normal: 400;
   --font-weight-bold: 700;
@@ -238,11 +258,9 @@
   --line-height-tight: 1.25;
   --line-height-base: 1.5;
 
-  // ===========================================================================
   //  SPACING
   //  A 4px-based scale. Steps are unitless multiples in rem so spacing scales
   //  with the reader's font size along with the type ramp.
-  // ===========================================================================
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -253,38 +271,30 @@
   --space-7: 2rem;
   --space-8: 2.5rem;
 
-  // ===========================================================================
   //  RADIUS
   //  Deliberately in px, not rem: a corner radius should not grow with the
   //  reader's font size.
-  // ===========================================================================
 
   --radius-sm: 2px;
   --radius-md: 4px;
   --radius-lg: 8px;
 
-  // ===========================================================================
   //  ELEVATION
-  // ===========================================================================
 
   --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.08);
   --elevation-2: 0 2px 8px rgba(0, 0, 0, 0.12);
   --elevation-3: 0 8px 24px rgba(0, 0, 0, 0.16);
 
-  // ===========================================================================
   //  BORDER
   //  Width and style are separate tokens so a rule can compose
   //  `var(--border-width) var(--border-style) var(--color-border)` without
   //  writing a literal.
-  // ===========================================================================
 
   --border-width: 1px;
 
   --border-style: solid;
 
-  // ===========================================================================
   //  DIALOG BOUNDS
-  // ===========================================================================
 
   // Safety caps for the modal dialog panel, against the VIEWPORT rather than
   // against a measured design size — which is why the operands are viewport units
@@ -298,12 +308,11 @@
   // vocabulary must be the only source of shared values: any future dialog-shaped
   // surface has to agree with this one rather than re-inventing its own cap.
   //
-  // Physical viewport units are used deliberately, not the logical `vi`/`vb`
-  // pair, whose browser support is materially shorter; the properties that
-  // consume them are logical, so the panel still reads correctly under a
-  // right-to-left or vertical writing mode.
+  // Physical viewport units are used deliberately rather than the logical `vi`/`vb`
+  // pair; the properties that consume them are logical, so the panel still reads
+  // correctly under a right-to-left or vertical writing mode.
   //
-  // MIGRATION: net-new. The legacy portal had no dialog of its own —
+  // MIGRATION: added, not ported. The legacy portal had no dialog of its own —
   // confirmation was a native blocking `confirm()` injected as an `onClick`
   // attribute, whose chrome the browser supplied
   // (`Library/Controls/DotNetNuke.WebUtility/ClientAPI.vb` L331-L332) — so there
@@ -311,22 +320,39 @@
   --dialog-max-inline-size: 90vw;
   --dialog-max-block-size: 90vh;
 
-  // ===========================================================================
+  // The label column of a horizontally laid-out form field.
+  //
+  // Named for the same two reasons as the dialog pair above: the value is a
+  // deliberate choice rather than an arbitrary one, and the shared vocabulary has
+  // to be the only place a shared dimension is defined, so a second form surface
+  // agrees with the first instead of picking its own width.
+  //
+  // It is a maximum, not a fixed width: the field's own rule pairs it with
+  // `minmax(0, …)` so the column still yields when the viewport cannot afford it.
+  //
+  // MIGRATION: measured, not invented. The legacy screens laid a field out as a
+  // two-cell table row, and the cell that hosted the label control carried the
+  // width on the markup itself — `<td class="SubHead" width="150">` followed by a
+  // `<dnn:Label>`, which is 229 of the 240 occurrences of that width across
+  // `Website/admin/**/*.ascx` and the most frequent width in the whole admin
+  // surface. 150px is expressed here as `9.375rem` so the column scales with the
+  // root type size instead of being pinned to one device pixel count, and it is
+  // declared once here rather than repeated at every call site, which is how the
+  // same alignment survives without a table.
+  --field-label-inline-size: 9.375rem;
+
   //  LAYERING
   //  Four widely spaced steps, so a new layer can be inserted between two of
   //  them without renumbering. Nothing outside this scale may set a z-index.
-  // ===========================================================================
 
   --z-index-sticky: 100;
   --z-index-dropdown: 200;
   --z-index-overlay: 300;
   --z-index-modal: 400;
 
-  // ===========================================================================
   //  FOCUS
   //  The focus indicator is never removed, only restyled. The offset keeps the
   //  ring clear of the control's own border.
-  // ===========================================================================
 
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;

@@ -89,11 +89,23 @@ public sealed class LoginRequest
     /// request type.
     /// </para>
     /// <para>
-    /// No maximum length is declared. The legacy table capped its password
-    /// column at 20 characters, but that was a storage limit of a schema that
-    /// no longer holds the credential at all, not a rule the caller must
-    /// satisfy, so carrying it onto this contract would invent a restriction
-    /// the target does not have.
+    /// A maximum length IS enforced, and it is net-new rather than ported. The
+    /// legacy table capped its password column at 20 characters, but that was a
+    /// storage limit of a schema which no longer holds the credential at all,
+    /// so it is not the source of the bound and is not reproduced. The bound
+    /// exists because this is an unauthenticated endpoint whose input is handed
+    /// to a deliberately expensive one-way hash, and an unbounded field lets the
+    /// caller choose how much work the server performs.
+    /// </para>
+    /// <para>
+    /// The bound is not declared on this member as an attribute or a comment
+    /// carrying its own number. It lives once, on
+    /// <see cref="Validation.CredentialBounds"/>, is measured in UTF-8 bytes
+    /// because that is the form the hashing algorithm consumes, and is applied by
+    /// <c>Validation/LoginRequestValidator.cs</c> together with every other
+    /// credential entry point. Stating the number here as well is exactly how the
+    /// two came to disagree before, so it is deliberately not stated. The
+    /// tightening is recorded in <c>MIGRATION_NOTES.md</c>.
     /// </para>
     /// </remarks>
     public string Password { get; set; } = string.Empty;
@@ -152,6 +164,14 @@ public sealed class LoginRequest
     /// neither into the other, leaving one single definition for the validator
     /// and the sign-in service to agree on.
     /// </para>
+    /// <para>
+    /// <b>The sign-in service is the only consumer.</b> <c>IAuthService.LoginAsync</c> reads
+    /// this member and nothing else does, and it is that contract - not this one - that
+    /// declares the two outcomes the code produces: <c>VERIFICATION_REQUIRED</c> when the
+    /// account awaits verification and no code accompanied the credential, and
+    /// <c>VERIFICATION_CODE_INVALID</c> when a code was supplied and did not match.
+    /// Composition of the value itself is measured and preserved there.
+    /// </para>
     /// </remarks>
     public string? VerificationCode { get; set; }
 
@@ -171,12 +191,19 @@ public sealed class LoginRequest
     // this migration excludes wholesale -- 102 files across ten control
     // sub-libraries -- so there is no equivalent for a member here to bind to.
     // This is a DELIBERATE FUNCTIONAL REDUCTION, not an oversight. The named
-    // compensating control is request rate limiting on the sign-in endpoint,
-    // configured in Api/Extensions/RateLimitingExtensions.cs and applied to
-    // AuthController. The identical decision is recorded for the sibling
-    // registration request DTO, CreateUserRequest, and the two must stay
-    // consistent; the legacy per-tenant switches that turned the challenge on
-    // are correspondingly inert on MembershipSettingsDto.
+    // compensating control is request rate limiting, configured in
+    // Api/Extensions/RateLimitingExtensions.cs and registered as a GLOBAL
+    // limiter that selects requests by method and path segment -- deliberately
+    // NOT as an attribute on a controller. The distinction is the whole value of
+    // the control: an attribute is a thing that can be omitted, and omitting it
+    // yields a credential endpoint with no bound and no indication that it is
+    // missing one, whereas a global limiter cannot be opted out of by writing a
+    // new controller. Bounding the password length is the companion control and
+    // lives in the validators; the two address different halves of the same
+    // problem and neither substitutes for the other. The identical decision is
+    // recorded for the sibling registration request DTO, CreateUserRequest, and
+    // the two must stay consistent; the legacy per-tenant switches that turned
+    // the challenge on are correspondingly inert on MembershipSettingsDto.
 
     // MIGRATION: The hard-coded "DNN" authentication-type argument is dropped.
     // Login.ascx.vb passed that literal twice -- at L164, as the fourth

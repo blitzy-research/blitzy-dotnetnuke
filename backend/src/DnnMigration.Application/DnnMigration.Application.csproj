@@ -1,28 +1,64 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    THIS PROJECT'S PACKAGE SURFACE IS THE TWO FLUENTVALIDATION ENTRIES BELOW, AND
+    NOTHING ELSE. AAP 0.6.1 states it directly: "Application declares only
+    FluentValidation". Nothing may be added here on the grounds that a type in this
+    layer wants it; a dependency this layer cannot express is a signal about the
+    boundary, not a gap in the manifest.
+
+    An earlier revision added Microsoft.Extensions.Options 8.0.2 so a validator
+    could take IOptions<PasswordPolicyOptions>. Every technical claim in that
+    justification was true - Options really is absent from the Microsoft.NETCore.App
+    reference pack, FluentValidation.DependencyInjectionExtensions really does not
+    supply it transitively, and the generic really does fail to compile without it -
+    and none of that made the package approved. The correct resolution was to change
+    the consumer rather than the manifest, so the one validator that reached for
+    IOptions<T> now takes the bound PasswordPolicyOptions instance directly, exactly
+    as its sibling ChangePasswordRequestValidator already did. That is the
+    boundary abstraction this layer is meant to use: PasswordPolicyOptions is
+    declared here and BOUND BY THE API LAYER, where the web framework supplies the
+    options machinery, and the composition root projects the bound instance as a
+    resolvable service so the container can hand it to both validators.
+
+    The wider point is that the options PATTERN is not the options PACKAGE. This
+    layer participates in the pattern by owning the policy type; only the layer that
+    reads configuration needs IOptions<T>, and AAP 0.5.2.2 puts that layer above
+    this one. Every IOptions<T> in the backend correctly sits in Api or
+    Infrastructure.
+  -->
   <ItemGroup>
+    <!--
+      These two entries are the whole of this project's package surface, and the inventory that
+      fixes them lists nothing else for this layer. Adding a package here is therefore not a
+      local decision: the inventory is frozen, so an entry it does not contain does not belong
+      in this file even when a compiler error appears to ask for one.
+
+      That case has already arisen once and is recorded so it is not repeated. IOptions<T> is NOT
+      available to this project: FluentValidation.DependencyInjectionExtensions 11.12.0 closes
+      over FluentValidation and Microsoft.Extensions.DependencyInjection.Abstractions only, so it
+      supplies no Options assembly transitively, and Microsoft.Extensions.Options.dll is not in
+      the reference pack a Microsoft.NET.Sdk class library targets - it ships in the ASP.NET Core
+      shared framework, which this layer must never reference. Compiling a validator whose
+      constructor names IOptions<PasswordPolicyOptions> consequently fails with CS0234 and CS0246,
+      and that was verified rather than assumed.
+
+      The resolution is to stop asking for IOptions<T>, not to import it. Every validator in
+      Validation/ takes the bound options object itself - a plain PasswordPolicyOptions - which is
+      a Domain-adjacent Application type this project already owns outright. Nothing is lost: the
+      wrapper only defers reading a value that has already been read by the time a validator is
+      constructed, and taking the concrete type keeps the constructor honest about needing a
+      policy rather than a source of one.
+
+      What this shifts onto the composition root is a real obligation, so it is stated here. The
+      Api layer must not only bind the section but also project the bound instance as a resolvable
+      concrete service, for example by registering PasswordPolicyOptions from
+      IOptions<PasswordPolicyOptions>.Value. If it binds without projecting, every validator in
+      this project fails loudly at construction, which is the intended outcome - a missing policy
+      registration is a startup defect and must not degrade into a silently unvalidated password.
+    -->
     <PackageReference Include="FluentValidation" Version="11.12.0" />
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.12.0" />
-    <!--
-      Required by the validators that bind a policy through IOptions<T> - currently
-      Validation/CreateUserRequestValidator.cs and Validation/ChangePasswordRequestValidator.cs,
-      both of which consume IOptions<PasswordPolicyOptions>.
-
-      This reference is NOT redundant. IOptions<T> is unavailable to this project without it,
-      established three ways: FluentValidation.DependencyInjectionExtensions 11.12.0 depends only
-      on FluentValidation and Microsoft.Extensions.DependencyInjection.Abstractions, so it does not
-      supply Options transitively; Microsoft.Extensions.Options.dll is absent from the
-      Microsoft.NETCore.App net8.0 reference pack that a Microsoft.NET.Sdk class library targets
-      (it ships in Microsoft.AspNetCore.App, which this layer must never reference); and compiling
-      IOptions<PasswordPolicyOptions> without this entry fails with CS0234 and CS0246.
-
-      Layering is preserved. The package closes over Microsoft.Extensions.DependencyInjection.Abstractions
-      and Microsoft.Extensions.Primitives only - abstractions with no ASP.NET Core and no EF Core
-      surface - so Rule T1 still holds and this project still references Domain alone. 8.0.2 is the
-      newest 8.0.x release of this package line, matching the solution's practice of pinning inside
-      the 8.0.x band rather than to a single uniform patch.
-    -->
-    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
   </ItemGroup>
 
   <ItemGroup>

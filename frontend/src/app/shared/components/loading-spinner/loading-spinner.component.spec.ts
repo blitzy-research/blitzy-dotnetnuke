@@ -2,16 +2,14 @@
 // Specification for `LoadingSpinnerComponent` — the shared asynchronous progress
 // indicator of the dnn-migration administration front end.
 //
-// ---------------------------------------------------------------------------
 // MIGRATION: THERE IS NO PREDECESSOR SUITE, AND NO PREDECESSOR COMPONENT
-// ---------------------------------------------------------------------------
 // The legacy DotNetNuke 4.9.0 VB.NET Web Forms application shipped no automated
 // test of any kind — not a unit test, not a fixture, not a test project, no
 // dependency manifest and no test runner anywhere in the checkout. Every
-// expectation below is therefore net-new coverage with no legacy assertion to
+// expectation below is therefore added coverage with no legacy assertion to
 // port, and that is reported rather than dressed up as a translation.
 //
-// MIGRATION: the affordance under test is itself net-new, established by
+// MIGRATION: the affordance under test has no legacy counterpart, established by
 // measurement rather than assumed. The five in-scope admin trees are pure
 // full-page-postback Web Forms — `UpdatePanel`, `UpdateProgress`,
 // `ScriptManager` and `AsyncPostBack` measure zero occurrences across all of
@@ -23,9 +21,7 @@
 // behaviour to mirror. What is asserted here is the contract the sibling
 // component publishes, and nothing beyond it.
 //
-// ---------------------------------------------------------------------------
 // TEST FRAMEWORK: KARMA WITH JASMINE, DELIBERATELY
-// ---------------------------------------------------------------------------
 // The mandated validation command is
 //
 //   ng test --watch=false --browsers=ChromeHeadless --code-coverage
@@ -34,9 +30,7 @@
 // that command invalid. Jasmine spies and matchers only; no other test library
 // is present in the pinned dependency set.
 //
-// ---------------------------------------------------------------------------
 // WHY THIS FILE MATTERS MORE THAN A TYPICAL COMPONENT SPEC
-// ---------------------------------------------------------------------------
 // Two reasons, both structural.
 //
 // FIRST, this is the only route by which the component is type-checked at all.
@@ -51,9 +45,7 @@
 // apart: it asserts the rendered DOM and accessibility contract, which is the
 // only surface all three must agree on.
 //
-// ---------------------------------------------------------------------------
 // WHAT IS DELIBERATELY NOT CONFIGURED, AND NOT ASSERTED
-// ---------------------------------------------------------------------------
 // No provider is configured, because the component injects nothing: it has two
 // inputs, four host bindings and one getter, and performs no I/O whatsoever.
 // Configuring an HTTP, router or animation provider would be noise a later
@@ -75,9 +67,7 @@ import { TestBed, type ComponentFixture } from '@angular/core/testing';
 
 import { LoadingSpinnerComponent, type LoadingSpinnerSize } from './loading-spinner.component';
 
-// ---------------------------------------------------------------------------
 // Contract values, restated rather than imported
-// ---------------------------------------------------------------------------
 
 /**
  * The component's published default size.
@@ -207,9 +197,7 @@ const LEGACY_CLASS_TOKENS: readonly string[] = [
 const SCRIPT_BEARING_LABEL = '<script>document.title = "pwned";</script>';
 const MARKUP_BEARING_LABEL = '<b>Loading portals…</b>';
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /**
  * Finds a required descendant, or fails the spec with a self-describing error.
@@ -292,9 +280,7 @@ interface SpinnerInputs {
 })
 class LiteralCallSiteHostComponent {}
 
-// ---------------------------------------------------------------------------
 // Specification
-// ---------------------------------------------------------------------------
 
 describe('LoadingSpinnerComponent', () => {
   beforeEach(async () => {
@@ -389,12 +375,45 @@ describe('LoadingSpinnerComponent', () => {
       expect(hostOf(fixture).getAttribute('role')).toBe('status');
     });
 
-    it('reports a busy state while it is mounted', () => {
-      // The element is only in the DOM while something is in flight, so a false
-      // value here would state the opposite of the component's whole purpose.
+    it('never declares a busy state that could defer its own announcement', () => {
+      // THIS EXPECTATION IS INVERTED FROM WHAT INTUITION SUGGESTS, so the reason
+      // is recorded rather than assumed. `aria-busy="true"` on a live region is
+      // not an extra hint that work is happening; it is an instruction to
+      // assistive technology to WITHHOLD the region's contents until busy turns
+      // false, so a half-built region is never read out mid-construction. Honouring
+      // that contract requires someone to clear the flag. This component cannot:
+      // the caller renders it only while work is in flight and REMOVES it when the
+      // work finishes, so there is no later moment at which busy could become
+      // false. A permanent busy state therefore defers an announcement that is
+      // never released, suppressing the very message the status role exists to
+      // deliver. The region is mounted with its label already in place, so it is
+      // complete from its first frame and has nothing to defer.
       const fixture = render();
 
-      expect(hostOf(fixture).getAttribute('aria-busy')).toBe('true');
+      expect(hostOf(fixture).getAttribute('aria-busy')).toBeNull();
+      expect(hostOf(fixture).hasAttribute('aria-busy')).toBeFalse();
+    });
+
+    it('leaves no residual busy state anywhere once loading completes', () => {
+      // THE COMPLETION-STATE ASSERTION. For this component "loading completed"
+      // means the element is gone: it owns no loading input and is unmounted by
+      // its caller rather than switched off. So the only way it CAN satisfy a
+      // clear-busy-on-completion contract is to never publish a busy state in the
+      // first place, and this proves that holds across the whole lifecycle - at
+      // mount, and after the destruction that represents completion. The host
+      // reference is captured BEFORE destroy so the detached element can still be
+      // inspected afterwards; a latched attribute would survive on it.
+      const fixture = render();
+      const host = hostOf(fixture);
+
+      expect(host.getAttribute('aria-busy')).toBeNull();
+      expect(host.getAttribute('role')).toBe('status');
+      expect(host.querySelectorAll('[aria-busy]').length).toBe(0);
+
+      fixture.destroy();
+
+      expect(host.getAttribute('aria-busy')).toBeNull();
+      expect(host.querySelectorAll('[aria-busy]').length).toBe(0);
     });
 
     it('declares the live region on the host and never repeats it on a descendant', () => {
@@ -613,11 +632,12 @@ describe('LoadingSpinnerComponent', () => {
       // The two host modes are mutually exclusive, and this is the second of
       // them. A status region takes its accessible name from its contents, and
       // with no wording its only child is the hidden glyph — so retaining the
-      // role would publish a permanently busy live region with neither content
-      // nor name, which can never announce anything and merely occupies the
-      // accessibility tree. The component therefore stops claiming to be a live
-      // region at all and hides itself instead, leaving the glyph as the purely
-      // visual affordance it already is.
+      // role would publish a live region with neither content nor name, which can
+      // never announce anything and merely occupies the accessibility tree. The
+      // component therefore stops claiming to be a live region at all and hides
+      // itself instead, leaving the glyph as the purely visual affordance it
+      // already is. No busy state appears in this mode either, consistent with the
+      // labelled mode, which does not declare one at all.
       const host = hostOf(render({ label: '' }));
 
       expect(host.getAttribute('role')).toBeNull();
@@ -628,11 +648,13 @@ describe('LoadingSpinnerComponent', () => {
     it('announces itself as a named live region as soon as wording is supplied', () => {
       // The positive control for the rule above, and the reason it is not simply
       // a withdrawal of function: the moment there is something to announce, the
-      // region and its busy state are both declared and the hiding is lifted.
+      // region is declared and the hiding is lifted. The region is declared
+      // WITHOUT a busy state, so the announcement is deliverable immediately
+      // rather than deferred behind a flag nothing will ever clear.
       const host = hostOf(render({ label: DEFAULT_LABEL }));
 
       expect(host.getAttribute('role')).toBe('status');
-      expect(host.getAttribute('aria-busy')).toBe('true');
+      expect(host.getAttribute('aria-busy')).toBeNull();
       expect(host.getAttribute('aria-hidden')).toBeNull();
     });
 
@@ -863,9 +885,12 @@ describe('LoadingSpinnerComponent', () => {
       fixture.detectChanges();
 
       expect(host.getAttribute('role')).toBe('status');
-      expect(host.getAttribute('aria-busy')).toBe('true');
       expect(host.getAttribute('aria-hidden')).toBeNull();
       expect(renderedTextOf(requireElement(host, LABEL_SELECTOR)).trim()).toBe('Loading roles…');
+
+      // No busy state is acquired on the way back either, so restoring the wording
+      // cannot reintroduce the deferral this contract exists to avoid.
+      expect(host.getAttribute('aria-busy')).toBeNull();
     });
   });
 });

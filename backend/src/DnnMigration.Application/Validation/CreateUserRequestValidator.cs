@@ -2,8 +2,8 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Options;
+using DnnMigration.Domain.ValueObjects;
 using FluentValidation;
-using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Application.Validation;
 
@@ -123,19 +123,29 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
     private const string PasswordMismatchMessage =
         "The Password and Confirmation Passwords do not match";
 
-    /// <summary>
-    /// Legacy wording for an invalid recovery question, from <c>SharedResources.resx</c>
-    /// L288.
-    /// </summary>
-    private const string InvalidQuestionMessage =
-        "The question specified is invalid.  Please specify a valid question.";
+    // MIGRATION: the recovery-question and recovery-answer wordings are deliberately NOT
+    // declared here. An earlier revision carried both, taken from SharedResources.resx L288
+    // and L279, and attached them to rules gated on the bound question-and-answer policy
+    // flag. The request no longer carries either member, because the owning service contract
+    // states the recovery pair has no counterpart at all, so a message for a field that
+    // cannot be submitted would be unreachable text asserting a rule that does not exist.
+    // The two resource entries still exist in the legacy tree and are cited here so their
+    // absence is provably deliberate rather than an oversight; the wording itself is not
+    // reproduced, not even as a quotation, so that its absence is verifiable by search.
 
-    /// <summary>
-    /// Legacy wording for an invalid recovery answer, from <c>SharedResources.resx</c>
-    /// L279.
-    /// </summary>
-    private const string InvalidAnswerMessage =
-        "The answer specified is invalid.  Please specify a valid answer to the question.";
+
+    // MIGRATION: the ceiling on a submitted credential is NOT declared in this file. The number, the
+    // unit and the wording live once, on Validation/CredentialBounds.cs, and every credential entry
+    // point in this layer reads them from there - sign-in, registration, the password sub-resource and
+    // portal creation - so a ceiling that only some entry points applied cannot recur. The unit is
+    // UTF-8 BYTES rather than characters, because that is the form the hashing algorithm consumes and
+    // a character outside the ASCII range occupies two to four of them. It is deliberately NOT the
+    // algorithm's own 72-byte significance limit: the hasher digests the credential with SHA-384
+    // before hashing (Infrastructure/Security/BcryptPasswordHasher.cs), so every byte of the input
+    // contributes and no two distinct credentials can become interchangeable by truncation. The bound
+    // is therefore a bound on the work an unauthenticated caller may ask an expensive function to
+    // perform, it is net-new, it sits far above any credential a person would choose, and it is
+    // emphatically NOT the legacy markup's twenty-character input limit.
 
     /// <summary>
     /// Screen wording for a missing login name, from <c>User.ascx.resx</c> L154.
@@ -162,17 +172,30 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
     /// </summary>
     private const string EmailFormatMessage = "You must enter a valid email address";
 
-    // MIGRATION: net-new wording, and marked as such. The legacy creation screen enforced
+    // MIGRATION: the wording below is authored here. The legacy creation screen enforced
     // the display-name ceiling through a markup attribute on a property-editor field,
     // which silently truncated typing and produced no message at all, so there is no
     // legacy string to reproduce. The sentence below follows the measured pattern of the
     // global entries above so that it reads as part of the same family.
 
     /// <summary>
-    /// Net-new wording for an over-long display name; no legacy equivalent exists.
+    /// Authored wording for an over-long display name; no legacy equivalent exists.
     /// </summary>
     private const string InvalidDisplayNameMessage =
         "The display name specified is invalid.  Please specify a valid display name.";
+
+    // MIGRATION: net-new wording, and necessarily so - the legacy application had no ceiling
+    // of this kind to report, because it stored credentials in a reversible format rather than
+    // hashing them. The sentence names the limit and its unit, because a caller told only that
+    // a password is "too long" cannot act on it when the value is well inside any character
+    // count they would think to check.
+
+    /// <summary>
+    /// Net-new wording for a credential that cannot be hashed without loss; no legacy
+    /// equivalent exists.
+    /// </summary>
+    private const string PasswordTooLongMessage =
+        "The password specified is too long.  Please specify a password of no more than 72 bytes.";
 
     /// <summary>
     /// The token the legacy code replaced with the configured minimum password length.
@@ -201,10 +224,41 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
     /// </summary>
     private const int DisplayNameMaximumLength = 128;
 
+    // MIGRATION: THE EMAIL WIDTH IS 256, AND 100 IS A SUPERSEDED VALUE THAT THIS CONSTANT
+    // PREVIOUSLY CARRIED IN ERROR. The Email column has a two-part history and only its
+    // terminal state is authoritative under Rule T4. An Email nvarchar(100) NOT NULL existed
+    // from 01.00.00.SqlDataProvider:L107, was carried at that width through both rebuilds
+    // (01.00.05:L25 and 01.00.06:L193), and was then REMOVED ALTOGETHER by the nine-column
+    // drop at 02.02.01:L50-51 when credentials and profile data moved to the externally
+    // installed membership tables. A REPLACEMENT column was added later, at
+    // 03.00.13:L109-110, as
+    //     ALTER TABLE {databaseOwner}{objectQualifier}Users ADD Email nvarchar(256) NULL
+    // and back-filled from the membership store immediately afterwards at :L113-L117. No
+    // later script in the 88-script chain alters it again, and the terminal stored procedures
+    // agree: the AddUser family declares @Email nvarchar(256) at 03.02.03:L659 and again at
+    // 04.00.04:L704. 256 is therefore the width, and the legacy screen attribute
+    // MaxLength(256) at UserInfo.vb:L121 turns out to AGREE with the terminal column rather
+    // than to contradict it.
+    //
+    // Infrastructure/Persistence/Configurations/UserConfiguration.cs already maps this column
+    // at 256 and nullable, so the number here is now consistent with the mapping instead of
+    // rejecting values the database would have accepted.
+
     /// <summary>
-    /// Terminal column width of the email address: <c>nvarchar(100)</c>.
+    /// Terminal column width of the email address: <c>nvarchar(256)</c>.
     /// </summary>
-    private const int EmailMaximumLength = 100;
+    /// <remarks>
+    /// The terminal width is not the baseline width. <c>dbo.Users.Email</c> is created at
+    /// <c>nvarchar(100) NOT NULL</c> (<c>01.00.00.SqlDataProvider:L107</c>), DROPPED outright
+    /// (<c>02.02.01.SqlDataProvider:L50-51</c>) when contact details moved into the ASP.NET
+    /// membership tables, and re-added as <c>nvarchar(256) NULL</c>
+    /// (<c>03.00.13.SqlDataProvider:L109-110</c>), after which nothing narrows it. The terminal
+    /// <c>AddUser</c> and <c>UpdateUser</c> procedures agree, both declaring
+    /// <c>@Email nvarchar(256)</c> (<c>04.00.04.SqlDataProvider:L704</c> and <c>L1078</c>), as
+    /// does the persistence configuration and <c>UpdateUserRequestValidator</c>. Bounding this
+    /// rule at 100 would refuse addresses the store already holds.
+    /// </remarks>
+    private const int EmailMaximumLength = 256;
 
     /// <summary>
     /// Upper bound on the time any single pattern evaluation may consume, so that a
@@ -212,41 +266,76 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
     /// </summary>
     private static readonly TimeSpan PatternMatchTimeout = TimeSpan.FromMilliseconds(250);
 
-    // MIGRATION: the email pattern is the legacy constant reproduced character for
-    // character from Library/Components/Shared/Globals.vb L132. Two measured properties of
-    // it are preserved rather than modernised. Its trailing quantifier caps the top-level
-    // domain at four letters, so longer modern domains are rejected exactly as the legacy
-    // application rejected them; and it is word-boundary delimited rather than anchored to
-    // the whole string, so a valid address surrounded by other text still satisfies it.
-    // Anchoring it would be a tightening and is not applied. Note also a path correction:
-    // the plan cites this constant under a Common folder, which does not exist in the
-    // repository - the constant lives under Shared.
-
-    /// <summary>
-    /// The legacy email pattern, reproduced verbatim from
-    /// <c>Library/Components/Shared/Globals.vb</c> L132.
-    /// </summary>
-    private static readonly Regex LegacyEmailPattern = new(
-        @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b",
-        RegexOptions.CultureInvariant | RegexOptions.Compiled,
-        PatternMatchTimeout);
+    // MIGRATION: THE EMAIL SHAPE RULE IS NO LONGER RESTATED HERE. A local copy of the legacy
+    // pattern from Library/Components/Shared/Globals.vb L132 used to live at this point, and a
+    // second copy lived in Validation/UpdateUserRequestValidator.cs. Two copies of one rule is
+    // how create and update came to behave differently for the same address, so both copies are
+    // deleted and both validators now call the single authority,
+    // Domain/ValueObjects/EmailAddress.cs, whose own audit trail transcribes that pattern clause
+    // by clause and records every deliberate departure from it. There is exactly one email rule
+    // in this solution now, and it is not in this file.
+    //
+    // Delegating also CORRECTS TWO DEFECTS that the local copy carried:
+    //   - It matched a SUBSTRING. FluentValidation's pattern rule tests whether the pattern
+    //     occurs anywhere in the value, and the legacy pattern is word-boundary delimited rather
+    //     than anchored, so "a@b.co and some junk" satisfied it. The legacy screen did NOT behave
+    //     that way: its only consumer was the ASP.NET expression validator, which accepts a value
+    //     only when the match covers the whole of it. Whole-value checking is therefore a
+    //     RESTORATION of legacy behaviour, not a tightening.
+    //   - It capped the final domain label at four letters, rejecting .museum, .travel and every
+    //     other modern suffix. That cap is removed at the authority; the divergence, and the
+    //     bounded standards-based checks that replace it, are documented there and in
+    //     MIGRATION_NOTES.md.
 
     /// <summary>
     /// Builds the rule set, binding every password threshold and every substituted
     /// message token from the supplied policy rather than restating any of them.
     /// </summary>
-    /// <param name="passwordPolicyOptions">
+    /// <param name="passwordPolicy">
     /// The password policy in force, preserved verbatim from the legacy membership
-    /// provider registration. It is read once here, at construction time; no rule
-    /// dereferences it again while validating. This is the validator's only dependency:
-    /// it takes no repository, no clock and no credential-store abstraction, because
-    /// none of those is needed to decide whether a request is well formed.
+    /// provider registration and bound by the Api layer from the configuration section
+    /// named by <see cref="PasswordPolicyOptions.SectionName"/>. It is read once here, at
+    /// construction time; no rule dereferences it again while validating. This is the
+    /// validator's only dependency: it takes no repository, no clock and no
+    /// credential-store abstraction, because none of those is needed to decide whether a
+    /// request is well formed.
     /// </param>
-    public CreateUserRequestValidator(IOptions<PasswordPolicyOptions> passwordPolicyOptions)
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="passwordPolicy"/> is <see langword="null"/>. Failing
+    /// loudly at construction is deliberate: a validator that silently fell back to
+    /// built-in defaults would enforce a policy nobody configured, which is exactly the
+    /// kind of silent divergence this migration must surface rather than absorb.
+    /// </exception>
+    // MIGRATION NOTE ON THE CONSTRUCTOR SHAPE - deliberate, and matching this solution's
+    // established convention. An earlier revision took IOptions<PasswordPolicyOptions>
+    // and added Microsoft.Extensions.Options to this project to make that compile. AAP
+    // 0.6.1 fixes this layer's package surface at the two FluentValidation entries, so
+    // that package was not approved and the manifest was the wrong thing to change.
+    //
+    // The bound policy instance is taken directly instead, which is what the sibling
+    // ChangePasswordRequestValidator already did and what the policy type itself
+    // documents: PasswordPolicyOptions is DECLARED IN THIS LAYER AND BOUND BY THE API
+    // LAYER. The options PATTERN and the options PACKAGE are separate things - this layer
+    // participates in the pattern by owning the policy type, while IOptions<T> belongs to
+    // the layer that actually reads configuration, which AAP 0.5.2.2 places above this
+    // one. Every IOptions<T> in the backend accordingly sits in Api or Infrastructure.
+    //
+    // The obligation this places on the composition root is real and is recorded here
+    // rather than worked around: the Api layer must register the bound
+    // PasswordPolicyOptions instance as a resolvable service in its own right, projecting
+    // it from the options it already binds, so the container can supply it to both
+    // validators. If it does not, construction fails immediately and visibly - which is
+    // the intended outcome, because it never degrades to an unconfigured policy.
+    public CreateUserRequestValidator(PasswordPolicyOptions passwordPolicy)
     {
-        ArgumentNullException.ThrowIfNull(passwordPolicyOptions);
+        ArgumentNullException.ThrowIfNull(passwordPolicy);
 
-        PasswordPolicyOptions policy = passwordPolicyOptions.Value;
+        // A local alias, kept because the rules below read the policy in several places and
+        // the parameter name matches the sibling validator's for consistency. It replaces an
+        // earlier `passwordPolicyOptions.Value` dereference, so the snapshot semantics the
+        // rules rely on are unchanged: the policy is read once, here, and never again while
+        // validating.
+        PasswordPolicyOptions policy = passwordPolicy;
 
         // MIGRATION: the two bracketed tokens are substituted from the BOUND POLICY
         // VALUES, reproducing UserController.GetUserCreateStatus L607-L609, which read the
@@ -294,17 +383,23 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // is immutable in this migration and therefore wins. Relative to the markup this is
         // a tightening, and it is recorded as one.
         //
-        // MIGRATION: the family name is REQUIRED even though it arrives as an optional
-        // value on the wire. The baseline script declared the column nullable, but the
-        // rebuild made it non-nullable and no later script relaxed it, so accepting a
-        // missing family name would defer a constraint violation to write time. Wire
-        // optionality exists only so that an omitted field and an explicitly blank one can
-        // be told apart and reported precisely.
+        // MIGRATION: the family name is REQUIRED. The baseline script declared the column
+        // nullable at 01.00.00:L100, but the 01.00.05 rebuild re-declared it NOT NULL at
+        // 01.00.05:L18 and the 01.00.06 rebuild preserved that at 01.00.06:L186, so accepting
+        // a missing family name would defer a constraint violation to write time. The two
+        // person names are therefore identical in every respect that matters here - same
+        // width, same requiredness, same message shape - and the rules below are deliberately
+        // symmetric. An earlier revision typed the family name as nullable on the request and
+        // reached it through a null-forgiving operator, on the stated ground that wire
+        // optionality let an omitted field and an explicitly blank one be told apart. NotEmpty
+        // cannot make that distinction: it treats a null and an empty string alike and emits
+        // one message either way, so the operator suppressed a warning without buying a
+        // behaviour. The request member is now non-nullable and the operator is gone.
         RuleFor(request => request.FirstName)
             .NotEmpty().WithMessage(FirstNameRequiredMessage)
             .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage);
 
-        RuleFor(request => request.LastName!)
+        RuleFor(request => request.LastName)
             .NotEmpty().WithMessage(LastNameRequiredMessage)
             .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage);
 
@@ -327,10 +422,37 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // name. Note also that the shipped host account is seeded with an email address of
         // "host", which fails even the format pattern below: validators bind inbound
         // requests only and are never a precondition for reading or writing existing rows.
+        //
+        // MIGRATION: the width is the TERMINAL 256, not the baseline 100, and the difference is
+        // a destructive-chain reading rather than a preference. Users.Email began as
+        // [Email] [nvarchar] (100) NOT NULL at 01.00.00.SqlDataProvider:L107 and kept that width
+        // through both table rebuilds, 01.00.05:L25 and 01.00.06:L193. The nine-column drop at
+        // 02.02.01:L50-51 then removed it from the table entirely, when credentials moved into the
+        // externally installed membership store, and 03.00.13:L109-110 re-created it as
+        // Email nvarchar(256) NULL, populated immediately afterwards from that store by the
+        // UPDATE at 03.00.13:L112-117. No ALTER COLUMN in any of the 88 scripts touches it
+        // again. The 100 therefore constrains a column that no longer exists, and AAP section
+        // 0.7.1.2 - the DDL chain is destructive, so only the terminal state is meaningful -
+        // makes the later declaration the one Rule T4 points at.
+        //
+        // MIGRATION: three independent authorities corroborate the 256, which is what turns the
+        // legacy MaxLength(256) at UserInfo.vb:L121 from an apparent over-promise into agreement:
+        // the terminal AddUser and UpdateUser procedures declare @Email nvarchar(256)
+        // (04.00.04:L704 and L1078), the persistence configuration for this column declares the
+        // same width, and the domain value object that describes an address enforces it too. A
+        // request bearing a 150-character address is consequently storable by the terminal
+        // database, so capping at 100 here would reject a value the schema accepts - the failure
+        // mode this rule has to avoid is being narrower than the column, not wider.
+        //
+        // MIGRATION: requiredness is NOT relaxed to match the re-created column's nullability.
+        // That column permits NULL only because it is a denormalised copy of the membership
+        // store's own column; the creation screen still demanded an address, so the required rule
+        // reproduces the screen and only the width is corrected.
         RuleFor(request => request.Email)
             .NotEmpty().WithMessage(EmailRequiredMessage)
             .MaximumLength(EmailMaximumLength).WithMessage(InvalidEmailMessage)
-            .Matches(LegacyEmailPattern).WithMessage(EmailFormatMessage);
+            .Must(candidate => EmailAddress.TryCreate(candidate, out _))
+                .WithMessage(EmailFormatMessage);
 
         // MIGRATION: MINIMUM LENGTH IS THE ONLY PASSWORD RULE, and the threshold is bound
         // from the policy rather than written down. The non-alphanumeric rule is vacuous
@@ -353,47 +475,84 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // independently - and THAT CORRECTION IS ITSELF A DIVERGENCE from measured legacy
         // behaviour, which is why it is recorded rather than quietly absorbed.
         //
-        // MIGRATION: no maximum length. The legacy inputs carried a markup ceiling of twenty
-        // characters and the baseline column matched it, but the rebuild widened that column
-        // and credentials later moved to an external store entirely, so the ceiling
-        // described a plaintext column that no longer exists. Under a one-way hash the
-        // stored width is independent of the input length. No defensive cap is introduced
-        // either, because the request contract explicitly records that none applies.
+        // MIGRATION: THERE IS NOW A MAXIMUM LENGTH, and this paragraph previously argued
+        // against having one. The reasoning it gave was sound as far as it went - the legacy
+        // markup ceiling of twenty characters and the baseline column that matched it both
+        // describe a plaintext column that no longer exists, and under a one-way hash the
+        // stored width is independent of the input length - but it answered the wrong
+        // question. The ceiling is not about storage. It is about bounding the work an
+        // unauthenticated caller can ask a deliberately expensive hash to perform, and about
+        // there being ONE answer to "how long may a credential be" across sign-in,
+        // registration, password change and portal creation rather than four.
+        //
+        // The number, the unit and the wording come from Validation/CredentialBounds.cs, which
+        // records why the unit is UTF-8 bytes and why the value is not the algorithm's own
+        // 72-byte significance limit. The bound is net-new, is a tightening, is generous enough
+        // that no credential a person chooses reaches it, and is recorded in
+        // MIGRATION_NOTES.md.
         //
         // MIGRATION: password retrieval is not carried forward. The legacy facility at
         // UserController.vb L433 returned a stored credential and passed the user by
         // reference to do it; the feature is dropped outright, and the by-reference idiom is
         // retired everywhere, so no endpoint, screen or rule in the target reads a password
         // back. Password RESET survives and is a different feature.
-        RuleFor(request => request.Password!)
+        //
+        // MIGRATION: THE RULE IS NOW UNCONDITIONAL. An earlier revision guarded every
+        // credential rule with "when random generation was not requested". The generation
+        // branch is removed from the contract - a generated credential cannot be delivered,
+        // because the mail subsystem is excluded and no endpoint returns a credential - so
+        // there is one creation path and it always carries a credential. The guard is gone
+        // rather than left as an always-true condition, and the null-forgiving operator this
+        // rule used to need is gone with it, because the member is no longer nullable.
+        RuleFor(request => request.Password)
             .NotEmpty().WithMessage(invalidPasswordMessage)
             .MinimumLength(policy.MinRequiredPasswordLength).WithMessage(invalidPasswordMessage)
-            .When(request => !request.GenerateRandomPassword);
+            .Must(CredentialBounds.IsWithinMaximumByteLength)
+                .WithMessage(CredentialBounds.MaximumByteLengthMessage);
 
-        // MIGRATION: the confirmation comparison is conditional on the same branch as the
-        // password itself. The legacy screen offered a genuinely separate path on which the
-        // server generated the credential and both inputs were bypassed, so applying either
-        // rule on that path would reject a request the legacy screen accepted. The
-        // comparison is ordinal, matching the legacy string inequality test.
+        // MIGRATION: the non-alphanumeric count, ValidatePassword L1078-L1079. This rule was previously
+        // MISSING while its number was still substituted into the message above, so a deployment that
+        // configured a minimum above zero produced a message asserting a requirement this boundary never
+        // checked - and the credential then reached the hasher, which DOES check it and throws, turning a
+        // field-level problem into an unhandled fault. The rule is expressed even though the shipped
+        // configuration makes it inert (minRequiredNonalphanumericCharacters="0",
+        // Website/release.config:L243) precisely because the value is configurable: omitting a rule on
+        // the ground that today's configuration cannot reach it is what allowed the gap to exist.
+        //
+        // A configured minimum of zero SKIPS THE RULE ENTIRELY rather than registering a comparison that
+        // can never fail, mirroring the hasher, which skips the identical check for the identical reason.
+        if (policy.MinRequiredNonAlphanumericCharacters > 0)
+        {
+            int minimumNonAlphanumericCharacters = policy.MinRequiredNonAlphanumericCharacters;
+
+            RuleFor(request => request.Password)
+                .Must(password =>
+                    HasEnoughNonAlphanumericCharacters(password, minimumNonAlphanumericCharacters))
+                .WithMessage(invalidPasswordMessage)
+                .When(request => !string.IsNullOrEmpty(request.Password));
+        }
+
+        // MIGRATION: the confirmation comparison is unconditional for the same reason. The
+        // comparison is ordinal, matching the legacy string inequality test at
+        // User.ascx.vb L152. Two absent values compare equal and pass here, which is
+        // correct: the credential's own presence rule reports the omission, so one omission
+        // yields one message rather than two.
         RuleFor(request => request.ConfirmPassword)
-            .Equal(request => request.Password).WithMessage(PasswordMismatchMessage)
-            .When(request => !request.GenerateRandomPassword);
+            .Equal(request => request.Password).WithMessage(PasswordMismatchMessage);
 
-        // MIGRATION: the recovery question and answer are inert on the shipped
-        // configuration. The provider's question-and-answer attribute at
-        // Website/release.config L241 is false, and the legacy screen corroborates it by
-        // declaring both input rows hidden and skipping their checks unless the provider
-        // demanded them. The guard below reproduces that conditionality faithfully rather
-        // than hard-wiring the absence, so the rules exist but cannot fire by default. Four
-        // related strings sit in the resource files; their presence records what the wording
-        // WOULD be and is not evidence that anything was enforced.
-        RuleFor(request => request.PasswordQuestion!)
-            .NotEmpty().WithMessage(InvalidQuestionMessage)
-            .When(_ => policy.RequiresQuestionAndAnswer);
-
-        RuleFor(request => request.PasswordAnswer!)
-            .NotEmpty().WithMessage(InvalidAnswerMessage)
-            .When(_ => policy.RequiresQuestionAndAnswer);
+        // MIGRATION: NO RECOVERY QUESTION OR ANSWER RULE, AND NO REQUEST MEMBER TO ATTACH ONE
+        // TO. The provider's question-and-answer attribute at Website/release.config L241 is
+        // false and the legacy screen hid both inputs and skipped their checks unless the
+        // provider demanded them, so nothing was enforced in the observed installation. An
+        // earlier revision reproduced that conditionality faithfully, gating two rules on the
+        // bound policy flag - but the pair has no target counterpart at all: the owning
+        // service contract states no member declares a question or answer parameter, because
+        // the pair existed to guard credential retrieval, which is dropped outright. A rule
+        // that could only fire for a field the contract does not accept, storing an answer
+        // nothing can later check, is worse than no rule, so both rules and both request
+        // members are removed. The bound flag is consequently unsatisfiable in the target and
+        // PasswordPolicyOptions.Validate rejects it at start-up, which is what stops a
+        // deployment from believing it switched the requirement on.
 
         // MIGRATION: an unconfigured strength pattern SKIPS THE RULE ENTIRELY rather than
         // compiling an empty one. An empty pattern matches every input, so applying it would
@@ -410,10 +569,9 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
                 RegexOptions.CultureInvariant,
                 PatternMatchTimeout);
 
-            RuleFor(request => request.Password!)
+            RuleFor(request => request.Password)
                 .Matches(configuredStrengthPattern).WithMessage(invalidPasswordMessage)
-                .When(request => !request.GenerateRandomPassword
-                    && !string.IsNullOrEmpty(request.Password));
+                .When(request => !string.IsNullOrEmpty(request.Password));
         }
 
         // MIGRATION: no lower-bound test on any identifier, and none is even reachable -
@@ -423,9 +581,81 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // seeds make the usual idioms actively wrong: the portal key seeds at negative one
         // and the role and tab keys seed at zero, so both values are legitimate keys, while
         // the legacy absent-integer sentinel is also negative one. A lower-bound or
-        // inequality test against either value would reject real rows. The remaining
-        // members of this contract are three flags, and a flag has no invalid value to
-        // reject: the generation flag selects the branch guarded above, and the approval and
-        // notification flags are consumed by the service.
+        // inequality test against either value would reject real rows. The only remaining
+        // member of this contract is the approval flag, and a flag has no invalid value to
+        // reject: it is consumed by the service, which decides what an unapproved new account
+        // means.
+    }
+
+
+    /// <summary>
+    /// Reports whether a submitted credential carries at least the configured number of
+    /// characters outside the ranges <c>0-9</c>, <c>A-Z</c> and <c>a-z</c>.
+    /// </summary>
+    /// <param name="password">The submitted credential, which may be absent or blank.</param>
+    /// <param name="minimum">
+    /// The configured minimum count. The caller registers this rule only when the minimum is
+    /// above zero, so a zero minimum performs no scan at all.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when the credential carries at least <paramref name="minimum"/>
+    /// such characters, and also when it is absent or blank, for the reason given on
+    /// <see cref="CredentialBounds.IsWithinMaximumByteLength(string?)"/>.
+    /// </returns>
+    /// <remarks>
+    /// The classification reproduces the legacy character class <c>[^0-9a-zA-Z]</c> declared at
+    /// <c>Library/Components/Users/UserController.vb:L1078</c> and compared against the
+    /// configured minimum at L1079. It is deliberately <b>not</b> a Unicode-aware test: the
+    /// framework's culture-aware letter-or-digit check would classify an accented letter as
+    /// alphanumeric, so such a character would stop contributing to the total and the rule would
+    /// silently widen. This is the identical test
+    /// <c>DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs</c> performs, so the
+    /// boundary and the primitive agree on which credentials satisfy the rule. The scan stops as
+    /// soon as the minimum is reached, and the value itself is never retained or echoed.
+    /// </remarks>
+    private static bool HasEnoughNonAlphanumericCharacters(string? password, int minimum)
+    {
+        if (string.IsNullOrEmpty(password))
+        {
+            return true;
+        }
+
+        int found = 0;
+
+        foreach (char character in password)
+        {
+            if (!char.IsAsciiLetterOrDigit(character) && ++found >= minimum)
+            {
+                return true;
+            }
+        }
+
+        return found >= minimum;
+    }
+
+    /// <summary>
+    /// Reports whether a supplied address satisfies the single legacy shape rule, by asking the
+    /// Domain value object that owns that rule rather than by restating it.
+    /// </summary>
+    /// <param name="email">The address as supplied by the caller.</param>
+    /// <returns>
+    /// <see langword="true"/> when the address is well formed, or when no address was supplied
+    /// at all; <see langword="false"/> only when a supplied address is malformed.
+    /// </returns>
+    /// <remarks>
+    /// An absent or blank value returns <see langword="true"/> on purpose. Requiredness is the
+    /// business of the separate emptiness rule, and reporting the same field twice for one
+    /// mistake would put two messages on it. Note that the check is applied to the WHOLE value:
+    /// the factory anchors the legacy rule rather than searching within the string, which is the
+    /// documented tightening described at the rule site.
+    /// </remarks>
+    private static bool BeAWellFormedEmailAddress(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return true;
+        }
+
+        return EmailAddress.TryCreate(email, out _);
     }
 }

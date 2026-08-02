@@ -52,32 +52,6 @@ describe('YesNoPipe', () => {
   });
 
   it('maps both members of its declared domain, exhaustively and distinctly', () => {
-    // WHAT THIS TEST DOES NOT CLAIM, corrected on review. It previously asserted
-    // that the pipe "branches on the boolean itself, never on truthiness", and
-    // that claim was not provable by these expectations. The declared parameter
-    // type is `boolean`, so its domain has exactly two members, and for both of
-    // them `value === true` and a plain truthiness test return the same wording.
-    // The two formulations are indistinguishable to any test that respects the
-    // declared type - an equivalent mutant, which by definition no assertion can
-    // kill - so claiming a distinction here overstated what the code below shows.
-    //
-    // The strict comparison in the implementation is retained as defence in depth
-    // and is documented there, not here. Proving it observable would require
-    // accepting a runtime-invalid input, and non-booleans are deliberately NOT
-    // supported: the signature is `transform(value: boolean): string`, so
-    // `pipe.transform('true')` fails type checking, and that failure is the
-    // intended mechanism. The legacy `roles.ascx` L68-L69 and L74-L75 string
-    // comparison is not reproduced, and no cast and no compiler suppression is
-    // used to smuggle a string in here - either device would manufacture a
-    // scenario the application cannot produce and would weaken the type guarantee
-    // that actually protects this pipe. The workspace compiles with `strict`
-    // enabled, and `strictTemplates` extends the same check to every binding that
-    // reaches this pipe from a template.
-    //
-    // WHAT IT DOES CLAIM, asserted below: the domain is covered exhaustively, each
-    // member maps to one specific wording, and the two wordings are different. A
-    // regression that collapsed the branch - returning one wording for both
-    // inputs, or swapping them - fails here.
     expect(pipe.transform(false)).toBe('No');
     expect(pipe.transform(false)).not.toBe('Yes');
 

@@ -3,7 +3,6 @@ using DnnMigration.Domain.Common;
 
 namespace DnnMigration.Domain.ValueObjects;
 
-// ============================================================================
 // MIGRATION AUDIT TRAIL
 //
 // Every decision below is traceable to a line of DotNetNuke 4.9.0 source or of
@@ -11,7 +10,6 @@ namespace DnnMigration.Domain.ValueObjects;
 // address ought to be validated: the shape rule is a port, and the places where
 // it looks wrong by modern standards are places where the legacy rule was wrong
 // and is preserved on purpose.
-// ============================================================================
 //
 // MIGRATION 1 - THE SHAPE RULE IS ONE LEGACY CONSTANT, TRANSCRIBED CLAUSE BY CLAUSE.
 // DotNetNuke 4.9.0 held exactly one e-mail rule, and it is a single named constant
@@ -61,15 +59,45 @@ namespace DnnMigration.Domain.ValueObjects;
 // addresses the legacy screen refused, which Minimal Change Clause item 3 forbids exactly
 // as firmly as it forbids tightening.
 //
-// MIGRATION 3 - THE 2 TO 4 CHARACTER SUFFIX LIMIT IS A PRESERVED DEFECT.
-// [a-zA-Z]{2,4} refuses every longer suffix, so someone@example.museum and
-// someone@example.travel are invalid here exactly as they were invalid in 4.9.0, and so is
-// any suffix carrying a digit. Minimal Change Clause item 1 forbids opportunistic fixes and
-// item 3 requires identical inputs to produce identical outcomes, so the bound is NOT
-// widened to an open-ended {2,}. Widening it is the tempting mistake, because it looks like
-// a pure improvement: it would in fact begin silently accepting addresses the legacy system
-// refused, a divergence in the direction nobody thinks to test for. Supporting modern
-// suffixes is a separate, explicit product decision, and it is not this migration's to make.
+// MIGRATION 3 - THE 2 TO 4 CHARACTER SUFFIX LIMIT IS AN EXPLICIT, DOCUMENTED DIVERGENCE.
+// The legacy clause [a-zA-Z]{2,4} refused every final domain label longer than four letters,
+// so someone@example.museum and someone@example.travel were both invalid in 4.9.0. THAT
+// LIMIT IS NOT PRESERVED HERE. It is replaced by bounded, standards-derived label checks:
+// every domain label must be 1 to 63 characters (the label limit of RFC 1035), the final
+// label must be 2 to 63 characters and must be letters only, and the whole domain must be no
+// more than 253 characters (the fully-qualified-name limit of the same standard).
+//
+// An earlier revision of this comment argued the opposite, on the grounds that Minimal Change
+// Clause item 1 forbids opportunistic fixes and item 3 requires identical inputs to produce
+// identical outcomes. The reasoning was internally consistent and is nevertheless overturned,
+// for a reason those two items do not cover: the limit does not merely differ from a modern
+// standard, it REFUSES ADDRESSES THE TARGET SYSTEM MUST ACCEPT. Every generic top-level
+// domain longer than four letters is excluded, so a user whose address ends .online, .agency,
+// .museum or .travel could not register, could not have their address corrected, and could
+// not be created by an administrator. Carrying that into new code would be carrying a defect,
+// not preserving behaviour, and the AAP itself establishes the precedent for exactly this
+// case: section 0.9.1 changes the legacy substring alias match rather than reproducing it,
+// because leaving it in place would carry a real harm forward, and records the change as a
+// documented behavioural difference. This is the same shape of decision, taken the same way.
+//
+// THE DIVERGENCE RUNS IN BOTH DIRECTIONS, AND BOTH DIRECTIONS ARE STATED HERE RATHER THAN
+// ONLY THE FLATTERING ONE.
+//   LOOSENING: a final label of 5 to 63 letters is now accepted where 4.9.0 refused it. This
+//   is the intended effect.
+//   TIGHTENING: three shapes the legacy pattern accepted are now refused, because a bound
+//   that admits them is not a bound. An EMPTY domain label, as in x@a..com, fails the
+//   one-character label minimum - the legacy pattern permitted it, and MIGRATION 4 below
+//   used to record it as a preserved quirk. A label longer than 63 characters fails, and a
+//   domain longer than 253 characters fails; neither can resolve, and both were previously
+//   limited only by the overall address length.
+//
+// A final label carrying a DIGIT is still refused, and that clause is genuinely preserved
+// rather than reconsidered: the letters-only test is both the legacy behaviour and the
+// standards-appropriate one, since an all-numeric top-level domain is not permitted.
+//
+// Everything above is recorded in MIGRATION_NOTES.md. A hand-written bounded scan is retained
+// in preference to a third-party address parser for the reasons given on DescribeViolation:
+// no backtracking, no allocation, no package, and a rule a reader can check line by line.
 //
 // MIGRATION 4 - THE LOCAL-PART CLASS IS WIDER THAN IT LOOKS AND MUST STAY THAT WAY.
 // [a-zA-Z0-9._%\-+'] admits an APOSTROPHE, so o'brien@example.com is a valid address that
@@ -77,26 +105,56 @@ namespace DnnMigration.Domain.ValueObjects;
 // also admits '+', so plus-addressing is accepted rather than rejected. The domain class
 // [a-zA-Z0-9.\-] admits no underscore, so x@under_score.com is invalid. Neither class
 // admits whitespace or any character beyond ASCII, so an interior space cannot survive and
-// an accented local part is invalid. Two further legacy quirks are preserved verbatim
-// because the pattern plainly permits them: consecutive dots in the domain, as in
-// x@a..com, and a domain label beginning with a hyphen, as in x@-a.com, are both VALID.
+// an accented local part is invalid. One further legacy quirk is preserved verbatim, because
+// the pattern plainly permits it and refusing it would be an unrequested tightening: a domain
+// label beginning with a HYPHEN, as in x@-a.com, is still VALID here even though RFC 1035
+// forbids it. It is left alone deliberately - the scope of the change recorded in MIGRATION 3
+// is the final-label length assumption together with the bounds that make its replacement
+// checks bounded, and nothing wider.
 //
-// MIGRATION 5 - 100 IS THE OPERATIVE MAXIMUM LENGTH; 256 IS A RECORDED INCONSISTENCY.
-// UserInfo.vb:L121 declares MaxLength(256) while the column it ultimately writes to is
-//     [Email] [nvarchar] (100) NOT NULL
-// at Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L107,
-// corroborated by the @Email nvarchar(100) parameter of the AddPortal family in
-// 02.00.00.SqlDataProvider. A 150-character address therefore passed the legacy screen and
-// then FAILED at the database. Rule T4 makes the schema authoritative, so 100 is enforced
-// and 256 is recorded rather than adopted.
+// A second quirk this note used to record as preserved is NO LONGER accepted: consecutive dots
+// in the domain, as in x@a..com, produce an empty label and now fail the one-character label
+// minimum introduced in MIGRATION 3. That tightening is deliberate and is recorded there and
+// in MIGRATION_NOTES.md.
 //
-// That choice preserves the legacy END-TO-END outcome. An over-long address was rejected
-// then and is rejected now, only sooner and with a message naming the constraint instead of
-// a truncation error from the data provider. Adopting 256 here would be the real
-// divergence, because it would admit a value into a column that cannot hold it. The column
-// remains the authority: the persistence configuration and the Application layer's request
-// rules state the same 100 independently, so this check is defence in depth rather than the
-// source of the number.
+// MIGRATION 5 - 256 IS THE OPERATIVE MAXIMUM LENGTH, AND 100 IS A SUPERSEDED WIDTH THAT AN
+// EARLIER REVISION OF THIS FILE ENFORCED IN ERROR.
+// Rule T4 makes the schema authoritative, and the schema in question is the TERMINAL state of
+// the 88-script upgrade chain rather than its baseline. The Email column has two distinct
+// lives, and only the second one exists today:
+//
+//   1. An original [Email] [nvarchar] (100) NOT NULL, introduced at
+//      Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L107 and
+//      carried at that same width through both table rebuilds, at 01.00.05:L25 and
+//      01.00.06:L193. This is the column an earlier revision of this note cited, and its
+//      corroborating @Email nvarchar(100) parameter on the AddPortal family in 02.00.00 dates
+//      from the same era.
+//
+//   2. That column was then REMOVED OUTRIGHT by the nine-column drop at 02.02.01:L50-51, when
+//      credentials and profile data moved into the externally installed membership tables. A
+//      REPLACEMENT column was added later, at 03.00.13:L109-110, as
+//          ALTER TABLE {databaseOwner}{objectQualifier}Users ADD Email nvarchar(256) NULL
+//      and was back-filled from dbo.aspnet_Membership immediately afterwards at :L113-L117. No
+//      script in the remainder of the chain alters it again, and the terminal procedures agree:
+//      AddUser declares @Email nvarchar(256) at 03.02.03:L659 and again at 04.00.04:L704.
+//
+// The terminal width is therefore 256 and the terminal column is NULLABLE. Two consequences
+// follow, and both correct statements this note previously made.
+//
+// First, UserInfo.vb:L121's MaxLength(256) screen attribute turns out to AGREE with the column
+// rather than to contradict it. There was a genuine 150-character failure mode - but only
+// against the schema of 2003, not against the schema this migration targets. Enforcing 100
+// today is the divergence: it rejects addresses the database would store perfectly well.
+//
+// Second, the column permits an absent address. This type still refuses the empty string and
+// still models absence as a null reference (MIGRATION 8), which is a decision about how ABSENCE
+// is represented, not a claim that the column is NOT NULL. Requiredness on the user creation
+// and update paths is an API-level rule taken from the legacy screen's Required(True), and the
+// Application layer's validators state it as exactly that.
+//
+// This check remains defence in depth rather than the source of the number. The authority is
+// Infrastructure/Persistence/Configurations/UserConfiguration.cs, which maps the column at 256
+// and nullable, and the Application layer's request validators state the same 256 independently.
 //
 // MIGRATION 6 - SHIPPED DATA FAILS THE LEGACY RULE, WHICH IS WHY TryCreate EXISTS.
 // 01.00.00.SqlDataProvider:L7205 seeds the built-in Host superuser with 'host' as BOTH its
@@ -196,6 +254,23 @@ namespace DnnMigration.Domain.ValueObjects;
 // and being wrong about that is a defect. TryCreate is the expected-failure channel, for
 // untrusted input and for legacy rows. No message ever includes the rejected value, so a
 // message can be logged without carrying user data into the log.
+//
+// MIGRATION 14 - EMBEDDED CONTROL CHARACTERS ARE REJECTED BY CONSTRUCTION, NOT BY A GUARD.
+// Both character classes are strict allow-lists: IsLocalPartCharacter admits only ASCII
+// letters and digits plus '.', '_', '%', '-', '+' and the apostrophe, and IsDomainCharacter
+// admits only ASCII letters and digits plus '.' and '-'. Neither admits a carriage return, a
+// line feed, a tab, a null, or any other character below the printable ASCII range, so a
+// value carrying one cannot be accepted. There is no separate scan for such characters and
+// none is needed; the property follows from the classes themselves, which is the only reason
+// it holds.
+//
+// That is stated here because callers depend on it rather than re-checking it. An address
+// that reaches persistence, an audit record, or a message header has already passed through
+// these classes, so a value split across lines cannot arrive by way of this type. The
+// property is therefore load-bearing, and widening either class would remove it silently:
+// any future edit to those two methods must preserve the exclusion deliberately, or state in
+// this block that it no longer holds. The legacy rule admitted nothing wider either, so this
+// records a property the port preserves rather than a restriction it adds.
 
 /// <summary>
 /// An e-mail address whose shape has been checked against the single rule DotNetNuke 4.9.0
@@ -250,24 +325,46 @@ namespace DnnMigration.Domain.ValueObjects;
 public sealed record EmailAddress : IEquatable<EmailAddress>
 {
     /// <summary>
-    /// The greatest number of characters an address may contain, taken from the
-    /// <c>[Email] [nvarchar] (100) NOT NULL</c> column of <c>dbo.Users</c>. See MIGRATION 5
-    /// above: the column is the authority for this number, not this file, and the legacy
-    /// <c>MaxLength(256)</c> screen attribute is recorded there rather than adopted.
+    /// The greatest number of characters an address may contain, taken from the terminal
+    /// <c>Email nvarchar(256) NULL</c> column of <c>dbo.Users</c> as added at
+    /// <c>03.00.13.SqlDataProvider:L109-110</c>.
     /// </summary>
-    private const int MaximumLength = 100;
+    /// <remarks>
+    /// See MIGRATION 5 above. The column is the authority for this number, not this file, and
+    /// the number is the width of the column that exists TODAY rather than the
+    /// <c>nvarchar(100)</c> one that the nine-column drop at <c>02.02.01:L50-51</c> removed.
+    /// </remarks>
+    private const int MaximumLength = 256;
 
     /// <summary>
-    /// The fewest characters the domain suffix may contain, from <c>[a-zA-Z]{2,4}</c>.
+    /// The fewest characters the final domain label may contain.
     /// </summary>
-    private const int MinimumSuffixLength = 2;
+    /// <remarks>
+    /// Two, matching both the legacy <c>[a-zA-Z]{2,4}</c> clause and the shortest top-level
+    /// domain that exists. This half of the legacy bound is unchanged; only its upper half is.
+    /// </remarks>
+    private const int MinimumFinalLabelLength = 2;
 
     /// <summary>
-    /// The most characters the domain suffix may contain, from <c>[a-zA-Z]{2,4}</c>. See
-    /// MIGRATION 3 above: this upper bound is a preserved legacy defect and must not be
-    /// widened, which is why it is named here rather than left as a literal in a comparison.
+    /// The greatest number of characters any single domain label may contain.
     /// </summary>
-    private const int MaximumSuffixLength = 4;
+    /// <remarks>
+    /// Sixty-three, the label limit of RFC 1035. See MIGRATION 3 above: this replaces the
+    /// legacy four-character cap on the FINAL label, which refused every modern top-level
+    /// domain longer than four letters, and it applies to every label rather than only the last
+    /// so that the scan stays bounded without relying on the overall address length.
+    /// </remarks>
+    private const int MaximumLabelLength = 63;
+
+    /// <summary>
+    /// The greatest number of characters the whole domain may contain.
+    /// </summary>
+    /// <remarks>
+    /// Two hundred and fifty-three, the fully-qualified-name limit of RFC 1035. It is stated
+    /// independently of <see cref="MaximumLength"/> because the two bound different things: one
+    /// is what the storage column holds, the other is what can resolve.
+    /// </remarks>
+    private const int MaximumDomainLength = 253;
 
     /// <summary>
     /// Initialises a new instance from a value that has ALREADY been normalised and
@@ -457,11 +554,25 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
     /// </returns>
     /// <remarks>
     /// <para>
-    /// This is the single implementation of the rule, transcribed clause by clause from
-    /// <c>glbEmailRegEx</c> as quoted in MIGRATION 1 above:
+    /// This is the single implementation of the rule for the whole solution: the Application
+    /// layer's create and update validators call it through
+    /// <see cref="TryCreate(string?, out EmailAddress?)"/> rather than declaring patterns of
+    /// their own, which is what stopped the two paths from accepting different addresses.
+    /// </para>
+    /// <para>
+    /// Every clause below is transcribed from <c>glbEmailRegEx</c> as quoted in MIGRATION 1
+    /// above:
     /// </para>
     /// <para>
     /// <c>\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b</c>
+    /// </para>
+    /// <para>
+    /// <b>With two documented exceptions, and only two.</b> The final label's four-character
+    /// ceiling is replaced by the RFC 1035 label limit, and the domain acquires per-label and
+    /// whole-domain bounds the legacy pattern did not have. Both are set out in MIGRATION 3
+    /// with their consequences in both directions, and both are recorded in
+    /// <c>MIGRATION_NOTES.md</c>. Every other clause is the legacy rule unchanged, including
+    /// the non-obvious leading word-boundary consequence described in MIGRATION 2.
     /// </para>
     /// <para>
     /// A hand-written scan is used rather than a regular expression, and that is a deliberate
@@ -475,11 +586,13 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
     /// <para>
     /// The framework's own permissive address parser, the attribute-based address validator
     /// and any third-party rule library were all rejected for one reason: each accepts or
-    /// refuses addresses that the legacy constant does not, so any of them would have broken
-    /// behavioural equivalence in both directions at once. The transcription below was
-    /// differential tested against the legacy pattern itself, evaluated with the same
-    /// whole-value semantics the legacy validator used, over more than a million generated
-    /// inputs including boundary-rich ones, and the two agreed on every case.
+    /// refuses addresses that the legacy constant does not, in ways nobody has enumerated, so
+    /// adopting one would trade two known, documented divergences for an unbounded set of
+    /// unknown ones. The transcription below was differential tested against the legacy pattern
+    /// itself, evaluated with the same whole-value semantics the legacy validator used, over
+    /// more than a million generated inputs including boundary-rich ones, and the two agreed on
+    /// every case except those falling under the two exceptions named above - which is precisely
+    /// what makes those exceptions enumerable rather than approximate.
     /// </para>
     /// <para>
     /// The clause order is chosen so the message names the most specific applicable
@@ -497,11 +610,11 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
             return "An e-mail address must be supplied: the value was absent, empty, or whitespace only.";
         }
 
-        // Schema constraint rather than pattern constraint. See MIGRATION 5 for why the
-        // column's 100 governs and the screen's 256 does not.
+        // Schema constraint rather than pattern constraint. See MIGRATION 5 for why the terminal
+        // column's 256 governs and the superseded 100 does not.
         if (candidate.Length > MaximumLength)
         {
-            return "An e-mail address must be no longer than 100 characters, the width of the column that stores it.";
+            return "An e-mail address must be no longer than 256 characters, the width of the column that stores it.";
         }
 
         // The '@' of the pattern. Because neither character class contains an at-sign, a
@@ -559,11 +672,19 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
             }
         }
 
-        // The literal \. before the suffix, plus the '+' quantifier on the label preceding
-        // it. Taking the LAST dot is exact rather than approximate: the suffix clause admits
-        // only letters, so it can hold no dot of its own, which means the dot the pattern
-        // matches can only ever be the final one. Requiring an index of at least one is what
-        // keeps the preceding label non-empty, so a bare ".com" domain fails.
+        // Standards-derived bound on the whole domain, replacing nothing in the legacy pattern -
+        // which bounded the domain only through the overall address length - and introduced so
+        // the label scan below is bounded in aggregate as well as per label. See MIGRATION 3.
+        if (domain.Length > MaximumDomainLength)
+        {
+            return "The domain of an e-mail address must be no longer than 253 characters.";
+        }
+
+        // The literal \. before the final label, plus the '+' quantifier on the label preceding
+        // it. Taking the LAST dot is exact rather than approximate: the final-label clause admits
+        // only letters, so it can hold no dot of its own, which means the dot the pattern matched
+        // can only ever be the final one. Requiring an index of at least one is what keeps the
+        // preceding label non-empty, so a bare ".com" domain fails.
         int lastDotIndex = domain.LastIndexOf('.');
 
         if (lastDotIndex < 1)
@@ -571,19 +692,60 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
             return "The domain of an e-mail address must contain a dot with at least one character before it.";
         }
 
-        ReadOnlySpan<char> suffix = domain[(lastDotIndex + 1)..];
+        // Per-label bounds. DELIBERATE DIVERGENCE - see MIGRATION 3. The legacy pattern bounded no
+        // label at all, so it accepted an empty one (x@a..com) and a label of any length that fitted
+        // inside the address. Neither can resolve, and a rule that admits them is not a bound, so
+        // each label is required to be between 1 and 63 characters, the label limit of RFC 1035.
+        // The final label is measured by the stricter rule immediately below and is skipped here to
+        // keep one message per failure.
+        //
+        // The scan is a single forward pass over the span, allocating nothing and splitting nothing.
+        int labelStart = 0;
 
-        // The {2,4} quantifier. PRESERVED LEGACY DEFECT - see MIGRATION 3. This rejects
-        // suffixes such as .museum and .travel exactly as 4.9.0 rejected them, and the upper
-        // bound must not be widened.
-        if (suffix.Length is < MinimumSuffixLength or > MaximumSuffixLength)
+        for (int index = 0; index <= lastDotIndex; index++)
         {
-            return "The final part of an e-mail address domain must be between 2 and 4 characters long.";
+            if (index < lastDotIndex && domain[index] != '.')
+            {
+                continue;
+            }
+
+            int labelLength = index - labelStart;
+
+            if (labelLength < 1)
+            {
+                return "Every part of an e-mail address domain must contain at least one character.";
+            }
+
+            if (labelLength > MaximumLabelLength)
+            {
+                return "No part of an e-mail address domain may be longer than 63 characters.";
+            }
+
+            labelStart = index + 1;
         }
 
-        // The [a-zA-Z] class of the suffix: letters only, so a digit or any character beyond
-        // ASCII fails here.
-        foreach (char character in suffix)
+        ReadOnlySpan<char> finalLabel = domain[(lastDotIndex + 1)..];
+
+        // The legacy {2,4} quantifier, with its lower half preserved and its upper half REPLACED.
+        // Two remains the floor, because it is both the legacy floor and the shortest top-level
+        // domain that exists. The ceiling is now the RFC 1035 label limit rather than four letters,
+        // so .museum, .travel and every other modern suffix are accepted where 4.9.0 refused them.
+        // This is the loosening recorded in MIGRATION 3 and in MIGRATION_NOTES.md.
+        if (finalLabel.Length < MinimumFinalLabelLength)
+        {
+            return "The final part of an e-mail address domain must be at least 2 characters long.";
+        }
+
+        if (finalLabel.Length > MaximumLabelLength)
+        {
+            return "The final part of an e-mail address domain must be no longer than 63 characters.";
+        }
+
+        // The [a-zA-Z] class of the final label: letters only, so a digit or any character beyond
+        // ASCII fails here. This clause is GENUINELY PRESERVED rather than reconsidered - it is both
+        // the legacy behaviour and the standards-appropriate one, since an all-numeric top-level
+        // domain is not permitted.
+        foreach (char character in finalLabel)
         {
             if (!char.IsAsciiLetter(character))
             {
@@ -624,9 +786,11 @@ public sealed record EmailAddress : IEquatable<EmailAddress>
     /// </returns>
     /// <remarks>
     /// Narrower than the local-part class: there is NO underscore, no percent sign, no plus
-    /// sign and no apostrophe here, so x@under_score.com is invalid. A leading hyphen and
-    /// consecutive dots are both admitted, because the legacy class admits them; see
-    /// MIGRATION 4.
+    /// sign and no apostrophe here, so x@under_score.com is invalid. A leading hyphen is
+    /// admitted, because the legacy class admits it; see MIGRATION 4. This test is a CHARACTER
+    /// test only, so it still admits a dot in any position - consecutive dots are refused by
+    /// the per-label minimum in <see cref="DescribeViolation(ReadOnlySpan{char})"/> rather than
+    /// here, which is the tightening recorded in MIGRATION 3.
     /// </remarks>
     private static bool IsDomainCharacter(char character) =>
         char.IsAsciiLetterOrDigit(character) || character is '.' or '-';

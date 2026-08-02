@@ -1,0 +1,35 @@
+<!--
+  The banner landmark.
+
+  The element order and the class names below are not free choices: they are the
+  selector contract that `header.component.scss` documents and compiles against.
+  `<header>` is the Flexbox container, `.app-header__brand` the leading identity
+  affordance, and `.app-header__actions` the trailing cluster that the stylesheet
+  pushes to the far edge with `margin-inline-start: auto` from the medium
+  breakpoint upward.
+
+  The action cluster is rendered UNCONDITIONALLY even when no account is signed
+  in, and its two children are the conditional part. That is deliberate: the
+  stylesheet hides the cluster with `.app-header__actions:empty { display: none }`,
+  and a control-flow block leaves only comment anchors behind when its condition
+  is false — which `:empty` tolerates. Guarding the container itself instead would
+  duplicate the same condition in two places and make the stylesheet's `:empty`
+  rule unreachable dead code.
+-->
+<header>
+  <a class="app-header__brand" [routerLink]="brandLink">{{ applicationName }}</a>
+
+  <div class="app-header__actions">
+    @if (hasSignedInUser) {
+      <span class="app-header__user">{{ userName }}</span>
+      <button
+        type="button"
+        class="app-header__logout"
+        [disabled]="signingOut"
+        (click)="onSignOutClick()"
+      >
+        Sign out
+      </button>
+    }
+  </div>
+</header>

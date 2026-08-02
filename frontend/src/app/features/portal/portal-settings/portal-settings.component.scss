@@ -1,3 +1,53 @@
+// =============================================================================
+//  COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+//
+//  This stylesheet is reached through `styleUrl` on its paired component, so it
+//  is compiled by `ng build` and by `ng test`, ships inside this screen's lazy
+//  chunk, and IS measured against the `anyComponentStyle` budget that
+//  `angular.json` caps at 8 kB as an ERROR. All three companions exist:
+//
+//      portal-settings.component.ts       present
+//      portal-settings.component.html     present
+//      portal-settings.component.spec.ts  present
+//
+//  The screen this styles is the route /portals/:portalId/settings, declared as a
+//  `loadComponent` entry in `src/app/app.routes.ts`.
+//
+//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
+//  encapsulation with the component's own content attribute, so a class name
+//  that drifts does not error — it silently matches nothing and the screen
+//  renders unstyled. The template emits exactly this vocabulary, and every
+//  entry below was checked against the template rather than assumed:
+//
+//      .portal-settings
+//      .portal-settings__tablist
+//      .portal-settings__tab
+//      .portal-settings__tab:hover
+//      .portal-settings__tab[aria-selected='true']
+//      .portal-settings__toggle
+//      .portal-settings__panel
+//      .portal-settings__intro
+//      .portal-settings__section
+//      .portal-settings__grid
+//      .portal-settings__field
+//      .portal-settings__label
+//      .portal-settings__control
+//      .portal-settings__control--medium
+//      .portal-settings__control--narrow
+//      .portal-settings__control > :is([type='checkbox'], [type='radio'])
+//      .portal-settings__notice
+//      .portal-settings__actions
+//
+//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
+//  carries nine shared components — page header, data table, pagination, form
+//  field, search input, confirm dialog, error banner, loading spinner and empty
+//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
+//  and the wire models under `core/models/`. It carries no portal.service.ts and
+//  no signal store, so this component performs no HTTP: its data arrives through
+//  inputs and its intent leaves through outputs. That seam is what makes every
+//  branch below directly testable from the paired specification, with no HTTP
+//  testing controller involved.
+// =============================================================================
 // Portal settings screen (route /portals/:portalId/settings).
 //
 // The legacy screen (Website/admin/Portal/sitesettings.ascx, 568 lines) is built
@@ -19,9 +69,7 @@
 
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
 //  MEASURES
-// -----------------------------------------------------------------------------
 // The token vocabulary declares no width or measure token, and the spacing scale
 // stops at --space-8 (2.5rem), so the two narrow field steps are composed by
 // ADDING tokens rather than by naming a length. Compile-time Sass names, so the
@@ -33,9 +81,7 @@
 $label-measure: calc(var(--space-8) + var(--space-8) + var(--space-8) + var(--space-6));
 $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 
-// -----------------------------------------------------------------------------
 //  ROOT
-// -----------------------------------------------------------------------------
 :host {
   display: block;
 }
@@ -51,9 +97,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
 //  TAB STRIP — the two surviving top-level groups
-// -----------------------------------------------------------------------------
 // The strip's own rule reproduces the `<hr noshade size="1">` that every
 // `IncludeRule="True"` section head emitted (Website/controls/sectionheadcontrol.ascx).
 // The measured colour of the legacy `HR` rule (default.css L626-630) is the exact
@@ -79,8 +123,28 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // surface is closed and exports no such query, and a component may not author one
 // itself, so the flat rule is the compliant form. The border colour matches the
 // measured legacy tab border (.LoginTab, default.css L996) exactly.
-.portal-settings__tab:hover {
-  border-color: var(--color-primary-hover);
+//
+// Guarded on `:enabled` so an unavailable tab cannot take the interactive edge
+// tint. A tab is a `<button>`, as recorded above, so the pseudo-class applies.
+//
+// THE PER-EDGE PROPERTIES ARE LOAD-BEARING, NOT A STYLE PREFERENCE. This rule
+// previously set the blanket `border-color`, and the selected rule below relies on
+// `border-block-end-color` surviving a hover. That used to hold by source order
+// alone: both selectors weighed (0,2,0), so the later one won. Adding `:enabled`
+// raises this rule to (0,3,0), which outranks the selected rule's (0,2,0)
+// outright — a blanket `border-color` here would now overwrite the bottom edge and
+// ERASE THE SELECTION MARKER on hover, in every source order. Naming only the
+// inline and block-start edges leaves the bottom edge untouched by construction,
+// so the invariant no longer depends on a convention that a future edit could
+// reorder without noticing.
+//
+// The consequence is intentional and is an improvement rather than a compromise:
+// the bottom edge now belongs exclusively to selection semantics, which is what
+// the resting state already reserves it for, so a hovered tab tints three edges
+// and a selected tab owns the fourth. The two states compose instead of competing.
+.portal-settings__tab:enabled:hover {
+  border-inline-color: var(--color-primary-hover);
+  border-block-start-color: var(--color-primary-hover);
 }
 
 // Selected state, keyed on the ARIA attribute rather than on a presentational
@@ -102,6 +166,49 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   border-block-end-color: var(--color-primary);
 }
 
+// Press. The fill is the vocabulary's press signal and is the same token the
+// selected state uses, which is deliberate rather than a collision: a press is
+// transient and a selection persists, and the selected state remains separable
+// throughout because it carries two further cues this rule does not touch — the
+// bold weight and the brand-coloured bottom edge. Pressing an unselected tab
+// therefore previews the selection tint it is about to acquire, and pressing the
+// already-selected tab changes nothing, which is the honest rendering of a press
+// that will not change the selection.
+.portal-settings__tab:enabled:active {
+  background-color: var(--color-selected);
+}
+
+// Unavailable, native form. The muted ink clears 4.5:1 against the strip unaided,
+// the softened edge distinguishes it from an interactive tab whose edges are
+// transparent at rest, and the cursor is the second, non-colour cue. `:enabled`
+// above cannot match here, so the two groups can never both apply.
+.portal-settings__tab:disabled {
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  cursor: not-allowed;
+}
+
+// Unavailable, ARIA form — kept focusable and in the tab order on purpose, so a
+// keyboard user reaches it and hears it announced rather than finding it missing.
+// No `cursor` and no `:hover` hold, matching the global layer's reasoning: an
+// element receiving no pointer events resolves no cursor and is never a hit-test
+// target.
+//
+// Declared AFTER the selected rule so an unavailable tab that is also the selected
+// one reads as unavailable. The two weigh (0,2,0) each, so source order decides,
+// and this is the order that keeps the stronger message visible.
+//
+// CONSUMER OBLIGATION — `pointer-events` guards the pointer only; CSS cannot
+// suppress keyboard activation. A tablist additionally moves focus with the arrow
+// keys, so the component MUST also exclude an `aria-disabled` tab from its arrow-key
+// sequence and guard its click, Enter and Space paths. Where focusability is not
+// needed, prefer native `disabled`, which closes every path at once.
+.portal-settings__tab[aria-disabled='true'] {
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  pointer-events: none;
+}
+
 // _reset.scss already rings `button` and `summary` on :focus-visible. Re-applying
 // the mixin here is deliberate and free of side effects — it is documented
 // idempotent — and it keeps the ring attached to these two affordances even if the
@@ -111,9 +218,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   @include mx.focus-ring;
 }
 
-// -----------------------------------------------------------------------------
 //  TAB PANEL
-// -----------------------------------------------------------------------------
 // The legacy group bodies were fixed at width="525" inside a width="560" wrapper.
 // No width token exists, so the measure snaps to the smallest declared breakpoint
 // step — the helper is exported for exactly this use. A shade narrower than the
@@ -132,9 +237,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   line-height: var(--line-height-base);
 }
 
-// -----------------------------------------------------------------------------
 //  NESTED COLLAPSIBLE SECTION
-// -----------------------------------------------------------------------------
 // Renders as `<fieldset><legend>` — whose border, radius, padding and legend type
 // _forms.scss owns — or as `<details><summary>` where the collapse the legacy
 // `IsExpanded` attribute carried is genuinely reproduced. Nothing is declared here
@@ -163,9 +266,72 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   cursor: pointer;
 }
 
-// -----------------------------------------------------------------------------
+//  SECTION-HEAD STATES
+//
+//  This head previously declared no hover, press or unavailable treatment at all,
+//  so a control rendering with `cursor: pointer` answered a pointer with no visual
+//  response whatever — the cursor promised interactivity the styling never
+//  confirmed.
+//
+//  Every selector below is guarded on the two unavailable ATTRIBUTES rather than on
+//  `:enabled`, and that is forced rather than preferred: this file records above
+//  that the head may be rendered as `<details><summary>`, and `:enabled` matches no
+//  element outside the form-control set, so a pseudo-class guard would resolve to
+//  no state at all on the summary shape. The attribute form matches both shapes and
+//  also covers `<button disabled>`, since a disabled button carries the attribute
+//  as well as matching the pseudo-class.
+//
+//  The chrome this head strips is what makes the states necessary rather than
+//  optional: `background-color: transparent` weighs (0,1,0) and the global
+//  `button:active` press tint weighs (0,1,1), so one class outranks one type
+//  selector and the global press state is already suppressed here before any
+//  pointer arrives. Restating inside the component is the only place it can land.
+
+// MIGRATION: the legacy section head (Website/controls/sectionheadcontrol.ascx)
+// had no hover, press or unavailable treatment to carry across, because its head
+// was not itself the control — the collapse affordance was a separate icon, and the
+// head was static text. Making the head the control is what creates the need for
+// these states, and an affordance that responds to nothing is a worse outcome than
+// the static text it replaced. Net-new by necessity, drawn wholly from the shared
+// vocabulary rather than invented, and recorded here as a deliberate divergence.
+.portal-settings__toggle:not([disabled]):not([aria-disabled='true']):hover {
+  color: var(--color-primary-hover);
+  border-block-end-color: var(--color-primary-hover);
+}
+
+// Press. Distinct from hover by channel: hover moves the ink and the rule beneath
+// the head, press adds a fill and leaves both standing. The radius contains the
+// tint, which would otherwise span the head's full inline size — `padding-inline: 0`
+// above means the head is as wide as its section — and read as a selected grid row
+// rather than as a control being pressed.
+.portal-settings__toggle:not([disabled]):not([aria-disabled='true']):active {
+  background-color: var(--color-selected);
+  border-radius: var(--radius-sm);
+}
+
+// Unavailable, native form. Muted ink, a softened rule beneath, and the cursor as
+// the second non-colour cue.
+.portal-settings__toggle[disabled] {
+  color: var(--color-text-muted);
+  border-block-end-color: var(--color-border);
+  cursor: not-allowed;
+}
+
+// Unavailable, ARIA form — focusable and announced rather than absent. No `cursor`
+// and no `:hover` hold, for the reason the global layer documents.
+//
+// CONSUMER OBLIGATION — `pointer-events` guards the pointer only. The component
+// setting `aria-disabled` MUST also guard the click, Enter and Space paths, and on a
+// `<summary>` must additionally prevent the native disclosure toggle, which no CSS
+// property can inhibit. Where focusability is not required, prefer native
+// `disabled` on a button.
+.portal-settings__toggle[aria-disabled='true'] {
+  color: var(--color-text-muted);
+  border-block-end-color: var(--color-border);
+  pointer-events: none;
+}
+
 //  FIELD GRID — replaces the layout tables
-// -----------------------------------------------------------------------------
 .portal-settings__grid {
   display: grid;
   gap: var(--space-3);
@@ -238,9 +404,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   justify-self: start;
 }
 
-// -----------------------------------------------------------------------------
 //  HOST-LOCK NOTICE
-// -----------------------------------------------------------------------------
 // The advisory that sits with the Banners choice group (sitesettings.ascx L118-126)
 // when the setting is held at host level. Muted and unemphasised because it
 // qualifies the control rather than competing with it; it measures 5.49:1 on the
@@ -252,9 +416,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   font-weight: var(--font-weight-normal);
 }
 
-// -----------------------------------------------------------------------------
 //  ACTION BAR
-// -----------------------------------------------------------------------------
 // Update / Cancel / Delete (sitesettings.ascx L562-567). Layout only — the buttons
 // themselves are styled globally. A real gap replaces the literal `&nbsp;&nbsp;`
 // the legacy markup used, so the separation survives white-space collapsing, and
@@ -267,9 +429,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   padding-block-start: var(--space-2);
 }
 
-// =============================================================================
 //  DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
-// =============================================================================
 //
 // MIGRATION: the legacy screen is built almost entirely from layout tables — 14
 // `summary="… Design Table"` attributes were counted on it — and contains NOT ONE
@@ -330,4 +490,3 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // at-rule for either — the hover rule is declared flatly and no transition is
 // introduced at all, which is also faithful, since the legacy stylesheets declare
 // `transition`, `animation`, `@keyframes` and `transform` zero times each.
-// =============================================================================

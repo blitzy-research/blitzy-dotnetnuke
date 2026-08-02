@@ -4,6 +4,8 @@
 // here is reachable statically: the container holds one instance and hands it to consumers by
 // constructor injection, which is what makes cache behaviour substitutable in a test.
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Services;
 using Microsoft.Extensions.Caching.Memory;
@@ -38,6 +40,14 @@ namespace DnnMigration.Infrastructure.Services;
 /// <para>
 /// Ownership of the injected cache belongs to the container, so this class implements neither
 /// <see cref="IDisposable"/> nor <see cref="IAsyncDisposable"/> and never disposes it.
+/// </para>
+/// <para>
+/// Diagnostics. No message produced by this class contains a cache key. One of the legacy key
+/// templates embeds a user name, so a key is potentially personal data, and the one refusal this
+/// class raises is recorded by the API layer's structured log. Where an entry has to be named,
+/// it is named by its declared category and a per-process keyed fingerprint through the single
+/// funnel that exists for the purpose; the section comment above the fingerprint secret records
+/// the reasoning and the trade-off accepted.
 /// </para>
 /// </remarks>
 internal sealed class MemoryCacheService : ICacheService
@@ -180,12 +190,17 @@ internal sealed class MemoryCacheService : ICacheService
     internal const string RolesCacheKey = "GetRoles";
 
     // ---------------------------------------------------------------------------------------
-    // THE FOUR LEGAL PERFORMANCE MULTIPLIERS
+    // THE FOUR CONVENTIONAL PERFORMANCE MULTIPLIERS
     //
     // Ported from the PerformanceSettings enumeration at
     // Library/Components/Shared/Globals.vb:L66-L75, whose own comment records that the values
     // were chosen to keep cache scaling linear. They are constants rather than a second type
     // because this file declares exactly one type.
+    //
+    // They are NAMES, not an allow-list. The legacy reader cast an arbitrary host-settings
+    // integer to that enumeration unchecked (Globals.vb:L229), so a configuration outside these
+    // four was legal then and stays legal here; the only boundary is that the multiplier may not
+    // be negative, and CachingOptions.Validate is the single place that boundary is stated.
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Caching disabled. A miss must not reach this service's creation path at all.</summary>
@@ -203,6 +218,127 @@ internal sealed class MemoryCacheService : ICacheService
     /// <summary>Heavy caching: base expiries are multiplied sixfold.</summary>
     internal const int HeavyCaching = 6;
 
+
+    /// <summary>
+    /// Greatest length of time a shared creation may run before it is abandoned.
+    /// </summary>
+    /// <remarks>
+    /// A creation is shared by every caller that missed the same key, so it cannot be bound to any
+    /// one caller's lifetime without letting that caller's withdrawal fail the others. That
+    /// isolation previously left it bound to nothing at all: a factory that never completed left
+    /// its registration in place permanently, and every later caller for that key joined the same
+    /// creation that was never going to finish. This budget is what bounds it instead. It is
+    /// generous, because the work behind it is a database read that a loaded server may legitimately
+    /// take seconds to answer, and it exists to break a stall rather than to enforce a latency
+    /// target.
+    /// </remarks>
+    private static readonly TimeSpan SharedCreationBudget = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Every declared category prefix, longest first.
+    /// </summary>
+    /// <remarks>
+    /// Longest-first ordering is what makes classification unambiguous where one prefix begins
+    /// with another. The portal template's prefix is a prefix of the portal-dictionary key, so a
+    /// shortest-first walk would file that key under the wrong category; ordered this way the more
+    /// specific match always wins. The values are derived from the key constants on this class
+    /// rather than restated, so a template and its category cannot drift apart.
+    /// </remarks>
+    private static readonly string[] CategoryPrefixes = BuildCategoryPrefixes();
+    // ---------------------------------------------------------------------------------------
+    // NAMING AN ENTRY IN A DIAGNOSTIC WITHOUT NAMING ITS KEY
+    //
+    // A cache key is not safe to put in a message. UserCacheKey is "UserInfo|{0}|{1}" and its
+    // second placeholder is a USER NAME (DataCache.vb:L79 and FormatUserCacheKey below), so a
+    // key composed for a real account carries personal data, and the message built from it
+    // travels to the structured log through the API layer's exception handler. Nothing about the
+    // key's own text is needed to diagnose the one failure that reports it - the caller needs to
+    // know WHICH FAMILY of entry missed and WHETHER two log lines concern the same entry - so
+    // the members below answer exactly those two questions and nothing else.
+    //
+    // A CATEGORY answers the first. It is one of the fixed literals this class already declares,
+    // resolved through PrefixOf so that no literal is restated, and it therefore contains no
+    // caller-supplied text by construction rather than by filtering.
+    //
+    // A KEYED FINGERPRINT answers the second. A bare SHA-256 digest was considered and REJECTED:
+    // these keys are short and highly predictable - "UserInfo|0|admin" is a guess, not a search -
+    // so an unkeyed digest of one is reversible by anyone holding the log and a list of candidate
+    // user names, which would defeat the whole exercise. Keying the hash with a secret this
+    // process generates at startup removes that: the fingerprint is stable for the life of the
+    // process, so two entries about one key correlate, and it is meaningless outside that
+    // process, so it cannot be joined to a precomputed table, to another deployment, or to the
+    // same installation's logs from before a restart. Losing cross-restart correlation is the
+    // deliberate price of that property and is recorded in MIGRATION_NOTES.md.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Category reported for a key that matches none of the declared families.
+    /// </summary>
+    /// <remarks>
+    /// A fixed word, and specifically NOT the key itself. The unrecognised case is the one where
+    /// falling back to the raw text would feel most defensible - the key is unfamiliar, so it
+    /// looks like the interesting thing to record - and it is the one where the raw text is least
+    /// trustworthy, because an unrecognised key is by definition one this class did not compose.
+    /// </remarks>
+    private const string UnrecognisedKeyCategory = "unrecognised";
+
+    /// <summary>
+    /// Number of digest bytes rendered into a fingerprint, giving twice as many hexadecimal
+    /// characters.
+    /// </summary>
+    /// <remarks>
+    /// Eight bytes is ample to tell one entry from another within a single process and short
+    /// enough to read at a glance. Truncation is not what makes the fingerprint one-way - the
+    /// secret is - so the length is chosen for legibility rather than for strength.
+    /// </remarks>
+    private const int KeyFingerprintBytes = 8;
+
+    /// <summary>
+    /// The per-process secret that keys every fingerprint.
+    /// </summary>
+    /// <remarks>
+    /// Generated once, from the cryptographic random source, and never configured: a configured
+    /// value would be shared between deployments and could be committed to source control, both
+    /// of which would restore exactly the correlation this field exists to prevent. It is never
+    /// logged, never exposed and never leaves this class.
+    /// </remarks>
+    private static readonly byte[] KeyFingerprintSecret = RandomNumberGenerator.GetBytes(32);
+
+    /// <summary>
+    /// The declared key families, longest prefix first, used to classify a key for a diagnostic.
+    /// </summary>
+    /// <remarks>
+    /// Every entry is derived from a constant on this class rather than written out again, so a
+    /// renamed key cannot leave a stale category behind. The descending-length ordering is
+    /// load bearing and is applied here rather than trusted to the declaration order:
+    /// <see cref="PortalDictionaryCacheKey"/> begins with the prefix of
+    /// <see cref="PortalCacheKey"/>, so a first-match scan in declaration order would report
+    /// the tab-to-portal dictionary as an individual portal. Sorting removes that hazard for
+    /// every pair, including ones a future key might introduce.
+    /// </remarks>
+    private static readonly string[] KeyCategoryPrefixes =
+        new[]
+        {
+            PrefixOf(PortalDictionaryCacheKey),
+            PrefixOf(PortalCacheKey),
+            PrefixOf(TabCacheKey),
+            PrefixOf(TabPathCacheKey),
+            PrefixOf(TabPermissionCacheKey),
+            PrefixOf(TabModuleCacheKey),
+            PrefixOf(ModulePermissionCacheKey),
+            PrefixOf(ModuleCacheKey),
+            PrefixOf(ProfileDefinitionsCacheKey),
+            PrefixOf(UserCacheKey),
+            PrefixOf(HostSettingsCacheKey),
+            PrefixOf(PortalAliasCacheKey),
+            PrefixOf(StyleSheetCacheKey),
+            PrefixOf(CompressionConfigCacheKey),
+            PrefixOf(ModuleSettingsCacheKeyPrefix),
+            PrefixOf(RolesCacheKey),
+        }
+        .OrderByDescending(static prefix => prefix.Length)
+        .ToArray();
+
     /// <summary>The process-wide store. Owned by the container and never disposed here.</summary>
     private readonly IMemoryCache _memoryCache;
 
@@ -213,11 +349,18 @@ internal sealed class MemoryCacheService : ICacheService
     private readonly int _performanceMultiplier;
 
     /// <summary>
-    /// In-flight creations, keyed by cache key, so that concurrent misses for one key perform
-    /// one load between them instead of one load each.
+    /// In-flight creations, keyed by cache key AND requested value shape, so that concurrent
+    /// misses for one key perform one load between them instead of one load each - while two
+    /// callers requesting one key as two different shapes are kept apart.
     /// </summary>
-    private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _inFlightLoads =
-        new(StringComparer.Ordinal);
+    /// <remarks>
+    /// The shape forms part of the identity because coalescing is only ever correct for callers
+    /// that are genuinely asking for the same thing. Two callers wanting the same key as two
+    /// different shapes are not, and joining them would deliver one of them a value it cannot
+    /// hold - intermittently, decided purely by arrival order. The default comparer for this
+    /// composite compares the key ordinally, matching the tracked-key registry.
+    /// </remarks>
+    private readonly ConcurrentDictionary<(string Key, Type ValueType), Lazy<Task<object?>>> _inFlightLoads = new();
 
     /// <summary>
     /// Every key this service has written and not yet evicted. The value is unused - this is a
@@ -226,6 +369,31 @@ internal sealed class MemoryCacheService : ICacheService
     /// without taking <see cref="_registryGate"/>.
     /// </summary>
     private readonly ConcurrentDictionary<string, byte> _trackedKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The keys this service has written, grouped by the category their key template defines.
+    /// </summary>
+    /// <remarks>
+    /// This index is what makes a category invalidation proportional to the category rather than
+    /// to the whole registry. Without it the only way to find one category's keys is to walk every
+    /// tracked key and test its prefix, and a single portal invalidation performs three such
+    /// category evictions, so the whole registry was previously walked three times over for one
+    /// administrative change. Maintained under <see cref="_registryGate"/> alongside
+    /// <see cref="_trackedKeys"/>, so the two can never disagree about which keys are live. A
+    /// category whose last key goes away is dropped rather than retained as an empty set.
+    /// </remarks>
+    private readonly Dictionary<string, HashSet<string>> _keysByCategory = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Counts invalidations, so a creation that began before one can detect that it did.
+    /// </summary>
+    /// <remarks>
+    /// Mutated only under <see cref="_registryGate"/>, and only ever incremented. A creation
+    /// records this value before it calls the caller's factory and presents it again when it comes
+    /// back; a mismatch means an invalidation intervened while the factory was running, and the
+    /// result is therefore delivered to the waiting callers but not published.
+    /// </remarks>
+    private long _invalidationGeneration;
 
     /// <summary>
     /// Serialises every mutation. Without it an invalidation could snapshot a key, evict it and
@@ -251,15 +419,17 @@ internal sealed class MemoryCacheService : ICacheService
     /// <see langword="null"/>.
     /// </exception>
     /// <exception cref="OptionsValidationException">
-    /// The configured multiplier is not one of the four legacy performance settings.
+    /// The bound options are unusable, as reported by <see cref="CachingOptions.Validate"/>.
     /// </exception>
     public MemoryCacheService(IMemoryCache memoryCache, IOptions<CachingOptions> cachingOptions)
     {
         ArgumentNullException.ThrowIfNull(memoryCache);
         ArgumentNullException.ThrowIfNull(cachingOptions);
 
+        CachingOptions options = cachingOptions.Value;
+
         _memoryCache = memoryCache;
-        _performanceMultiplier = ValidateMultiplier(cachingOptions.Value.PerformanceMultiplier);
+        _performanceMultiplier = ValidateMultiplier(options);
     }
 
     /// <summary>
@@ -270,62 +440,64 @@ internal sealed class MemoryCacheService : ICacheService
     private bool IsCachingEnabled => _performanceMultiplier > NoCaching;
 
     /// <summary>
-    /// Accepts only the four multipliers the legacy enumeration declared, and rejects every
-    /// other value loudly at construction.
+    /// Proves the bound options usable and returns the multiplier, failing loudly at construction
+    /// when they are not.
     /// </summary>
-    /// <param name="performanceMultiplier">The configured multiplier.</param>
-    /// <returns>The same value, once proven legal.</returns>
+    /// <param name="options">The bound caching options.</param>
+    /// <returns>The configured multiplier, once proven usable.</returns>
     /// <remarks>
-    /// <see cref="CachingOptions.PerformanceMultiplier"/> is deliberately an unvalidated integer:
-    /// it models what configuration actually supplies. Validation belongs at the point of
-    /// consumption, which is here, and it happens at construction so that a misconfigured
-    /// deployment fails while the container is composing rather than midway through a request
-    /// with a silently wrong cache lifetime.
+    /// <para>
+    /// The rule itself is NOT restated here. It is declared by
+    /// <see cref="CachingOptions.Validate"/>, beside the value it governs, and this method only
+    /// applies it -- so the two cannot disagree. The check is repeated at construction as well as
+    /// at start-up because this service can also be constructed directly, in a test or by a caller
+    /// that never went through the host's options validation, and a silently wrong cache lifetime
+    /// is worse than a refused construction.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an earlier revision of this method stated its own rule and accepted only the four
+    /// multipliers the legacy <c>PerformanceSettings</c> enumeration declared, while the
+    /// documentation on <see cref="CachingOptions.PerformanceMultiplier"/> described any integer as
+    /// legitimate. The two disagreed, and the documentation was the accurate one: the legacy reader
+    /// cast an arbitrary host-settings integer straight to that enumeration
+    /// (<c>Library/Components/Shared/Globals.vb:L229</c>), and a Visual Basic conversion to an
+    /// enumeration is unchecked, so a stored <c>4</c> genuinely produced a multiplier of <c>4</c>.
+    /// Rejecting such a value was therefore a tightening of a configuration the legacy installation
+    /// accepted. The four constants remain declared on this class because they are the values an
+    /// operator will normally choose and callers name them, but they are no longer an allow-list.
+    /// </para>
     /// </remarks>
-    private static int ValidateMultiplier(int performanceMultiplier)
+    private static int ValidateMultiplier(CachingOptions options)
     {
-        if (performanceMultiplier is NoCaching or LightCaching or ModerateCaching or HeavyCaching)
+        IReadOnlyList<string> failures = options.Validate();
+
+        if (failures.Count == 0)
         {
-            return performanceMultiplier;
+            return options.PerformanceMultiplier;
         }
-
-        // Every number reaches the message through an invariant conversion first, so the
-        // concatenation below interpolates strings only and cannot pick up a culture.
-        string configured = FormattableString.Invariant($"{performanceMultiplier}");
-        string supported = string.Join(
-            ", ",
-            FormattableString.Invariant($"{NoCaching} (no caching)"),
-            FormattableString.Invariant($"{LightCaching} (light)"),
-            FormattableString.Invariant($"{ModerateCaching} (moderate, the default)"),
-            FormattableString.Invariant($"{HeavyCaching} (heavy)"));
-
-        string failure =
-            $"{CachingOptions.SectionName}:{nameof(CachingOptions.PerformanceMultiplier)} is "
-            + $"{configured}, which is not one of the four supported values: {supported}. Those "
-            + "are the values the legacy PerformanceSettings enumeration declared, chosen so "
-            + "that cache lifetimes scale linearly, so any other multiplier would produce "
-            + "expiries no legacy configuration could have produced.";
 
         throw new OptionsValidationException(
             Microsoft.Extensions.Options.Options.DefaultName,
             typeof(CachingOptions),
-            [failure]);
+            failures);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// A miss also drops any stale registration for <paramref name="key"/>, because an entry that
-    /// expired naturally leaves its registration behind - this service registers no eviction
-    /// callback, so the registry is reconciled lazily, here and in the eviction paths.
+    /// A miss also drops any stale registration for <paramref name="key"/>. An entry evicted for
+    /// any reason, natural expiry included, withdraws its own registration through the eviction
+    /// callback registered when it was written; this path reconciles anything that callback has not
+    /// yet reached, so the two are belt and braces rather than either one alone.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// <paramref name="key"/> is <see langword="null"/>, empty or white space.
     /// </exception>
-    /// <exception cref="InvalidCastException">
+    /// <exception cref="InvalidOperationException">
     /// A live entry exists under <paramref name="key"/> but is not a <typeparamref name="T"/>.
-    /// Two callers sharing one key with different value types is a defect in the callers, and it
-    /// surfaces here for the same reason the framework's own typed read surfaces it, rather than
-    /// being disguised as a miss.
+    /// Two callers sharing one key with different value shapes is a defect in the callers, and it
+    /// surfaces here deliberately rather than being disguised as a miss. The refusal names the
+    /// key's category and both shapes, never the key itself, because a composed key can carry a
+    /// user name.
     /// </exception>
     public T? Get<T>(string key)
     {
@@ -335,7 +507,7 @@ internal sealed class MemoryCacheService : ICacheService
         // helpers (Library/Components/Shared/Null.vb) mapped an absent integer to -1 and an
         // absent string to the empty string, and both are legitimate stored values in the
         // existing schema, so neither may stand in for a miss.
-        return TryRead(key, out object? entry) ? FromCacheEntry<T>(entry) : default;
+        return TryRead(key, out object? entry) ? FromCacheEntry<T>(key, entry) : default;
     }
 
     /// <inheritdoc />
@@ -388,15 +560,65 @@ internal sealed class MemoryCacheService : ICacheService
             return;
         }
 
-        MemoryCacheEntryOptions entryOptions = new() { SlidingExpiration = expiration };
-
         lock (_registryGate)
         {
-            // Register BEFORE writing, and under the gate, so that no invalidation can observe
-            // the written entry without also observing its registration.
-            _trackedKeys[key] = 0;
-            _memoryCache.Set(key, value, entryOptions);
+            Publish(key, value, expiration);
         }
+    }
+
+    /// <summary>
+    /// Writes an entry and registers it. Callers must already hold
+    /// <see cref="_registryGate"/> and must already have established that caching is on and that
+    /// <paramref name="expiration"/> is positive.
+    /// </summary>
+    /// <typeparam name="T">The value's type.</typeparam>
+    /// <param name="key">The cache entry key.</param>
+    /// <param name="value">The value to store.</param>
+    /// <param name="expiration">How long the entry stays live.</param>
+    private void Publish<T>(string key, T value, TimeSpan expiration)
+    {
+        MemoryCacheEntryOptions entryOptions = new() { SlidingExpiration = expiration };
+
+        // An entry that goes away on its own must take its registration with it. Without this the
+        // registry only ever shrank when somebody happened to ask for the very key that had
+        // expired, so it accumulated the name of every key ever written and every category
+        // eviction paid to walk them.
+        //
+        // The callback is safe to take the gate from, and the reason is worth stating exactly
+        // because it is not the obvious one. The store dispatches this callback to the thread pool
+        // rather than running it inline, so it never arrives on the thread that triggered the
+        // eviction and cannot re-enter a gate that thread is holding. That also settles the
+        // ordering: an eviction this service performs holds the gate across Remove AND the
+        // withdrawal that follows it, so a callback raised by that removal cannot acquire the gate
+        // until the withdrawal has already happened, and it then finds nothing to do and returns on
+        // its lock-free path. A natural expiry arrives with no gate held by anyone and does the
+        // withdrawal itself. Either way the work happens exactly once, and Forget is idempotent
+        // besides, so an ordering this comment has misjudged still cannot corrupt either registry.
+        entryOptions.RegisterPostEvictionCallback(static (evictedKey, _, _, state) =>
+        {
+            if (evictedKey is string cacheKey && state is MemoryCacheService service)
+            {
+                service.ForgetIfAbsent(cacheKey);
+            }
+        }, this);
+
+        // Register BEFORE writing, and under the gate, so that no invalidation can observe
+        // the written entry without also observing its registration.
+        _trackedKeys[key] = 0;
+
+        string? category = CategoryOf(key);
+        if (category is not null)
+        {
+            if (!_keysByCategory.TryGetValue(category, out HashSet<string>? members))
+            {
+                members = new HashSet<string>(StringComparer.Ordinal);
+                _keysByCategory[category] = members;
+            }
+
+            members.Add(key);
+        }
+
+        _memoryCache.Set(key, value, entryOptions);
     }
 
     /// <inheritdoc />
@@ -418,9 +640,30 @@ internal sealed class MemoryCacheService : ICacheService
     /// caller's withdrawal surface as an <see cref="OperationCanceledException"/> to unrelated
     /// callers whose own tokens are perfectly healthy - two concurrent requests miss the same
     /// key, the first client disconnects, and the second fails through no fault of its own.
-    /// <paramref name="factory"/> therefore receives <see cref="CancellationToken.None"/>. A
-    /// caller that abandons its await leaves the creation running, and its result is still cached
-    /// for whoever asks next, which is exactly what the coalesced callers are waiting for.
+    /// <paramref name="factory"/> therefore receives a token of the creation's own, never a
+    /// caller's - see the next paragraph for what bounds it. A caller that abandons its await
+    /// leaves the creation running, and its result is still cached for whoever asks next, which is
+    /// exactly what the coalesced callers are waiting for.
+    /// </para>
+    /// <para>
+    /// Bounded, so that isolation cannot become a stall. Because the shared creation answers to no
+    /// caller's token, it needs a limit of its own: a factory that never completes would otherwise
+    /// hold its registration permanently and every later caller for that key would join the same
+    /// creation that was never going to finish. Two limits apply. The factory receives a token that
+    /// elapses, which cancels a factory that observes it; and the wait itself is bounded, which
+    /// covers a factory that does not - in that case the registration is retired so the next caller
+    /// begins a fresh attempt.
+    /// </para>
+    /// <para>
+    /// Coalescing is shape-aware. The in-flight identity is the key together with the requested
+    /// value shape, so two callers asking for one key as two different shapes are never joined;
+    /// only callers genuinely asking for the same thing share a creation.
+    /// </para>
+    /// <para>
+    /// Publication is invalidation-aware. A creation records the invalidation count when it begins
+    /// and publishes only if that count has not moved, so a value produced before an invalidation
+    /// cannot be written back after it. The waiting callers still receive the value; only the cache
+    /// write is withheld.
     /// </para>
     /// <para>
     /// Failure is not sticky. The in-flight registration is released whether the creation
@@ -433,7 +676,14 @@ internal sealed class MemoryCacheService : ICacheService
     /// <exception cref="ArgumentNullException"><paramref name="factory"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidOperationException">
     /// No live entry exists and caching is switched off, or <paramref name="expiration"/> is not
-    /// positive. See the remarks on why this is a refusal rather than a pass-through.
+    /// positive - see the remarks on why this is a refusal rather than a pass-through. Also raised
+    /// when a live entry exists but cannot be delivered as <typeparamref name="T"/>, which means
+    /// one key is being shared by two different value shapes.
+    /// </exception>
+    /// <exception cref="TimeoutException">
+    /// The shared creation did not complete within its budget. The registration is retired first,
+    /// so a subsequent call starts a fresh attempt rather than joining the stalled one. No message
+    /// raised here names the key, only its category.
     /// </exception>
     /// <exception cref="OperationCanceledException">
     /// <paramref name="cancellationToken"/> was cancelled. Another caller's cancellation is never
@@ -460,7 +710,7 @@ internal sealed class MemoryCacheService : ICacheService
         // live entry is still served even when caching has since been switched off.
         if (TryRead(key, out object? entry))
         {
-            return FromCacheEntry<T>(entry);
+            return FromCacheEntry<T>(key, entry);
         }
 
         // MIGRATION: the caller owns the no-caching decision, and this refuses rather than
@@ -480,21 +730,55 @@ internal sealed class MemoryCacheService : ICacheService
             throw new InvalidOperationException(BuildCachingDisabledMessage(key, expiration));
         }
 
+        // MIGRATION: net-new. The registration is identified by the key AND the value shape, not
+        // by the key alone. Coalescing exists to stop two callers loading the same thing twice,
+        // but two callers asking for the same key as two different shapes are not asking for the
+        // same thing: joining them would hand one of them a value it cannot hold, and it would do
+        // so intermittently, depending only on which arrived first. The legacy accessor could not
+        // encounter this because it returned an untyped value and every call site cast for itself.
+        (string Key, Type ValueType) registration = (key, typeof(T));
+
         // The creation is deliberately NOT handed this caller's token. See the remarks: a shared
         // creation bound to one caller's lifetime lets that caller's withdrawal cancel work other
         // callers are waiting on, so a healthy caller would surface a cancellation it never asked
         // for. Isolation is enforced here, at the single point where the shared work is started.
         Lazy<Task<object?>> load = _inFlightLoads.GetOrAdd(
-            key,
+            registration,
             _ => new Lazy<Task<object?>>(
                 () => LoadAndCacheAsync(key, factory, expiration),
                 LazyThreadSafetyMode.ExecutionAndPublication));
 
-        // Accessing Value starts the creation at most once, however many callers arrive.
-        // WaitAsync gives this caller its own cancellation without disturbing the shared work.
-        object? produced = await load.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
+        object? produced;
 
-        return FromCacheEntry<T>(produced);
+        try
+        {
+            // Accessing Value starts the creation at most once, however many callers arrive.
+            // WaitAsync gives this caller its own cancellation without disturbing the shared work,
+            // and a budget besides: the creation is bound to no caller's lifetime, so without one
+            // a caller could wait on it indefinitely.
+            produced = await load.Value
+                .WaitAsync(SharedCreationBudget, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // The creation has outrun its budget, which means a factory that is not observing the
+            // token it was handed. Retiring the registration is the part that matters: left in
+            // place it would be joined by every later caller for this key, so one stalled load
+            // would become a permanent refusal to serve that key at all. The comparing overload is
+            // used so that a REPLACEMENT registration - one a later caller may already have
+            // started - is never mistaken for this one and removed.
+            _inFlightLoads.TryRemove(
+                new KeyValuePair<(string Key, Type ValueType), Lazy<Task<object?>>>(registration, load));
+
+            throw new TimeoutException(
+                $"Producing a cache entry for the requested key ({DescribeKey(key)}) did not "
+                + $"complete within "
+                + $"{SharedCreationBudget}. The registration has been retired, so a subsequent "
+                + "call will start a fresh attempt rather than joining this one.");
+        }
+
+        return FromCacheEntry<T>(key, produced);
     }
 
     /// <inheritdoc />
@@ -561,11 +845,16 @@ internal sealed class MemoryCacheService : ICacheService
             Evict(TabPathCacheKey);
 
             // Everything else this service wrote, portal, tab, module and user keys included.
-            // Keys is a snapshot, so evicting while enumerating it is safe.
+            // Keys is a snapshot, so evicting while enumerating it is safe. This member alone walks
+            // the whole registry, and that is not the scan the category index removed: here
+            // "everything" IS the scope, so every tracked key is a key that has to go.
             foreach (string trackedKey in _trackedKeys.Keys)
             {
                 Evict(trackedKey);
             }
+
+            // Leaves both registries genuinely empty rather than merely mostly empty.
+            _keysByCategory.Clear();
         }
     }
 
@@ -704,6 +993,62 @@ internal sealed class MemoryCacheService : ICacheService
         string.Format(System.Globalization.CultureInfo.InvariantCulture, UserCacheKey, portalId, userName);
 
     /// <summary>
+    /// Builds the ordered category vocabulary from the key templates declared on this class.
+    /// </summary>
+    /// <returns>Every declared category prefix, longest first.</returns>
+    private static string[] BuildCategoryPrefixes()
+    {
+        string[] prefixes =
+        [
+            PrefixOf(PortalCacheKey),
+            PrefixOf(TabCacheKey),
+            PrefixOf(TabPermissionCacheKey),
+            PrefixOf(TabModuleCacheKey),
+            PrefixOf(ModulePermissionCacheKey),
+            PrefixOf(ModuleCacheKey),
+            PrefixOf(ProfileDefinitionsCacheKey),
+            PrefixOf(UserCacheKey),
+            ModuleSettingsCacheKeyPrefix,
+
+            // The portal dictionary earns an entry of its own even though nothing sweeps it as a
+            // category, because its literal key begins with the portal category's prefix. Without
+            // it the dictionary is filed under a category it is not a member of, and it would be
+            // carried off as collateral the day anyone sweeps the portal category. Registering it
+            // here and sorting longest-first makes that impossible rather than merely unlikely.
+            PortalDictionaryCacheKey,
+        ];
+
+        // Longest first, so that the most specific category claims a key whose prefix is also the
+        // start of another category's prefix. Ordinal ordering breaks ties between equal lengths
+        // so the vocabulary is deterministic rather than dependent on the literal order above.
+        Array.Sort(
+            prefixes,
+            (left, right) => right.Length != left.Length
+                ? right.Length - left.Length
+                : string.CompareOrdinal(left, right));
+
+        return prefixes;
+    }
+
+    /// <summary>
+    /// Determines which declared category a composed key belongs to.
+    /// </summary>
+    /// <param name="key">The composed cache key.</param>
+    /// <returns>The matching category prefix, or <see langword="null"/> when there is none.</returns>
+    private static string? CategoryOf(string key)
+    {
+        foreach (string prefix in CategoryPrefixes)
+        {
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return prefix;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Returns the fixed leading text of a legacy key template - everything before its first
     /// placeholder - so that a category can be matched without restating the literal and letting
     /// the two drift apart.
@@ -718,27 +1063,133 @@ internal sealed class MemoryCacheService : ICacheService
     }
 
     /// <summary>
+    /// Describes a cache key for a diagnostic without disclosing it, as a declared category
+    /// paired with a fingerprint.
+    /// </summary>
+    /// <param name="key">The key to describe. Never reproduced, in whole or in part.</param>
+    /// <returns>
+    /// Text of the form <c>category UserInfo, fingerprint 0123456789ABCDEF</c>. Never
+    /// <see langword="null"/> and never empty.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This is the only member that turns a key into text for human consumption, and it is
+    /// deliberately the only one: a single funnel is what makes "no key reaches a message"
+    /// checkable by reading one method rather than by auditing every message in the class. The
+    /// section comment beside <see cref="KeyFingerprintSecret"/> records why a category and a
+    /// keyed fingerprint are the two facts reported, and why an unkeyed digest was rejected.
+    /// </para>
+    /// <para>
+    /// The category is trimmed of a trailing pipe so that the user-entry family reads as
+    /// <c>UserInfo</c> rather than <c>UserInfo|</c>. The delimiter is load bearing in the key
+    /// itself and is left untouched there; this affects the label alone. Matching is ordinal,
+    /// matching how the keys are composed and compared everywhere else in this class.
+    /// </para>
+    /// </remarks>
+    private static string DescribeKey(string key)
+    {
+        string category = UnrecognisedKeyCategory;
+
+        foreach (string prefix in KeyCategoryPrefixes)
+        {
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                category = prefix.TrimEnd('|');
+                break;
+            }
+        }
+
+        return FormattableString.Invariant($"category {category}, fingerprint {FingerprintOf(key)}");
+    }
+
+    /// <summary>
+    /// Computes the per-process keyed fingerprint of a cache key.
+    /// </summary>
+    /// <param name="key">The key to fingerprint.</param>
+    /// <returns>
+    /// <see cref="KeyFingerprintBytes"/> bytes of the keyed digest, in upper-case hexadecimal.
+    /// </returns>
+    /// <remarks>
+    /// A keyed hash, not a plain one, for the reason given beside
+    /// <see cref="KeyFingerprintSecret"/>. The one-shot static form is used so no instance is
+    /// created and nothing needs disposing, which also makes the method safe to call from any
+    /// thread without synchronisation. The digest is truncated for legibility; the secret, not
+    /// the truncation, is what makes the result one-way.
+    /// </remarks>
+    private static string FingerprintOf(string key)
+    {
+        byte[] digest = HMACSHA256.HashData(KeyFingerprintSecret, Encoding.UTF8.GetBytes(key));
+
+        return Convert.ToHexString(digest, 0, KeyFingerprintBytes);
+    }
+
+    /// <summary>
     /// Converts a raw cache entry to the caller's type, round-tripping a stored null rather than
-    /// substituting anything for it.
+    /// substituting anything for it, and refusing a value the caller cannot legally receive.
     /// </summary>
     /// <typeparam name="T">The caller's value type.</typeparam>
-    /// <param name="entry">The raw entry read out of the cache.</param>
+    /// <param name="key">The key the entry was read under, used only to name its category.</param>
+    /// <param name="entry">The raw entry read from the cache.</param>
     /// <returns>The typed value.</returns>
-    private static T FromCacheEntry<T>(object? entry) => entry is null ? default! : (T)entry;
+    /// <exception cref="InvalidOperationException">
+    /// A live entry exists but is not assignable to <typeparamref name="T"/>, which means one key
+    /// is being shared by two different value shapes.
+    /// </exception>
+    private static T FromCacheEntry<T>(string key, object? entry)
+    {
+        // A stored null round-trips as the caller's own default. This is not a sentinel: the
+        // absence of an ENTRY is reported by the callers of this helper, never by its result.
+        if (entry is null)
+        {
+            return default!;
+        }
+
+        if (entry is T typed)
+        {
+            return typed;
+        }
+
+        // MIGRATION: net-new, with no legacy counterpart. The legacy accessor returned an
+        // untyped value and every one of the measured call sites cast it at the call site, so a
+        // key reused under two shapes surfaced as a cast failure in whichever caller happened to
+        // read second. Generics moved that cast in here, which concentrates the fault rather than
+        // removing it, so it is detected and named instead of thrown blind: an unchecked cast
+        // would raise a bare InvalidCastException naming only the two types, leaving no clue
+        // which cache key was being shared. The key itself is deliberately NOT quoted - only its
+        // category - because a composed key can carry a user name.
+        throw new InvalidOperationException(
+            $"The cache entry for the requested key ({DescribeKey(key)}) holds "
+            + $"{entry.GetType().FullName} and cannot be delivered as {typeof(T).FullName}. One "
+            + "cache key is being used for two different value shapes, which the coalescing "
+            + "registry keeps apart but a single stored entry cannot. Give the two shapes "
+            + "distinct keys.");
+    }
+
 
     /// <summary>
     /// Builds the refusal message for a miss that arrives with caching switched off or with a
     /// non-positive expiry.
     /// </summary>
-    /// <param name="key">The key that missed.</param>
+    /// <param name="key">
+    /// The key that missed. It is used only to derive the non-disclosing descriptor described on
+    /// <see cref="DescribeKey(string)"/>; neither the key nor any part of it appears in the
+    /// returned message.
+    /// </param>
     /// <param name="expiration">The expiry the caller supplied.</param>
     /// <returns>The message.</returns>
+    /// <remarks>
+    /// The two values that ARE reported - the configured multiplier and the requested expiry -
+    /// are safe and necessary. The multiplier is configuration rather than input, the expiry is
+    /// a <see cref="TimeSpan"/> the calling service computed rather than text a caller chose, and
+    /// together they are the whole explanation of why the refusal happened. Withholding them
+    /// would leave a message that reports a failure without its cause.
+    /// </remarks>
     private string BuildCachingDisabledMessage(string key, TimeSpan expiration)
     {
         string multiplier = FormattableString.Invariant($"{_performanceMultiplier}");
         string requested = FormattableString.Invariant($"{expiration}");
 
-        return $"No live cache entry exists for '{key}' and this service will not create one: "
+        return $"No live cache entry exists for the requested key ({DescribeKey(key)}) and this service will not create one: "
             + $"{CachingOptions.SectionName}:{nameof(CachingOptions.PerformanceMultiplier)} is "
             + $"{multiplier} and the requested expiration is {requested}. When the effective "
             + "cache lifetime is not positive, the legacy read path this replaces skipped the "
@@ -772,10 +1223,16 @@ internal sealed class MemoryCacheService : ICacheService
     }
 
     /// <summary>
-    /// Drops a registration whose entry has expired naturally, leaving a live entry's
-    /// registration alone.
+    /// Drops a registration whose entry is no longer live, leaving a live entry's registration
+    /// alone. Takes <see cref="_registryGate"/> itself, so callers must NOT already hold it.
     /// </summary>
     /// <param name="key">The key whose registration may be stale.</param>
+    /// <remarks>
+    /// Reached from two places: the eviction callback every written entry carries, which is what
+    /// makes an entry withdraw its own registration when it goes away unobserved, and the read
+    /// path, which reconciles anything the callback has not yet been dispatched for. Both are
+    /// idempotent, so arriving twice for one key is harmless.
+    /// </remarks>
     private void ForgetIfAbsent(string key)
     {
         // Lock-free first pass. The overwhelming majority of misses are for keys this service
@@ -792,36 +1249,89 @@ internal sealed class MemoryCacheService : ICacheService
             // stand - dropping it would hide a live entry from category eviction.
             if (!_memoryCache.TryGetValue(key, out _))
             {
-                _trackedKeys.TryRemove(key, out _);
+                Forget(key);
             }
         }
     }
 
     /// <summary>
-    /// Evicts one entry and its registration together. Callers must already hold
-    /// <see cref="_registryGate"/>.
+    /// Evicts one entry and its registration together, and records that an invalidation happened.
+    /// Callers must already hold <see cref="_registryGate"/>.
     /// </summary>
     /// <param name="key">The key to evict.</param>
+    /// <remarks>
+    /// Advancing the invalidation count is part of evicting, not an extra step a caller may choose
+    /// to take, which is why it lives here rather than in the members that call this one. Any new
+    /// invalidation member therefore becomes visible to in-flight creations simply by routing its
+    /// removals through here. The count moves even when the key held no entry: an eviction for a
+    /// key that is absent still expresses the intent that whatever is under that key must go, and a
+    /// creation that is at this moment about to publish under it has to honour that.
+    /// </remarks>
     private void Evict(string key)
     {
+        // Every explicit eviction reaches this method - the eight named invalidations, the single
+        // removal and the category sweep alike - so this is the one place the generation needs to
+        // move. A creation already in progress compares the value it recorded against this one and
+        // declines to publish if they differ.
+        _invalidationGeneration++;
+
         _memoryCache.Remove(key);
-        _trackedKeys.TryRemove(key, out _);
+        Forget(key);
     }
 
     /// <summary>
-    /// Evicts every tracked key beginning with <paramref name="keyPrefix"/>. Callers must already
-    /// hold <see cref="_registryGate"/>.
+    /// Withdraws a key from both registries together. Callers must already hold
+    /// <see cref="_registryGate"/>.
+    /// </summary>
+    /// <param name="key">The key to withdraw.</param>
+    /// <remarks>
+    /// Every path that drops a registration goes through here, so the tracked-key registry and the
+    /// category index can never disagree about which keys are live. That matters most on the
+    /// natural-expiry path: dropping a key from one registry but not the other would leave the
+    /// category index accumulating names whose entries had long since gone, which is the growth
+    /// this index was introduced to remove. A category left holding nothing is dropped rather than
+    /// retained as an empty set, so the index cannot accumulate one entry per category ever used.
+    /// </remarks>
+    private void Forget(string key)
+    {
+        _trackedKeys.TryRemove(key, out _);
+
+        string? category = CategoryOf(key);
+        if (category is not null && _keysByCategory.TryGetValue(category, out HashSet<string>? members))
+        {
+            members.Remove(key);
+
+            if (members.Count == 0)
+            {
+                _keysByCategory.Remove(category);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Evicts every tracked key in one category. Callers must already hold
+    /// <see cref="_registryGate"/>.
     /// </summary>
     /// <param name="keyPrefix">The category prefix, matched ordinally.</param>
+    /// <remarks>
+    /// Reads the category index rather than walking the whole registry, so the work is
+    /// proportional to the category being invalidated. This matters because one portal
+    /// invalidation evicts three categories, and each of those previously walked every key this
+    /// service had ever written, including keys belonging to unrelated categories and keys whose
+    /// entries had already expired.
+    /// </remarks>
     private void EvictTrackedCategory(string keyPrefix)
     {
-        // Keys is a snapshot, so evicting while enumerating it is safe.
-        foreach (string trackedKey in _trackedKeys.Keys)
+        if (!_keysByCategory.TryGetValue(keyPrefix, out HashSet<string>? members))
         {
-            if (trackedKey.StartsWith(keyPrefix, StringComparison.Ordinal))
-            {
-                Evict(trackedKey);
-            }
+            return;
+        }
+
+        // Snapshot first: Evict mutates this very set, and may remove it outright once its last
+        // member goes.
+        foreach (string trackedKey in members.ToArray())
+        {
+            Evict(trackedKey);
         }
     }
 
@@ -835,9 +1345,10 @@ internal sealed class MemoryCacheService : ICacheService
     /// <param name="expiration">How long a newly produced entry stays live.</param>
     /// <returns>The produced or concurrently published value, boxed for the shared task.</returns>
     /// <remarks>
-    /// Takes no cancellation token by design, so that no caller's lifetime can be attached to work
+    /// Accepts no caller token by design, so that no caller's lifetime can be attached to work
     /// that other callers are waiting on. Per-caller cancellation is applied by the awaiting
-    /// member instead.
+    /// member instead, and this creation is bounded by its own budget rather than by anyone's
+    /// token.
     /// </remarks>
     private async Task<object?> LoadAndCacheAsync<T>(
         string key,
@@ -846,19 +1357,51 @@ internal sealed class MemoryCacheService : ICacheService
     {
         try
         {
+            long observedGeneration;
+
             // Second check, now that this creation has been elected. A value published between
-            // the caller's read and this point must not provoke another round of caller I/O.
-            if (_memoryCache.TryGetValue(key, out object? published))
+            // the caller's read and this point must not provoke another round of caller I/O. The
+            // generation is recorded in the same critical section as that check, so the value
+            // recorded is exactly the one in force at the instant this creation began: read it
+            // outside the gate and an invalidation could slip between the two and go unnoticed.
+            lock (_registryGate)
             {
-                return published;
+                if (_memoryCache.TryGetValue(key, out object? published))
+                {
+                    return published;
+                }
+
+                observedGeneration = _invalidationGeneration;
             }
 
-            // CancellationToken.None, not a caller's token: this one creation serves every
-            // coalesced caller, so it must outlive any individual caller that withdraws.
-            T produced = await factory(CancellationToken.None).ConfigureAwait(false);
+            // Not a caller's token: this one creation serves every coalesced caller, so it must
+            // outlive any individual caller that withdraws. It is bounded all the same - a
+            // creation bound to nothing at all is what let a single stalled factory hold a key
+            // permanently. A factory that observes the token it is handed is cancelled here; one
+            // that ignores it is abandoned by the awaiting member instead.
+            using CancellationTokenSource creationBudget = new(SharedCreationBudget);
 
-            Set(key, produced, expiration);
+            T produced = await factory(creationBudget.Token).ConfigureAwait(false);
 
+            // MIGRATION: net-new, and the reason this publication is conditional. The legacy idiom
+            // read, loaded and inserted as three separate statements at each of the measured call
+            // sites, with nothing relating the insert to any clear that happened in between, so a
+            // clear issued while a load was in flight was simply overwritten by that load a moment
+            // later. The value being published here was produced BEFORE any invalidation that has
+            // since occurred, so publishing it would reinstate exactly the state the invalidation
+            // was issued to remove. The comparison and the write share one critical section, which
+            // is what makes the pair atomic with respect to eviction.
+            lock (_registryGate)
+            {
+                if (_invalidationGeneration == observedGeneration)
+                {
+                    Publish(key, produced, expiration);
+                }
+            }
+
+            // Delivered to every waiting caller either way. A suppressed publication costs a
+            // cache entry, never a result: the value was produced correctly and is at least as
+            // fresh as anything the cache could have offered.
             return produced;
         }
         finally
@@ -869,8 +1412,10 @@ internal sealed class MemoryCacheService : ICacheService
             // releases the key too, and the next caller simply retries. Release happens here,
             // in the creation that owns the registration, rather than in each awaiter: an
             // awaiter that released by key could remove a newer registration and provoke a
-            // duplicate load.
-            _inFlightLoads.TryRemove(key, out _);
+            // duplicate load. The identity released is the same key-and-shape pair the awaiting
+            // member registered, so a concurrent creation for the same key under a different shape
+            // keeps its own registration.
+            _inFlightLoads.TryRemove((key, typeof(T)), out _);
         }
     }
 

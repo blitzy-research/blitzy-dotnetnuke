@@ -1,0 +1,77 @@
+@if (isNavigable) {
+  <!--
+    A `nav` landmark with an accessible name, so a person using assistive technology
+    can jump to the pager and knows what it is. The name comes from an aria-label
+    rather than a visible heading, because a visible "Pagination" heading is not part
+    of the migrated design.
+  -->
+  <nav class="pagination" [attr.aria-label]="labels.region">
+    <!--
+      The range summary is a live region. Page changes replace the list contents without
+      moving focus, so without an announcement a screen-reader user has no signal that
+      anything happened. `polite` rather than `assertive`: this is a status update, not
+      an alert, and it must not interrupt.
+    -->
+    <p class="pagination__status" aria-live="polite">
+      {{ firstItemNumber }}&ndash;{{ lastItemNumber }} of {{ totalCount }}
+    </p>
+
+    <div class="pagination__controls">
+      <!--
+        Real `button` elements with an explicit `type="button"`. Without the explicit
+        type a button inside a form defaults to submit, which would post the form
+        every time a person changed page.
+
+        The visible glyph is hidden from assistive technology and the accessible name
+        comes from the label, so the button is announced as "First page" rather than
+        as a punctuation character.
+      -->
+      <button
+        class="pagination__button"
+        type="button"
+        [disabled]="!canGoPrevious"
+        [attr.aria-label]="labels.first"
+        (click)="goFirst()"
+      >
+        <span aria-hidden="true">{{ labels.firstSymbol }}</span>
+      </button>
+
+      <button
+        class="pagination__button"
+        type="button"
+        [disabled]="!canGoPrevious"
+        [attr.aria-label]="labels.previous"
+        (click)="goPrevious()"
+      >
+        <span aria-hidden="true">{{ labels.previousSymbol }}</span>
+      </button>
+
+      <!--
+        The current position is text rather than a control: there is nothing to click,
+        and rendering it as a disabled button would put an unusable stop in the tab
+        order.
+      -->
+      <span class="pagination__position">{{ displayPage }} / {{ totalPages }}</span>
+
+      <button
+        class="pagination__button"
+        type="button"
+        [disabled]="!canGoNext"
+        [attr.aria-label]="labels.next"
+        (click)="goNext()"
+      >
+        <span aria-hidden="true">{{ labels.nextSymbol }}</span>
+      </button>
+
+      <button
+        class="pagination__button"
+        type="button"
+        [disabled]="!canGoNext"
+        [attr.aria-label]="labels.last"
+        (click)="goLast()"
+      >
+        <span aria-hidden="true">{{ labels.lastSymbol }}</span>
+      </button>
+    </div>
+  </nav>
+}

@@ -1,12 +1,10 @@
-# Docker build-context excludes for the repository root.
+# Docker build-context excludes for the repository root. Both shipped images
+# build from this directory, so this one file governs both; frontend/.dockerignore
+# is a separate list that applies only to a build rooted at frontend/.
 #
-# Both images build from this directory, so this one file governs both of them.
-# frontend/.dockerignore is a separate list that only applies when a build is
-# rooted at frontend/.
-#
-# Every rule below is root-anchored or `**/`-scoped and none is a `!`
-# re-inclusion, so rule order can never resurrect or hide a file. Nothing a
-# Dockerfile COPYs may be added here.
+# Every rule is root-anchored or `**/`-scoped and none is a `!` re-inclusion, so
+# rule order can never resurrect or hide a file. Nothing a Dockerfile COPYs may
+# be added here.
 
 # Version control and repository plumbing.
 .git/
@@ -28,7 +26,7 @@ catalog-info.yaml
 README.md
 MIGRATION_NOTES.md
 
-# Root-scoped on purpose: `*` never crosses `/`, so Markdown nested inside a
+# Root-scoped on purpose: `*` never crosses `/`, so Markdown nested in a
 # subdirectory is not matched and stays in the context.
 *.md
 

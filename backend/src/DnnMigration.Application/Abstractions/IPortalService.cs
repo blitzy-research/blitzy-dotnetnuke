@@ -105,13 +105,18 @@
 // member below commits once, through the domain layer's unit of work, so the tenant either exists
 // completely or not at all.
 //
-// MIGRATION: 11 of 15. Alias matching becomes exact. The legacy tenant-resolution procedure
-// GetPortalSettings, at 01.00.00.SqlDataProvider:L4569-L4600, selected the lowest matching
-// identifier using a substring predicate that wrapped the supplied alias in wildcards, so an alias
-// that was a substring of a different tenant's alias could resolve to the wrong tenant. Every
-// alias comparison behind this contract - the duplicate check on add, and lookup - compares
-// exactly. This is a deliberate correction of a latent multi-tenant defect, not an incidental
-// change.
+// MIGRATION: 11 of 15. Alias matching refuses ambiguity; exact matching itself is preserved, not
+// introduced. The EARLIEST tenant-resolution procedure GetPortalSettings, at
+// 01.00.00.SqlDataProvider:L4569-L4600, selected the lowest matching identifier using a substring
+// predicate that wrapped the supplied alias in wildcards, so an alias that was a substring of a
+// different tenant's alias could resolve to the wrong tenant - but that procedure was dropped at
+// 02.02.00.SqlDataProvider:L267 and the Portals.PortalAlias column it read was dropped at
+// 02.02.02.SqlDataProvider:L3925-L3926. The TERMINAL legacy lookups already compared whole values:
+// GetPortalAlias at 02.02.02.SqlDataProvider:L3846-L3856 and GetPortalByAlias at L3930-L3938 both
+// write HTTPAlias = @HTTPAlias. Every alias comparison behind this contract - the duplicate check on
+// add, and lookup - therefore reproduces terminal legacy behaviour. The one deliberate correction is
+// that a match yielding more than one candidate is refused rather than collapsed with min(PortalId),
+// which is where the latent multi-tenant defect actually survived to the end.
 //
 // MIGRATION: 12 of 15. The pre-generics alias collection wrapper produces no target type.
 // GetPortalAliasByPortalID at PortalAliasController.vb:L67 and GetPortalAliases at L86 both
@@ -179,15 +184,27 @@ namespace DnnMigration.Application.Abstractions;
 /// <c>portal.last_remaining</c>, the delete was refused because one portal must survive;
 /// <c>portal.creation_failed</c>, creation could not be completed and nothing was committed;
 /// <c>portal.paging_invalid</c>, the supplied page coordinates are not usable;
-/// <c>portal.alias_not_found</c>, the named alias does not exist; and
-/// <c>portal.alias_duplicate</c>, the submitted host name is already bound. Unexpected faults are
-/// left to surface and are translated once, at the API edge.
+/// <c>portal.alias_not_found</c>, the named alias does not exist;
+/// <c>portal.alias_duplicate</c>, the submitted host name is already bound. There is deliberately
+/// no route-versus-payload mismatch code, for the reason given in the next paragraph. Unexpected
+/// faults are left to surface and are translated once, at the API edge.
 /// </para>
 /// <para>
-/// A route-supplied identifier is authoritative. Where a member takes both an identifier and a
-/// payload, the identifier is the one bound from the route and it wins. An implementation must
-/// never retarget a write using an identifier carried in the payload: doing so would let a caller
-/// edit another tenant's record by editing the body of a request it is otherwise entitled to make.
+/// A route-supplied identifier is the ONLY place a subject is named, and no payload on this contract
+/// carries a copy of one. That is a deliberate property of the request types rather than an accident:
+/// <c>UpdatePortalRequest</c> declares no portal identifier, <c>CreatePortalRequest</c> declares no
+/// identifier at all, and the two alias request types carry the host name and nothing else. The
+/// hazard being closed is real - a payload identifier that an implementation trusted would let a
+/// caller edit another tenant's record by editing the body of a request it is otherwise entitled to
+/// make, and one that an implementation quietly discarded would commit a write the caller may never
+/// have asked for while obliging nobody to notice the disagreement. Both variants of the hazard need
+/// a second copy of the identifier to exist. Refusing a disagreement was considered and is
+/// implementable - <c>Api/Filters/FluentValidationActionFilter.cs</c> publishes every route value
+/// into the validation context's root data - but a rule guards only the requests that reach it,
+/// whereas a contract with no duplicate has nothing to disagree on any path. There is consequently
+/// no identifier comparison for any member below to perform, and none should be introduced without
+/// first reintroducing the duplicate it would guard. The same reasoning is recorded on the payload
+/// contracts themselves, so the two descriptions cannot drift apart.
 /// </para>
 /// <para>
 /// Configuration is columns, not a key-value bag. There is no <c>PortalSettings</c> table anywhere
@@ -253,7 +270,11 @@ public interface IPortalService
     /// reported the grand total through a by-reference argument. Omitting
     /// <paramref name="nameFilter"/> reproduces the first; supplying it reproduces the second. An
     /// empty page is a success, not a failure - a filter that matches nothing is a legitimate
-    /// answer.
+    /// answer. The page coordinates, the sort field and the filter length are bounded by
+    /// <c>PortalListPagedRequestValidator</c>, whose sortable set is the set of columns the
+    /// legacy portal grid bound; an unrecognised sort field is a validation failure there and
+    /// never reaches an implementation, which is what keeps <c>portal.paging_invalid</c>
+    /// reserved for coordinates that are well formed yet still cannot be honoured.
     /// </remarks>
     Task<Result<PagedResult<PortalListItemDto>>> ListPortalsAsync(
         PagedRequest request,
@@ -313,9 +334,10 @@ public interface IPortalService
     /// Modifies an existing portal.
     /// </summary>
     /// <param name="portalId">
-    /// Identifier of the portal to modify. This value is authoritative: if
-    /// <paramref name="request"/> also carries an identifier, it is ignored, so a caller cannot
-    /// retarget the write at another tenant.
+    /// Identifier of the portal to modify, bound from the route. It is the only place a tenant is
+    /// named on this call - <paramref name="request"/> carries no identifier of its own - so a caller
+    /// cannot retarget the write at another tenant, and there is no disagreement for any layer to
+    /// detect.
     /// </param>
     /// <param name="request">The values to store.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
@@ -461,13 +483,13 @@ public interface IPortalService
     /// Binds a new alias to a portal.
     /// </summary>
     /// <param name="portalId">
-    /// Identifier of the portal to bind the alias to. This value is authoritative and the portal
-    /// identifier carried in <paramref name="alias"/> is ignored, so a caller cannot bind a host
-    /// name to a tenant other than the one addressed by the route.
+    /// Identifier of the portal to bind the alias to. It is supplied by the route and is the only
+    /// place a tenant is named on this call, so a caller cannot bind a host name to a tenant other
+    /// than the one addressed.
     /// </param>
-    /// <param name="alias">
-    /// The alias to bind. Only the host name is read; the alias identifier is assigned by the
-    /// database and any value supplied for it is ignored.
+    /// <param name="request">
+    /// The alias to bind, whose shape has already been checked by
+    /// <c>CreatePortalAliasRequestValidator</c>. It carries the host name and nothing else.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
@@ -490,19 +512,31 @@ public interface IPortalService
     /// The duplicate test compares host names exactly.
     /// </para>
     /// </remarks>
+    // MIGRATION: this member took the alias PROJECTION until the request contract below existed, and
+    // that shape could not express the write. The projection reports a nullable host name, because
+    // the column is nullable and a reader must represent what it finds, so nothing in the type system
+    // stopped an absent alias reaching this call; and it carried two identifiers - the alias's own,
+    // which the database assigns, and the owning portal's, which the route already fixes - both of
+    // which the documentation above had to declare ignored. A dedicated request type carries the one
+    // value a caller decides, so there is no longer anything to declare ignored and no way to submit
+    // a blank alias. Uniqueness is still the service's answer, because only the store knows what is
+    // already bound.
     Task<Result<PortalAliasDto>> AddPortalAliasAsync(
         int portalId,
-        PortalAliasDto alias,
+        CreatePortalAliasRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Modifies an existing alias.
     /// </summary>
     /// <param name="portalAliasId">
-    /// Identifier of the alias to modify. This value is authoritative and any identifier carried in
-    /// <paramref name="alias"/> is ignored.
+    /// Identifier of the alias to modify. It is supplied by the route and is the only place an alias
+    /// is named on this call, so a caller cannot redirect the write onto a different alias.
     /// </param>
-    /// <param name="alias">The values to store. Only the host name is read.</param>
+    /// <param name="request">
+    /// The values to store, whose shape has already been checked by
+    /// <c>UpdatePortalAliasRequestValidator</c>. It carries the host name and nothing else.
+    /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
     /// A successful outcome when the alias was stored. Fails with <c>portal.alias_not_found</c> when
@@ -514,9 +548,14 @@ public interface IPortalService
     /// be moved between portals through this member: the owning portal is fixed when the alias is
     /// bound, matching the legacy screen, which offered only the host name for editing.
     /// </remarks>
+    // MIGRATION: for the reason recorded on the create member, this member takes a request contract
+    // rather than the alias projection. The update path is where the shape gap mattered most: the
+    // legacy screen declared no validator over its one input and learned about a collision only by
+    // catching the exception the unique constraint raised, at EditPortalAlias.ascx.vb:L223-L228, so
+    // an unchecked value reached the store on every edit.
     Task<Result> UpdatePortalAliasAsync(
         int portalAliasId,
-        PortalAliasDto alias,
+        UpdatePortalAliasRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>

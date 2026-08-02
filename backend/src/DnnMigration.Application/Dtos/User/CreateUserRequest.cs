@@ -11,8 +11,8 @@ namespace DnnMigration.Application.Dtos.User;
 /// only two shapes in this folder permitted to carry a plaintext password, and
 /// it is therefore precisely the object a naive request logger would leak. The
 /// structured-logging requirement forbids emitting sensitive data, so request
-/// logging must redact or omit the password, confirmation, question and answer
-/// members rather than serialising the instance.
+/// logging must redact or omit the password and confirmation members rather than
+/// serialising the instance.
 /// </para>
 /// <para>
 /// This type is inert by design: it declares data and nothing else. It performs
@@ -26,10 +26,27 @@ namespace DnnMigration.Application.Dtos.User;
 /// FIELD SET PROVENANCE. The members mirror the legacy create form. The first
 /// five reproduce the property-editor surface of <c>Website/admin/Users/User.ascx</c>,
 /// declared in the legacy sort order Username, FirstName, LastName, DisplayName,
-/// Email; the remainder reproduce the explicit create-only controls of the same
-/// page - the authorise and notify checkboxes, the random-password checkbox, and
-/// the password, confirmation, question and answer inputs. Workflow provenance is
+/// Email; the remainder reproduce the create-only controls of the same page that
+/// survive into the target - the authorise checkbox and the password and
+/// confirmation inputs. Workflow provenance is
 /// <c>Website/admin/Users/User.ascx.vb</c>.
+/// </para>
+/// <para>
+/// FOUR LEGACY CREATE CONTROLS ARE DELIBERATELY NOT REPRODUCED, and their absence
+/// is a contract decision rather than an omission. The recovery question and
+/// answer inputs, the random-password checkbox and the notify checkbox each
+/// backed a capability the owning service contract states is not carried forward:
+/// <c>IUserService</c> records that the recovery pair has no counterpart and that
+/// no member declares a question or answer parameter, that the generation members
+/// are absent because a generated credential has to be transmitted to be useful,
+/// and that the notify switch is dropped with the excluded mail subsystem. An
+/// earlier revision of this type declared all four anyway, so the wire contract
+/// advertised four operations that nothing behind it could perform - a caller
+/// could set the generation flag and receive an account whose credential no
+/// endpoint would ever disclose, or set the notify flag and be told a message was
+/// sent that no subsystem exists to send. The four members are therefore removed
+/// rather than left inert, because an inert member on a published contract is
+/// indistinguishable from a supported one.
 /// </para>
 /// <para>
 /// MEASURED PASSWORD POLICY, preserved verbatim from the legacy membership
@@ -37,32 +54,60 @@ namespace DnnMigration.Application.Dtos.User;
 /// minimum length 7; minimum non-alphanumeric characters 0; question and answer
 /// NOT required; unique email NOT required; application name DotNetNuke.
 /// Tightening any of these during the migration would lock existing users out,
-/// so the validator must reproduce them exactly and add nothing.
+/// so the validator must reproduce them exactly and add nothing. The one bound
+/// the validator adds is not a policy rule: the credential hasher is BCrypt,
+/// which consumes only the first 72 encoded bytes of its input, so a request
+/// carrying more than that would have its excess silently ignored and two
+/// different credentials could hash identically. That ceiling is a property of
+/// the hashing primitive and is enforced consistently by the hasher and by every
+/// validator that accepts a credential.
 /// </para>
 /// <para>
 /// MEASURED COLUMN WIDTHS from the terminal schema of the Users table, for the
 /// validator's length rules: Username 100, FirstName 50, LastName 50,
-/// DisplayName 128, Email 100. Username additionally carries a UNIQUE
+/// DisplayName 128, Email 256. Username additionally carries a UNIQUE
 /// NONCLUSTERED constraint, added by script 03.00.09, which replaced an earlier
 /// unique constraint on Email; Email is therefore NOT unique in the terminal
 /// schema, corroborating the provider setting above. No length rule and no
-/// uniqueness rule is expressed on this type.
+/// uniqueness rule is expressed on this type. The email width is 256 and not the
+/// baseline 100 because the column was dropped and re-added wider; the chain is
+/// cited in full on the <c>Email</c> member below, and an earlier revision of
+/// this paragraph read only the baseline.
 /// </para>
 /// <para>
-/// MEASURED EMAIL PATTERN, for the validator only, from
-/// <c>Library/Components/Shared/Globals.vb</c> line 132 and applied to the
-/// legacy Email property by its editor attribute:
-/// <c>\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b</c>. Note that the
-/// trailing quantifier caps the top-level domain at four characters, so
-/// reproducing it verbatim rejects longer modern domains; that is a deliberate
-/// fidelity decision for the validator author to make explicitly, not a defect
-/// to fix silently here.
+/// THE EMAIL WIDTH IS 256, AND AN EARLIER REVISION OF THIS PARAGRAPH SAID 100.
+/// The column has two lives and only the second exists today: an original
+/// <c>Email nvarchar(100) NOT NULL</c> from <c>01.00.00:L107</c> was REMOVED by
+/// the nine-column drop at <c>02.02.01:L50-51</c>, and a replacement
+/// <c>Email nvarchar(256) NULL</c> was added at <c>03.00.13:L109-110</c> and
+/// back-filled from the membership store. Nothing later alters it, and the
+/// terminal <c>AddUser</c> declares <c>@Email nvarchar(256)</c> at
+/// <c>04.00.04:L704</c>. The legacy editor attribute of 256 therefore AGREES with
+/// the terminal column rather than contradicting it, and
+/// <c>Infrastructure/Persistence/Configurations/UserConfiguration.cs</c> maps the
+/// column at that width and as nullable. Requiredness on this contract is an
+/// API-level rule from the legacy screen's <c>Required(True)</c>, not a
+/// restatement of the column's nullability.
+/// </para>
+/// <para>
+/// THE EMAIL SHAPE RULE IS NOT REPRODUCED ON THIS TYPE OR RESTATED FOR THE
+/// VALIDATOR AUTHOR. It lives once, in
+/// <see cref="Domain.ValueObjects.EmailAddress"/>, which transcribes the legacy
+/// constant from <c>Library/Components/Shared/Globals.vb</c> line 132 clause by
+/// clause and records its two deliberate departures from it - the legacy
+/// four-character cap on the final domain label is replaced by bounded,
+/// standards-derived label checks, so modern suffixes such as <c>.museum</c> are
+/// accepted. The validators call that type; they declare no pattern of their own,
+/// because two copies of one rule is exactly how the create and update paths came
+/// to accept different addresses.
 /// </para>
 /// <para>
 /// MEASURED VALIDATION SEQUENCE reproduced by the legacy page: the confirmation
 /// is compared first (User.ascx.vb line 152), then password strength
-/// (<c>UserController.ValidatePassword</c>), then question and answer, and only
-/// when the provider requires them. LATENT DEFECT to flag for the validator
+/// (<c>UserController.ValidatePassword</c>). The legacy sequence continued with
+/// the recovery question and answer, and only when the provider required them;
+/// that step has no target counterpart because the pair is not carried forward,
+/// so the sequence ends at strength. LATENT DEFECT to flag for the validator
 /// author: <c>ValidatePassword</c> at <c>Library/Components/Users/UserController.vb</c>
 /// lines 1067 to 1091 evaluates three rules but its third branch, line 1086,
 /// ASSIGNS the regular-expression outcome to the running flag instead of
@@ -139,10 +184,21 @@ public sealed class CreateUserRequest
     // registered with an encrypted (Triple-DES) storage format and with password
     // retrieval enabled, and the corresponding decryption key is committed in
     // plain sight at Website/release.config lines 89 to 93. That store is
-    // replaced by a one-way adaptive hash computed in the Infrastructure layer,
-    // with re-hashing on first successful login and administrative reset as the
-    // fallback. Hashing is exclusively an Infrastructure concern and is
-    // unreachable from this layer by project reference.
+    // replaced by a one-way adaptive hash computed in the Infrastructure layer.
+    // Hashing is exclusively an Infrastructure concern and is unreachable from
+    // this layer by project reference.
+    //
+    // MIGRATION: CREDENTIALS THAT ALREADY EXIST ARE MIGRATED BY ADMINISTRATIVE
+    // RESET, AND BY NOTHING ELSE. An earlier revision of the note above claimed
+    // re-hashing on first successful login with administrative reset as a mere
+    // fallback. THAT CLAIM WAS FALSE and is removed rather than softened: the
+    // hasher verifies BCrypt digests only, no legacy credential column is mapped
+    // by the persistence layer, and no service in this solution can check a
+    // submitted password against a value held under the legacy reversible scheme -
+    // so the first-login sequence it described could never execute. Every
+    // pre-existing account therefore needs an administrative password reset before
+    // its owner can sign in. This is a deliberate functional reduction and is
+    // recorded in MIGRATION_NOTES.md.
     //
     // MIGRATION: password RETRIEVAL is not carried forward to any endpoint or
     // screen, so there is no retrieval request shape and no password-hint member
@@ -157,6 +213,17 @@ public sealed class CreateUserRequest
     // terminal schema, narrower still in the baseline before the table rebuild.
     // That ceiling described a plaintext column that no longer exists, so it is
     // deliberately NOT carried onto this type or into its validator.
+    //
+    // MIGRATION: a DIFFERENT ceiling does apply, and it is net-new rather than
+    // ported. Validation/CredentialBounds.cs declares one maximum credential
+    // length for the whole application, measured in UTF-8 bytes because that is
+    // what the hashing algorithm consumes, and every credential entry point -
+    // sign-in, this registration contract, password change and portal creation -
+    // applies that same number. It bounds the work an unauthenticated caller can
+    // ask an intentionally expensive hash to perform; it is not a storage limit
+    // and is not policy. It is deliberately not restated on this type, because
+    // restating it is how such numbers come to disagree. Recorded in
+    // MIGRATION_NOTES.md.
     //
     // MIGRATION: no server-computed membership facts are accepted - not lockout
     // state, online state, last login, last activity, last lockout, last
@@ -221,25 +288,33 @@ public sealed class CreateUserRequest
     public string FirstName { get; set; } = string.Empty;
 
     /// <summary>
-    /// The family name.
+    /// The family name. Required.
     /// </summary>
     /// <remarks>
     /// MEASURED SCHEMA FINDING - IMPORTANT FOR THE VALIDATOR AUTHOR. The
     /// baseline script declares this column nullable, but the baseline is not
     /// the terminal state: scripts 01.00.05 and 01.00.06 rebuild the table
     /// through a temporary copy, drop the original and rename the copy into
-    /// place, and the rebuilt column is nvarchar(50) NOT NULL. No later script
-    /// alters it back. The legacy required attribute on the user object
-    /// therefore AGREES with the terminal column, so the attribute-versus-column
-    /// collision described in the plan is NOT present in the terminal schema.
+    /// place, and the rebuilt column is nvarchar(50) NOT NULL
+    /// (01.00.05:L18, 01.00.06:L186). No later script alters it back. The legacy
+    /// required attribute on the user object therefore AGREES with the terminal
+    /// column, so the attribute-versus-column collision described in the plan is
+    /// NOT present in the terminal schema.
     /// CONSEQUENCE: the validator MUST treat this member as required. If it is
     /// left optional, an insert will violate a NOT NULL constraint at run time.
-    /// It is nullable here only because nullability on a request shape expresses
-    /// wire optionality, letting the validator distinguish an omitted field from
-    /// an explicitly blank one and report the more precise error; required-ness
-    /// is the validator's concern, never the type's.
+    /// MIGRATION: this member is non-nullable, matching FirstName, which is the
+    /// same shape against the same width with the same requiredness. An earlier
+    /// revision typed it nullable to express "wire optionality", so that an
+    /// omitted field and an explicitly blank one could be reported differently.
+    /// That distinction was never realised and cannot be: the rule applied is
+    /// NotEmpty, which treats a null and an empty string identically and emits
+    /// one message either way, and the legacy absent-string sentinel IS the empty
+    /// string, so an omitted value and a blank value already mean the same thing
+    /// on this contract -- the DisplayName remark below states that same rule.
+    /// The nullability bought nothing and cost the validator a null-forgiving
+    /// operator on this member alone.
     /// </remarks>
-    public string? LastName { get; set; }
+    public string LastName { get; set; } = string.Empty;
 
     /// <summary>
     /// The name shown to other users.
@@ -260,10 +335,19 @@ public sealed class CreateUserRequest
     /// The email address. Required.
     /// </summary>
     /// <remarks>
-    /// Terminal schema: nvarchar(100) NOT NULL.
-    /// SCHEMA-WINS RECONCILIATION: the legacy user object carried a maximum-length
-    /// editor attribute of 256 on this property while the column is 100. The
-    /// schema is authoritative, so the validator's length rule is 100.
+    /// Terminal schema: <c>Email nvarchar(256) NULL</c>, added as a REPLACEMENT
+    /// column at <c>03.00.13:L109-110</c> after the nine-column drop at
+    /// <c>02.02.01:L50-51</c> removed the original <c>nvarchar(100) NOT NULL</c>
+    /// one. The schema is authoritative, so the validator's length rule is 256.
+    /// SCHEMA-WINS RECONCILIATION, CORRECTED: the legacy user object's
+    /// maximum-length editor attribute of 256 AGREES with the terminal column; it
+    /// was the superseded 100 that disagreed, and an earlier revision of this
+    /// remark enforced that superseded value.
+    /// REQUIREDNESS IS AN API-LEVEL RULE, NOT THE COLUMN'S NULLABILITY: the column
+    /// permits an absent address and the legacy creation screen did not, declaring
+    /// <c>Required(True)</c>; the screen's rule is what a create request must
+    /// satisfy and is stated as an intentional API limit so it is not later
+    /// relaxed by appealing to the schema.
     /// Uniqueness must NOT be enforced: the legacy provider sets unique email to
     /// false, and the terminal schema corroborates it, the unique constraint
     /// having been moved off Email and onto Username.
@@ -273,24 +357,39 @@ public sealed class CreateUserRequest
     /// </remarks>
     public string Email { get; set; } = string.Empty;
 
+    // MIGRATION: the credential members below became UNCONDITIONALLY required when the
+    // random-password branch was removed. An earlier revision declared both nullable and
+    // guarded every credential rule with "when generation was not requested", which was the
+    // only reason either could be legitimately absent. With that branch gone there is exactly
+    // one creation path and it always carries a credential, so both members are non-nullable
+    // and seeded with the empty string like every other required member of this type. Two
+    // consequences follow and are deliberate: the validator no longer needs a null-forgiving
+    // operator on either member, and an omitted JSON field now deserialises to the empty
+    // string that the legacy absent-string sentinel already used, which the presence rule
+    // rejects with one message rather than two.
+
     /// <summary>
-    /// The plaintext password, inbound only. Conditionally required.
+    /// The plaintext password, inbound only. Required.
     /// </summary>
     /// <remarks>
-    /// Nullable because the random-password branch makes it legitimately absent.
-    /// CONDITIONALITY for the validator, expressed there with a conditional
-    /// rule: required only when <see cref="GenerateRandomPassword"/> is false.
     /// Measured strength rules are minimum length 7 and minimum
-    /// non-alphanumeric characters 0; no maximum length applies.
+    /// non-alphanumeric characters 0. No length ceiling is inherited from the
+    /// schema, because the credential is exchanged for a fixed-length digest, but
+    /// the validator applies the hasher's own 72-encoded-byte ceiling: BCrypt
+    /// consumes no more than that, so a longer value would have its excess
+    /// silently discarded and two distinct credentials could produce the same
+    /// digest. That is a property of the hashing primitive rather than a
+    /// tightening of the legacy policy, and it is enforced identically by the
+    /// hasher itself.
     /// MIGRATION: never echoed back. The creation response carries a detail shape
     /// that is asserted free of all password material, and this value is
     /// exchanged for a one-way hash in the Infrastructure layer before
     /// persistence.
     /// </remarks>
-    public string? Password { get; set; }
+    public string Password { get; set; } = string.Empty;
 
     /// <summary>
-    /// The repeated password used to catch typing errors. Conditionally required.
+    /// The repeated password used to catch typing errors. Required.
     /// </summary>
     /// <remarks>
     /// Carried on the request rather than resolved in the service so that a
@@ -300,47 +399,10 @@ public sealed class CreateUserRequest
     /// input at User.ascx.vb line 152.
     /// The comparison is deliberately NOT implemented on this type - no
     /// self-checking hook and no comparing accessor. It belongs to the
-    /// validator, alongside the same conditional rule that governs
-    /// <see cref="Password"/>.
+    /// validator, which compares the two ordinally exactly as the legacy string
+    /// inequality test did.
     /// </remarks>
-    public string? ConfirmPassword { get; set; }
-
-    /// <summary>
-    /// The password-recovery question. Optional.
-    /// </summary>
-    /// <remarks>
-    /// Optional because the legacy provider sets question and answer to not
-    /// required, and the legacy page both hid these inputs and skipped their
-    /// checks unless the provider required them. The validator must not make
-    /// this member required.
-    /// </remarks>
-    public string? PasswordQuestion { get; set; }
-
-    /// <summary>
-    /// The answer to <see cref="PasswordQuestion"/>. Optional.
-    /// </summary>
-    /// <remarks>
-    /// Optional for the same measured reason as the question, and treated as
-    /// sensitive: it participates in recovery and must not be logged or echoed.
-    /// </remarks>
-    public string? PasswordAnswer { get; set; }
-
-    /// <summary>
-    /// When true, the server generates the password and
-    /// <see cref="Password"/> and <see cref="ConfirmPassword"/> are ignored.
-    /// </summary>
-    /// <remarks>
-    /// Load-bearing, not cosmetic: the legacy page took a genuinely separate
-    /// branch that bypassed the password input entirely and called the
-    /// controller's password generator. That generator produced a password of
-    /// the configured minimum length plus four characters, so 11 under the
-    /// measured policy. Generation is a service concern and is deliberately not
-    /// invoked here.
-    /// The legacy markup pre-checked the corresponding box, but the page reset it
-    /// to false on first load (User.ascx.vb line 261), so false is both the
-    /// measured effective default and the wire default.
-    /// </remarks>
-    public bool GenerateRandomPassword { get; set; }
+    public string ConfirmPassword { get; set; } = string.Empty;
 
     /// <summary>
     /// When true, the new account is approved immediately.
@@ -357,16 +419,39 @@ public sealed class CreateUserRequest
     /// </remarks>
     public bool Authorize { get; set; }
 
-    /// <summary>
-    /// When true, a notification message is sent to the new user.
-    /// </summary>
-    /// <remarks>
-    /// Maps to the notify checkbox the legacy page read when raising its
-    /// created event. MEASURED DEFAULT DIVERGENCE: as with approval, the legacy
-    /// markup pre-checked this box and never reset it, so its effective legacy
-    /// default was true; the wire default here is false so that an omitted field
-    /// never causes an unrequested outbound message. A client that wants the
-    /// legacy behaviour sends true explicitly.
-    /// </remarks>
-    public bool Notify { get; set; }
+    // MIGRATION: THE NOTIFY FLAG IS NOT A MEMBER OF THIS CONTRACT. The legacy page read a
+    // pre-checked notify checkbox when it raised its created event, but the mail subsystem
+    // that switch drove is excluded from this migration, and the owning service contract
+    // states the switch is dropped with it. An earlier revision declared the flag anyway,
+    // which meant a caller could ask for a notification, receive a 201, and never learn that
+    // nothing was sent - a silent failure with no observable symptom, because the wire
+    // contract advertised a capability nothing behind it implements. Removing the member
+    // makes the absence visible in the contract itself, which is the only place a client can
+    // discover it. Should outbound mail ever come into scope, the flag returns together with
+    // a service member that can honour it, not before.
+
+    // MIGRATION: THE RECOVERY QUESTION AND ANSWER ARE NOT MEMBERS OF THIS CONTRACT either,
+    // and the reason is the same shape as the notify flag's. The legacy page carried both
+    // inputs but hid them and skipped their checks unless the membership provider demanded
+    // them, and the provider is registered with the pair not required. The owning service
+    // contract records that the pair has no counterpart at all and that no member declares a
+    // question or answer parameter, because the pair's only real purpose was to guard
+    // credential retrieval - which is dropped outright. An earlier revision declared both
+    // members and its validator asserted them whenever the bound policy flag was set, so a
+    // deployment that switched the flag on would have collected a question and an answer that
+    // nothing stores and nothing can ever check. The policy flag itself is consequently
+    // unsatisfiable in the target, and PasswordPolicyOptions.Validate rejects it at start-up
+    // rather than letting it look enforced.
+
+    // MIGRATION: THE RANDOM-PASSWORD FLAG IS NOT A MEMBER OF THIS CONTRACT. The legacy page
+    // took a genuinely separate branch that bypassed both credential inputs and called the
+    // controller's generator, which produced a credential of the configured minimum length
+    // plus four characters. The generator is not carried forward: a generated credential has
+    // to be transmitted to be useful, the mail subsystem that would transmit it is excluded,
+    // and no endpoint in the target returns, echoes or reconstructs a credential. An earlier
+    // revision declared the flag and made both credential members conditional on it, so a
+    // caller could create an account with a credential that no one - including the account's
+    // own holder - could ever learn. Creation therefore always carries an explicit
+    // credential, and the administrative-reset path on the password sub-resource is where an
+    // administrator sets one on a caller's behalf.
 }

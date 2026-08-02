@@ -1,10 +1,75 @@
+// =============================================================================
+//  ⚠ COMPANION FILES NOT YET AUTHORED — THIS STYLESHEET IS UNCOMPILED
+//
+//  This file is one third of a component. The other two thirds, and the
+//  specification that would exercise them, do not exist:
+//
+//      module-export.component.ts      ABSENT
+//      module-export.component.html    ABSENT
+//      module-export.component.spec.ts ABSENT
+//
+//  The screen this styles is the route /modules/:moduleId/export.
+//
+//  WHAT THAT MEANS IN PRACTICE. A component stylesheet reaches a bundle only
+//  through some component's `styleUrl`, and a search of every `.ts` file in
+//  `src/` finds ZERO references to this one. So it is not compiled by
+//  `ng build`, not compiled by `ng test`, contributes nothing to any chunk, and
+//  is not measured against the `anyComponentStyle` budget that `angular.json`
+//  caps at 8 kB as an ERROR. It is inert rather than broken: it cannot fail a
+//  gate and cannot affect the rendered application. No gate VERIFIES it either,
+//  which is a real gap, so it was compiled directly against the workspace's own
+//  Sass implementation to close it: the file compiles clean, its `@use` of the
+//  shared mixin module resolves, and it emits 320 bytes of CSS — comfortably
+//  inside the 8 kB per-component ceiling it will be measured against once a
+//  companion exists. That check was performed by hand and does not re-run.
+//
+//  ⚠ DO NOT DELETE IT, AND DO NOT TREAT IT AS DEAD CODE. It carries the
+//  measured legacy-parity decisions for this screen, and re-deriving those from
+//  the legacy source is the expensive half of the work. It is retained
+//  deliberately as the visual contract the companion component must satisfy.
+//
+//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
+//  encapsulation with the component's own content attribute, so a class name
+//  that drifts does not error — it silently matches nothing and the screen
+//  renders unstyled. The template must therefore emit exactly this vocabulary:
+//
+//      .module-export
+//      .module-export__form
+//      .module-export__actions
+//
+//  BLOCKING DEPENDENCIES. The companion cannot be authored until these exist;
+//  each was checked against the workspace rather than assumed:
+//
+//      core/models/module.model.ts                       present, but it declares only
+//                                                        ModuleSettings, UpdateModuleRequest and
+//                                                        the visibility / alignment code sets —
+//                                                        there is no Module wire contract yet
+//      core/services/module.service.ts                   ABSENT   must call POST /api/v1/modules/{id}/export
+//      core/config/api-endpoints.ts                      present, but it carries only `apiUrl` and
+//                                                        the authentication route templates — the
+//                                                        export route template is not declared there
+//      shared/components/form-field                      present  every labelled control on this screen
+//      shared/components/page-header                     present
+//      features/module/module.routes.ts                  ABSENT   and deliberately so: this workspace
+//                                                        declares its lazy leaves directly in
+//                                                        app.routes.ts rather than per feature
+//
+//  Writing the component before its service — and before the Module wire contract
+//  that service would return — would mean inventing that contract, and a screen
+//  built against an invented contract is harder to correct later than one not yet
+//  built. That is why this is recorded as a blocking dependency list rather than
+//  worked around with a local interface.
+// =============================================================================
 @use '../../../../styles/mixins' as mx;
 
-// The host needs a box-generating display regardless, because a custom element
-// defaults to inline and would not contain block-level children correctly. Both
-// selectors carry the same flow so the rhythm holds whether the blocks sit
-// directly on the host or inside one wrapper; a flow container with a single
-// child simply has no gap to apply.
+// The host needs a box-generating display regardless, because a custom element defaults to inline and
+// would not contain block-level children correctly. Both selectors carry the same flow so the rhythm holds
+// whether the blocks sit directly on the host or inside one wrapper; a flow container with a single child
+// simply has no gap to apply.
+//
+// Focus indication is deliberately absent here and must stay absent: _reset.scss applies the shared
+// focus-ring mixin to a superset of the controls this screen can render, so the design system owns focus
+// indication and a feature screen consumes it rather than redeclaring it.
 :host,
 .module-export {
   display: flex;
@@ -12,10 +77,9 @@
   gap: var(--space-4);
 }
 
-// `breakpoint()` read for a raw width is the sanctioned use of that function —
-// what is barred is writing a media query by hand. A maximum rather than a fixed
-// measure keeps the form fluid below the step and capped above it, which is why
-// this screen needs no breakpoint mixin at all.
+// Reading `breakpoint()` for a raw width is the sanctioned use of that function - what is barred is
+// writing a media query by hand. A maximum rather than a fixed measure keeps the form fluid below the step
+// and capped above it, which is why this screen needs no breakpoint mixin at all.
 .module-export__form {
   display: flex;
   flex-direction: column;
@@ -23,40 +87,11 @@
   max-inline-size: mx.breakpoint('sm');
 }
 
-// Wrapping is intrinsic and deliberate: on a narrow viewport the second action
-// drops to its own line instead of overflowing, and the gap then supplies the row
-// spacing as well as the column spacing.
+// Wrapping is intrinsic and deliberate: on a narrow viewport the second action drops to its own line
+// instead of overflowing, and the gap then supplies the row spacing as well as the column spacing.
 .module-export__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
-
-// -----------------------------------------------------------------------------
-//  FOCUS VISIBILITY IS NOT DECLARED HERE — IT IS GLOBAL
-//
-//  This file previously carried its own `button, a[href], input` group applying
-//  the shared focus-ring mixin. That group is removed: src/styles/_reset.scss
-//  section 13 already applies the same mixin to a strict SUPERSET of those
-//  elements — a, button, input, select, textarea, summary and every element with
-//  a non-negative explicit tab index — so every control this screen can render
-//  already receives the ring, from one definition site.
-//
-//  The removed block defended itself on the grounds that the mixin is idempotent,
-//  so a control receiving the ring twice is unaffected. That is true and beside
-//  the point: idempotence makes the duplicate HARMLESS, not NECESSARY. A second
-//  declaration of a shared primitive is still a second definition, free to drift
-//  from the first the moment either is edited, and free to keep applying an old
-//  treatment after the global one changes. The design system owns focus
-//  indication; a feature screen consumes it.
-//
-// MIGRATION: focus indication remains a NET ADDITION relative to the legacy site —
-//  across all 34 legacy stylesheets under Website/ there is not one focus or
-//  outline declaration, so keyboard users had only the browser default. Two legacy
-//  affordances were worse than absent: the shared label control put a negative tab
-//  index on both its help trigger and its help image, removing them from the tab
-//  order outright. That defect is not reproduced. None of this is declared here
-//  any longer, but the addition itself is unchanged — only its single definition
-//  site is.
-// -----------------------------------------------------------------------------

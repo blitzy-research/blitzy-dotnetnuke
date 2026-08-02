@@ -1,4 +1,48 @@
 // =============================================================================
+//  COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+//
+//  This stylesheet is reached through `styleUrl` on its paired component, so it
+//  is compiled by `ng build` and by `ng test`, ships inside this screen's lazy
+//  chunk, and IS measured against the `anyComponentStyle` budget that
+//  `angular.json` caps at 8 kB as an ERROR. All three companions exist:
+//
+//      profile-definition-list.component.ts present
+//      profile-definition-list.component.html present
+//      profile-definition-list.component.spec.ts present
+//
+//  The screen this styles is the route /settings/profile-definitions, declared as a
+//  `loadComponent` entry in `src/app/app.routes.ts`.
+//
+//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
+//  encapsulation with the component's own content attribute, so a class name
+//  that drifts does not error — it silently matches nothing and the screen
+//  renders unstyled. The template emits exactly this vocabulary, and every
+//  entry below was checked against the template rather than assumed:
+//
+//      .profile-definitions__help
+//      .profile-definitions__bulk
+//      .profile-definitions__bulk-item
+//      .profile-definitions__grid-actions
+//      .profile-definitions__row-actions
+//      .profile-definitions__row-action
+//      .profile-definitions__code
+//      .profile-definitions__form-toggle
+//      .profile-definitions__form
+//      .profile-definitions__form-legend
+//      .profile-definitions__form-grid
+//      .profile-definitions__form-actions
+//      .profile-definitions__form-hint
+//
+//  WHAT THE SCREEN CONSUMES, AND THE ONE SEAM IT DOES NOT CROSS. The workspace
+//  carries nine shared components — page header, data table, pagination, form
+//  field, search input, confirm dialog, error banner, loading spinner and empty
+//  state — plus the `hasPermission` directive, `core/config/api-endpoints.ts`
+//  and the wire models under `core/models/`. It carries no user.service.ts and
+//  no signal store, so this component performs no HTTP: its data arrives through
+//  inputs and its intent leaves through outputs. That seam is what makes every
+//  branch below directly testable from the paired specification, with no HTTP
+//  testing controller involved.
+// =============================================================================
 //  profile-definition-list.component.scss
 //  Profile property definitions — the administration screen that replaces the
 //  legacy admin pair Website/admin/Users/ProfileDefinitions.ascx (the grid) and

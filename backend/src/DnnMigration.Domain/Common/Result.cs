@@ -47,12 +47,23 @@ namespace DnnMigration.Domain.Common;
 /// what <see cref="Result.Error"/> deliberately hides.
 /// </para>
 /// <para>
-/// Declared as a <c>readonly record struct</c> so that value equality, hashing
-/// and the equality operators are all synthesised by the compiler rather than
-/// hand-written, and so that a reason costs no allocation.
+/// Declared as a <c>sealed record</c> - a reference type - so that value equality,
+/// hashing and the equality operators are all synthesised by the compiler rather
+/// than hand-written, while the validating constructor below remains the
+/// <em>only</em> way to obtain an instance. A value type would not give that
+/// guarantee: every value type has an implicit parameterless initialisation that
+/// cannot be suppressed, so <c>default</c> would sidestep the constructor entirely
+/// and yield a reason whose <see cref="Code"/> and <see cref="Message"/> were both
+/// <see langword="null"/> - an unusable state that the type claims is
+/// unrepresentable. As a reference type the absent case is simply
+/// <see langword="null"/>, which the nullable annotations on
+/// <see cref="Result.Reason"/> and <see cref="Result.Error"/> already model and
+/// which the compiler checks at every call site. The allocation is immaterial:
+/// <see cref="Result"/> is itself a reference type, so one is allocated for every
+/// outcome regardless.
 /// </para>
 /// </remarks>
-public readonly record struct ResultReason
+public sealed record ResultReason
 {
     /// <summary>
     /// Initialises a new <see cref="ResultReason"/>.
@@ -147,29 +158,51 @@ public readonly record struct ResultReason
 /// </para>
 /// <para>
 /// Instances are immutable and are built exclusively through the static factory
-/// methods; the constructor is not public, so an inconsistent outcome cannot be
-/// constructed. No implicit boolean conversion is offered - branch on
-/// <see cref="IsSuccess"/> or <see cref="IsFailure"/> explicitly - and no
-/// combinator, pipeline or exception-capturing helper is provided, because this is
-/// a reporting primitive rather than a functional-composition library.
+/// methods; the constructor is <c>private protected</c>, so the outcome hierarchy
+/// is closed to this assembly and no type in a consuming assembly can derive from
+/// <see cref="Result"/> in order to construct an outcome directly. That
+/// restriction is what makes the failure invariant enforceable: a failed outcome
+/// always carries a reason, so <see cref="Error"/> is guaranteed to be non-null
+/// whenever <see cref="IsFailure"/> is <see langword="true"/>. No implicit boolean
+/// conversion is offered - branch on <see cref="IsSuccess"/> or
+/// <see cref="IsFailure"/> explicitly - and no combinator, pipeline or
+/// exception-capturing helper is provided, because this is a reporting primitive
+/// rather than a functional-composition library.
 /// </para>
 /// </remarks>
 public class Result
 {
     /// <summary>
-    /// Initialises a new outcome. Not public: outcomes are built through the
-    /// static factory methods so that the success flag and the reason cannot be
-    /// combined inconsistently. Visible to <see cref="Result{T}"/> only.
+    /// Initialises a new outcome. Declared <c>private protected</c>: outcomes are
+    /// built through the static factory methods so that the success flag and the
+    /// reason cannot be combined inconsistently, and the accessibility closes the
+    /// hierarchy to this assembly so that <see cref="Result{T}"/> is its only
+    /// derived shape. A type in a consuming assembly therefore cannot subclass
+    /// <see cref="Result"/> to manufacture a failed outcome that carries no reason.
     /// </summary>
     /// <param name="isSuccess">
     /// <see langword="true"/> when the operation succeeded.
     /// </param>
     /// <param name="reason">
-    /// The advisory or failure reason, or <see langword="null"/> when the outcome
-    /// needs no explanation.
+    /// The advisory or failure reason. Optional on a success, where
+    /// <see langword="null"/> records that the outcome needs no explanation;
+    /// mandatory on a failure.
     /// </param>
-    protected Result(bool isSuccess, ResultReason? reason)
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="isSuccess"/> is <see langword="false"/> and
+    /// <paramref name="reason"/> is <see langword="null"/>. A failure carrying no
+    /// reason would leave the caller unable to discover why the operation did not
+    /// succeed, which is exactly the deficiency this type exists to remove.
+    /// </exception>
+    private protected Result(bool isSuccess, ResultReason? reason)
     {
+        if (!isSuccess && reason is null)
+        {
+            throw new ArgumentNullException(
+                nameof(reason),
+                "A failed outcome must carry a reason. Build failures through the Failure factory methods so that a code and a message are always supplied.");
+        }
+
         IsSuccess = isSuccess;
         Reason = reason;
     }
@@ -205,7 +238,11 @@ public class Result
     /// <remarks>
     /// The failure-only projection of <see cref="Reason"/>. Because it is empty
     /// for every successful outcome, an advisory code attached to a success can
-    /// never be mistaken here for a failure.
+    /// never be mistaken here for a failure. Conversely, because the constructor
+    /// rejects a failure that carries no reason and the hierarchy is closed to this
+    /// assembly, this property is guaranteed to be non-null whenever
+    /// <see cref="IsFailure"/> is <see langword="true"/>: every failed outcome is
+    /// explicable.
     /// </remarks>
     public ResultReason? Error => IsSuccess ? null : Reason;
 
@@ -222,14 +259,34 @@ public class Result
     /// </summary>
     /// <param name="reason">The advisory reason to attach to the success.</param>
     /// <returns>A successful <see cref="Result"/> carrying <paramref name="reason"/>.</returns>
-    public static Result Success(ResultReason reason) => new(true, reason);
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="reason"/> is <see langword="null"/>. Use the
+    /// parameterless <see cref="Success()"/> overload for a success that needs no
+    /// explanation; passing a null reason here is a mistake at the call site rather
+    /// than a request for the no-reason overload.
+    /// </exception>
+    public static Result Success(ResultReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+
+        return new Result(true, reason);
+    }
 
     /// <summary>
     /// Creates a failed outcome.
     /// </summary>
     /// <param name="reason">The reason the operation failed.</param>
     /// <returns>A failed <see cref="Result"/>.</returns>
-    public static Result Failure(ResultReason reason) => new(false, reason);
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="reason"/> is <see langword="null"/>. A failure is
+    /// never anonymous: it always names the expected condition that occurred.
+    /// </exception>
+    public static Result Failure(ResultReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+
+        return new Result(false, reason);
+    }
 
     /// <summary>
     /// Creates a failed outcome from a discriminator and a message.
@@ -385,7 +442,18 @@ public sealed class Result<T> : Result
     /// <returns>
     /// A successful <see cref="Result{T}"/> carrying <paramref name="reason"/>.
     /// </returns>
-    public static Result<T> Success(T value, ResultReason reason) => new(true, value, reason);
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="reason"/> is <see langword="null"/>. Use the
+    /// single-argument <see cref="Success(T)"/> overload for a success that needs no
+    /// explanation. Note that this guard constrains the <em>reason</em> only:
+    /// <paramref name="value"/> may legitimately be <see langword="null"/>.
+    /// </exception>
+    public static Result<T> Success(T value, ResultReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+
+        return new Result<T>(true, value, reason);
+    }
 
     /// <summary>
     /// Creates a failed outcome. Hides the non-generic
@@ -394,7 +462,16 @@ public sealed class Result<T> : Result
     /// </summary>
     /// <param name="reason">The reason the operation failed.</param>
     /// <returns>A failed <see cref="Result{T}"/>.</returns>
-    public static new Result<T> Failure(ResultReason reason) => new(false, default!, reason);
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="reason"/> is <see langword="null"/>. A failure is
+    /// never anonymous: it always names the expected condition that occurred.
+    /// </exception>
+    public static new Result<T> Failure(ResultReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+
+        return new Result<T>(false, default!, reason);
+    }
 
     /// <summary>
     /// Creates a failed outcome from a discriminator and a message. Hides the
