@@ -38,13 +38,37 @@ WORKDIR /app
 # Non-root runtime user (non-functional requirement: container hardening).
 RUN adduser -D -u 1000 appuser
 
+# ICU, without which the image cannot open a database connection at all.
+#
+# mcr.microsoft.com/dotnet/aspnet:8.0-alpine sets
+# DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true because Alpine's musl userland ships
+# no ICU, and Microsoft.Data.SqlClient 5.x REFUSES to open a connection in that
+# mode: SqlConnection.TryOpen throws
+# `System.NotSupportedException: Globalization Invariant Mode is not supported`
+# before a socket is opened. The observable result is /health answering 503 for
+# the container's whole life, the api service never reporting healthy, and the
+# frontend service - which declares `depends_on: condition: service_healthy` -
+# never starting at all.
+#
+# This installs ICU and turns invariant mode off, which is exactly the two-line
+# remedy recorded in MIGRATION_NOTES.md ("Deployment - The delivered API
+# container cannot open a database connection as built"). It is applied here so
+# the composed topology is operational as delivered rather than requiring an
+# undocumented manual step at deploy time; it must run before `USER appuser`
+# because apk needs root. Nothing else in the artefact changes.
+RUN apk add --no-cache icu-libs icu-data-full
+
 COPY --from=build /app/publish ./
 RUN chown -R appuser:appuser /app
 USER appuser
 
+# DOTNET_SYSTEM_GLOBALIZATION_INVARIANT is false deliberately, and depends on the
+# `apk add icu-libs icu-data-full` above: with invariant mode off and no ICU
+# present the runtime fails at startup instead of at connection time. Keep the two
+# together.
 ENV ASPNETCORE_URLS=http://+:8080 \
     ASPNETCORE_ENVIRONMENT=Production \
-    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 EXPOSE 8080
 
