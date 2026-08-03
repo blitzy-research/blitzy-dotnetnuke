@@ -1085,6 +1085,7 @@ public class JwtTokenServiceTests
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
+            HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
 
@@ -1095,6 +1096,7 @@ public class JwtTokenServiceTests
                 Tokens.Object,
                 PasswordHasher.Object,
                 Clock.Object,
+                HostSettings.Object,
                 UnitOfWork.Object,
                 CurrentUser.Object,
                 Policy);
@@ -1125,6 +1127,8 @@ public class JwtTokenServiceTests
         public Mock<IPasswordHasher> PasswordHasher { get; }
 
         public Mock<IClock> Clock { get; }
+
+        public Mock<IHostSettingsService> HostSettings { get; }
 
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
@@ -1192,6 +1196,14 @@ public class JwtTokenServiceTests
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => Result<IReadOnlyList<string>>.Success(harness.Permissions));
+
+            // No credential-expiry window is configured, which is the shipped state and keeps this
+            // suite's attention on the token contract rather than on the sign-in advisories.
+            harness.HostSettings
+                .Setup(settings => settings.GetSettingAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((string?)null);
 
             harness.PasswordHasher
                 .Setup(hasher => hasher.Verify(It.IsAny<string>(), It.IsAny<string>()))

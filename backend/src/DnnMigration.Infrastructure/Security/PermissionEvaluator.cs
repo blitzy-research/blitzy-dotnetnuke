@@ -1,165 +1,272 @@
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Options;
+using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
-using DnnMigration.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
+// MIGRATION: no interface is declared in this file, and that is a decision rather than an omission.
+// The public abstraction this type implements already exists and is already consumed:
+// Application/Abstractions/IPermissionEvaluator.cs declares it, Application/Services/PermissionService.cs
+// depends on it, and Infrastructure/DependencyInjection.cs binds this implementation to it. Declaring a
+// second interface of the same name in this namespace would not merely duplicate that contract - the
+// registration file imports DnnMigration.Application.Abstractions and DnnMigration.Infrastructure.Security
+// together, so the name would become ambiguous and the solution would stop compiling. More importantly,
+// two contracts for one decision is the very failure this type exists to prevent: an evaluator that can
+// disagree with another evaluator surfaces as an intermittent authorisation defect rather than as a
+// failure. One contract, one implementation, one place where allow-and-deny precedence is settled.
+//
+// MIGRATION: this file supersedes logic the legacy codebase duplicated across three static controllers -
+// PermissionController.vb, ModulePermissionController.vb and TabPermissionController.vb, carrying 9, 18
+// and 15 public members - each of which re-derived the same reachability and precedence rules over its
+// own grant table. AAP section 0.4.3 places that arithmetic here, once.
+//
+// MIGRATION: every read below goes through a Domain repository abstraction. Nothing in this file names a
+// database session, a queryable, a table, a column or a stored procedure, which is what AAP Rule T3
+// requires and what makes the whole type substitutable in a test with nothing but five fakes. The legacy
+// alternative was the reflection-constructed static provider accessor at
+// Library/Components/Providers/Data/DataProvider.vb:L31-L50, and it produces no code here.
+//
+// MIGRATION: the legacy reachability test lived in PortalSecurity.IsInRoles
+// (Library/Components/Security/PortalSecurity.vb:L115-L136), which recovered its caller from ambient
+// request state, split a semicolon-delimited role string and consulted the ambient web request for the
+// authentication flag. The caller is named by argument here instead, so this type touches no request, no
+// principal, no cookie and no session, and the same question always produces the same answer.
 namespace DnnMigration.Infrastructure.Security;
 
 /// <summary>
-/// One applicable permission grant, reduced to the three facts a decision depends on.
-/// </summary>
-/// <param name="ScopeKind">
-/// Which kind of thing the grant was made against - see <see cref="PermissionScopeKind"/>. It exists so
-/// that module grants and page grants can travel in one sequence without their identifiers colliding:
-/// both <c>Modules.ModuleID</c> and <c>Tabs.TabID</c> seed at 0, so an identifier alone does not say
-/// what it identifies.
-/// </param>
-/// <param name="ScopeId">
-/// Identifier of the module or page the grant was made against. Carries no sentinel meaning: 0 is a real
-/// identifier for both, and -1 is a real portal identifier, so nothing here may be read as "absent".
-/// </param>
-/// <param name="PermissionKey">
-/// The permission key exactly as stored in <c>Permission.PermissionKey</c>. Compared
-/// case-insensitively, because the legacy column is <c>varchar</c> under a case-insensitive collation
-/// and the shipped rows are not consistently cased.
-/// </param>
-/// <param name="AllowAccess">
-/// The value of the grant's <c>AllowAccess bit NOT NULL</c> column: <see langword="true"/> allows,
-/// <see langword="false"/> denies.
-/// </param>
-internal readonly record struct PermissionGrant(
-    PermissionScopeKind ScopeKind,
-    int ScopeId,
-    string PermissionKey,
-    bool AllowAccess);
-
-/// <summary>Distinguishes the two kinds of thing a permission grant can be made against.</summary>
-internal enum PermissionScopeKind
-{
-    /// <summary>The grant was made against a module instance, in <c>ModulePermission</c>.</summary>
-    Module = 0,
-
-    /// <summary>The grant was made against a page, in <c>TabPermission</c>.</summary>
-    Tab = 1,
-}
-
-/// <summary>
-/// The single place in this solution where allow-and-deny precedence over permission grants is decided.
+/// The single place in this solution where permission grants are turned into an access decision.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: this supersedes logic that the legacy codebase duplicated across three controllers -
-/// <c>PermissionController.vb</c>, <c>ModulePermissionController.vb</c> and
-/// <c>TabPermissionController.vb</c>, carrying 9, 18 and 15 public members respectively - each of which
-/// re-derived the same rules over its own grant table. Centralising them here is the whole point:
-/// <em>two evaluators that can disagree is the worst available result in this area</em>, because the
-/// disagreement shows up as an intermittent authorisation defect rather than as a failure.
+/// <strong>What it owns.</strong> Two things, and deliberately only two: <em>which grants a caller
+/// reaches</em>, and <em>what those grants consequently confer</em>. Both listings and verdicts run
+/// through <see cref="Survivors"/>, so a listing that offers an action and a verdict that refuses it
+/// cannot disagree - <see cref="Holds"/> is defined as a membership test over the very set the listings
+/// return rather than as a second rule that happens to agree today.
 /// </para>
 /// <para>
-/// <strong>Where the boundary lies.</strong> This type owns the whole of evaluation: it establishes
-/// <em>which grants a caller reaches</em> - a retrieval question that the database must answer because
-/// it needs the role table - and then decides <em>what the caller consequently holds</em>.
-/// <c>PermissionRepository</c> deliberately does neither. That contract mirrors the legacy provider
-/// blocks at core <c>DataProvider.vb</c> L279-L308 and is pure persistence: it reads and writes rows
-/// and returns no verdict, so an access question can only be asked here. Both effective-key reads and
-/// both single-key verdicts run through <see cref="Reduce"/>, so a verdict and a listing are incapable
-/// of contradicting one another: <see cref="Holds"/> is defined as a membership test against the very
-/// set <see cref="Reduce"/> returns rather than as a second rule that happens to agree today.
+/// <strong>What it does not own.</strong> Host-account short-circuiting, existence checking, the
+/// module-inherits-its-view-permission-from-its-page composition, and the shape of the answer handed to
+/// an HTTP caller all belong to the application service above. That is why no member here accepts a
+/// superuser flag: the legacy test returned true for a host account at
+/// <c>PortalSecurity.vb:L123</c> before examining a single role, so the decision belongs to the caller
+/// that knows the account, and asking this type would be asking a question already answered.
 /// </para>
 /// <para>
 /// <strong>Deny beats allow, within a scope.</strong> A denying grant suppresses its key on the module or
-/// page it was made against, even when another grant allows the same key there. It does not suppress that
-/// key elsewhere. The legacy string builders at <c>ModulePermissionController.vb:L243</c> and
-/// <c>TabPermissionController.vb:L218</c> filtered on the allow flag being set and so discarded deny rows
-/// altogether, but they were assembling a value for a permission grid rather than deciding access, which
-/// is why their behaviour is not the behaviour reproduced here.
+/// page it was recorded against, even when another grant allows the same key there, and it suppresses it
+/// nowhere else. Scoping the suppression matters: the portal-wide read spans every module and page of a
+/// tenant, so applying one denial across that whole union would let a single forgotten page strip a key
+/// the caller genuinely holds everywhere else. The legacy string builders at
+/// <c>ModulePermissionController.vb:L243</c> and <c>TabPermissionController.vb:L218</c> filtered on the
+/// allow flag and discarded denials outright, but they were assembling a value for a permission grid
+/// rather than deciding access, which is why their behaviour is not the behaviour reproduced here.
 /// </para>
 /// <para>
-/// <strong>Why suppression is scoped rather than global.</strong> The portal-wide read exists to answer
-/// "which sections may this caller be offered", and it spans every module and page of a tenant. Applying
-/// a denial across that whole union would let one obscure denial on one forgotten page remove a key the
-/// caller genuinely holds everywhere else - strictly harsher than any legacy behaviour and wrong for the
-/// question being asked. Suppression is therefore correlated to the scope that carries the denial, which
-/// is also exactly what the two scoped reads do, so the three reads share one rule rather than two.
+/// <strong>Pseudo-principals are identifiers, not rows.</strong> A grant's role identifier may hold a
+/// value that names no role row at all: <c>-1</c> is "All Users", <c>-2</c> is "Superuser", <c>-3</c> is
+/// "Unauthenticated Users" and <c>-4</c> is "Nothing" - the measured constants at
+/// <c>Library/Components/Shared/Globals.vb:L95-L98</c>. This is why neither grant table ever carried a
+/// foreign key to the roles table and why the 04.05.00 upgrade script could rebuild <c>RoleID</c> as
+/// nullable. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so no genuine role can collide with a negative
+/// value and <c>0</c> is a perfectly ordinary role identifier.
 /// </para>
 /// <para>
-/// <strong>Pseudo-roles are sentinel identifiers, not rows.</strong> The constants published here are the
-/// measured legacy values from <c>Library/Components/Shared/Globals.vb</c> lines 95 to 98, and the write
-/// path that produces them is <c>TabController.vb:L901-L904</c> and
-/// <c>ModuleController.vb:L354-L357</c>, both of which map a display name onto a negative identifier
-/// before storing it. This is why neither grant table has ever carried a foreign key to <c>Roles</c>, and
-/// why the 04.05.00 script could make <c>RoleID</c> nullable: a sentinel identifies no role row. They are
-/// published here, rather than restated in the repository, so that the query which selects reachable
-/// grants and the rule which interprets them cannot drift apart. <c>Roles.RoleID</c> is
-/// <c>IDENTITY(0, 1)</c>, so no genuine role can ever collide with a negative sentinel.
+/// <strong>Tenant isolation.</strong> Role names are unique per portal rather than per installation, so
+/// names are resolved to identifiers only within the portal that owns the module or page under
+/// evaluation. Resolving them installation-wide would let a grant to one tenant's "Administrators" role
+/// be honoured for another tenant's, which is a silent cross-tenant escalation rather than a visible
+/// failure.
 /// </para>
 /// <para>
-/// The precedence arithmetic below is stateless, but the type resolves grants through the unit-of-work
-/// scoped database context and is therefore registered per request rather than as a singleton.
+/// <strong>Absence denies.</strong> No catalogue entry, no grant, or no reachable grant all mean the
+/// caller holds nothing. That is an answer, not an error, and it is the same answer an explicit denial
+/// produces.
+/// </para>
+/// <para>
+/// The precedence arithmetic itself is stateless, but every read is issued through repositories that share
+/// the unit-of-work scoped context, so this type is registered per request rather than as a singleton.
 /// </para>
 /// </remarks>
 internal sealed class PermissionEvaluator : IPermissionEvaluator
 {
     /// <summary>
-    /// The sentinel role identifier that admits every caller, authenticated or not.
+    /// The role identifier that admits every caller, authenticated or not.
     /// </summary>
     /// <remarks>
     /// MIGRATION: <c>glbRoleAllUsers = "-1"</c> at <c>Library/Components/Shared/Globals.vb:L95</c>,
-    /// displayed as "All Users". <c>PortalSecurity.IsInRoles</c> admitted it unconditionally at line 125.
+    /// displayed as "All Users" (<c>L100</c>). <c>PortalSecurity.IsInRoles</c> admitted it
+    /// unconditionally at <c>L125</c>, and that is reproduced exactly. It is emphatically not an absence
+    /// marker: <c>Null.NullInteger</c> is also <c>-1</c>, and conflating the two would discard every
+    /// public grant in the installation.
     /// </remarks>
-    public const int AllUsersRoleId = -1;
+    private const int AllUsersRoleId = -1;
 
     /// <summary>
-    /// The sentinel role identifier reserved for host accounts, deliberately never matched here.
+    /// The role identifier reserved for host accounts, which matches nobody here.
     /// </summary>
     /// <remarks>
     /// MIGRATION: <c>glbRoleSuperUser = "-2"</c> at <c>Library/Components/Shared/Globals.vb:L96</c>. It is
-    /// published for completeness and for the reader who finds a -2 in a grant row, but no rule below
-    /// matches it. A superuser is admitted before any grant is examined - which is what
-    /// <c>PortalSecurity.IsInRoles</c> did at line 123, testing <c>IsSuperUser</c> first and returning
-    /// true without looking at a single role - so the only caller this sentinel could serve has already
-    /// been answered. Matching it here would be dead code that looked like a security rule.
+    /// matched explicitly and refused, rather than left to fall through, because a reader who finds a
+    /// <c>-2</c> in a grant row deserves to find the rule that governs it. No member of this type accepts
+    /// a superuser flag - the contract has none, by design - so admitting <c>-2</c> would have to admit
+    /// every caller, which is the one mistake this area cannot afford. A host account is answered by the
+    /// application service before a grant is read, exactly as <c>PortalSecurity.vb:L123</c> answered it
+    /// before examining a role.
     /// </remarks>
-    public const int SuperUserRoleId = -2;
+    private const int SuperUserRoleId = -2;
 
     /// <summary>
-    /// The sentinel role identifier that admits only callers who have not signed in.
+    /// The role identifier that admits only callers who have not signed in.
     /// </summary>
     /// <remarks>
     /// MIGRATION: <c>glbRoleUnauthUser = "-3"</c> at <c>Library/Components/Shared/Globals.vb:L97</c>,
-    /// displayed as "Unauthenticated Users". <c>PortalSecurity.IsInRoles</c> admitted it only when
-    /// <c>context.Request.IsAuthenticated</c> was false, at line 124 - so a grant to this sentinel is
-    /// genuinely narrower than a grant to every user, and the two are not interchangeable.
+    /// displayed as "Unauthenticated Users" (<c>L102</c>). <c>PortalSecurity.IsInRoles</c> admitted it
+    /// only while <c>context.Request.IsAuthenticated</c> was false, at <c>L124</c>, so a grant to this
+    /// identifier is genuinely narrower than a grant to every user and the two are not interchangeable.
+    /// The contract carries no authentication flag of its own: an absent account identifier <em>is</em>
+    /// the anonymous caller, which is what the contract documents its nullable account parameter to mean.
     /// </remarks>
-    public const int UnauthenticatedRoleId = -3;
+    private const int UnauthenticatedRoleId = -3;
 
     /// <summary>
-    /// The sentinel role identifier that admits nobody.
+    /// The scope code shared by the catalogue entries every module definition inherits.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: <c>glbRoleNothing = "-4"</c> at <c>Library/Components/Shared/Globals.vb:L98</c>. No rule
-    /// matches it, which is the correct treatment rather than an omission: a grant carrying it reaches no
-    /// caller, so leaving it unmatched is precisely what it asks for.
+    /// MIGRATION: the literal <c>SYSTEM_MODULE_DEFINITION</c> carried by the terminal
+    /// <c>GetPermissionsByModuleID</c> and <c>GetModulePermissionsByModuleID</c> bodies. It is reference
+    /// data seeded by the upgrade scripts rather than a configurable value, so it is a constant. Note
+    /// that it is not the <em>only</em> code a module-scoped catalogue entry may carry: an installed
+    /// module contributes entries under its own code, and those are legitimate.
     /// </remarks>
-    public const int NoRoleId = -4;
+    private const string ModuleDefinitionScopeCode = "SYSTEM_MODULE_DEFINITION";
 
-    private readonly DnnDbContext _context;
+    /// <summary>The scope code carried by the catalogue entries every page shares.</summary>
+    /// <remarks>
+    /// MIGRATION: the literal <c>SYSTEM_TAB</c> carried by the terminal <c>GetPermissionsByTabID</c> and
+    /// <c>GetTabPermissionsByTabID</c> bodies. Unlike the module code above, this one <em>is</em> the
+    /// complete page vocabulary: the page catalogue read filters on it and on nothing else.
+    /// </remarks>
+    private const string TabScopeCode = "SYSTEM_TAB";
+
+    /// <summary>
+    /// The value both grant readers treat as "every permission" in their permission argument.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the terminal grant procedures accept <c>-1</c> in the permission position as a wildcard,
+    /// which the repository contract documents. <c>Permission.PermissionID</c> is <c>IDENTITY(1, 1)</c>,
+    /// so no catalogue entry can ever carry it and the guard below can never reject a real entry. The
+    /// guard exists because the consequence of losing it is silent and severe: passing the wildcard would
+    /// return the grants of <em>every</em> permission and this type would then judge them as though they
+    /// all carried the key that was asked about.
+    /// </remarks>
+    private const int AnyPermissionId = -1;
+
+    private readonly IPermissionRepository _permissions;
+
+    private readonly IRoleRepository _roles;
+
+    private readonly IModuleRepository _modules;
+
+    private readonly ITabRepository _tabs;
+
+    private readonly string _allUsersRoleName;
+
+    private readonly string _unauthenticatedRoleName;
 
     /// <summary>Initialises a new instance of the <see cref="PermissionEvaluator"/> class.</summary>
-    /// <param name="context">The unit-of-work scoped database context grants are resolved through.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
-    public PermissionEvaluator(DnnDbContext context)
+    /// <param name="permissions">Reads the permission catalogue and the recorded grants.</param>
+    /// <param name="roles">Resolves role names to identifiers within one portal.</param>
+    /// <param name="modules">Establishes which portal and definition own a module under evaluation.</param>
+    /// <param name="tabs">Establishes which portal owns a page under evaluation.</param>
+    /// <param name="portalOptions">Supplies the two built-in role display names.</param>
+    /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Either built-in role name is blank. Both are load-bearing: they are the names by which a caller
+    /// declares that it stands for every user or for an anonymous one, so a blank value would silently
+    /// stop matching rather than fail.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: five collaborators, and each earns its place. <see cref="IPermissionRepository"/> and
+    /// <see cref="IRoleRepository"/> supply the grants and the roles. <see cref="IModuleRepository"/> and
+    /// <see cref="ITabRepository"/> supply the one fact the scoped members are not given and cannot do
+    /// without - the portal that owns the module or page - because the contract's scoped members name only
+    /// the module or the page, and resolving role names outside the owning portal is the cross-tenant
+    /// escalation the contract explicitly forbids. The module lookup additionally yields the definition
+    /// that bounds its catalogue.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <see cref="PortalOptions"/> replaces the excluded static role-name constants
+    /// <c>glbRoleAllUsersName</c> and <c>glbRoleUnauthUserName</c>. They are configurable rather than
+    /// compiled in because the legacy comparison matched a persisted display name as a string, so an
+    /// installation that renamed either role would silently stop matching a compiled-in literal. Both
+    /// values are copied verbatim - never trimmed, folded or localised - because the name in the roles
+    /// table is the value that must match.
+    /// </para>
+    /// <para>
+    /// Nothing else is injected. No database context, no cache, no clock, no HTTP or request accessor, no
+    /// ambient tenant snapshot and no service provider: an access decision that depended on any of those
+    /// could differ between two callers asking the same question.
+    /// </para>
+    /// </remarks>
+    public PermissionEvaluator(
+        IPermissionRepository permissions,
+        IRoleRepository roles,
+        IModuleRepository modules,
+        ITabRepository tabs,
+        IOptions<PortalOptions> portalOptions)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+        ArgumentNullException.ThrowIfNull(portalOptions);
+
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
+        _roles = roles ?? throw new ArgumentNullException(nameof(roles));
+        _modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
+
+        PortalOptions options = portalOptions.Value
+            ?? throw new ArgumentNullException(nameof(portalOptions));
+
+        if (string.IsNullOrWhiteSpace(options.AllUsersRoleName))
+        {
+            throw new ArgumentException(
+                "PortalOptions.AllUsersRoleName is blank. It is the name by which a caller declares that "
+                + "it stands for every user, so a blank value would quietly match nothing.",
+                nameof(portalOptions));
+        }
+
+        if (string.IsNullOrWhiteSpace(options.UnauthenticatedRoleName))
+        {
+            throw new ArgumentException(
+                "PortalOptions.UnauthenticatedRoleName is blank. It is the name by which an anonymous "
+                + "caller is recognised, so a blank value would quietly match nothing.",
+                nameof(portalOptions));
+        }
+
+        _allUsersRoleName = options.AllUsersRoleName;
+        _unauthenticatedRoleName = options.UnauthenticatedRoleName;
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// The union spans every module and page of the tenant, and the deleted ones are excluded because a
-    /// grant on something a caller can no longer reach confers nothing. Role names are resolved against
-    /// the portal directly here, rather than through the owning module or page as the two scoped reads
-    /// do, because the portal <em>is</em> the scope in this case.
+    /// <para>
+    /// The union spans every module and page of the tenant. Soft-deleted ones are excluded, because a
+    /// grant on something the caller can no longer reach confers nothing.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this member exists instead of a loop over the two scoped reads, and the reason is the
+    /// round-trip count: a portal carrying hundreds of pages and modules would cost hundreds of reads to
+    /// answer one question. It is answered with a fixed five reads - the portal's roles, its modules, its
+    /// pages, its module grants and its page grants - plus one catalogue lookup for each <em>distinct
+    /// permission the caller actually reaches</em>. That last number is bounded by the catalogue, which
+    /// the schema bounds, rather than by how much content the tenant holds, so the cost does not grow
+    /// with the portal.
+    /// </para>
+    /// <para>
+    /// The reduction is the same one the scoped members use, applied per scope, so a key this member
+    /// reports for a module is exactly the key the module-scoped member reports for it.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<string>> ListEffectivePortalPermissionKeysAsync(
         int portalId,
@@ -168,74 +275,122 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        IReadOnlyList<string> wantedRoles = NormaliseRoleNames(roleNames);
-        int? caller = userId;
-
-        IQueryable<int> portalRoleIds = _context.Roles
-            .Where(r => r.PortalId == portalId && wantedRoles.Contains(r.RoleName.ToLower()))
-            .Select(r => r.RoleId);
-
-        IQueryable<ModulePermission> moduleGrants = _context.ModulePermissions
-            .Where(p => p.Module!.PortalId == portalId && !p.Module.IsDeleted)
-            .Where(p =>
-                (caller != null && p.UserId != null && p.UserId == caller)
-                || p.RoleId == AllUsersRoleId
-                || (caller == null && p.RoleId == UnauthenticatedRoleId)
-                || (p.RoleId != null && portalRoleIds.Contains(p.RoleId.Value)));
-
-        IQueryable<TabPermission> tabGrants = _context.TabPermissions
-            .Where(p => p.Tab!.PortalId == portalId && !p.Tab.IsDeleted)
-            .Where(p =>
-                (caller != null && p.UserId != null && p.UserId == caller)
-                || p.RoleId == AllUsersRoleId
-                || (caller == null && p.RoleId == UnauthenticatedRoleId)
-                || (p.RoleId != null && portalRoleIds.Contains(p.RoleId.Value)));
-
-        // Both projections carry a scope discriminator, so the two sets travel in a single union without
-        // their identifiers colliding - both Modules.ModuleID and Tabs.TabID seed at 0, so an identifier
-        // alone does not say what it identifies. One statement therefore serves a whole tenant, which is
-        // the entire reason this member exists rather than a loop over the two scoped reads.
-        //
-        // The union is deliberately taken over rows of plain columns rather than over the PermissionGrant
-        // projection the two scoped reads use. Constructing a domain-shaped value is a client projection,
-        // and a relational set operation cannot be translated once one has been applied, so unioning the
-        // projected sequences fails at execution rather than at compile time. Taking the union first and
-        // shaping afterwards keeps the whole read in one statement; shaping first and unioning afterwards
-        // does not, and issuing two statements would abandon the single-round-trip property outright.
-        var rows = await moduleGrants
-            .Select(p => new
-            {
-                ScopeKind = (int)PermissionScopeKind.Module,
-                ScopeId = p.ModuleId,
-                PermissionKey = p.Permission!.PermissionKey,
-                p.AllowAccess,
-            })
-            .Union(tabGrants.Select(p => new
-            {
-                ScopeKind = (int)PermissionScopeKind.Tab,
-                ScopeId = p.TabId,
-                PermissionKey = p.Permission!.PermissionKey,
-                p.AllowAccess,
-            }))
-            .ToListAsync(cancellationToken)
+        // The portal is the scope here, so role names resolve against it directly rather than through an
+        // owning module or page.
+        Principal principal = await BuildPrincipalAsync(portalId, userId, roleNames, cancellationToken)
             .ConfigureAwait(false);
 
-        // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration and the column
-        // stores its member name, so the union carries the enumeration and the name is taken here,
-        // client side, once the rows have landed. PermissionGrant deliberately keeps a string: it
-        // models what the row said, and the precedence rule below is what decides what an
-        // unrecognised key means.
-        List<PermissionGrant> grants = rows.ConvertAll(row => new PermissionGrant(
-            (PermissionScopeKind)row.ScopeKind,
-            row.ScopeId,
-            row.PermissionKey.ToString(),
-            row.AllowAccess));
+        // Live modules, indexed to their definitions: the definition bounds which catalogue entries apply
+        // to a module, and it is needed again below when each reached grant is checked against its scope.
+        IReadOnlyList<Module> modules = await _modules
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
 
-        return Reduce(grants);
+        Dictionary<int, int> liveModuleDefinitions = new(modules.Count);
+        foreach (Module module in modules)
+        {
+            if (!module.IsDeleted)
+            {
+                liveModuleDefinitions[module.ModuleId] = module.ModuleDefinitionId;
+            }
+        }
+
+        IReadOnlyList<Tab> tabs = await _tabs
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> liveTabs = new(tabs.Count);
+        foreach (Tab tab in tabs)
+        {
+            if (!tab.IsDeleted)
+            {
+                liveTabs.Add(tab.TabId);
+            }
+        }
+
+        IReadOnlyList<ModulePermission> moduleGrants = await _permissions
+            .GetModulePermissionsByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        IReadOnlyList<TabPermission> tabGrants = await _permissions
+            .GetTabPermissionsByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Reachability is decided before the catalogue is consulted, so the catalogue is only read for the
+        // permissions that can still affect the answer. Denying grants are kept: a key that is never seen
+        // cannot be suppressed.
+        List<ReachedGrant> reached = new(moduleGrants.Count + tabGrants.Count);
+
+        foreach (ModulePermission grant in moduleGrants)
+        {
+            if (liveModuleDefinitions.ContainsKey(grant.ModuleId)
+                && Matches(grant.RoleId, grant.UserId, principal))
+            {
+                reached.Add(new ReachedGrant(
+                    PermissionScope.Module,
+                    grant.ModuleId,
+                    grant.PermissionId,
+                    grant.AllowAccess));
+            }
+        }
+
+        foreach (TabPermission grant in tabGrants)
+        {
+            if (liveTabs.Contains(grant.TabId) && Matches(grant.RoleId, grant.UserId, principal))
+            {
+                reached.Add(new ReachedGrant(
+                    PermissionScope.Tab,
+                    grant.TabId,
+                    grant.PermissionId,
+                    grant.AllowAccess));
+            }
+        }
+
+        // MIGRATION: the key is resolved from the catalogue by the grant's own PermissionID column rather
+        // than from a navigation property. Whether the repository loaded that reference is the
+        // repository's business, and a decision that silently returned "holds nothing" because a
+        // reference happened to be unloaded would be an authorisation defect that no test of this type
+        // could see.
+        Dictionary<int, Permission> catalogue = await ReadCatalogueAsync(reached, cancellationToken)
+            .ConfigureAwait(false);
+
+        List<MatchedGrant> matched = new(reached.Count);
+        foreach (ReachedGrant grant in reached)
+        {
+            Permission? entry = catalogue.GetValueOrDefault(grant.PermissionId);
+            if (entry is null)
+            {
+                // The catalogue entry the grant names does not exist, so there is no key to confer. That
+                // is a broken row rather than a denial, and failing closed is the only safe reading of it.
+                continue;
+            }
+
+            bool inScope = grant.Scope == PermissionScope.Module
+                ? IsModuleScoped(entry, liveModuleDefinitions[grant.ScopeId])
+                : IsTabScoped(entry);
+
+            if (inScope)
+            {
+                matched.Add(new MatchedGrant(
+                    grant.Scope,
+                    grant.ScopeId,
+                    entry.PermissionKey,
+                    grant.AllowAccess));
+            }
+        }
+
+        return Names(Survivors(matched));
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Answered from the module's own grants alone. A module that defers its view permission to the pages
+    /// it sits on is resolved by the application service, which composes this answer with the page
+    /// answers; that composition is not performed here, because a module's grant rows are all this member
+    /// is asked about.
+    /// </remarks>
     public async Task<IReadOnlyList<string>> ListEffectiveModulePermissionKeysAsync(
         int moduleId,
         int? userId,
@@ -243,17 +398,21 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        // One round trip fetches the reachable grants, projected to the three facts a decision depends
-        // on; the precedence rule is then applied below, which is the only place it exists.
-        List<PermissionGrant> grants = await ProjectModuleGrants(ApplicableModuleGrants(moduleId, userId, roleNames))
-            .ToListAsync(cancellationToken)
+        List<MatchedGrant> matched = await CollectModuleGrantsAsync(
+                moduleId,
+                permissionKey: null,
+                userId,
+                roleNames,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        return Reduce(grants);
+        return Names(Survivors(matched));
     }
 
     /// <inheritdoc />
+    /// <remarks>The page counterpart of <see cref="ListEffectiveModulePermissionKeysAsync"/>.</remarks>
     public async Task<IReadOnlyList<string>> ListEffectiveTabPermissionKeysAsync(
         int tabId,
         int? userId,
@@ -261,19 +420,32 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        List<PermissionGrant> grants = await ProjectTabGrants(ApplicableTabGrants(tabId, userId, roleNames))
-            .ToListAsync(cancellationToken)
+        List<MatchedGrant> matched = await CollectTabGrantsAsync(
+                tabId,
+                permissionKey: null,
+                userId,
+                roleNames,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        return Reduce(grants);
+        return Names(Survivors(matched));
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// A caller with no reachable grant on the module holds nothing, so the answer is false rather than
-    /// an error: an absent grant denies, which is the closed default and the same answer an explicit
-    /// denial produces.
+    /// <para>
+    /// A caller with no reachable grant on the module holds nothing, so the answer is
+    /// <see langword="false"/> rather than an error: an absent grant denies, which is the closed default
+    /// and the same answer an explicit denial produces. A module that does not exist confers nothing for
+    /// the same reason.
+    /// </para>
+    /// <para>
+    /// Only the catalogue entries carrying the requested key are read, so the grants examined are exactly
+    /// the grants that could confer it. The verdict is then the same reduction the listing above performs,
+    /// asked whether the key survived.
+    /// </para>
     /// </remarks>
     public async Task<bool> HasModulePermissionAsync(
         int moduleId,
@@ -283,19 +455,17 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        // MIGRATION: the key is compared as the enumeration itself rather than as lower-cased text.
-        // The property is a closed enumeration mapped to the varchar column by a string conversion, so
-        // the provider compares the canonical member name against the column and the comparison stays
-        // case-insensitive by virtue of the database collation - which is exactly what the previous
-        // explicit lower-casing was reproducing, without it a query could no longer index-seek.
-        List<PermissionGrant> grants = await ProjectModuleGrants(
-                ApplicableModuleGrants(moduleId, userId, roleNames)
-                    .Where(p => p.Permission!.PermissionKey == permissionKey))
-            .ToListAsync(cancellationToken)
+        List<MatchedGrant> matched = await CollectModuleGrantsAsync(
+                moduleId,
+                permissionKey,
+                userId,
+                roleNames,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        return Holds(grants, permissionKey);
+        return Holds(matched, permissionKey);
     }
 
     /// <inheritdoc />
@@ -308,242 +478,578 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleNames);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        // MIGRATION: the same enumeration comparison as HasModulePermissionAsync, for the same reason.
-        List<PermissionGrant> grants = await ProjectTabGrants(
-                ApplicableTabGrants(tabId, userId, roleNames)
-                    .Where(p => p.Permission!.PermissionKey == permissionKey))
-            .ToListAsync(cancellationToken)
+        List<MatchedGrant> matched = await CollectTabGrantsAsync(
+                tabId,
+                permissionKey,
+                userId,
+                roleNames,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        return Holds(grants, permissionKey);
+        return Holds(matched, permissionKey);
     }
 
-    /// <summary>
-    /// Reduces a caller's reachable grants to the distinct permission keys the caller consequently holds.
-    /// </summary>
-    /// <param name="grants">
-    /// Every grant the caller reaches, in any order, possibly spanning several modules and pages. An
-    /// empty sequence is legitimate and yields an empty result.
+    /// <summary>Collects the grants on one module that the given caller reaches.</summary>
+    /// <param name="moduleId">The module being evaluated.</param>
+    /// <param name="permissionKey">
+    /// The single key to narrow the catalogue to, or <see langword="null"/> to consider every key the
+    /// module's catalogue declares.
     /// </param>
-    /// <returns>
-    /// The surviving keys, upper-cased, without duplicates, in a stable ordinal order. Upper-casing
-    /// matches the closed <see cref="PermissionKey"/> enumeration and the strings the Angular
-    /// <c>hasPermission</c> directive matches on; the ordering exists so that a token minted twice from
-    /// the same grants carries an identical claim set both times.
-    /// </returns>
-    /// <exception cref="ArgumentNullException"><paramref name="grants"/> is <see langword="null"/>.</exception>
+    /// <param name="userId">The caller's account identifier, or <see langword="null"/> when anonymous.</param>
+    /// <param name="roleNames">The role names the caller declares.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The reached grants, allowing and denying alike, in no significant order.</returns>
     /// <remarks>
-    /// A key survives when some grant allows it on a scope where no grant denies it. Suppression is
-    /// evaluated per scope, for the reason given in the type remarks, so a denial on one page cannot
-    /// remove a key held on another. An empty result is a positive answer - the caller holds nothing here
-    /// - and never signals an error.
+    /// <para>
+    /// The reads happen in a fixed order, and the order is the point. The module is read first because it
+    /// names the portal that role names must resolve within - which is what
+    /// <see cref="BuildPrincipalAsync"/> then reads the roles of - and the definition that bounds its
+    /// catalogue. The catalogue is read next and narrowed to the keys being asked about. The grants are
+    /// read last, once per surviving catalogue entry, because that is the shape the repository contract
+    /// offers: a grant reader taking a module and one permission.
+    /// </para>
+    /// <para>
+    /// An unknown module yields nothing. That is the closed default rather than an error - this member is
+    /// asked what a caller holds, and the answer for something that does not exist is "nothing". Reporting
+    /// existence is the application service's job, and it does it before asking.
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<string> Reduce(IEnumerable<PermissionGrant> grants)
+    private async Task<List<MatchedGrant>> CollectModuleGrantsAsync(
+        int moduleId,
+        PermissionKey? permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(grants);
+        List<MatchedGrant> matched = new();
 
-        // Collect the denials first, because a denial has to be known before any allowance on the same
-        // scope can be judged, and the sequence may present them in any order.
-        HashSet<(PermissionScopeKind Kind, int Id, string Key)> denied = new();
-        List<PermissionGrant> allowances = new();
-
-        foreach (PermissionGrant grant in grants)
+        Module? module = await _modules.GetByIdAsync(moduleId, cancellationToken).ConfigureAwait(false);
+        if (module is null)
         {
-            string key = NormaliseKey(grant.PermissionKey);
+            return matched;
+        }
 
-            if (key.Length == 0)
+        Principal principal = await BuildPrincipalAsync(module.PortalId, userId, roleNames, cancellationToken)
+            .ConfigureAwait(false);
+
+        IReadOnlyList<Permission> catalogue = await _permissions
+            .GetByModuleIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> visited = new();
+
+        foreach (Permission entry in catalogue)
+        {
+            if (!Applies(entry, permissionKey) || !IsModuleScoped(entry, module.ModuleDefinitionId))
             {
                 continue;
             }
 
-            if (grant.AllowAccess)
+            if (entry.PermissionId == AnyPermissionId || !visited.Add(entry.PermissionId))
             {
-                allowances.Add(grant);
+                continue;
             }
-            else
+
+            IReadOnlyList<ModulePermission> grants = await _permissions
+                .GetModulePermissionsByModuleIdAsync(moduleId, entry.PermissionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (ModulePermission grant in grants)
             {
-                denied.Add((grant.ScopeKind, grant.ScopeId, key));
+                // The two equality checks re-assert the arguments just passed to the reader. Both of that
+                // reader's arguments carry a documented wildcard, so a row that answers a wider question
+                // than the one asked must not be judged as though it carried the requested key.
+                if (grant.ModuleId != moduleId || grant.PermissionId != entry.PermissionId)
+                {
+                    continue;
+                }
+
+                if (Matches(grant.RoleId, grant.UserId, principal))
+                {
+                    matched.Add(new MatchedGrant(
+                        PermissionScope.Module,
+                        grant.ModuleId,
+                        entry.PermissionKey,
+                        grant.AllowAccess));
+                }
             }
         }
 
-        HashSet<string> held = new(StringComparer.Ordinal);
+        return matched;
+    }
 
-        foreach (PermissionGrant allowance in allowances)
+    /// <summary>Collects the grants on one page that the given caller reaches.</summary>
+    /// <param name="tabId">The page being evaluated.</param>
+    /// <param name="permissionKey">
+    /// The single key to narrow the catalogue to, or <see langword="null"/> to consider every key the page
+    /// catalogue declares.
+    /// </param>
+    /// <param name="userId">The caller's account identifier, or <see langword="null"/> when anonymous.</param>
+    /// <param name="roleNames">The role names the caller declares.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The reached grants, allowing and denying alike, in no significant order.</returns>
+    /// <remarks>
+    /// The page counterpart of <see cref="CollectModuleGrantsAsync"/>, with two measured differences. The
+    /// page catalogue is product-wide rather than definition-bound, so every page shares it and no
+    /// definition narrows it. And the page grant reader treats only its permission argument as a wildcard,
+    /// never its page argument, so the page half of the equality check below is defensive symmetry rather
+    /// than a requirement - it is kept so that the two collectors read identically and neither can be
+    /// tightened without the other.
+    /// </remarks>
+    private async Task<List<MatchedGrant>> CollectTabGrantsAsync(
+        int tabId,
+        PermissionKey? permissionKey,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken)
+    {
+        List<MatchedGrant> matched = new();
+
+        Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
+        if (tab is null)
         {
-            string key = NormaliseKey(allowance.PermissionKey);
+            return matched;
+        }
 
-            if (!denied.Contains((allowance.ScopeKind, allowance.ScopeId, key)))
+        Principal principal = await BuildPrincipalAsync(tab.PortalId, userId, roleNames, cancellationToken)
+            .ConfigureAwait(false);
+
+        IReadOnlyList<Permission> catalogue = await _permissions
+            .GetByTabIdAsync(tabId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> visited = new();
+
+        foreach (Permission entry in catalogue)
+        {
+            if (!Applies(entry, permissionKey) || !IsTabScoped(entry))
             {
-                held.Add(key);
+                continue;
+            }
+
+            if (entry.PermissionId == AnyPermissionId || !visited.Add(entry.PermissionId))
+            {
+                continue;
+            }
+
+            IReadOnlyList<TabPermission> grants = await _permissions
+                .GetTabPermissionsByTabIdAsync(tabId, entry.PermissionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (TabPermission grant in grants)
+            {
+                if (grant.TabId != tabId || grant.PermissionId != entry.PermissionId)
+                {
+                    continue;
+                }
+
+                if (Matches(grant.RoleId, grant.UserId, principal))
+                {
+                    matched.Add(new MatchedGrant(
+                        PermissionScope.Tab,
+                        grant.TabId,
+                        entry.PermissionKey,
+                        grant.AllowAccess));
+                }
             }
         }
 
-        List<string> ordered = held.ToList();
-        ordered.Sort(StringComparer.Ordinal);
-
-        return ordered;
+        return matched;
     }
 
-    /// <summary>
-    /// Decides whether a caller's reachable grants confer one particular permission.
-    /// </summary>
-    /// <param name="grants">Every grant the caller reaches for the scope being decided.</param>
-    /// <param name="permissionKey">The permission being asked about.</param>
-    /// <returns>
-    /// <see langword="true"/> when the caller holds it; otherwise <see langword="false"/>. A caller with
-    /// no reachable grant holds nothing, so an absent grant denies - the closed default, and the same
-    /// answer an explicit denial produces.
-    /// </returns>
-    /// <exception cref="ArgumentNullException"><paramref name="grants"/> is <see langword="null"/>.</exception>
+    /// <summary>Reads the catalogue entry behind each distinct permission a set of grants names.</summary>
+    /// <param name="reached">The grants whose permissions need resolving.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The entries that exist, indexed by permission identifier.</returns>
     /// <remarks>
-    /// Deliberately defined as a membership test over <see cref="Reduce"/> rather than as a rule of its
-    /// own. Expressing the verdict twice - once for listings and once for decisions - is how the two
-    /// come to disagree, and a listing that offers an action the decision then refuses is a defect a user
-    /// experiences and a test rarely catches.
+    /// One read per <em>distinct</em> permission, never one per grant: a tenant records the same handful of
+    /// permissions across all of its content, so resolving them per row would multiply the reads by the
+    /// size of the portal for no additional information. An identifier naming no entry is simply absent
+    /// from the result, and the caller treats that as conferring nothing.
     /// </remarks>
-    public bool Holds(IEnumerable<PermissionGrant> grants, PermissionKey permissionKey)
+    private async Task<Dictionary<int, Permission>> ReadCatalogueAsync(
+        IReadOnlyCollection<ReachedGrant> reached,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(grants);
+        HashSet<int> permissionIds = new(reached.Count);
+        foreach (ReachedGrant grant in reached)
+        {
+            permissionIds.Add(grant.PermissionId);
+        }
 
-        string wanted = NormaliseKey(permissionKey.ToString());
+        Dictionary<int, Permission> catalogue = new(permissionIds.Count);
+        foreach (int permissionId in permissionIds)
+        {
+            Permission? entry = await _permissions
+                .GetByIdAsync(permissionId, cancellationToken)
+                .ConfigureAwait(false);
 
-        return Reduce(grants).Contains(wanted, StringComparer.Ordinal);
+            if (entry is not null)
+            {
+                catalogue[permissionId] = entry;
+            }
+        }
+
+        return catalogue;
     }
 
-    /// <summary>
-    /// Reduces a caller's role names to the distinct, lower-cased set a grant query may be matched on.
-    /// </summary>
-    /// <param name="roleNames">The caller's role names, in any order and possibly containing blanks.</param>
-    /// <returns>The distinct lower-cased names, with blanks discarded.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="roleNames"/> is <see langword="null"/>.</exception>
+    /// <summary>Builds the effective principal a set of grants is matched against.</summary>
+    /// <param name="owningPortalId">
+    /// The portal that owns the scope under evaluation, or <see langword="null"/> for a host-level scope
+    /// that belongs to no portal.
+    /// </param>
+    /// <param name="userId">The caller's account identifier, or <see langword="null"/> when anonymous.</param>
+    /// <param name="roleNames">The role names the caller declares.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The account identifier together with the role identifiers those names resolve to.</returns>
     /// <remarks>
-    /// Blank names are discarded, which reproduces the <c>role &lt;&gt; ""</c> guard
-    /// <c>PortalSecurity.IsInRoles</c> applied at line 123 - it had to, because it split a
-    /// semicolon-delimited string whose legacy form carried a leading delimiter and therefore always
-    /// produced an empty first element. Lower-casing happens here rather than being left to the database
-    /// collation so that the comparison behaves identically on a case-sensitive installation.
+    /// <para>
+    /// MIGRATION: this reproduces <c>PortalSecurity.IsInRoles</c>
+    /// (<c>Library/Components/Security/PortalSecurity.vb:L115-L136</c>) with the ambient state removed.
+    /// The "All Users" name participates for every caller, matching the unconditional test at
+    /// <c>L125</c>; the "Unauthenticated Users" name participates only while the caller is anonymous,
+    /// matching the guarded test at <c>L124</c>. Blank names are discarded, which is the
+    /// <c>role &lt;&gt; ""</c> guard at <c>L123</c> - the legacy string it split carried a leading
+    /// delimiter and so always produced an empty first element.
+    /// </para>
+    /// <para>
+    /// Names are compared <strong>exactly</strong>. Nothing is trimmed, folded or localised, because the
+    /// value stored in <c>Roles.RoleName</c> is the value a grant was made against, and normalising the
+    /// comparison here would make this type disagree with the store on installations whose collation does
+    /// not.
+    /// </para>
+    /// <para>
+    /// Every identifier a name resolves to is kept, <c>0</c> and negatives included. <c>Roles.RoleID</c>
+    /// is <c>IDENTITY(0, 1)</c>, so <c>0</c> is the first role any installation creates, and discarding
+    /// non-positive identifiers - a natural-looking guard - would silently revoke it.
+    /// </para>
+    /// <para>
+    /// A host-level scope carries no portal, and resolves no named role as a result. That is deliberate
+    /// and closed: with no portal there is no set of role names that can be resolved without reaching
+    /// installation-wide, and reaching installation-wide is the cross-tenant escalation the contract
+    /// forbids. Such a scope is still reachable through the "All Users", anonymous and account-scoped
+    /// grants, none of which needs a role identifier at all.
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<string> NormaliseRoleNames(IReadOnlyCollection<string> roleNames)
+    private async Task<Principal> BuildPrincipalAsync(
+        int? owningPortalId,
+        int? userId,
+        IReadOnlyCollection<string> roleNames,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(roleNames);
-
-        HashSet<string> distinct = new(StringComparer.Ordinal);
+        HashSet<string> declared = new(StringComparer.Ordinal);
 
         foreach (string name in roleNames)
         {
             if (!string.IsNullOrWhiteSpace(name))
             {
-                distinct.Add(name.Trim().ToLowerInvariant());
+                declared.Add(name);
             }
         }
 
-        return distinct.ToList();
+        declared.Add(_allUsersRoleName);
+
+        if (userId is null)
+        {
+            declared.Add(_unauthenticatedRoleName);
+        }
+
+        HashSet<int> roleIds = new();
+
+        if (owningPortalId is int portalId)
+        {
+            IReadOnlyList<Role> portalRoles = await _roles
+                .GetByPortalIdAsync(portalId, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (Role role in portalRoles)
+            {
+                if (declared.Contains(role.RoleName))
+                {
+                    roleIds.Add(role.RoleId);
+                }
+            }
+        }
+
+        return new Principal(userId, roleIds);
     }
 
-    /// <summary>Brings a permission key into the one casing every comparison here uses.</summary>
-    /// <param name="permissionKey">The key as stored, or as named by the caller.</param>
-    /// <returns>The trimmed, upper-cased key, or an empty string when nothing was supplied.</returns>
-    private static string NormaliseKey(string? permissionKey)
-    {
-        return string.IsNullOrWhiteSpace(permissionKey)
-            ? string.Empty
-            : permissionKey.Trim().ToUpperInvariant();
-    }
-
-    /// <summary>Projects module grants to the three facts a permission decision depends on.</summary>
-    /// <param name="grants">The reachable module grants.</param>
-    /// <returns>A projection carrying the module scope discriminator.</returns>
+    /// <summary>Decides whether one grant row reaches the given caller.</summary>
+    /// <param name="roleId">The grant's role identifier, or <see langword="null"/> when it names none.</param>
+    /// <param name="userId">The grant's account identifier, or <see langword="null"/> when it names none.</param>
+    /// <param name="principal">The caller, as resolved by <see cref="BuildPrincipalAsync"/>.</param>
+    /// <returns><see langword="true"/> when the grant applies to the caller.</returns>
     /// <remarks>
-    /// Only three columns cross, and the stored allow-or-deny flag crosses unaltered: the projection
-    /// narrows the row without interpreting it, because interpreting it is the precedence rule's job.
-    /// The grant's own module identifier travels with it so that suppression stays correlated to the
-    /// scope that carries the denial even when several modules are in the same result.
-    /// </remarks>
-    private static IQueryable<PermissionGrant> ProjectModuleGrants(IQueryable<ModulePermission> grants)
-    {
-        // MIGRATION: the key crosses as the enumeration member's name. The column already holds that
-        // name - the mapping applies a string conversion rather than an ordinal one - and constructing
-        // PermissionGrant is a client projection over the materialised rows, so the name is taken after
-        // the column has been read and the emitted SQL still selects the same three columns.
-        return grants.Select(p => new PermissionGrant(
-            PermissionScopeKind.Module,
-            p.ModuleId,
-            p.Permission!.PermissionKey.ToString(),
-            p.AllowAccess));
-    }
-
-    /// <summary>Projects page grants to the three facts a permission decision depends on.</summary>
-    /// <param name="grants">The reachable page grants.</param>
-    /// <returns>A projection carrying the page scope discriminator.</returns>
-    private static IQueryable<PermissionGrant> ProjectTabGrants(IQueryable<TabPermission> grants)
-    {
-        // MIGRATION: as ProjectModuleGrants, the key crosses as the enumeration member's name.
-        return grants.Select(p => new PermissionGrant(
-            PermissionScopeKind.Tab,
-            p.TabId,
-            p.Permission!.PermissionKey.ToString(),
-            p.AllowAccess));
-    }
-
-    /// <summary>Selects the grants on one module that the given caller reaches.</summary>
-    /// <param name="moduleId">The module being evaluated.</param>
-    /// <param name="userId">The caller's account identifier, or <see langword="null"/> when anonymous.</param>
-    /// <param name="roleNames">The caller's role names.</param>
-    /// <returns>The reachable grants, allowing and denying alike.</returns>
-    /// <remarks>
-    /// Four ways a grant reaches a caller, and they are alternatives rather than a hierarchy: it names the
-    /// account directly, it names the "All Users" sentinel, it names the "Unauthenticated Users" sentinel
-    /// while the caller is anonymous, or it names a role the caller holds within the portal that owns the
-    /// module. Denying grants are selected too - they have to be, because a key that is never seen cannot
-    /// be suppressed.
     /// <para>
-    /// The role lookup is correlated to the owning portal, which is what keeps one tenant's
-    /// "Administrators" grants from reaching another tenant's answer. A host-level module carries a null
-    /// portal, and relational equality never matches null, so it resolves no named role and fails closed.
+    /// A grant names an account or a role, and the account takes precedence in the test because that is
+    /// the order the legacy code tested in: <c>ModulePermissionController.vb:L37-L45</c> and
+    /// <c>TabPermissionController.vb:L42-L50</c> both examined the account column first and consulted the
+    /// role only when it held no account.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy account test could not distinguish an account from an absence. It asked
+    /// <c>Null.IsNull(UserID)</c>, and <c>Null.NullInteger</c> is <c>-1</c>, so a stored <c>-1</c> read as
+    /// "no account". The terminal column is nullable, so absence is now <see langword="null"/> and every
+    /// stored number is a real account. The legacy code then wrapped the account in brackets and matched
+    /// it as though it were a role name - <c>IsInRoles("[" &amp; UserID &amp; "]")</c> - which is a
+    /// workaround for having only a role-name comparison available, and no such synthetic name is
+    /// reconstructed here.
+    /// </para>
+    /// <para>
+    /// A role identifier of <c>-1</c> admits everyone, <c>-3</c> admits only an anonymous caller, and
+    /// <c>-2</c> admits nobody for the reason given on <see cref="SuperUserRoleId"/>. Anything else must
+    /// name a role the caller holds within the owning portal. <c>-4</c> - the legacy "Nothing" role -
+    /// needs no special case: <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so it can never resolve from a
+    /// role name and therefore reaches nobody, which is precisely what it asks for.
+    /// </para>
+    /// <para>
+    /// A grant naming neither an account nor a role reaches nobody. Both columns became nullable in the
+    /// same upgrade, so the combination is representable, and the closed reading is the only safe one.
     /// </para>
     /// </remarks>
-    private IQueryable<ModulePermission> ApplicableModuleGrants(int moduleId, int? userId, IReadOnlyCollection<string> roleNames)
+    private static bool Matches(int? roleId, int? userId, in Principal principal)
     {
-        IReadOnlyList<string> wantedRoles = NormaliseRoleNames(roleNames);
-        int? caller = userId;
+        if (userId is int grantedUserId)
+        {
+            return principal.UserId is int callerId && callerId == grantedUserId;
+        }
 
-        IQueryable<int> scopedRoleIds = _context.Roles
-            .Where(r => wantedRoles.Contains(r.RoleName.ToLower())
-                && _context.Modules.Any(m => m.ModuleId == moduleId && m.PortalId == r.PortalId))
-            .Select(r => r.RoleId);
+        if (roleId is not int grantedRoleId)
+        {
+            return false;
+        }
 
-        return _context.ModulePermissions
-            .Where(p => p.ModuleId == moduleId)
-            .Where(p =>
-                (caller != null && p.UserId != null && p.UserId == caller)
-                || p.RoleId == AllUsersRoleId
-                || (caller == null && p.RoleId == UnauthenticatedRoleId)
-                || (p.RoleId != null && scopedRoleIds.Contains(p.RoleId.Value)));
+        if (grantedRoleId == AllUsersRoleId)
+        {
+            return true;
+        }
+
+        if (grantedRoleId == UnauthenticatedRoleId)
+        {
+            return principal.IsAnonymous;
+        }
+
+        if (grantedRoleId == SuperUserRoleId)
+        {
+            return false;
+        }
+
+        return principal.RoleIds.Contains(grantedRoleId);
     }
 
-    /// <summary>Selects the grants on one page that the given caller reaches.</summary>
-    /// <param name="tabId">The page being evaluated.</param>
-    /// <param name="userId">The caller's account identifier, or <see langword="null"/> when anonymous.</param>
-    /// <param name="roleNames">The caller's role names.</param>
-    /// <returns>The reachable grants, allowing and denying alike.</returns>
-    /// <remarks>The page counterpart of <see cref="ApplicableModuleGrants"/>, with the same four rules.</remarks>
-    private IQueryable<TabPermission> ApplicableTabGrants(int tabId, int? userId, IReadOnlyCollection<string> roleNames)
+    /// <summary>Reduces reached grants to the keys that survive allow-and-deny precedence.</summary>
+    /// <param name="matched">
+    /// Every grant the caller reached, in any order, possibly spanning several modules and pages. An empty
+    /// sequence is legitimate and yields an empty result.
+    /// </param>
+    /// <returns>The surviving keys, without duplicates.</returns>
+    /// <remarks>
+    /// <para>
+    /// A key survives when some grant allows it on a scope where no grant denies it. Denials are collected
+    /// in full before any allowance is judged, in a separate pass, so the outcome cannot depend on the
+    /// order the store happened to return rows in - which matters because a grant and a denial of the same
+    /// key on the same scope is a legitimate configuration, and "whichever came first wins" would make
+    /// authorisation depend on a query plan.
+    /// </para>
+    /// <para>
+    /// Suppression is correlated to the scope carrying the denial, never applied globally, for the reason
+    /// given in the type remarks.
+    /// </para>
+    /// <para>
+    /// This is the only implementation of the rule in the solution. Both listing members return its
+    /// output and both verdict members test membership in it, so a listing that offers an action the
+    /// verdict then refuses is not merely unlikely, it is unrepresentable.
+    /// </para>
+    /// </remarks>
+    private static HashSet<PermissionKey> Survivors(IReadOnlyCollection<MatchedGrant> matched)
     {
-        IReadOnlyList<string> wantedRoles = NormaliseRoleNames(roleNames);
-        int? caller = userId;
+        HashSet<(PermissionScope Scope, int ScopeId, PermissionKey Key)> denied = new();
 
-        IQueryable<int> scopedRoleIds = _context.Roles
-            .Where(r => wantedRoles.Contains(r.RoleName.ToLower())
-                && _context.Tabs.Any(t => t.TabId == tabId && t.PortalId == r.PortalId))
-            .Select(r => r.RoleId);
+        foreach (MatchedGrant grant in matched)
+        {
+            if (!grant.AllowAccess)
+            {
+                denied.Add((grant.Scope, grant.ScopeId, grant.Key));
+            }
+        }
 
-        return _context.TabPermissions
-            .Where(p => p.TabId == tabId)
-            .Where(p =>
-                (caller != null && p.UserId != null && p.UserId == caller)
-                || p.RoleId == AllUsersRoleId
-                || (caller == null && p.RoleId == UnauthenticatedRoleId)
-                || (p.RoleId != null && scopedRoleIds.Contains(p.RoleId.Value)));
+        HashSet<PermissionKey> held = new();
+
+        foreach (MatchedGrant grant in matched)
+        {
+            if (grant.AllowAccess && !denied.Contains((grant.Scope, grant.ScopeId, grant.Key)))
+            {
+                held.Add(grant.Key);
+            }
+        }
+
+        return held;
     }
+
+    /// <summary>Decides whether reached grants confer one particular key.</summary>
+    /// <param name="matched">Every grant the caller reached for the scope being decided.</param>
+    /// <param name="permissionKey">The key being asked about.</param>
+    /// <returns><see langword="true"/> when the caller holds it.</returns>
+    /// <remarks>
+    /// Deliberately a membership test over <see cref="Survivors"/> rather than a rule of its own.
+    /// Expressing the verdict a second time is how a verdict and a listing come to disagree, and a user
+    /// offered an action that is then refused is a defect they experience and a test rarely catches.
+    /// </remarks>
+    private static bool Holds(IReadOnlyCollection<MatchedGrant> matched, PermissionKey permissionKey)
+    {
+        return Survivors(matched).Contains(permissionKey);
+    }
+
+    /// <summary>Renders surviving keys as the canonical strings the contract returns.</summary>
+    /// <param name="keys">The surviving keys.</param>
+    /// <returns>The key names, distinct, in a stable ordinal order.</returns>
+    /// <remarks>
+    /// MIGRATION: the name of a <see cref="PermissionKey"/> member <em>is</em> the stored spelling and the
+    /// wire value, so rendering is <see cref="object.ToString"/> and nothing more - no upper-casing pass
+    /// is required, because a member cannot be mis-cased. The ordering is not cosmetic: an access token
+    /// minted twice from the same grants must carry an identical claim set both times, and a set's
+    /// enumeration order is not a contract.
+    /// </remarks>
+    private static IReadOnlyList<string> Names(HashSet<PermissionKey> keys)
+    {
+        List<string> names = new(keys.Count);
+
+        foreach (PermissionKey key in keys)
+        {
+            names.Add(key.ToString());
+        }
+
+        names.Sort(StringComparer.Ordinal);
+
+        return names;
+    }
+
+    /// <summary>Decides whether a catalogue entry carries the key being asked about.</summary>
+    /// <param name="entry">The catalogue entry.</param>
+    /// <param name="permissionKey">The key to narrow to, or <see langword="null"/> to accept every key.</param>
+    /// <returns><see langword="true"/> when the entry is in play.</returns>
+    /// <remarks>
+    /// MIGRATION: the comparison is between enumeration members, never between strings. The provider typed
+    /// this column as text and the legacy controllers compared it with string equality
+    /// (<c>ModulePermissionController.vb:L36</c>), which is what let mis-cased and untrimmed values become
+    /// a hazard. A member is a closed value: it cannot be mis-cased, cannot be parsed from user input
+    /// here, is never combined with another member, and is never reduced to its ordinal.
+    /// </remarks>
+    private static bool Applies(Permission entry, PermissionKey? permissionKey)
+    {
+        return permissionKey is not PermissionKey wanted || entry.PermissionKey == wanted;
+    }
+
+    /// <summary>Decides whether a catalogue entry belongs to the module scope being evaluated.</summary>
+    /// <param name="entry">The catalogue entry.</param>
+    /// <param name="moduleDefinitionId">The definition the module under evaluation was built from.</param>
+    /// <returns><see langword="true"/> when the entry applies to that module.</returns>
+    /// <remarks>
+    /// <para>
+    /// Two admissions, and both are needed. An entry carrying the product-wide module scope code applies
+    /// to every module, and an entry declared by the module's own definition applies to that module. The
+    /// second admission is why this is not a fixed list of known codes: every installed module contributes
+    /// catalogue entries under a code of its own choosing, and a check that only recognised the shipped
+    /// code would revoke every permission those modules define.
+    /// </para>
+    /// <para>
+    /// The check re-asserts, in this file, the predicate the catalogue read already applied, and it is
+    /// worth its keep for what it forecloses: nothing scoped to anything other than this module can enter
+    /// a module decision. In particular the file-system permission scope, which this solution models no
+    /// entity for and which the migration plan excludes entirely, cannot reach a module verdict through a
+    /// catalogue entry - and it cannot reach a page verdict either, because <see cref="IsTabScoped"/>
+    /// admits one code and only one.
+    /// </para>
+    /// <para>
+    /// The code comparison is ordinal. Every occurrence of the two scope codes across the upgrade scripts
+    /// is upper-case, so an exact comparison matches the shipped data, and where it would not, refusing is
+    /// the closed direction to fail in.
+    /// </para>
+    /// </remarks>
+    private static bool IsModuleScoped(Permission entry, int moduleDefinitionId)
+    {
+        return string.Equals(entry.PermissionCode, ModuleDefinitionScopeCode, StringComparison.Ordinal)
+            || entry.ModuleDefinitionId == moduleDefinitionId;
+    }
+
+    /// <summary>Decides whether a catalogue entry belongs to the page scope.</summary>
+    /// <param name="entry">The catalogue entry.</param>
+    /// <returns><see langword="true"/> when the entry applies to pages.</returns>
+    /// <remarks>
+    /// One code, exactly. The terminal page catalogue procedure filters on the product-wide page scope code
+    /// and on nothing else - it does not even reference the page it is passed - so every page shares one
+    /// vocabulary and no definition widens it. Keeping the module and page scopes apart is what stops a
+    /// grant recorded in one from being read as the other, which matters because both scope identifiers
+    /// seed at <c>0</c> and an identifier alone does not say what it identifies.
+    /// </remarks>
+    private static bool IsTabScoped(Permission entry)
+    {
+        return string.Equals(entry.PermissionCode, TabScopeCode, StringComparison.Ordinal);
+    }
+
+    /// <summary>Distinguishes the two kinds of thing a permission grant can be recorded against.</summary>
+    /// <remarks>
+    /// It exists so that module grants and page grants can travel in one sequence without their
+    /// identifiers colliding: <c>Modules.ModuleID</c> and <c>Tabs.TabID</c> both seed at <c>0</c>, so an
+    /// identifier on its own does not say what it identifies, and a denial on page 4 must not suppress a
+    /// key on module 4.
+    /// </remarks>
+    private enum PermissionScope
+    {
+        /// <summary>Recorded against a module instance.</summary>
+        Module,
+
+        /// <summary>Recorded against a page.</summary>
+        Tab,
+    }
+
+    /// <summary>A caller, reduced to what a grant can be matched against.</summary>
+    /// <param name="UserId">
+    /// The account identifier, or <see langword="null"/> for an anonymous caller. It carries no sentinel
+    /// meaning: every number here is a real account.
+    /// </param>
+    /// <param name="RoleIds">
+    /// The identifiers the caller's declared role names resolved to within the owning portal, including
+    /// <c>0</c> and any negative identifier a genuine role happens to hold.
+    /// </param>
+    private readonly record struct Principal(int? UserId, HashSet<int> RoleIds)
+    {
+        /// <summary>Gets a value indicating whether the caller has not signed in.</summary>
+        /// <remarks>
+        /// An absent account identifier is the anonymous caller, which is what the contract documents its
+        /// nullable account parameter to mean. This is the flag the legacy code read from the ambient web
+        /// request's authentication property, derived from the argument instead.
+        /// </remarks>
+        internal bool IsAnonymous => UserId is null;
+    }
+
+    /// <summary>A grant that reached the caller, before its permission has been resolved to a key.</summary>
+    /// <param name="Scope">Which kind of thing the grant was recorded against.</param>
+    /// <param name="ScopeId">The module or page the grant was recorded against.</param>
+    /// <param name="PermissionId">The catalogue entry the grant names.</param>
+    /// <param name="AllowAccess">
+    /// The stored allow-or-deny flag, carried through uninterpreted: interpreting it is
+    /// <see cref="Survivors"/>'s job.
+    /// </param>
+    private readonly record struct ReachedGrant(
+        PermissionScope Scope,
+        int ScopeId,
+        int PermissionId,
+        bool AllowAccess);
+
+    /// <summary>A grant that reached the caller, with its permission resolved to a key.</summary>
+    /// <param name="Scope">Which kind of thing the grant was recorded against.</param>
+    /// <param name="ScopeId">
+    /// The module or page the grant was recorded against. It travels with the grant so that suppression
+    /// stays correlated to the scope carrying the denial even when several scopes are in one sequence.
+    /// </param>
+    /// <param name="Key">The key the grant confers or denies.</param>
+    /// <param name="AllowAccess"><see langword="true"/> allows, <see langword="false"/> denies.</param>
+    private readonly record struct MatchedGrant(
+        PermissionScope Scope,
+        int ScopeId,
+        PermissionKey Key,
+        bool AllowAccess);
 }

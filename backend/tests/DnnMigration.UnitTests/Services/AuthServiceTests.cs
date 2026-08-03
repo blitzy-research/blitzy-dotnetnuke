@@ -690,136 +690,49 @@ public class AuthServiceTests
     /// <summary>
     /// Every collaborator is required.
     /// </summary>
+    /// <remarks>
+    /// Driven from the constructor's own parameter list rather than from a hand-written call per position,
+    /// so that a collaborator added later is covered without this test being edited and cannot be added
+    /// without a guard. The parameter count is asserted first, because a silently shortened argument list
+    /// would otherwise make every omission below pass for the wrong reason.
+    /// </remarks>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
-        Mock<IUserRepository> users = new();
-        Mock<IPortalRepository> portals = new();
-        Mock<IPermissionService> permissions = new();
-        Mock<ITokenService> tokens = new();
-        Mock<IPasswordHasher> hasher = new();
-        Mock<IClock> clock = new();
-        Mock<IUnitOfWork> unitOfWork = new();
-        Mock<ICurrentUser> currentUser = new();
-        PasswordPolicyOptions policy = new();
+        object[] collaborators =
+        [
+            new Mock<IUserRepository>().Object,
+            new Mock<IPortalRepository>().Object,
+            new Mock<IPermissionService>().Object,
+            new Mock<ITokenService>().Object,
+            new Mock<IPasswordHasher>().Object,
+            new Mock<IClock>().Object,
+            new Mock<IHostSettingsService>().Object,
+            new Mock<IUnitOfWork>().Object,
+            new Mock<ICurrentUser>().Object,
+            new PasswordPolicyOptions(),
+        ];
 
-        Assert.Throws<ArgumentNullException>(() =>
+        ConstructorInfo constructor = typeof(AuthService).GetConstructors().Single();
+
+        constructor.GetParameters().Should().HaveCount(
+            collaborators.Length,
+            "every constructor parameter must be represented below, or an omission would go untested");
+
+        _ = constructor.Invoke(collaborators);
+
+        for (int omitted = 0; omitted < collaborators.Length; omitted++)
         {
-            _ = new AuthService(
-                null!,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                null!,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                null!,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                null!,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                null!,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                null!,
-                unitOfWork.Object,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                null!,
-                currentUser.Object,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                null!,
-                policy);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new AuthService(
-                users.Object,
-                portals.Object,
-                permissions.Object,
-                tokens.Object,
-                hasher.Object,
-                clock.Object,
-                unitOfWork.Object,
-                currentUser.Object,
-                null!);
-        });
+            object?[] withOneMissing = new object?[collaborators.Length];
+            Array.Copy(collaborators, withOneMissing, collaborators.Length);
+            withOneMissing[omitted] = null;
+
+            TargetInvocationException thrown = Assert.Throws<TargetInvocationException>(
+                () => constructor.Invoke(withOneMissing));
+
+            thrown.InnerException.Should().BeOfType<ArgumentNullException>(
+                $"the collaborator at position {omitted} is required");
+        }
     }
 
     /// <summary>
@@ -871,6 +784,7 @@ public class AuthServiceTests
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
+            HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
 
@@ -881,6 +795,7 @@ public class AuthServiceTests
                 Tokens.Object,
                 PasswordHasher.Object,
                 Clock.Object,
+                HostSettings.Object,
                 UnitOfWork.Object,
                 CurrentUser.Object,
                 Policy);
@@ -913,6 +828,8 @@ public class AuthServiceTests
         public Mock<IPasswordHasher> PasswordHasher { get; }
 
         public Mock<IClock> Clock { get; }
+
+        public Mock<IHostSettingsService> HostSettings { get; }
 
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
@@ -1008,6 +925,15 @@ public class AuthServiceTests
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<IReadOnlyList<string>>.Success(Array.Empty<string>()));
+
+            // No credential-expiry window is configured, which is the shipped state: the legacy
+            // property defaulted the window to zero when the installation-wide setting was absent,
+            // and zero disables the check.
+            harness.HostSettings
+                .Setup(settings => settings.GetSettingAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((string?)null);
 
             harness.PasswordHasher
                 .Setup(hasher => hasher.Verify(It.IsAny<string>(), It.IsAny<string>()))

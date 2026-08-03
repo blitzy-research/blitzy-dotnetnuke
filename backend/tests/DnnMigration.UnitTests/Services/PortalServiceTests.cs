@@ -1377,8 +1377,16 @@ public class PortalServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(LastRemainingCode);
+
+        // The message leads with the legacy wording verbatim. IPortalService documents this rule as
+        // yielding "the shared message keyed LastPortal, whose wording is 'You Can Not Delete The Last
+        // Portal In Your Database'", sourced from Website/App_GlobalResources/SharedResources.resx:942,
+        // and the migration discipline requires error messages to stay equivalent to the ones existing
+        // operators already recognise. Asserting the legacy sentence is therefore asserting the parity
+        // requirement itself, not merely the current phrasing; the trailing sentence explains the rule to
+        // a caller that has never seen the legacy screen.
         outcome.Reason!.Message.Should().Be(
-            "The installation must retain at least one portal, so the last remaining portal cannot be removed.");
+            "You Can Not Delete The Last Portal In Your Database. The installation must retain at least one portal.");
         harness.RemovedPortals.Should().BeEmpty();
     }
 

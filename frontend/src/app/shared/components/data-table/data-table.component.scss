@@ -1,280 +1,420 @@
+// =============================================================================
+//  data-table.component.scss — the shared record grid
+// =============================================================================
+//
+//  Eight legacy administration grids across the five in-scope trees collapse into
+//  this one component. This stylesheet carries ONLY what is specific to it.
+//
+//  SCOPE — WHAT THIS FILE DELIBERATELY DOES NOT CONTAIN
+//  ---------------------------------------------------
+//  src/styles/_tables.scss owns the bare-element grid conventions and is loaded
+//  globally, fourth in the single global stylesheet. Everything it resolves is
+//  CONSUMED here and never restated:
+//
+//    the collapsed border model, the full-width table, the transparent table
+//    surface, the base family, the dense body type step and its line height,
+//    the one uniform cell-padding step, top cell alignment, reflowing cell text,
+//    bold brand-coloured heading cells, the column/row heading alignments, the
+//    alternating-row surface, the selected-row tint, the selectable-row pointer,
+//    the sortable-heading pointer and active-column tint, the ENTIRE sort-button
+//    reset, the spanning message cell, and the clipped-caption hook.
+//
+//  Restating any of those would double the byte cost of the workspace's largest
+//  component stylesheet and give one value two definition sites that could drift.
+//  Where this file names a property that partial also names, it is because the
+//  component genuinely needs a different value and the divergence is annotated.
+//
+//  Angular scopes these rules with an added attribute selector, so every class
+//  rule here outranks that partial's bare-element rules on specificity alone. No
+//  importance flag appears anywhere in this file and none is needed; the phrase is
+//  spelled out rather than written verbatim so that a search for the flag over
+//  this file finds nothing even inside a comment.
+//
+//  @use DEPTH IS FOUR, AND THAT IS NOT A TYPO
+//  ------------------------------------------
+//  ROOT CAUSE: core/, shared/ and layout/ are siblings INSIDE src/app/, but
+//  styles/ is a sibling of app/ one level HIGHER, inside src/. The Sass target is
+//  therefore always exactly ONE level further out than the TypeScript target a
+//  neighbouring file imports, and copying a neighbour's import depth is the way
+//  to get this wrong. Counting from this folder: `..` is components/, `../..` is
+//  shared/, `../../..` is app/ and `../../../..` is src/. Three levels resolves
+//  to src/app/styles/, which does not exist, and the build fails outright with
+//  "Can't find stylesheet to import."
+//
+//  Verified by probing this exact folder rather than inferred: levels one, two,
+//  three and five are all absent and level four is the one that exists. The
+//  workspace configures no Sass load path — angular.json declares no
+//  stylePreprocessorOptions.includePaths — so a relative path is the only form
+//  that can resolve, and the mixins partial's own catalogue publishes this same
+//  four-level form for a shared component.
+//
+//  Sass modules are per-file and never ambient. The load in src/styles.scss does
+//  not make these mixins visible here and no forward can, so this file loads the
+//  partial itself. It loads ONLY that partial: design tokens are reached through
+//  `var()`, which needs no load at all because custom properties inherit through
+//  the DOM. An unused load would be dead weight, so there is not one.
+//
+//  ZERO HARDCODED VALUES — THE ONE NON-NEGOTIABLE RULE
+//  --------------------------------------------------
+//  Every value below resolves to a token declared in src/styles/_tokens.scss.
+//  The only literals are the six the migration plan permits — `0`, `none`,
+//  `auto`, `inherit`, `currentColor`, `transparent` — plus structural keywords
+//  and intrinsic units, which name a layout mechanism rather than a design
+//  decision. Unitless multipliers inside `calc()` are arithmetic, not lengths.
+//
+//  Where a value could not be composed from a token, the treatment is OMITTED and
+//  the gap is REPORTED in a note below. No fallback literal appears anywhere: a
+//  literal written as the second argument of `var()` is still a hardcoded value,
+//  merely wearing a token's coat.
+//
+//  Nothing here opens the document root or declares a custom property; the tokens
+//  partial owns the workspace's only such block. No asset is referenced. No
+//  legacy class name is reproduced — the legacy values informed the tokens, and
+//  the vocabulary itself is replaced by the classes below.
+//
+//  PROVENANCE, AND WHY NO LEGACY VALUE IS QUOTED LITERALLY
+//  ------------------------------------------------------
+//  The only visual design source for this migration is the legacy portal CSS and
+//  the grid markup that wires it; no design file, frame or URL was supplied.
+//  Both reference stylesheets are read-only inputs — this migration is purely
+//  additive and no legacy file is modified or removed.
+//
+//  Legacy values are named below by their TOKEN or by DESCRIPTION and never as a
+//  literal, deliberately: a literal sitting in a comment is one copy-paste away
+//  from becoming a declaration, and the zero-hardcoded-values rule is enforced
+//  over the whole file rather than over its declarations alone.
+//
+//  NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT, and that is not licence to
+//  lower the bar. The migration plan's own normative sections carry rule-force
+//  here, and its precedence order governs every decision below: design-system
+//  compliance first, then visual continuity with the legacy portal, then
+//  accessibility, then responsive behaviour, then code quality.
+// =============================================================================
+
+// Loaded for `visually-hidden` and `focus-ring`. Both are called below, which is
+// the whole justification for this line.
 @use '../../../../styles/mixins' as mx;
 
+// A block box, so the scrolling container below can resolve a width to scroll
+// against. A custom element is inline by default, and an inline box would leave
+// the container shrink-wrapped to its content and the overflow never engaging.
 :host {
   display: block;
 }
 
-// The scroll container, not the table itself. A wide table on a narrow viewport must
-// scroll within its own bounds rather than widening the page, which would otherwise
-// push the whole layout sideways and move every other control off screen.
+// =============================================================================
+//  CONTAINER — the scrolling region and the panel around it
+// =============================================================================
+
+// This is the component's OWN scrolling region and it deliberately does not opt
+// into the shared table partial's scroll hook. Two measured reasons, both
+// recorded in the template: that hook floors the table at the width of its
+// container, which is inert under the fixed table layout and percentage tracks
+// this component uses, so the token-composed floor below must win instead; and
+// the hook documents that its consumer must supply the tab stop, the region role
+// and an ACCESSIBLE NAME, which a shared component cannot invent — the same
+// reason the caption text is projected rather than defaulted.
 //
-// `overflow-x: auto` makes the container focusable in some browsers so the scroll can be
-// driven from the keyboard, which is why the border lives here: it marks the edge of the
-// scrollable region rather than the edge of the table.
+// Not a landmark, and never will be: landmark elements belong to the application
+// shell alone.
+//
+// MIGRATION: the panel treatment — a hairline boundary, a corner radius and an
+// explicit surface — is a PURE NET ADDITION with no legacy counterpart at all.
+// The two legacy wrapper classes that surrounded these grids are referenced ten
+// and eight times across the admin markup and are defined in ZERO stylesheets
+// repository-wide, so there is no measured panel to reproduce. It is added
+// because a horizontally scrollable region with no visible boundary gives the
+// reader no way to tell that content is clipped rather than absent, which makes
+// this functional rather than decorative. The radius and the elevation scales it
+// draws on are themselves net additions: the legacy stylesheets declare a corner
+// radius and a shadow zero times each, and the legacy design is square-cornered.
 .data-table__container {
   overflow-x: auto;
+
+  // Stops a horizontal swipe that reaches the end of the grid from continuing
+  // into the page or into the browser's own back gesture.
+  overscroll-behavior-x: contain;
+
   border: var(--border-width) var(--border-style) var(--color-border);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
 }
 
-// MIGRATION: the legacy grid container declared a full-width table with collapsed
-// borders on the base font stack, and all three are carried across. `collapse` rather
-// than `separate` so a single-pixel rule sits between cells instead of a doubled one.
-//
-// `table-layout: fixed` is load-bearing rather than cosmetic. It makes the column tracks
-// resolve from the `colgroup` instead of from cell content, which is the precondition for
-// the row-level render virtualisation further down: a row whose layout is skipped while it
-// is off screen contributes no measurement, so under automatic layout the columns would
-// visibly shift as rows scrolled in and out. Under fixed layout they cannot.
-.data-table {
-  inline-size: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-md);
-  line-height: var(--line-height-base);
+// =============================================================================
+//  TABLE — fixed layout, and the floor that makes narrow viewports readable
+// =============================================================================
 
-  // Without a floor the table can never be WIDER than its container, so the container's
-  // `overflow-x: auto` never engages and the columns crush instead of scrolling. Measured
-  // on a 480px viewport with no floor: tracks fell below their own heading widths, four
-  // pairs of headings physically overlapped, and numerals broke one digit per line.
-  //
-  // `min-content` was tried first and is INERT here, which is worth recording so it is not
-  // tried again: under a fixed table layout with percentage column tracks, the percentages
-  // contribute nothing to intrinsic sizing, so min-content resolves to approximately zero
-  // and `inline-size: 100%` still wins. Measured after that attempt: table 430px in a 430px
-  // container, 17px of scroll range, all four heading collisions still present.
-  //
-  // The floor is therefore composed from the spacing scale instead. It is expressed in
-  // token multiples rather than as a literal, and because the spacing scale is in `rem` it
-  // scales with the reader's root font size along with everything else. Below this width the
-  // container scrolls, which is the documented intent; above it `inline-size: 100%` governs
-  // and this declaration never applies.
+// MIGRATION: per-column and per-grid width literals are replaced by tracks on a
+// column group, and never by a size on a cell. The legacy grids carried widths
+// on the markup itself — five identical fixed column widths on the
+// profile-property listing, a hairline command column and a fixed grid width on
+// the alias listing, and a further nine distinct fixed widths spread across the
+// role, account and security-role listings, alongside a percentage width on six
+// of the eight. Every one of those literals is gone: the component projects a
+// width member per column into the group, so a track is either an author-declared
+// size or absent, and an absent one simply takes its share. Cells carry no size
+// at all, which is also what makes the row virtualisation below safe.
+//
+// The fixed layout is load-bearing rather than stylistic: it is what lets the
+// column group resolve the tracks instead of the cell content, so a row whose
+// layout the engine skips while it is off screen cannot shift the columns as it
+// scrolls back in. The track sizes and the virtualisation strategy are two halves
+// of one design.
+//
+// MIGRATION: the floor is composed from a spacing token multiplied by a unitless
+// factor, and it exists because the obvious alternative is INERT. A percentage
+// minimum resolves against the containing block, which under a fixed layout with
+// percentage tracks collapses to approximately nothing — it was tried, and
+// heading pairs were still measured physically overlapping on a narrow viewport.
+// A token-composed floor is a real length, so the region scrolls instead of
+// crushing every column into an unreadable sliver. The cost is that a single-word
+// heading in a marginally narrow track can break mid-word, which is cosmetic,
+// leaves the accessible name intact, and is strictly better than two illegible
+// headings.
+.data-table {
+  table-layout: fixed;
   min-inline-size: calc(var(--space-8) * 16);
 }
 
-// Always announced, never painted. The caption is projected by the consuming feature, so
-// it is the table's accessible name; hiding it visually costs nothing because the
-// administration screens already carry a page heading that names the records being
-// listed, and a painted caption would simply repeat it.
+// =============================================================================
+//  HEADING BAND — THREE DELIBERATE ABSENCES, EACH LOAD-BEARING
+// =============================================================================
 //
-// The shared mixin is included rather than the technique restated, so every
-// visually-hidden element in the workspace uses one implementation - `display: none` and
-// `visibility: hidden` would both remove the caption from the accessibility tree as well
-// as from the page, which is the opposite of what is wanted.
-.data-table__caption {
-  @include mx.visually-hidden;
+// There is no `.data-table__header` rule below, and no `.data-table__header-row`
+// rule either. That is the design, not an omission, and the reasoning is recorded
+// here because a heading cell is the single most likely place for a later author
+// to add a rule that quietly undoes all three decisions.
+//
+// MIGRATION 1 — THE BRAND HUE CARRIES THE HEADING TEXT, NEVER A FILLED BAND, and
+// the effective legacy rendering is what settles it. The heading class that six of
+// the seven record grids actually wired declares family, size and weight and NO
+// colour at all, so the bare heading-element rule's brand colour won the cascade
+// for every one of them; only the portal listing wired the grid-specific heading
+// class, which does declare its own colour and one step less size. The measured
+// legacy heading background is `transparent` in BOTH of those classes — there was
+// never a filled band in the legacy portal to carry forward. The global table
+// partial already resolves this exactly, colouring heading cells with the brand
+// token and painting no surface, so this file adds nothing and overrides nothing.
+// This also refines the type question: it is one step versus the next step up, not
+// one step versus two, because the bare heading element's larger size never
+// applied at run time — all eight grids set a heading class, and a class beats an
+// element selector for size. The partial resolves the final step and this file
+// consumes that resolution rather than re-opening it.
+//
+// AND IT RESOLVES A LIVE ACCESSIBILITY DEFECT AT ITS ROOT. An earlier revision of
+// this stylesheet painted the heading band with the brand token and reversed the
+// text onto it. Because the shared focus ring also resolves its colour from that
+// same brand token, the sort control's ring then painted brand-on-brand at a
+// contrast ratio of one to one — invisible, and geometrically unable to escape the
+// cell, which a pixel census of the ring annulus confirmed. The template carries a
+// standing flag for it and correctly states that the fix must live outside the
+// markup. Not painting the band IS that fix, and it needs no new token and no
+// second ring: the ring now falls on the page surface, the alternating surface or
+// the selected tint, which measure about twelve and a half, eleven and a half and
+// eight to one against the brand hue respectively — all of them clear of the three
+// to one floor for a non-text indicator. WCAG 2.4.7 and 2.4.11 are satisfied
+// without a compromise, and no surface anywhere in this component is painted with
+// the focus ring's own colour.
+//
+// MIGRATION 2 — NO CELL BORDERS, AND THIS IS A TRUE INVARIANT. All eight legacy
+// grids declare their grid lines off, without exception, and the entire legacy
+// grid vocabulary contains no dimensional CSS whatsoever: the only literals in
+// that whole block are four type sizes, and there is no padding, border, width,
+// height or margin anywhere in it. An earlier revision of this stylesheet drew a
+// hairline above every body cell, which is exactly the "improvement" the global
+// partial warns against in its own opening rule; it is removed. The alternating
+// surface is the row separation, as it was. Stated prominently so that nobody
+// reintroduces grid lines later believing they were merely forgotten.
+//
+// One genuine divergence is inseparable from that invariant and belongs on the
+// record: the collapsed border model. The legacy stylesheets declare a border
+// collapse mode, a border spacing and a table layout mode zero times each, so the
+// legacy grids used the browser default separated model and its inter-cell gap.
+// The global partial collapses the model, which is what makes the borderlessness
+// hold rather than merely look similar, and it also removes any dangling divider
+// after the final row. The divergence is owned there; this file does not restate
+// it.
+//
+// MIGRATION 3 — THE CELL-PADDING AND TYPE STEPS ARE NORMALISED TO ONE VALUE EACH,
+// resolved in the global partial and consumed here unchanged. The legacy grids
+// disagreed with one another across FOUR states, not two: two of them set one
+// padding value, three set a larger one, two set none at all, and one declared no
+// padding attribute whatsoever. Because that spacing came from a markup attribute
+// and never from CSS, the target value has NO css provenance to preserve and is a
+// pure net-new token decision — which is precisely why it is made once, in the
+// shared partial, rather than argued again in every component. The spacing scale
+// it draws on is itself a net addition: the legacy stylesheets have no spacing
+// system at all.
+//
+// MIGRATION 4 — THE PORTAL LISTING'S SECOND HEADING STYLE IS NORMALISED AWAY.
+// That one file wires the grid-specific heading class on its grid and the shared
+// emphasis class again elsewhere on the same screen, so a single legacy screen
+// rendered its headings two different ways. One treatment replaces both, and the
+// three consolidated legacy font stacks — the dominant one used thirty-eight
+// times, plus two near-identical variants used twice and once — collapse into the
+// single base family token the global partial applies. Tahoma resolves first in
+// that stack, so the substitution is imperceptible.
+
+// =============================================================================
+//  SORT CONTROL — only the two things the shared reset leaves open
+// =============================================================================
+
+// MIGRATION: heading scope, sort announcement, a keyboard-operable sort control
+// and a visible focus indicator are NET ACCESSIBILITY GAINS AT ZERO VISUAL COST.
+// Measured across the legacy stylesheets, the focus pseudo-class appears in zero
+// files, the outline property appears in zero files and no accessibility attribute
+// is styled in any file, so the legacy grids announced no sort state and drew no
+// focus indicator of any kind. Nothing is taken away in order to add them.
+//
+// The control's appearance is entirely inherited: the global partial resets the
+// button to the heading's own font and colour, strips its border, padding and
+// surface, lays it out inline with a token gap for the indicator, inherits the
+// cell's alignment and attaches the focus ring. A real button is used rather than
+// an activatable heading precisely so that all of that comes for free and both
+// activation keys work with no key handling. Only the two cases below are left
+// open by that reset.
+
+// The control is disabled while an ordering request is in flight. The pointer must
+// stop promising an interaction the control will refuse; the default arrow says
+// exactly that.
+//
+// REPORTED GAP, NOT PAPERED OVER: there is no opacity token and no disabled-text
+// token in the design vocabulary — the muted token carries the disabled role for
+// text, but the control inherits the heading colour by design and dimming it here
+// would fight that inheritance rather than express a state. So the disabled state
+// is conveyed by the cursor and by the element's own disabled property, which
+// assistive technology announces, and no dimming is invented.
+.data-table__sort:disabled {
+  cursor: default;
 }
 
-// MIGRATION: the legacy header row painted the brand colour behind reversed bold text.
-// That treatment is carried across, and it is the reason the sort control below inherits
-// its colour rather than resolving to the link colour: a brand-coloured link on a
-// brand-coloured background would be invisible.
-.data-table__header {
-  padding: var(--space-2) var(--space-3);
-  border-block-end: var(--border-width) var(--border-style) var(--color-border-strong);
-  background-color: var(--color-primary);
-  color: var(--color-background);
-  font-weight: var(--font-weight-bold);
-
-  // Headings WRAP rather than being held to one line, and that is a deliberate reversal of
-  // the obvious choice. A single-line heading looks tidier and matches the legacy grids at
-  // desktop widths - which it still does, because a heading only wraps once its track is too
-  // narrow to hold it. But `nowrap` does not make a narrow heading fit; it makes it SPILL,
-  // and under a fixed table layout, with cells that are `overflow: visible`, it spills
-  // straight over the neighbouring heading. Measured at 480px with `nowrap` in force: four
-  // pairs of headings physically overlapped, the worst by 34.89px, rendering both illegible.
-  // Wrapping turns that into a taller heading band, which stays readable at every width and
-  // needs no breakpoint. This defends against a caller's track allocation as well as against
-  // a narrow viewport, so it holds even where the width floor above cannot help.
-  //
-  // THE COST, stated rather than discovered later. `break-word` will break INSIDE a word when
-  // there is no other opportunity, so a single-word heading in a track a hair too narrow
-  // breaks mid-word - measured, a heading needing 60.70px in a 59.41px content box rendered
-  // as "DiskSpac" plus an orphaned "e". That is cosmetic: no collision, no overflow, and the
-  // accessible name is untouched. Removing the declaration would fix the orphan and bring
-  // back the illegible overlaps, because a single-word heading has no other break
-  // opportunity to take. An ugly break beats two headings drawn on top of one another, so
-  // this stays; the caller-side remedy is a wider track or a label with a natural break, and
-  // it is written into the width member's documentation.
-  overflow-wrap: break-word;
+// The direction indicator is a text glyph rather than an asset, and this component
+// references no image at all. At heading size the glyph reads as heavy beside the
+// label, so it takes the smallest step of the type ramp; pinning its line box to
+// the unit line height stops the taller glyph from growing the heading row.
+.data-table__sort-indicator {
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-none);
 }
 
-// A heading label that is announced but not painted. Distinct from the caption case only
-// in which element it applies to; the same single implementation is reused.
-//
-// MIGRATION: legacy practice was inconsistent - only the profile-property grid labelled
-// its command columns, as "Edit", "Del", "Dn" and "Up", while the portal, role and account
-// grids supplied no heading text at all and the page-module grid suppressed its heading row
-// outright. Normalised here: every column carries a label and this rule decides whether it
-// is drawn, so a cell is announced with its column name in every grid.
+// A heading whose label is suppressed still needs an accessible name, so the label
+// is CLIPPED rather than removed. The mixin keeps the element in the accessibility
+// tree, which neither `display: none` nor `visibility: hidden` would do — and both
+// would silence the very text this exists to announce. Applied to the label span in
+// both branches of the template, sortable and plain alike.
 .data-table__label--hidden {
   @include mx.visually-hidden;
 }
 
-// The sort control is a button styled to look like the heading text it replaces, because
-// the legacy heading was a text link. Everything the browser adds to a button - the
-// border, the background, the padding, the font - is reset so the heading does not
-// suddenly gain a chrome-coloured box, and `color: inherit` picks up the reversed
-// heading colour above.
-.data-table__sort {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0;
-  border: none;
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
+// =============================================================================
+//  BODY ROWS — virtualisation, focus, and the selected state
+// =============================================================================
 
+// MIGRATION: virtualisation is delivered as CSS RENDER-VIRTUALISATION, with zero
+// JavaScript, zero new dependency and no change to the component's public surface.
+// The pinned dependency set contains no scrolling package and none may be added,
+// so no viewport component was available. The engine is permitted to skip the
+// layout and paint of rows that are off screen, and is given a placeholder size to
+// reserve for the ones it skips. Every row stays in the DOM, so every row stays in
+// the accessibility tree, in find-in-page and in the tab order — this is therefore
+// not windowing, and nothing is hidden from a screen reader to buy the saving.
+//
+// Skipping a row's layout is only safe because the column group and the fixed table
+// layout above make the tracks independent of any row's content; without that pair,
+// columns would shift as rows entered and left the viewport.
+//
+// REPORTED GAP: the design-token set declares NO row-height and NO intrinsic-size
+// token. The placeholder is therefore composed from three existing tokens — the
+// base type size, the base line height and one spacing step, the step standing in
+// for the cell padding above and below the text — rather than being hardcoded to a
+// pixel count. The block axis is named explicitly and the inline axis is left
+// alone, because the column group already owns inline sizing and must not be
+// second-guessed here. The leading keyword asks the engine to prefer a row's last
+// really-rendered size over the estimate once it has one, so scrollbar drift
+// settles as the reader moves.
+.data-table__row {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto
+    calc((var(--font-size-base) * var(--line-height-base)) + var(--space-2));
+
+  // The row is a tab stop, so it owns a visible focus indicator rather than
+  // depending on a global selector staying broad enough to match it. Composed from
+  // the shared mixin so the ring's width, style and colour keep one definition
+  // site; only the offset is corrected below.
   @include mx.focus-ring;
 
-  &:hover:not(:disabled) {
-    text-decoration: underline;
-  }
-
-  // While a request is in flight the control shows the default cursor and stops
-  // responding, so a second sort cannot be queued behind the first.
-  &:disabled {
-    cursor: default;
-  }
-}
-
-.data-table__sort-indicator {
-  font-size: var(--font-size-xs);
-}
-
-// The heading of the SORTED column keeps the painted brand surface.
-//
-// The global table stylesheet tints a sorted heading with the surface colour, reasoning
-// that "the head is not striped, so this tint has nothing to collide with". That holds for
-// an unpainted head; this component paints its head with the brand colour and reverses the
-// text out of it, so the tint would put white text on a near-white surface - measured at
-// 1.16:1 against the 4.5:1 minimum, which is illegible rather than merely low. Emulated
-// view encapsulation already gives this component's class selector the higher specificity,
-// so the tint does not reach production; declaring the value here nonetheless means the
-// background and the colour are stated together in one place and cannot drift apart.
-//
-// Nothing is lost by declining the tint: the direction indicator above identifies the
-// sorted column AND names its direction, which a tint cannot do, and `aria-sort` carries
-// the same fact to assistive technology. Colour was never the sole indicator here.
-.data-table__header[aria-sort='ascending'],
-.data-table__header[aria-sort='descending'] {
-  background-color: var(--color-primary);
-  color: var(--color-background);
-}
-
-// ---------------------------------------------------------------------------------
-// Render virtualisation - graded option ONE, pure CSS
-//
-// No scrolling package exists in the pinned dependency set and none may be added, so no
-// viewport component is available. Instead the engine is permitted to skip the layout and
-// paint of body rows that are outside the viewport, while every row remains in the DOM -
-// and therefore in the accessibility tree, in find-in-page and in the tab order. Zero
-// JavaScript, zero dependency, no change to the component's public surface.
-//
-// `contain-intrinsic-size` supplies the placeholder measurement for a skipped row.
-// REPORTED GAP: the token set declares no row-height and no intrinsic-size token, so
-// rather than hardcode a pixel literal the value is COMPOSED from existing tokens - one
-// line of base text plus the block padding the cell rule below applies, doubled for its
-// two sides. It therefore tracks the type ramp automatically: a reader who raises their
-// base font size gets a proportionally larger placeholder with no second rule.
-//
-// `auto` and `content-visibility` are keywords, so no literal value is introduced here.
-// ---------------------------------------------------------------------------------
-.data-table__body .data-table__row {
-  content-visibility: auto;
-  contain-intrinsic-size: auto calc(
-      (var(--font-size-md) * var(--line-height-base)) + (var(--space-2) * 2)
-    );
-}
-
-// MIGRATION: the legacy grid alternated its row surface between the page background and
-// the surface colour, and both values are carried across as tokens. The alternation is
-// applied with `:nth-child(even)` rather than by a class written onto every other row,
-// so it cannot desynchronise from the rendered order when a page is re-sorted.
-.data-table__row {
-  &:nth-child(even) {
-    background-color: var(--color-surface);
-  }
-
-  // Guarded so a touch device does not leave the last-tapped row looking hovered, which on
-  // a grid reads as a selection that was never made.
-  @media (hover: hover) {
-    &:hover {
-      background-color: var(--color-surface);
-    }
+  // The offset is turned INWARD, and this is the one correction the component
+  // needs. The shared ring sits outside the box it marks, which is right for a
+  // control in normal flow — but these rows live inside a scrolling region, and a
+  // region that scrolls in one axis clips in both, so an outward ring on the first
+  // or last row would be cut off exactly when it matters. Drawing it inside the row
+  // keeps the whole annulus visible and still shifts no layout, because an outline
+  // never participates in layout in either direction.
+  &:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-offset));
   }
 }
 
-// The row's focus ring, drawn INSIDE the row, and deliberately authored at high specificity.
+// MIGRATION: the selected row diverges from the legacy rendering over FOUR
+// distinct layers, and every one of them is recorded here rather than absorbed.
+//   (a) PROVENANCE. The tint token's only two uses in the entire legacy stylesheet
+//       are the selected-item rules of the two out-of-scope legacy menu families.
+//       It was never a grid colour.
+//   (b) THE RULE IT NOMINALLY REPLACES declares a neutral mid-tone surface with a
+//       contrasting text colour — neither of which is the tint. Both are named by
+//       description rather than by value, for the reason given in the header.
+//   (c) THAT RULE IS DEAD CSS. Searching every markup, code, resource and
+//       configuration file under both legacy trees for its class name returns no
+//       match whatsoever.
+//   (d) WHAT THE REAL GRIDS WIRED IS AN ERROR STYLE. Three of them point their
+//       selected-item style at the class the legacy stylesheet's own comment
+//       describes as the style used for error messages; the other grids declare no
+//       selected style at all. So the EFFECTIVE legacy selected row was bold text
+//       in the error hue with no change of surface — a semantic misuse of an error
+//       style, not a design intent.
+// Design-system compliance outranks legacy fidelity, and here the semantic argument
+// points the same way, so the tint token wins. The tint itself is applied by the
+// global partial, keyed to the announced selection state rather than to a class, so
+// that a row cannot be painted as selected without also being announced as
+// selected. This file adds only the part that attribute cannot express.
 //
-// Two things are going on here, and both were established by measurement rather than
-// assumed.
+// The weight is the NON-COLOUR CUE, and choosing it preserves the one legacy
+// property that was not semantically wrong: the legacy selected row was bold, and
+// it stays bold. Colour is therefore never the sole indicator of selection — the
+// template independently publishes both the selection state and the current-item
+// state, and the vocabulary's own contract for this tint requires exactly that.
 //
-// WHY THE RING IS INSET. The shared focus-ring mixin offsets the outline OUTWARD, which is
-// right for a button and wrong for a full-width table row. Measured with an outset ring: on
-// the first row the top stroke was drawn navy-on-navy across the heading band and vanished;
-// on the last row the bottom stroke fell past the container's edge and was clipped; and on
-// EVERY row the left and right strokes landed outside the scroll container and were clipped
-// by its `overflow-x`. One of four edges was visible. Inset, all four strokes land on the
-// row's own surface, where nothing can hide or clip them.
-//
-// WHY THE SELECTOR IS THIS LONG. The global stylesheet focuses anything focusable with
-// `[tabindex]:not([tabindex='-1']):focus-visible`, which is specificity (0,3,0). Every row
-// here carries `tabindex`, so it matches. A plain `.data-table__row:focus-visible` is
-// (0,2,0) and LOSES, whatever the source order - measured: the offset stayed at the global
-// +2px and the intended inset ring was never drawn at all. Adding the body class and the
-// attribute brings this to (0,4,0), which wins outright rather than depending on which
-// stylesheet the bundler happens to emit last. The outline itself is restated here for the
-// same reason, so the component owns the whole ring instead of half of it; every value is
-// still the shared token, so the ring remains identical to every other focus ring in the
-// application apart from the direction of its offset. No `!important` is used or needed.
-.data-table__body .data-table__row[tabindex]:focus-visible {
-  outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
-// MIGRATION: the legacy selected-row style is carried across as a real persistent state,
-// which is a correction rather than a copy. The legacy grids declared a selected-item
-// class whose effective treatment was bold red text with no change of surface at all,
-// while the tinted surface token sat unused on a different selector. Selection here is a
-// tinted row, and it is published through `aria-current` as well, so the state does not
-// depend on colour alone. Placed after the alternation rule so it wins on both row
-// parities without needing greater specificity.
+// No motion accompanies the change of state. REPORTED GAP: the design vocabulary
+// declares no duration and no easing token, and the mixins partial exports no
+// motion helper, so there is nothing to compose a transition from and a literal
+// duration is forbidden. The legacy portal declares a transition, an animation, a
+// keyframe rule and a transform zero times each, so the static presentation is also
+// the faithful one.
 .data-table__row--selected {
-  background-color: var(--color-selected);
-
-  &:nth-child(even) {
-    background-color: var(--color-selected);
-  }
+  font-weight: var(--font-weight-bold);
 }
 
-// MIGRATION: legacy body cells set their vertical alignment to the top essentially
-// uniformly, so it is normalised here once rather than exposed as a per-column option.
-// The bare-element rule that would otherwise baseline-align headings never took effect at
-// run time, because every one of the eight grids either set a heading class or suppressed
-// its heading row.
-.data-table__cell {
-  padding: var(--space-2) var(--space-3);
-  border-block-start: var(--border-width) var(--border-style) var(--color-border);
-  vertical-align: top;
-  // Fixed table layout will not widen a track to fit an unbroken value, so a long alias
-  // or address wraps inside its cell instead of overflowing it.
-  overflow-wrap: break-word;
-}
-
-// Alignment is driven by an attribute rather than a modifier class, matching the house
-// style used by the other shared components, so the component emits a resolved token and
-// the stylesheet owns every value.
+// =============================================================================
+//  ALIGNMENT — one rule per value, naming both the heading and the body cell
+// =============================================================================
 //
-// MIGRATION: heading and body alignment are addressed by SEPARATE selectors because the
-// legacy markup separated them at two levels at once. Three of the eight grids centre the
-// heading row and start-align the body at grid level, and the portal grid overrides both
-// sides independently on three of its columns while four further columns inherit the grid
-// default. Deriving one from the other would misrender most of them.
+// Three rules rather than six. Heading alignment and body alignment are resolved
+// INDEPENDENTLY by the component, each from its own column member, because the
+// legacy grids genuinely disagreed — several centred their headings while starting
+// their bodies — so neither may be derived from the other. But the CSS for a given
+// value is identical whichever cell carries it, so each value gets one rule listing
+// both selectors instead of a heading rule and a body rule per value. That is the
+// difference between three rules and six in the workspace's largest component
+// stylesheet.
+//
+// Written out rather than left to inheritance, and deliberately so: the global
+// partial starts body cells and CENTRES column headings, and the browser's own
+// stylesheet also targets the heading element directly, so an inherited value
+// cannot be relied upon to win. Naming the value removes the dependency on both.
+//
+// Logical keywords throughout, so the grid still reads correctly under a
+// right-to-left or vertical writing mode. These are the three values the
+// component's own alignment type admits, and its default is the first of them.
 .data-table__header[data-align='start'],
 .data-table__cell[data-align='start'] {
   text-align: start;
@@ -290,40 +430,150 @@
   text-align: end;
 }
 
-// Digits share one advance width, so figures in a numeric column line up on their decimal
-// position instead of drifting with the glyph widths. Applied to end-aligned body cells
-// only, which is where the legacy grid put its formatted fee and count columns.
+// End alignment is what a numeric column is given, so its digits are held to one
+// advance width. Figures then line up by place value down the column instead of
+// drifting, which is the whole reason the column was end-aligned. Applied to body
+// cells only: a heading is words, not figures.
 .data-table__cell[data-align='end'] {
   font-variant-numeric: tabular-nums;
 }
 
-// Gap rather than margins between siblings, so there is no trailing space after the last
-// command and no `:last-child` rule to undo one. Works correctly with zero, one or many
-// projected commands, which matters because the legacy grids carried between two and four
-// and made some of them conditional per row.
+// =============================================================================
+//  COMMANDS AND MESSAGES
+// =============================================================================
+
+// MIGRATION: the commands column replaces the legacy image-command column, and the
+// nine legacy raster buttons and boolean glyphs it contained are replaced by text,
+// inline vector art or stylesheet treatment — this component references no image
+// asset at all. The row of commands is laid out ONE LEVEL IN, on this wrapper,
+// never on the cell: a table cell made into a flex container stops being a table
+// cell and drops out of the row's layout altogether, taking the column tracks with
+// it. Wrapping is permitted so a narrow command column stacks instead of forcing
+// the whole grid wider, and the gap uses the same step the shared sort control uses
+// for its own indicator, so spacing between small controls is consistent.
 //
-// The flex context lives in this wrapper rather than on the cell because giving a `td` a
-// flex display removes it from the table layout algorithm entirely and drops it out of its
-// row.
+// INLINE-LEVEL ON PURPOSE, and this is the one thing here that is easy to get
+// wrong. A block-level flex container fills the whole cell, and its own
+// distribution then decides where the buttons sit — so the cell's `text-align` is
+// powerless and the group lands at the start edge no matter what alignment the
+// column asked for. Measured in a real browser before this was corrected: the
+// commands sat a little under sixty pixels left of centre in every row while the
+// heading above them was centred to within a tenth of a pixel. An INLINE-level box
+// is positioned BY the surrounding text alignment instead, so the group lands
+// centred under a centred column and at the start or end edge under a column the
+// feature has aligned that way, and it honours all three values of the alignment
+// attribute WITHOUT this file naming a distribution or restating an alignment.
+// That is exactly the reasoning the shared table partial records for the sort
+// control, so the two interactive groups in this grid are positioned the same way.
 //
-// `wrap` rather than a single forced line. The track width is the CALLER's to choose, and a
-// caller who picks one too narrow for its commands must not get overlapping content: with a
-// fixed table layout, cells are `overflow: visible` and static, so an unwrappable row of
-// commands spills across the neighbouring column and overprints real data - measured at
-// 82.8px of spill, with the first command landing on top of the adjacent value. Wrapping
-// turns that into a taller cell, which is legible and self-evidently a layout to widen.
+// `.data-table__cell--actions` carries no rule of its own: the cell needs the same
+// padding, alignment and reflow every other cell gets, and its distinct behaviour —
+// stopping activation events from reaching the row — is the template's, not this
+// file's.
 .data-table__actions {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
   align-items: center;
+  gap: var(--space-1);
 }
 
-// The waiting and empty messages share one treatment: centred, muted and given room, so
-// the table does not collapse to a single thin line when it has nothing to show.
+// The spanning cell that carries the waiting or zero-result message while the
+// table's structure stays on screen. Its generous block padding, its muted colour
+// and its centring all come from the global partial's own documented hook for
+// exactly this pattern, so none of that is restated. Only the inline padding is
+// widened here: the shared cell step is the dense grid value, which is too tight
+// for a centred block of prose and for the two child components rendered into it.
+//
+// The muted colour that hook applies is safe here for a reason worth recording: the
+// vocabulary warns that muted text on the selected tint falls below the contrast
+// floor and must be promoted to the brand hue — and a message row is never
+// selectable, so it can never receive that tint.
+//
+// MIGRATION, an ACCEPTED consequence rather than an oversight, measured in a real
+// browser and recorded so nobody has to rediscover it. The message spans every
+// column, so on a viewport narrower than the table's floor it is centred across the
+// FULL table width rather than across the visible part of the scrolling region, and
+// a few pixels of the longest wording therefore sit past the visible edge until the
+// reader scrolls. Measured on a small phone viewport: under four pixels of the
+// waiting wording and under twenty of the zero-result wording, both fully reachable
+// by the same horizontal scroll the column headings already require, and neither
+// affects a roomier viewport at all, where both wordings measured perfectly centred
+// and wholly visible. It is left alone deliberately: the alternatives are to
+// re-litigate the shared hook's centring — which this file consumes rather than
+// re-opens — or to introduce a container-query mechanism, and neither is warranted
+// by a sub-twenty-pixel offset on content that is already reachable. The floor that
+// causes it is the same floor that stops the columns being crushed, which is the
+// trade this component deliberately makes.
 .data-table__message {
-  padding: var(--space-5) var(--space-4);
-  border-block-start: var(--border-width) var(--border-style) var(--color-border);
-  color: var(--color-text-muted);
-  text-align: center;
+  padding-inline: var(--space-4);
 }
+
+// =============================================================================
+//  DELIBERATE ABSENCES — read this before adding a rule
+// =============================================================================
+//
+// RESPONSIVE BEHAVIOUR IS BREAKPOINT-FREE BY CONSTRUCTION, and no breakpoint mixin
+// is included. The token-composed floor on the table and the automatic overflow on
+// the container together give the grid its entire responsive behaviour: the region
+// begins scrolling at whatever viewport can no longer afford the floor, and stops
+// when it can, with no step to choose and none to drift. Inventing a breakpoint the
+// design does not have would be worse than having none — the legacy stylesheets
+// declare a media query zero times, so every step in the shared scale is already a
+// net addition, and this component needs no step of its own. The shared scale
+// remains available should a genuine step ever be identified.
+//
+// NO HOVER TREATMENT, AND THE OMISSION IS PRINCIPLED. A hover rule sticks to the
+// last-tapped element on a touch device until something else is tapped, so it needs
+// a hover-capability guard — and the mixins partial, the only file in the workspace
+// permitted a media feature query, closes its exported surface without one and
+// instructs a consumer that needs another at-rule to report the gap and degrade.
+// An earlier revision of this stylesheet wrote that query directly, and a second
+// unguarded hover rule besides; both are removed. REPORTED GAP: emitting no rule
+// beats emitting an unguarded one, and the pointer the global partial already puts
+// on selectable rows and sortable headings, together with the focus ring, tells the
+// reader which of them are interactive.
+//
+// NO REDUCED-MOTION QUERY, for the same structural reason and with the same
+// resolution. That partial exports no reduced-motion guard either, and design-system
+// compliance outranks accessibility in this project's precedence order, so the query
+// may not be written here. REPORTED GAP — and a harmless one in this instance,
+// because this component emits no motion at all for such a query to withdraw.
+//
+// NO STICKY HEADING ROW. The global partial offers one as an opt-in and this
+// component does not take it: the container scrolls horizontally, not vertically, so
+// there is no vertical scroll for a sticky heading to survive. The template emits no
+// such attribute either, so the two agree.
+//
+// NO TRUNCATION ANYWHERE. Cells reflow instead, which the global partial resolves
+// and explains: a grid cell is often the only place a value appears, so clipping its
+// tail hides the information the reader came for.
+//
+// NO PAGER RULE. The pager is a SIBLING of this table and never a row inside it, so
+// nothing here reaches out to style one — which is the legacy arrangement
+// reproduced, not a preference.
+//
+// `.data-table__caption`, `.data-table__header-row` and `.data-table__body` are
+// intentionally unstyled. The caption is clipped by the global partial's own
+// attribute hook, so the clipping technique lives in exactly one place; the other
+// two are structural hooks the template offers for future use and need no treatment
+// today.
+//
+// MIGRATION: the caption is a PURE NET ADDITION. No caption element is styled
+// anywhere in the legacy stylesheets — the apparent matches are all a class name
+// that merely contains the word, inside out-of-scope editor skins — and the legacy
+// grids' summary text is a design-surface artefact rather than user-facing writing,
+// which is why the wording arrives by projection from the feature instead of being
+// borrowed. Only three of the eight legacy grids carried any summary at all.
+//
+// MIGRATION: the alternating-row surface replaces a LEGACY DEFECT, and the defect
+// is annotated here rather than silently corrected. The legacy alternating-row class
+// recoloured every second row's TEXT with the hue the stylesheet reserves for error
+// messages, and left both row backgrounds identical — so the stripe is the
+// functional replacement for the only distinction that existed, and the text colour
+// stays exactly as the normal row sets it. That text recolouring is NOT reproduced:
+// it is a defect, not an intent, and the migration discipline is to annotate such a
+// thing in place rather than to fix it elsewhere. Striping was in any case wired by
+// only two of the eight grids — two more pointed their alternating style at a class
+// with neither a surface nor a colour, so they striped nothing at all, and the
+// remaining four declared no alternating style whatsoever. One consistent treatment
+// replaces all four behaviours, and the global partial owns it.

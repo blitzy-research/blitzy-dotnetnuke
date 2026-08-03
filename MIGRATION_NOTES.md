@@ -873,7 +873,9 @@ behaviour an account-existence oracle.
 **Annotated in code at.**
 `backend/src/DnnMigration.Api/Extensions/RateLimitingExtensions.cs`,
 `backend/src/DnnMigration.Application/Dtos/Auth/LoginRequest.cs`,
-`backend/src/DnnMigration.Application/Validation/LoginRequestValidator.cs`.
+`backend/src/DnnMigration.Application/Validation/LoginRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`, which is the surface the
+removed CAPTCHA gated and which names this control as its replacement.
 
 ### Request size ceiling, and refusals of unsafe portal path configuration
 
@@ -2860,6 +2862,295 @@ sign-in continues, exactly as `:L1454-L1461` did.
 place for the same contract to drift. `GetCurrentUserAsync` takes no identifier at
 all - the subject is the caller, read through `ICurrentUser` - and its roles and
 permissions are read from the store rather than copied out of the token.
+
+### Correction: the delivered sign-in evaluates the lock and approval BEFORE the credential, and answers every refusal uniformly
+
+**What this entry corrects.** The entry immediately above describes a sign-in that
+verifies the password first and then reports five distinguishable outcomes. Four of
+its claims do not match the delivered service, and this file is append-only, so they
+are left in place and superseded here. Where the two disagree, this entry is the one
+that matches `backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+**Corrected claim one — the gate order.** The delivered order is the provider's own:
+resolve the account within the tenant, evaluate the lock, evaluate approval, and only
+then compare the credential — reproducing the guard at
+`AspNetMembershipProvider.vb:L1481` rather than reordering it. Verifying the
+credential first was considered and **rejected**, because it defeats the very control
+the lock is: a locked account exists precisely so that its credential is no longer
+compared, and comparing it anyway both lets a guess be confirmed against a locked
+account and spends an adaptive hash verification on every attempt against one, which
+is a denial-of-service lever rather than a hardening measure. The same reasoning
+applies to the approval gate: comparing the credential of an unapproved registration
+would report credential failure separately from approval failure, which anyone able
+to register could use as a credential oracle.
+
+**Corrected claim two — one answer for every refusal.** The delivered service does
+**not** distinguish "enter your code" from "that code is wrong" to the caller. An
+unknown account name, a wrong credential, an account belonging to another tenant, an
+account with no credential on file, a tenant that does not exist and an unapproved
+registration all receive the identical failure `auth.invalid_credentials` with
+identical wording. The approval gate closes *before* any credential is compared, so
+answering the caller specifically would confirm to an unauthenticated party that a
+named account exists and is merely awaiting verification — without that party having
+proved anything at all. The three legacy message keys are nevertheless preserved and
+still determined on every such refusal, as
+`auth.verification_required` (`EnterCode`), `auth.verification_code_invalid`
+(`InvalidCode`) and `auth.account_not_approved` (`UserNotAuthorized`), because the
+mapping of those outcomes is owned by the application layer; the determination is
+made and then deliberately withheld from the response. The one refusal that *is*
+reported specifically is the lock, and only to a caller already entitled to it — a
+host account, or the tenant's administrator identified by identifier rather than by
+role name.
+
+**Corrected claim three — the outcome vocabulary.** The delivered reason codes are
+the lower-dotted `auth.` family, not the upper-snake names the entry above lists:
+`auth.request_invalid`, `auth.invalid_credentials`, `auth.locked_out`,
+`auth.invalid_refresh_token`, `auth.user_not_found`, the three approval codes above,
+and the two advisory codes `auth.insecure_admin_password` and
+`auth.insecure_host_password`. `TOKEN_STORE_UNAVAILABLE` keeps the token service's
+own upper-snake form because it is propagated unchanged, which is what lets a caller
+tell "your credential was refused" from "your credential was accepted and the session
+could not be recorded". The Api edge maps the first five to `401`, `auth.user_not_found`
+to `404` and `auth.request_invalid` to `400`.
+
+**Corrected claim four — the automatic-unlock window is NOT preserved.** The entry
+above states that an account whose lockout has elapsed is unlocked and the sign-in
+continues, as `AspNetMembershipProvider.vb:L1454-L1461` did. **That is not the
+delivered behaviour.** The window depended on a lockout-duration setting the
+preserved credential policy does not carry, and honouring it would perform a
+security-relevant write on an anonymous request path. A locked account is therefore
+cleared by the administrative unlock member on `IUserService`.
+**Operational consequence:** an account locked by repeated wrong credentials stays
+locked until an administrator unlocks it, however long the holder waits. For an
+installation that relied on the window this is a support obligation to plan for, not
+an incident to discover.
+
+**The residual weakness the entry above identified correctly, and its compensating
+control.** A verification code is still compared, and a matching one still approves
+the account and persists it, *before* the credential is compared — so a party who can
+guess a tenant identifier and an account identifier can still flip somebody else's
+pending registration to approved without holding their credential, exactly as the
+legacy did. That is preserved rather than repaired because repairing it means
+reordering the gates, whose cost is set out above and is higher. It confers no
+sign-in: the credential gate still stands, and the outcome is still the uniform
+denial. The compensating control is rate limiting on the credential endpoints,
+recorded in its own entry in this file. This is stated so the trade-off is on record
+rather than lost between two entries that each describe half of it.
+
+### The sign-in status enumeration is computed in full, and a locked-out account is mapped to a refusal
+
+**Legacy behaviour.** `Login.ascx.vb:L163` declared a status variable initialised to
+the failure member and passed it by reference into `UserController.ValidateUser` at
+`:L164`, which passed it on to the provider to be mutated while separately returning
+an object it set to `Nothing` on refusal. The page then derived its own authenticated
+flag at `:L187` from `loginStatus <> UserLoginStatus.LOGIN_FAILURE`, in the `Else` arm
+of the `:L168` test that special-cases the not-approved member alone.
+
+**The defect that produces, stated exactly.** Every member other than not-approved
+reaches that inequality, so `LOGIN_USERLOCKEDOUT` — which is 3, not 0 — evaluated as
+authenticated. The provider compounds it: a locked account never has its credential
+compared (`:L1481`) and is returned as `Nothing` (`:L1505-L1508`), so the legacy
+raised an authenticated event carrying no account at all.
+
+**Target behaviour, and the mapping decision this service owns.** The by-reference
+argument is eliminated: a local status occupies the same place in the flow, is moved
+by the same three gates in the same order, and is then mapped **once** onto the
+returned result. The complete mapping is:
+
+| Status | Value | Legacy `authenticated` | Delivered outcome |
+| --- | --- | --- | --- |
+| `Failure` | 0 | false | Refusal. The attempt is recorded against the account, which is what produces the lock. |
+| `Success` | 1 | true | Success. Token pair issued. |
+| `SuperUser` | 2 | true | Success. Token pair issued, and the post-credential advisories are skipped. |
+| `UserLockedOut` | 3 | **true** | **Refusal** — a deliberate, documented divergence. |
+| `UserNotApproved` | 4 | false | Refusal, answered uniformly; the approval ladder is determined and withheld. |
+| `InsecureAdminPassword` | 5 | true | Success **with an advisory reason**, and the must-change flag set. |
+| `InsecureHostPassword` | 6 | true | Success **with an advisory reason**, and the must-change flag set. |
+
+**Why the locked-out divergence is taken.** `AAP 0.9.1` requires a discovered defect
+to be annotated and not fixed *unless it blocks delivery*. A lock-out that does not
+lock out is the failure of the only control standing between an attacker and unlimited
+credential guessing, and preserving it would make the failed-attempt bookkeeping the
+same method performs pointless. It is therefore treated as blocking. The legacy tree
+is not touched and stays byte-identical; the divergence is recorded here and annotated
+in place.
+
+**Why the two insecure-password members are successes.** They are promotions of an
+already-successful authentication — `UserController.vb:L1144-L1152` *replaced* a
+successful status when a shipped default credential was presented, and the caller was
+signed in regardless. Refusing them would lock an installation out of the two accounts
+every installation begins with. They travel two ways at once: as an informational
+reason on a successful result, which keeps the two cases distinguishable at the Api
+edge, and as the must-change advisory on the response body, because forcing a
+credential change is the legacy remediation intent for both. No legacy status ordinal
+reaches the wire.
+
+**One widening.** The legacy compared the shipped account name with VB's `=` operator
+under the default binary comparison, making it case-**sensitive**, so an account
+signing in as `Admin` escaped the advisory while being just as exposed. The delivered
+comparison is case-insensitive, which is consistent with the case-insensitive
+resolution that admitted the account in the first place. The credential itself is
+still compared exactly, and neither the matched name nor the matched credential ever
+appears in a reported message.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`,
+`backend/src/DnnMigration.Domain/Enums/UserLoginStatus.cs`.
+
+### The credential-expiry advisories are read from the installation settings, including a legacy key with a trailing space
+
+**Legacy behaviour.** `UserController.vb:L1171-L1197` returned the post-credential
+validation enumeration: an administrator-forced update took precedence, otherwise —
+and only when `PasswordConfig.PasswordExpiry` exceeded zero — the stored change date
+plus that window was compared against `Today`, reporting expired when it had passed
+and expiring when it fell inside the reminder window. `PasswordConfig.vb:L52-L64`
+reads the window from the installation-wide setting `PasswordExpiry`, defaulting to
+zero, and `:L77-L88` reads the reminder from `PasswordExpiryReminder`, defaulting to
+seven.
+
+**Target behaviour.** The same rule, in the same precedence, evaluated through
+`IHostSettingsService` over the real `HostSettings` table, and surfaced as the
+`MustChangePassword` and `PasswordExpiring` flags on the sign-in response. The
+forced-update case still suppresses the expiry evaluation entirely, so the two are
+never reported together — the legacy enumeration was single-valued and could not
+report both. The evaluation is skipped in full for a host account, which is measured:
+`Website/admin/Authentication/Login.ascx.vb:L511` wraps the call in
+`If Not objUser.IsSuperUser Then`.
+
+**A legacy key with a trailing space is preserved verbatim.**
+`PasswordConfig.vb` reads the reminder setting at `:L81-L82` and writes it at `:L88`
+under the name `"PasswordExpiryReminder "` — **with a trailing space**. The getter and
+the setter agree with each other, which is why the defect was never visible, and the
+consequence is that the row an existing installation holds carries the space in its
+key. The delivered code reads what the legacy wrote rather than what it meant to
+write. Trimming the name would silently stop honouring a configured reminder window
+on every existing installation, so the quirk is recorded here rather than repaired,
+per `AAP 0.9.1`.
+
+**A calendar comparison that can differ by one day.** The legacy compared against
+VB's `Today`, the server's **local** calendar date. The delivered comparison is
+against the coordinated universal date, because the injected clock is
+universal-time-only. For an installation east or west of the meridian a credential can
+therefore be reported expired, or reminded about, up to **one calendar day** earlier or
+later than the legacy would have. Universal time is nevertheless correct for the
+target: a container has no meaningful local zone, and two replicas in two zones would
+otherwise disagree about the same account.
+
+**An absent change date yields no advisory rather than an expiry.** The legacy read a
+non-nullable date that the null-sentinel helper had already collapsed to the minimum
+date when the column held no value, so an account with no recorded change date
+computed the minimum plus the window and was reported **expired**. The target models
+the column as nullable and treats an absent date as "no expiry can be computed". This
+is a deliberate divergence in the safe direction: the alternative forces a credential
+change on every account whose date was never recorded, on the strength of a sentinel
+rather than of a fact. The case is unreachable against a real installation, because
+the externally installed membership objects populate the column when a credential is
+created.
+
+**An unusable setting is tolerated rather than fatal.** The legacy read was a late
+conversion compiled with Option Strict off and threw on any non-numeric value. The
+delivered read is explicit, total and culture-invariant: an absent, blank or
+unparseable setting applies the default rather than faulting a sign-in over a mistyped
+configuration row.
+
+**GAP REPORTED: the profile advisory is not evaluated.** The legacy condition at
+`UserController.vb:L1189-L1193` combined a per-tenant setting,
+`Security_RequireValidProfileAtLogin`, with the completeness check at
+`ProfileController.vb:L305-L319`. That setting is not tenant configuration in the
+schema sense — it is a module setting on the tenant's User Accounts module instance,
+reached through `UserModuleBase.GetSetting` over `UserController.GetUserSettings` — and
+both it and the profile-property definitions the check reads belong to the
+account-administration vertical rather than to sign-in. Evaluating them in the sign-in
+service would place a profile rule and two further reads on the anonymous credential
+path and would give the completeness rule a second implementation. The
+`MustUpdateProfile` flag is therefore carried by the response contract and left unset
+by the sign-in service. **Operational consequence:** an installation that relied on
+being sent to a profile-completion step at sign-in is not sent there; the profile
+screens remain reachable and enforce their own required-field rules.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`.
+
+### Clarification: a stored credential IS replaced on sign-in when its work factor is superseded
+
+**What this clarifies.** The correction earlier in this file states that no credential
+is upgraded on sign-in. That is exactly right about the **legacy reversible format**,
+and it is worth stating precisely what it does not cover, because the delivered
+sign-in does perform one replacement and the two statements would otherwise appear to
+contradict each other.
+
+**The distinction.** A pre-migration value cannot be verified at all: verifying it
+would need the symmetric material committed at `Website/release.config:L89-L93`, which
+is out of scope and is reproduced nowhere, and the delivered hasher holds exactly one
+algorithm with no legacy branch. Such an account regains access through an
+administrative reset, and nothing on the sign-in path changes that. What the sign-in
+path *does* do is ask the hasher whether an **already one-way** representation was
+produced at a cost the current configuration considers superseded, and replace it when
+it was. The hasher's own implementation records that this is the member's only
+reachable use, because the method is consulted only after a verification has already
+succeeded and a legacy value can never accompany a successful verification.
+
+**Why it is contained.** The replacement is transparent: no extra round trip, no
+change to the response and no new failure mode. A persistence failure must not fail a
+sign-in whose credential was correct, so it is caught and the account simply keeps a
+still-valid representation at the superseded cost until the next successful sign-in
+tries again. Cancellation is deliberately excluded from that containment and continues
+to propagate, because a cancelled request is not a failed write.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs`.
+
+### GAP REPORTED: the sign-in audit record cannot be emitted from the application layer
+
+**Legacy behaviour.** `UserController.vb:L66-L82` wrote an audit entry whose log type
+key was `loginStatus.ToString` at `:L80`, carrying the properties `IP`, the tenant
+identifier, the tenant name, the account name — passed through
+`PortalSecurity.InputFilter` with `NoScripting`, `NoAngleBrackets` and `NoMarkup` at
+`:L77` — and the account identifier. It was raised for the locked-out and failure
+outcomes only (`:L1138-L1141`), and it was always passed `Null.NullInteger`, minus
+one, as the account identifier, so **the legacy trail never recorded which account
+failed.**
+
+**What is delivered, and what is not.** The mapping of these outcomes onto stable
+event names — which the enumeration entry earlier in this file assigns to the
+application layer — is discharged: the sign-in service computes the status for every
+outcome and its member name *is* that stable name. **Emission is not possible in that
+project.** `ILogger<T>` does not resolve there: the application layer declares
+FluentValidation and nothing else, per `AAP 0.6.1`, and the logging abstractions are
+absent from the reference pack a class library targets. This was established by
+compiling a probe, which fails with `CS0234` on the namespace and `CS0246` on the
+generic, rather than by inspection. The layer's manifest already records an identical
+earlier attempt — made for `IOptions<T>` — that was reverted with the ruling that the
+consumer changes rather than the manifest, and the same ruling is applied here.
+
+**The compensating control.** `Api/Middleware/RequestLoggingMiddleware.cs` records
+every request with its method, path, status code and elapsed time, raising a refused
+sign-in to warning level, and `Api/Middleware/CorrelationIdMiddleware.cs` binds the
+correlation identifier those events are read against. The log-forging concern that
+`PortalSecurity.InputFilter` addressed is answered structurally rather than by a
+filter: the Api layer emits structured properties, so a submitted value is a property
+of an event and can never become part of its message template.
+
+**What is lost, stated plainly.** The specific gate that closed a sign-in is not
+recorded anywhere — the request log records that the attempt was refused, not which of
+the lock, the approval gate or the credential comparison refused it. An installation
+that needs per-gate audit must supply a logging abstraction to the application layer,
+which is a manifest decision rather than a code change.
+
+**The caller's network address is absent from the layer altogether.** It was the
+seventh argument at `Login.ascx.vb:L164` and the legacy service did nothing with it
+but record it. The sign-in request contract carries no address property, and reaching
+for the ambient request context is confined to the tenant-resolution middleware, so
+the address is recorded by the Api request log instead. Absence is a stronger
+guarantee than acceptance here: an address that could influence the outcome would be
+an input the caller controls.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/DnnMigration.Application.csproj`.
 
 ### A portal alias is refused rather than silently rewritten
 
@@ -6009,3 +6300,339 @@ rule is asserted by
 `Module_ExpressesDateAbsenceAsNullRatherThanAsTheLegacyMinimumDate`, which also
 records that the legacy absence test compared **only the date part**, so any time of
 day on `DateTime.MinValue` read as absent; that truncation is not reproduced.
+
+## Portal lifecycle orchestration — `PortalService`
+
+Every entry in this section concerns
+`backend/src/DnnMigration.Application/Services/PortalService.cs`, which absorbs
+`Library/Components/Portal/PortalController.vb` (1,632 lines, 21 public members) and
+the alias surface of `Library/Components/Portal/PortalAliasController.vb` (9
+members). Each difference below carries a matching `// MIGRATION:` annotation in
+that file.
+
+### The portal-creation audit entry is not emitted by the Application layer
+
+**Legacy behaviour.** `CreatePortal` closed by writing an event-log record at
+`PortalController.vb:L1137-L1160`. It set `BypassBuffering = True`, so the entry was
+written through immediately rather than batched — a failed installation had to leave
+a trace — typed the entry as `EventLogType.HOST_ALERT`, and attached **fourteen**
+properties at L1142-L1155: `Install Portal:` carrying the portal name, then
+`FirstName`, `LastName`, `Username`, `Email`, `Description`, `Keywords:` (the label
+is spelt with a lower-case `w` although the argument it read was `KeyWords`),
+`TemplatePath`, `TemplateFile`, `HomeDirectory`, `PortalAlias`, `ServerPath`,
+`ChildPath` and `IsChildPortal`. The password argument was **not** among them, so the
+legacy code already declined to record the credential.
+
+**Target behaviour.** The record becomes a structured log event, but it is **not
+emitted from this service**. `DnnMigration.Application` declares exactly two
+packages, `FluentValidation` and its dependency-injection extensions, and
+`Microsoft.Extensions.Logging.Abstractions` is neither among them nor present in the
+reference pack a class library targets. Naming `ILogger<T>` in this project fails to
+compile with `CS0234` and `CS0246`; that was **verified by compiling it**, not
+assumed, exactly as the project file already records for an earlier attempt to import
+the options package. Serilog belongs to the API layer, and structured logging is
+placed in `Program.cs` and `Api/Middleware/RequestLoggingMiddleware.cs`, so the
+owning layer sits above this one. The fourteen property names are recorded in the
+service so the owning layer has everything it needs, and the successful outcome
+carries the created portal's identifier, which is the value that middleware needs in
+order to record the installation. No password, hash or token is logged anywhere.
+
+### `RemoveCache("GetRoles")` has no counterpart
+
+**Legacy behaviour.** `PortalController.vb:L1131` evicted a single cache entry keyed
+by the bare literal `GetRoles`, because creating a portal had just inserted its three
+stock roles and the role cache would otherwise have served a list that predated them.
+
+**Target behaviour.** The eviction is **omitted**, and the omission is bounded rather
+than open-ended. `ICacheService` exposes twelve members and none of them evicts
+roles; the generic `Remove(key)` member cannot be used correctly from the Application
+layer because the key is composed inside the Infrastructure layer and this layer
+holds no constant for it, so passing the bare legacy string would be a guess that
+fails silently if the two spellings ever diverge — worse than the omission, because
+it would look as though the concern had been handled. The roles being created belong
+to a **brand-new** portal, so no reader can hold a cached role list for a tenant that
+did not exist a moment earlier, and the stale-read window the legacy eviction guarded
+is empty at that point in the lifecycle. The host-wide and portal-scoped
+invalidations that surround it are both reproduced.
+
+### Four legacy defects are annotated and deliberately not fixed
+
+**Legacy behaviour.** Four faults were measured in the source of this service and are
+recorded rather than corrected, because a defect discovered during a migration is
+annotated in place and not fixed unless it blocks delivery.
+
+- `PortalController.vb:L1140` and `:L1141` are **byte-identical consecutive
+  statements**, both assigning `LogTypeKey` the same `HOST_ALERT` value. The second
+  is pure redundancy, but it is almost certainly a copy-and-paste survivor of a line
+  meant to set a different property.
+- `ParseTemplate` at `:L1372-L1376` wraps the template load in a `Try` followed by a
+  `Catch` whose body is **empty**, so a missing or malformed template was swallowed
+  and parsing continued against an empty document: a tenant was created with none of
+  the pages, modules or settings the template described, and the caller was told the
+  creation had succeeded. The same member seeds three role identifiers to `-1` at
+  `:L1364-L1366`, a value that is also a legitimate role key in this schema.
+- The audit block is wrapped in an **empty** `Catch` at `:L1158-L1160`, so a logging
+  failure was discarded and the one record proving a portal had been installed could
+  go missing while the caller was told it had succeeded.
+- The private two-argument `CreatePortal` ends with an **empty** `Catch` at
+  `:L371-L373` and returns `-1`. That signal is unusable here, because
+  `Portals.PortalID` is declared `IDENTITY (-1, 1)`, so a successful creation of the
+  first portal and a swallowed failure returned the **same value**.
+
+**Target behaviour.** None of the three empty handlers is reproduced, because
+reproducing one would violate the engineering baseline this migration is held to.
+Failures surface as a `Result` failure or propagate; none is discarded. That is a
+**documented divergence** from the legacy behaviour rather than a silent correction of
+it, and the redundant assignment is recorded rather than quietly tidied away.
+
+### The last-portal refusal keeps the legacy wording
+
+**Legacy behaviour.** `DeletePortal` at `PortalController.vb:L162` read how many
+portals existed, proceeded only when more than one did, and otherwise returned the
+shared resource keyed `LastPortal.Text`, whose wording at
+`Website/App_GlobalResources/SharedResources.resx` is "You Can Not Delete The Last
+Portal In Your Database". The outcome was reported by **returning that string**, with
+an empty string meaning success, so a caller had to compare text to learn whether the
+delete had happened.
+
+**Target behaviour.** The rule survives as the failure code `portal.last_remaining`,
+and the message **leads with that legacy sentence verbatim** so existing operators
+still recognise it, followed by a sentence explaining the rule to a caller that has
+never seen the legacy screen. The tally is read and judged inside the service; no
+member reports a portal count, so the decision cannot migrate into a controller.
+Asserted by `DeletePortal_RefusesToRemoveTheLastRemainingTenant`.
+
+### The seven installation defaults invert their guard
+
+**Legacy behaviour.** The private two-argument `CreatePortal` at
+`PortalController.vb:L326-L377` read seven host settings, each guarded by
+`If Convert.ToString(HostSettings(key)) <> ""` — a comparison against the **empty
+string**, which worked because `Null.NullString` is the empty string rather than
+`Nothing` and `Convert.ToString` of a database null also yields the empty string, so
+one comparison covered a missing key, a null value and a blank value alike. The
+defaults were: `DemoPeriod` yielding no expiry; `HostFee`, `HostSpace`, `PageQuota`
+and `UserQuota` each yielding zero; `SiteLogHistory` yielding **`-1`**, a sentinel
+meaning "keep for ever" rather than a count; and `HostCurrency` yielding `"USD"`.
+
+**Target behaviour.** `IHostSettingsService.GetSettingsAsync` deliberately diverges
+from the legacy null contract: a key that is not present is simply **absent from the
+dictionary**. Testing for the empty string alone would therefore let a missing key
+through as though it were configured, so each read tests presence **and**
+non-blankness **and** parsability, which restores the legacy outcome across all three
+cases. A present but unparsable value is treated as absent, matching the legacy
+conversion. Every legacy default is preserved, including the distinction that matters
+most: retention stays **absent** rather than collapsing to zero, because zero would
+silently turn unlimited retention into none, while a configured `-1` round-trips as
+`-1`. The currency is a string setting, so only blankness makes it absent — a value
+that is not a number is still a valid currency code, exactly as the legacy guard
+implied.
+
+### Expiry dates are computed from a UTC clock, not server-local time
+
+**Legacy behaviour.** The trial expiry added a day interval to `Now()` using the VB
+runtime's date-arithmetic intrinsic, reached without an `Imports` statement because
+the project imported the runtime namespace globally. `Now()` is **server-local**. The
+result was then round-tripped through a formatted medium-date string and re-parsed, a
+lossy artefact of a formatting helper in the excluded globals module, which truncated
+the time component.
+
+**Target behaviour.** The instant comes from the injected clock, which is **UTC
+only**. Because the offset between the two can cross midnight, a computed expiry can
+land on a different **calendar day** from the one the legacy code would have produced
+for the same real instant — a trial can appear to end a day early or a day late
+relative to a legacy installation. That is accepted deliberately: a local-zone
+timestamp is not comparable across hosts and cannot be interpreted without knowing
+the machine that wrote it, and the injected clock is also what makes time-dependent
+behaviour testable. The value is kept strongly typed rather than formatted and
+re-parsed, so no precision is lost. The same UTC-versus-local difference applies to
+the administrator membership's creation timestamp.
+
+### The file-system stages of creation and deletion are omitted
+
+**Legacy behaviour.** Creation performed five file-system stages, each with its own
+failure resource: deleting a pre-existing upload folder at
+`PortalController.vb:L1030-L1034` (`DeleteUploadFolder.Error`, "Error deleting
+previous upload folder"); configuring a child portal on disc at `:L1038-L1053`
+(`ChildPortal.Error`, "Error configuring Child Portal"); creating the home directory
+and copying the tenant's resource file at `:L1058-L1067`; parsing the portal and
+administration templates at `:L1075` and `:L1082` (`PortalTemplate.Error`, "Error
+parsing Portal Template", and `AdminTemplate.Error`, "Error parsing Admin
+Template"); and copying the default page template and synchronising the folder tree
+at `:L1087-L1102`. A sixth resource, `CreatePortal.Error`, "Error creating Portal",
+reported an outright creation failure, and `CreateAdminUser.Error`, "Error creating
+Administrator user account.", reported a failed administrator. Deletion performed
+four more stages: removing the tenant's `.Portal-<id>.resx` overrides, deleting the
+child-portal directory derived from each alias, deleting `Portals\<id>`, and deleting
+the mapped home directory.
+
+**Target behaviour.** All nine stages are **omitted**, because the file-system
+subsystem, the skinning subsystem and the module installer are outside this
+migration, and none of those five stage-failure codes is reachable. The consequences
+are stated plainly rather than implied: a portal created here has its **database rows
+complete but no directories on disc**, and the pages, modules and folder permissions
+the template would have supplied are absent — except the three stock roles, which are
+lifted out of the template path and created unconditionally, because a tenant without
+them cannot be administered. A portal deleted here has **all of its rows removed**,
+so no tenant remains addressable, but orphaned directories and resource files are
+**left on disc** for an operator to reclaim. `DeletePortalInfo` at `:L1191` also began
+with four skin resets, which have no counterpart because skinning is out of scope.
+
+The load-bearing literal `"admin.template"` — the name of the template that
+provisioned a tenant's administration pages, where a misspelling would have produced
+a portal with no administration surface and no error — is preserved as the named
+constant `PortalOptions.AdminTemplateFileName`, whose default is that exact string,
+so the value survives in configuration even though nothing currently reads it.
+
+The legacy delete reached its paths through the VB runtime's `InStr`, `Mid` and
+`InStrRev` intrinsics. None is transliterated, and the difference matters if the path
+is ever restored: those intrinsics are **one-based** and return `0` for "not found",
+whereas `IndexOf`, `Substring` and `LastIndexOf` are **zero-based** and return `-1`.
+
+### The two scheduler-driven members are not ported
+
+**Legacy behaviour.** `DeleteExpiredPortals` at `PortalController.vb:L156` swept
+expired tenants and `UpdatePortalExpiry` at `:L1495` advanced the expiry date. Both
+were driven by the scheduling subsystem.
+
+**Target behaviour.** Both are **omitted**, because scheduling is out of scope. The
+`ExpiryDate` **column survives** and is still read and written, so no data is lost and
+an operator can still see and set it — only the unattended sweep is gone. Restoring it
+would mean a hosted background service rather than a ported scheduler client.
+
+### The administrator's password is hashed, and creation status becomes failure codes
+
+**Legacy behaviour.** `PortalController.vb:L1005` assigned the administrator's
+password in **cleartext**, and the membership provider that received it was
+registered with `passwordFormat="Encrypted"` and `enablePasswordRetrieval="true"`
+(`Website/release.config:L236-L246`) — a **reversible** scheme whose 3DES decryption
+key was itself committed to source control at `Website/release.config:L89-L93`.
+Anyone holding the repository and the database could recover every password. The
+outcome of creating the account was reported by an enum returned by value at `:L1013`
+and tested at `:L1015`.
+
+**Target behaviour.** The password is hashed one-way through `IPasswordHasher`, so the
+stored value cannot be reversed even by this application. Two consequences are
+accepted: password **retrieval** is not carried forward to any endpoint or screen,
+because a one-way hash cannot support it, and a forgotten password is answered by
+reset rather than by recovery. The cleartext value is never logged, returned or
+stored. The creation-status enum does not cross the service boundary; its eighteen
+members become distinct, stable failure codes, which also removes a trap worth
+recording — that enum's `Success` member is **13, not 0**, and member `0` is a
+failure, so the usual "zero means success" reflex would have reported every failed
+creation as a success. No numeric status comparison is carried forward at all.
+
+### Host names are matched exactly, closing a cross-tenant hazard
+
+**Legacy behaviour.** Tenant resolution was created as
+`where PortalAlias like '%' + @PortalAlias + '%'` at
+`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L4569-L4600`
+and then took `min(PortalID)` among the matches, so a request for `example.com` also
+matched a stored `test.example.com.au`.
+
+**Target behaviour.** Matching is **exact**, on the write side in this service and at
+request time in `Api/Middleware/PortalAliasResolutionMiddleware`, so the duplicate
+check and the later lookup cannot disagree. Two legacy consequences are closed: an
+alias could be accepted as free while colliding with an existing tenant under the
+legacy predicate, and a live request could be resolved to the **wrong tenant** purely
+because one host name was a substring of another — a cross-tenant data-exposure
+hazard in a multi-tenant product. An installation that relied on substring
+resolution will resolve differently, which is why this is recorded as a deliberate
+behavioural difference rather than an optimisation.
+
+### The two lazy tallies become explicit awaited reads
+
+**Legacy behaviour.** `PortalInfo.Users` at `:L309` and `PortalInfo.Pages` at `:L320`
+were **lazy property getters**. Each issued a synchronous database read the first time
+it was touched, memoised the answer in a backing field, and used `-1` in that field to
+mean "not loaded yet".
+
+**Target behaviour.** The domain entity carries neither property, and both tallies are
+awaited explicitly where the projection is assembled. Three faults are removed rather
+than carried: reading a property performed hidden I/O, so a caller could not tell a
+field access from a query and a template that touched it in a loop issued one query
+per iteration; the I/O was synchronous, which the async-throughout rule forbids in the
+request path; and the not-loaded marker was `-1`, which in this schema is also a
+legitimate identifier, so the sentinel was ambiguous.
+
+### The unpaged sentinel is replaced by a named factory
+
+**Legacy behaviour.** `GetPortalsByName` at `PortalController.vb:L262` declared
+"return everything" by passing a page index of `-1`, then rewrote its own arguments to
+page 0 with a page size of `Integer.MaxValue`, and reported the grand total through a
+by-reference argument.
+
+**Target behaviour.** The unpaged case has its own named factory on the paged
+envelope, and a **negative page index is refused outright** with
+`portal.paging_invalid` rather than reinterpreted. The legacy sentinel was
+indistinguishable from a caller's arithmetic error, so a page index that had
+underflowed to `-1` silently returned the whole table instead of failing, and it
+collided with this schema's use of `-1` as a real identifier. The records and the
+total travel together on one immutable value, so no by-reference argument appears.
+
+### Role fee clamping replaces an intrinsic that evaluates both branches
+
+**Legacy behaviour.** The private `CreateRole` helper clamped a negative service fee
+and a negative trial fee to zero using the VB runtime's inline-conditional intrinsic,
+wrapped in a narrowing conversion, at `PortalController.vb:L395` and `:L398`. It also
+looked the role up **by name** first and, when one already existed, returned the
+existing identifier **unchanged**, and it set `RoleGroupID` to the absent-integer
+sentinel `-1` as its "belongs to no group" convention. Its three call sites passed the
+literals `Administrators`, `Registered Users` and `Subscribers` with the billing code
+`"M"` and the trial code `"N"`.
+
+**Target behaviour.** The clamp becomes a maximum against zero. That substitution is
+**not valid in general** and the reasoning is recorded because of it: the intrinsic is
+an ordinary **function**, so both of its value arguments are evaluated before it is
+called, whereas the C# conditional operator **short-circuits** and evaluates only the
+branch it selects. The rewrite is faithful here only because each branch is a literal
+zero or a parameter already in hand, so nothing is observable in the difference.
+Where the same intrinsic appears with arguments that call a method, index a collection
+or read a side-effecting property, the rewrite would silently change behaviour.
+Create-or-reuse is preserved as a genuine rule, and on the creation path it holds by
+construction because the portal is created in the same transaction, so the tenant
+provably carries no role of any name and a lookup could only miss; a caller adding a
+role to an existing tenant goes through the role service, which performs the name
+check. The billing and trial codes are **load-bearing data** stored in
+`Roles.BillingFrequency`, a `char(1)` column, so they are carried across as the enum
+members whose stored values are those exact characters and are never renamed — and
+that enum admits **six** codes, not the four the calendar-interval letters alone
+suggest. No `-1` group sentinel is stored; the grouping navigation is simply left
+unset, so absence is a null column rather than a number that is also a legitimate
+group identifier.
+
+### The whole tenant graph commits once
+
+**Legacy behaviour.** Creation wrote across the `Portals`, `PortalAlias`, `Roles`,
+`Tabs` and `Modules` tables as a sequence of independent statements, each committed on
+its own, so a failure part-way through left a half-built tenant behind and the
+clean-up branch at `:L1164-L1167` had to delete it explicitly.
+
+**Target behaviour.** Every insert is **staged** and committed **once** through the
+unit of work, so a partially built tenant cannot be left behind and no
+store-assigned identifier is needed beforehand — every foreign key inside the graph
+is resolved by the object graph itself. Three portal columns and the credential
+record cannot join that commit, because each needs an identifier the database assigns
+during it; the legacy path had the same shape, stamping those identifiers only after
+the rows existed. Any failure in that second step is compensated by removing
+everything the first commit created, and the compensation deliberately does not
+swallow its own failure.
+
+### Portal configuration is columns, not a settings table
+
+**Legacy behaviour.** The name `PortalSettings` suggests a key-value store, and there
+is none. No such member appears among the abstract data provider's methods, no such
+procedure among the ones the provider invoked, and no such table in any of the schema
+scripts — which define `ModuleSettings`, `HostSettings`, `TabModuleSettings` and
+`ScheduleItemSettings`, but nothing portal-scoped. The legacy `PortalSettings` class
+was not persisted at all: `PortalController.vb:L1209-L1210` returns it from the
+ambient per-request store, so it was a request-lifetime composite assembled from the
+portal row and discarded at the end of the request.
+
+**Target behaviour.** Portal configuration lives as **columns** on the portal, the
+settings projection reads those columns, and the request-lifetime half of the legacy
+class is served by the scoped portal context. Nothing reads or writes a portal
+settings table. That projection is also deliberately **not cached**, unlike the
+listing and detail reads: it backs an editing screen whose purpose is to show an
+administrator what is stored immediately after they changed it, and serving that from
+a sixty-minute cache would show a stale form and invite them to save the old values
+back over their own edit.

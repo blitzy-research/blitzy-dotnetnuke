@@ -2,7 +2,6 @@ using System.Globalization;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Portal;
-using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Mapping;
 using DnnMigration.Application.Options;
@@ -43,6 +42,31 @@ namespace DnnMigration.Application.Services;
 /// path created when a template did not supply them are lifted out of that path and created
 /// unconditionally, because a tenant without them is not usable. The omission is a deliberate,
 /// documented behavioural difference.
+/// </para>
+/// <para>
+/// MIGRATION: the legacy creation path ran <c>ParseTemplate</c> (<c>PortalController.vb:L1360</c>)
+/// TWICE - once over the caller's chosen template at L1075 and once over a second, fixed template at
+/// L1082 whose file name was the bare literal <c>"admin.template"</c>. That literal is load-bearing
+/// rather than incidental: it names the template that provisions a tenant's administration pages, so
+/// a misspelling would have produced a portal with no administration surface and no error. It is
+/// preserved as the named constant <see cref="PortalOptions.AdminTemplateFileName"/>, whose default is
+/// that exact string, so the value survives this migration in configuration even though, template
+/// parsing being out of scope, nothing here reads it. Recording it rather than discarding it is what
+/// lets the second pass be restored later without rediscovering the name from the legacy source.
+/// </para>
+/// <para>
+/// MIGRATION: DEFECT 5, annotated and deliberately NOT fixed, per the migration discipline that a
+/// defect discovered in the legacy source is recorded in place rather than corrected. Two faults sit
+/// in <c>ParseTemplate</c>. First, <c>PortalController.vb:L1372-L1376</c> wraps the template load in
+/// <c>Try xmlDoc.Load(TemplatePath &amp; TemplateFile)</c> followed by a <c>Catch</c> whose body is
+/// EMPTY, so a missing or malformed template was swallowed without trace and parsing simply continued
+/// against an empty document - a tenant was then created with none of the pages, modules or settings
+/// the template described, and the caller was told the creation had succeeded. Second, L1364-L1366
+/// seed <c>AdministratorRoleId</c>, <c>RegisteredRoleId</c> and <c>SubscriberRoleId</c> each to
+/// <c>-1</c>, the legacy absent-Integer sentinel, which in this schema is also a real role identifier
+/// - the sentinel and a legitimate key are indistinguishable. Neither fault is reproduced, because
+/// this service does not parse templates at all; both are recorded so that a later agent restoring the
+/// template pass does not reintroduce them, and so that the divergence is traceable rather than silent.
 /// </para>
 /// <para>
 /// This service reaches persistence only through repository abstractions - never a database context, a
@@ -259,9 +283,8 @@ public sealed class PortalService : IPortalService
         var rows = new List<PortalListItemDto>(page.Items.Count);
         foreach (Portal portal in page.Items)
         {
-            IReadOnlyList<string> aliases = aliasesByPortal.TryGetValue(portal.PortalId, out List<string>? bound)
-                ? bound
-                : Array.Empty<string>();
+            IReadOnlyList<string> aliases = aliasesByPortal.GetValueOrDefault(portal.PortalId)
+                ?? (IReadOnlyList<string>)Array.Empty<string>();
 
             // MIGRATION: the legacy listing read its member and page tallies from correlated
             // sub-selects inside the portal view, so they were computed per row there as well.
@@ -271,6 +294,16 @@ public sealed class PortalService : IPortalService
             rows.Add(PortalMappings.ToListItem(portal, aliases, users, pages));
         }
 
+        // MIGRATION: "return everything" is expressed by a NAMED FACTORY, not by a negative page index.
+        // GetPortalsByName (PortalController.vb:L262) declared that intent by passing pageIndex = -1, then
+        // rewrote its own arguments to page 0 with a page size of Integer.MaxValue once it had detected the
+        // sentinel. Two things were wrong with that and both are closed here. The sentinel was
+        // indistinguishable from a caller's arithmetic error, so a page index that had underflowed to -1
+        // silently returned the whole table instead of failing; and it collided with this schema's use of
+        // -1 as a real identifier. A page size of zero selects the unpaged factory explicitly, and the
+        // guard at the top of this member REJECTS a negative page index outright with
+        // portal.paging_invalid rather than reinterpreting it. The paged factory is given the store's own
+        // coordinates so that the envelope reports what was actually read.
         PagedResult<PortalListItemDto> projected = request.PageSize == 0
             ? PagedResult<PortalListItemDto>.Unpaged(rows)
             : PagedResult<PortalListItemDto>.Create(rows, page.TotalCount, page.PageIndex, page.PageSize);
@@ -284,6 +317,20 @@ public sealed class PortalService : IPortalService
         CancellationToken cancellationToken = default)
     {
         string cacheKey = string.Format(CultureInfo.InvariantCulture, PortalCacheKeyFormat, portalId);
+        // MIGRATION: the CALLER computes the lifetime, because ICacheService takes a TimeSpan and holds no
+        // policy of its own. The arithmetic is the legacy arithmetic:
+        // "DataCache.PortalCacheTimeOut * Convert.ToInt32(Globals.PerformanceSetting)" at
+        // PortalController.vb:L218, with the twenty-minute base preserved as a named constant above and
+        // the installation-wide multiplier now bound configuration rather than a static read of the
+        // excluded globals module. Its default is 3, which is the legacy default, so an installation that
+        // configures nothing caches for the same sixty minutes it always did.
+        // MIGRATION: a multiplier of ZERO DISABLES CACHING, and that is load-bearing rather than an edge
+        // case - it is how the legacy installation turned caching off, and an operator diagnosing a stale
+        // read still relies on it. Multiplying yields a zero lifetime, and handing a zero lifetime to a
+        // cache would ask it to store an entry that has already expired, whose behaviour is the cache's
+        // business and not something this service should depend on. The guard below therefore bypasses the
+        // cache entirely and reads through, which is unambiguous. Any negative multiplier that reached
+        // here would be bypassed by the same test rather than producing a negative lifetime.
         TimeSpan expiration = TimeSpan.FromMinutes(PortalCacheTimeOutMinutes * _caching.PerformanceMultiplier);
 
         PortalDetailDto? detail = expiration > TimeSpan.Zero
@@ -312,6 +359,19 @@ public sealed class PortalService : IPortalService
             throw new DomainException("A portal alias is required in order to reach the new portal.");
         }
 
+        // MIGRATION: host names are matched EXACTLY here, where the legacy installation matched them as
+        // substrings. The tenant-resolution procedure was created as
+        // "where PortalAlias like '%' + @PortalAlias + '%'" at
+        // Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L4569-L4600, so a
+        // request for "example.com" also matched a stored "test.example.com.au" and the procedure then
+        // took min(PortalID) among the matches. Two consequences followed: an alias could be accepted as
+        // free while colliding with an existing tenant under the legacy predicate, and a live request
+        // could be resolved to the WRONG TENANT purely because one host name was a substring of another -
+        // a cross-tenant data-exposure hazard in a multi-tenant product. The exact match closes both.
+        // This is a deliberate behavioural difference and not an optimisation: an installation that
+        // relied on substring resolution will resolve differently. Request-time resolution itself lives
+        // in Api/Middleware/PortalAliasResolutionMiddleware; this call is the write-side counterpart,
+        // and both use exact matching so that the check and the later lookup cannot disagree.
         bool aliasTaken = await _aliases
             .AliasExistsAsync(alias, null, cancellationToken)
             .ConfigureAwait(false);
@@ -328,6 +388,18 @@ public sealed class PortalService : IPortalService
             throw new DomainException("An administrator account name is required in order to create a portal.");
         }
 
+        // MIGRATION: the legacy path learned why administrator creation had failed from an enum returned
+        // by value - "Dim createStatus As UserCreateStatus = UserController.CreateUser(objAdminUser)" at
+        // PortalController.vb:L1013 - and tested it against a named member at L1015 before converting it
+        // to display text at L1018. That enum does not cross this boundary. Its eighteen members become
+        // distinct, stable failure codes on the Result, which is the canonical replacement for a status
+        // channel and lets the API edge classify a collision separately from a failed write.
+        // MIGRATION: the enum's shape is the reason this matters. UserCreateStatus declares eighteen
+        // members numbered 0 to 17 and its Success member is 13, NOT 0, so the usual "zero means
+        // success" reflex is exactly wrong: member 0 is a FAILURE. Testing a numeric zero for success
+        // would have inverted the outcome and reported every failed creation as a success. No numeric
+        // comparison is carried forward - success is the absence of a failure code - which removes the
+        // trap rather than documenting a way to live with it.
         bool usernameTaken = await _users
             .UsernameExistsAsync(administratorUsername, null, cancellationToken)
             .ConfigureAwait(false);
@@ -346,11 +418,44 @@ public sealed class PortalService : IPortalService
 
         PortalDefaults defaults = await ReadPortalDefaultsAsync(cancellationToken).ConfigureAwait(false);
 
+        // MIGRATION: five FILE-SYSTEM stages of the legacy creation sequence are not reproduced, listed
+        // here in the order they ran so the omission is auditable against the original. From
+        // PortalController.vb: L1030-L1034 deleted a pre-existing upload folder, reporting failure through
+        // the resource keyed DeleteUploadFolder.Error, "Error deleting previous upload folder";
+        // L1038-L1053 configured a child portal on disc, reporting ChildPortal.Error, "Error configuring
+        // Child Portal"; L1058-L1067 created the home directory and copied the tenant's resource file;
+        // L1075 and L1082 parsed the portal and administration templates, reporting PortalTemplate.Error,
+        // "Error parsing Portal Template", and AdminTemplate.Error, "Error parsing Admin Template"; and
+        // L1087-L1102 copied the default page template and synchronised the folder tree. The file-system
+        // subsystem, the skinning subsystem and the module installer are all outside this migration, so
+        // none of these has a counterpart and none of those five failure codes is reachable. The
+        // consequence is stated plainly rather than implied: a portal created here has its DATABASE rows
+        // complete but NO DIRECTORIES on disc, and the pages, modules and folder permissions the template
+        // would have supplied are absent - except the three stock roles, which are lifted out of the
+        // template path below precisely because a tenant without them cannot be administered.
+        // MIGRATION: two further legacy members that touched this lifecycle are not ported at all, because
+        // the scheduling subsystem is excluded: DeleteExpiredPortals (L156), which swept expired tenants,
+        // and UpdatePortalExpiry (L1495), which advanced the expiry date. The ExpiryDate COLUMN survives
+        // and is still read and written, so no data is lost and an operator can still see and set it -
+        // only the unattended sweep is gone. Restoring it would mean a hosted background service rather
+        // than a ported scheduler client, and it is recorded so the absence is a decision, not a gap.
+
         // MIGRATION: the legacy screen rendered the literal placeholder "Portals/[PortalID]" in the home
         // directory box and deliberately did not submit it (Signup.ascx.vb L245-L246), so the column was
         // stored empty and the effective directory was derived at request time by the excluded
         // file-system layer. That is reproduced exactly: whatever the request carries is stored
         // verbatim, and an omitted directory is stored as the empty string the column defaults to.
+        // MIGRATION: the legacy path did contain a defaulting step - "If HomeDirectory = "" Then
+        // HomeDirectory = "Portals/" + intPortalId.ToString" at PortalController.vb:L991-L993 - and it is
+        // deliberately NOT reproduced, because reading the surrounding code shows the defaulted value
+        // never reached the stored column. It assigned a LOCAL parameter, and that local was consumed in
+        // exactly two places: the mapped directory computed at L994, which belongs to the excluded
+        // file-system layer, and one property of the audit entry at L1151. The write-back that followed
+        // took its value from elsewhere - the twenty-seven-argument update at L1114-L1118 passes
+        // objportal.HomeDirectory, a field of the record READ BACK from the store at L1109, not the local
+        // - so the column kept whatever the insert had put there. Defaulting it here would therefore
+        // introduce a persisted value the legacy installation never held, which is why the apparent
+        // omission is in fact the faithful behaviour.
         Portal portal = PortalMappings.ToNewPortal(
             request,
             defaults.Currency,
@@ -411,6 +516,15 @@ public sealed class PortalService : IPortalService
         });
         _users.Add(administrator);
 
+        // MIGRATION: the instant comes from the injected clock, which is UTC-ONLY, where every legacy
+        // reading came from VB's Now() and was therefore in the SERVER'S LOCAL zone. The two differ by
+        // the host's offset, so a value stored here can fall on a different calendar day from the one
+        // the legacy code would have stored for the same real instant - west of UTC it can appear a day
+        // later, east of it a day earlier. That is accepted deliberately: a local-zone timestamp is not
+        // comparable across hosts and cannot be interpreted without knowing the machine that wrote it,
+        // whereas UTC is unambiguous. The offset is also what makes time-dependent behaviour testable at
+        // all, since the clock can be substituted. Recorded because it is observable in stored data, not
+        // merely internal.
         DateTime createdUtc = _clock.UtcNow;
         _users.AddMembership(new UserPortal
         {
@@ -449,6 +563,19 @@ public sealed class PortalService : IPortalService
         // everything the first commit created, so a half-built tenant is never left behind.
         try
         {
+            // MIGRATION: the administrator's password is HASHED here. The legacy path assigned it in
+            // CLEARTEXT - "objAdminUser.Membership.Password = Password" at PortalController.vb:L1005 -
+            // and the membership provider that received it was registered with
+            // passwordFormat="Encrypted" and enablePasswordRetrieval="true"
+            // (Website/release.config:L236-L246), a REVERSIBLE scheme whose 3DES decryption key was
+            // itself committed to source control at Website/release.config:L89-L93. Anyone holding the
+            // repository and the database could therefore recover every password in plaintext.
+            // The replacement is a one-way hash through IPasswordHasher, so the stored value cannot be
+            // reversed even by this application. Two behavioural consequences are accepted and recorded:
+            // password RETRIEVAL is not carried forward to any endpoint or screen, because a one-way
+            // hash cannot support it, and a forgotten password is answered by reset rather than by
+            // recovery. The cleartext value is never logged, never returned and never stored - only the
+            // hash reaches the store - and this is the single point in this service that touches it.
             string passwordHash = _passwordHasher.Hash(password);
             bool credentialCreated = await _users
                 .CreateCredentialAsync(administrator.UserId, passwordHash, isApproved: true, createdUtc, cancellationToken)
@@ -488,9 +615,27 @@ public sealed class PortalService : IPortalService
             throw;
         }
 
+        // Reproduces DataCache.ClearHostCache(True) at PortalController.vb:L1128, which discarded the
+        // installation-wide entries so the new tenant became reachable, plus the portal's own entry.
         _cache.InvalidateHost();
         _cache.InvalidatePortal(portal.PortalId);
 
+        // MIGRATION: the legacy path had a THIRD invalidation here that is not reproduced, and it is
+        // recorded rather than dropped in silence. PortalController.vb:L1131 is
+        // DataCache.RemoveCache("GetRoles"), evicting a single entry keyed by that bare literal, because
+        // creating a portal had just inserted the three stock roles below and the role cache would
+        // otherwise have served a list that predated them. ICacheService exposes twelve members and none
+        // of them evicts roles: there is no InvalidateRoles, and the generic Remove(key) member cannot be
+        // used correctly from here because the key is composed inside the infrastructure layer and this
+        // layer has no constant for it. Passing the bare legacy string would be a guess that fails
+        // silently if the two spellings ever diverge - worse than the omission, because it would look
+        // like the concern was handled. Extending ICacheService is not available either: that contract
+        // belongs to another file and is outside this file's scope.
+        // MIGRATION: the omission is bounded rather than open-ended. The roles created here are the three
+        // stock roles of a BRAND-NEW portal, so no reader can hold a cached role list for a tenant that
+        // did not exist a moment ago; the stale-read window the legacy eviction guarded is empty at this
+        // point in the lifecycle. The two invalidations above additionally discard the host-wide and
+        // portal-scoped entries. Recorded so that a later change to ICacheService can close it explicitly.
         PortalDetailDto? created = await ReadDetailAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
         if (created is null)
         {
@@ -499,6 +644,44 @@ public sealed class PortalService : IPortalService
                 "The portal was created but could not be read back.");
         }
 
+        // MIGRATION: the legacy path closed with an AUDIT ENTRY that this service does not emit, and the
+        // reason is a layering constraint rather than an oversight, so it is recorded in full here.
+        // PortalController.vb:L1137-L1160 built a Services.Log.EventLog.LogInfo with BypassBuffering set
+        // to True - the entry was written through immediately rather than batched, because a failed
+        // installation had to leave a trace - typed it as EventLogType.HOST_ALERT, attached FOURTEEN
+        // properties and submitted it through EventLogController.AddLog. The fourteen, verbatim and in
+        // order, at L1142-L1155: "Install Portal:" carrying the portal name, then FirstName, LastName,
+        // Username, Email, Description, "Keywords:" (spelt with a lower-case w in the label although the
+        // argument it read was KeyWords), TemplatePath, TemplateFile, HomeDirectory, PortalAlias,
+        // ServerPath, ChildPath and IsChildPortal. Note what is absent: the password argument was NOT
+        // among them, so the legacy code already declined to record the credential and this migration
+        // preserves that rather than newly imposing it.
+        // MIGRATION: this layer cannot emit it. The audit sites become structured log events, but
+        // DnnMigration.Application declares exactly two packages - FluentValidation and its dependency
+        // injection extensions - because AAP 0.6.1 states "Application declares only FluentValidation",
+        // and Microsoft.Extensions.Logging.Abstractions is neither among them nor present in the
+        // reference pack a class library targets. Naming ILogger<T> in this project therefore fails to
+        // compile with CS0234 and CS0246; that was VERIFIED by compiling it, not assumed, exactly as the
+        // project file records for an earlier attempt to import the options package. AAP 0.6.1 assigns
+        // Serilog to the Api layer and AAP 0.9.6 places structured logging in Program.cs and
+        // Api/Middleware/RequestLoggingMiddleware.cs, so the owning layer is above this one. Adding the
+        // package here would breach the frozen inventory and edit a file outside this file's scope; the
+        // correct action is to record the gap, which is what this comment does. The successful outcome
+        // returned below carries the created portal's identifier, which is the value the request-scoped
+        // logging middleware needs in order to record the installation with these property names.
+        // MIGRATION: DEFECT 4, annotated and deliberately NOT fixed. L1140 and L1141 are BYTE-IDENTICAL
+        // consecutive statements, both assigning
+        // "objEventLogInfo.LogTypeKey = ...EventLogType.HOST_ALERT.ToString". The second assignment is
+        // pure redundancy - it overwrites the first with the same value, so the behaviour is unaffected -
+        // but it is almost certainly a copy-and-paste survivor of a line that was meant to set a
+        // different property, which is why it is recorded rather than quietly tidied away.
+        // MIGRATION: DEFECT 6, annotated and deliberately NOT fixed. The whole audit block is wrapped in
+        // "Catch ex As Exception" / "' error" / "End Try" at L1158-L1160 - an EMPTY handler. A logging
+        // failure was therefore swallowed, so the one record proving a portal had been installed could go
+        // missing while the caller was told the installation had succeeded. Reproducing an empty handler
+        // would violate the enterprise baseline this migration is held to, so it is not reproduced: this
+        // service surfaces failures as a Result or lets them propagate, and never discards one. That is a
+        // documented divergence from the legacy behaviour rather than a silent correction of it.
         return Result<PortalDetailDto>.Success(created);
     }
 
@@ -545,17 +728,49 @@ public sealed class PortalService : IPortalService
 
         // One page of size one is read purely for its total, because the repository exposes no bare
         // count of portals and an installation must retain at least one tenant.
+        // MIGRATION: the tally is read and judged INSIDE this service, exactly as the legacy body did -
+        // "Dim portalCount As Integer = DataProvider.Instance.GetPortalCount()" followed by
+        // "If portalCount > 1 Then" at PortalController.vb:L162. No member of this service reports a
+        // portal count to a caller, deliberately: exposing one would let the decision be taken in a
+        // controller, which is the layering violation Rule T2 exists to prevent, and would let two
+        // callers disagree about the threshold.
         PagedResult<Portal> firstPage = await _portals
             .ListAsync(0, 1, null, null, false, cancellationToken)
             .ConfigureAwait(false);
 
         if (firstPage.TotalCount <= 1)
         {
+            // MIGRATION: the wording is preserved verbatim from the legacy resource the screen displayed,
+            // Website/App_GlobalResources/SharedResources.resx keyed LastPortal.Text - "You Can Not
+            // Delete The Last Portal In Your Database" - because the migration discipline requires error
+            // messages to remain equivalent to the ones existing operators already recognise. The legacy
+            // member reported this by RETURNING that string, with an empty string meaning success, so a
+            // caller had to compare text to learn whether the delete had happened; here the outcome is a
+            // failure Result whose stable code is what a caller branches on and whose message is what a
+            // human reads.
             return Result.Failure(
                 LastRemainingCode,
-                "The installation must retain at least one portal, so the last remaining portal cannot be removed.");
+                "You Can Not Delete The Last Portal In Your Database. The installation must retain at least one portal.");
         }
 
+        // MIGRATION: four FILE-SYSTEM removal stages of the legacy delete are not reproduced, because the
+        // file-system subsystem is outside this migration. In order, from PortalController.vb:L162:
+        // DeleteFilesRecursive over the server path matching ".Portal-<id>.resx" (the tenant's localised
+        // resource overrides); a sweep that read the tenant's aliases, reduced each to a domain name and
+        // deleted the matching child-portal directory; DeleteFolderRecursive over "Portals\<id>"; and,
+        // when it existed, DeleteFolderRecursive over the tenant's mapped home directory. The database
+        // rows are removed in full, so no tenant remains addressable, but ORPHANED DIRECTORIES AND
+        // RESOURCE FILES ARE LEFT ON DISC for an operator to reclaim. That is a deliberate, documented
+        // behavioural difference and the omission is recorded rather than absorbed.
+        // MIGRATION: those legacy stages reached their paths through the VB runtime's string intrinsics -
+        // InStr, Mid and InStrRev - which arrived without an Imports statement via the project-level
+        // imports at Library/DotNetNuke.Library.vbproj:L107-L134. None is transliterated: the BCL
+        // equivalents are IndexOf, Substring and LastIndexOf, and they differ in a way that would matter
+        // if this path were ever restored, because the VB intrinsics are ONE-BASED and return 0 for "not
+        // found" whereas the BCL members are ZERO-BASED and return -1.
+        // MIGRATION: DeletePortalInfo (L1191) also began with four SkinController.SetSkin calls, resetting
+        // the tenant's page and container skins. Skinning is out of scope - this generation of the product
+        // uses skins rather than master pages and none of it is ported - so those calls have no counterpart.
         // Aliases are loaded, so they are removed explicitly. Pages, modules, roles and memberships are
         // removed by the cascade configured on the portal's relationships: the repository contracts
         // expose no removal member for a page or a module, and expressing the sweep here would require
@@ -583,10 +798,29 @@ public sealed class PortalService : IPortalService
         int portalId,
         CancellationToken cancellationToken = default)
     {
+        // MIGRATION: this read is deliberately NOT CACHED, and the omission is recorded rather than left
+        // to be noticed. Every value it returns is projected from columns of the portal row, so the legacy
+        // Portal{id} entry would have served it - but this member exists to back the settings screen, whose
+        // whole purpose is to show an administrator what is currently stored immediately after they have
+        // changed it. Serving that from a cache with a sixty-minute lifetime would show a stale form and
+        // invite the administrator to save the old values back over their own edit. The listing and detail
+        // reads above are cached because a slightly stale list is harmless; an editing form is not. The
+        // same reasoning applies to the alias reads, which back an editing screen too.
         Portal? portal = await _portals
             .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
+        // MIGRATION: there is NO portal-setting entity, and this projection is where that shows. A reader
+        // meeting a "portal settings" contract would reasonably expect a key-value table behind it, and
+        // there is none: no such member appears among the abstract data provider's methods, no such
+        // procedure appears among the ones the provider invoked, and no such table appears in any of the
+        // schema scripts - which define ModuleSettings, HostSettings, TabModuleSettings and
+        // ScheduleItemSettings, but nothing portal-scoped. The legacy PortalSettings CLASS that lent the
+        // name was not persisted at all; PortalController.vb:L1209-L1210 returns it from the ambient
+        // per-request store, so it was a request-lifetime composite assembled from the portal row and
+        // discarded at the end of the request. Portal configuration therefore lives as COLUMNS on the
+        // portal, this DTO projects those columns, and the request-scoped half of the legacy class is
+        // served by the scoped portal context instead. Nothing here reads or writes a settings table.
         return portal is null
             ? Result<PortalSettingsDto?>.Success(null)
             : Result<PortalSettingsDto?>.Success(PortalMappings.ToSettings(portal));
@@ -769,6 +1003,17 @@ public sealed class PortalService : IPortalService
             return null;
         }
 
+        // MIGRATION: both tallies are AWAITED EXPLICITLY here because they were LAZY PROPERTY GETTERS on
+        // the legacy record - Users at PortalInfo.vb:L309 and Pages at L320 - each of which issued a
+        // synchronous database read the first time it was touched, memoised the answer in a backing field,
+        // and used -1 in that field to mean "not loaded yet". Three problems came with that shape and all
+        // three are removed rather than carried. Reading a property performed hidden I/O, so a caller
+        // could not tell a field access from a query and a template that touched it in a loop issued one
+        // query per iteration. The I/O was synchronous, which Rule T6 forbids anywhere in the request
+        // path. And the not-loaded marker was -1, which in this schema is also a legitimate identifier, so
+        // the sentinel was ambiguous. The domain entity therefore carries neither property: both are
+        // computed once, here, where the awaiting is visible and cancellable, and travel onward as plain
+        // values on the projection.
         int users = await _portals.CountUsersAsync(portalId, cancellationToken).ConfigureAwait(false);
         int pages = await _portals.CountPagesAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -778,14 +1023,16 @@ public sealed class PortalService : IPortalService
             .GetRoleNamesAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
+        // Each designated role is resolved only when the portal actually designates one. The test is for
+        // a value being present, never for a particular number: Roles.RoleID is declared IDENTITY (0, 1),
+        // so zero is the first role an installation creates and -1 is a legitimate key as well, which
+        // means no numeric comparison can stand in for absence here.
         string? administratorRoleName = portal.AdministratorRoleId is int administratorRoleId
-            && roleNames.TryGetValue(administratorRoleId, out string? administratorName)
-            ? administratorName
+            ? roleNames.GetValueOrDefault(administratorRoleId)
             : null;
 
         string? registeredRoleName = portal.RegisteredRoleId is int registeredRoleId
-            && roleNames.TryGetValue(registeredRoleId, out string? registeredName)
-            ? registeredName
+            ? roleNames.GetValueOrDefault(registeredRoleId)
             : null;
 
         // MIGRATION: the legacy view exposed an Email column on the portal result set that was in fact
@@ -817,10 +1064,56 @@ public sealed class PortalService : IPortalService
     /// <param name="cancellationToken">Token observed while the read is in flight.</param>
     /// <returns>The resolved defaults.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: reproduces the private two-argument <c>CreatePortal</c> (L326-L377) exactly. A blank
     /// setting yields zero for the monetary and quota values, no expiry for a blank trial length, and
     /// an absent retention period where the legacy code used its -1 sentinel. A blank currency falls
-    /// back to the same literal the legacy code used.
+    /// back to the same literal the legacy code used. Seven host settings are read, and the legacy
+    /// default for each is preserved: <c>DemoPeriod</c> yields no expiry, <c>HostFee</c>,
+    /// <c>HostSpace</c>, <c>PageQuota</c> and <c>UserQuota</c> each yield zero, <c>SiteLogHistory</c>
+    /// yields absent, and <c>HostCurrency</c> yields <c>"USD"</c>.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the GUARD IS INVERTED on all seven reads, and the inversion is what makes them
+    /// behave identically rather than differently. Every legacy guard tested
+    /// <c>If Convert.ToString(HostSettings(key)) &lt;&gt; ""</c>, comparing against the EMPTY STRING,
+    /// because the legacy null contract at <c>Library/Components/Shared/Null.vb</c> defines its
+    /// absent-String marker as <c>""</c> and not as null, and <c>Convert.ToString</c> of a database null
+    /// yields <c>""</c> as well - so one comparison covered a missing key, a null value and a blank
+    /// value alike. <see cref="IHostSettingsService.GetSettingsAsync"/> deliberately diverges from that
+    /// contract: a key that is not present is simply absent from the dictionary, and a present key can
+    /// still hold blank text. Testing for <c>""</c> alone would therefore let a MISSING key through as
+    /// though it were configured. Each read here tests presence AND non-blankness AND parsability, which
+    /// restores the legacy outcome across all three cases; a value that is present but unparsable is
+    /// treated as absent, matching the legacy conversion, which yielded the type's default.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the trial length is applied through the injected clock, whose reading is UTC, where
+    /// the legacy expression added a day interval to the current instant using the VB runtime's
+    /// date-arithmetic intrinsic - reached without an <c>Imports</c> statement, because the project
+    /// imported the runtime namespace globally - over a SERVER-LOCAL current time. Neither the intrinsic
+    /// nor the local reading is carried forward; adding days to the clock's reading replaces both.
+    /// Because the offset between the two can cross midnight, a
+    /// computed expiry can land on a different CALENDAR DAY from the one the legacy code would have
+    /// produced for the same real instant, and a trial can therefore appear to end a day early or a day
+    /// late relative to the legacy installation. The legacy expression compounded that by round-tripping
+    /// the result through a formatted medium-date string and re-parsing it - a lossy artefact of a
+    /// formatting helper in the excluded globals module, which truncated the time component. The value
+    /// is kept strongly typed here instead of being formatted and re-parsed, so no precision is lost.
+    /// </para>
+    /// <para>
+    /// MIGRATION: DEFECT 7, annotated and deliberately NOT fixed. The legacy body ended at
+    /// <c>PortalController.vb:L371-L373</c> with <c>Catch</c> / <c>' error creating portal</c> /
+    /// <c>End Try</c> - an EMPTY handler. Every failure in reading the host settings or inserting the
+    /// portal row was therefore discarded and the method returned <c>-1</c>, which the caller tested at
+    /// L990 as its sole failure signal. That signal is unusable in this schema, because
+    /// <c>Portals.PortalID</c> is declared <c>IDENTITY (-1, 1)</c>, so <c>-1</c> is the identifier of the
+    /// first portal an installation creates: a successful creation and a swallowed failure returned the
+    /// SAME value. Neither half is reproduced. Failures here propagate, and the outcome is reported by a
+    /// Result whose failure code cannot be confused with an identifier. Reproducing the empty handler
+    /// would violate the enterprise baseline, so this is recorded as a documented divergence rather than
+    /// presented as a silent fix.
+    /// </para>
     /// </remarks>
     private async Task<PortalDefaults> ReadPortalDefaultsAsync(CancellationToken cancellationToken)
     {
@@ -828,22 +1121,25 @@ public sealed class PortalService : IPortalService
             .GetSettingsAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        DateTime? expiryDate = null;
-        if (TryReadInt(settings, DemoPeriodSetting, out int demoPeriodDays))
-        {
-            expiryDate = _clock.UtcNow.AddDays(demoPeriodDays);
-        }
+        int? demoPeriodDays = ReadInt(settings, DemoPeriodSetting);
+        DateTime? expiryDate = demoPeriodDays is int trialDays
+            ? _clock.UtcNow.AddDays(trialDays)
+            : null;
 
-        decimal hostFee = TryReadDecimal(settings, HostFeeSetting, out decimal fee) ? fee : 0m;
-        int hostSpace = TryReadInt(settings, HostSpaceSetting, out int space) ? space : 0;
-        int pageQuota = TryReadInt(settings, PageQuotaSetting, out int pages) ? pages : 0;
-        int userQuota = TryReadInt(settings, UserQuotaSetting, out int members) ? members : 0;
-        int? siteLogHistory = TryReadInt(settings, SiteLogHistorySetting, out int retention) ? retention : null;
+        decimal hostFee = ReadDecimal(settings, HostFeeSetting) ?? 0m;
+        int hostSpace = ReadInt(settings, HostSpaceSetting) ?? 0;
+        int pageQuota = ReadInt(settings, PageQuotaSetting) ?? 0;
+        int userQuota = ReadInt(settings, UserQuotaSetting) ?? 0;
 
-        string currency = settings.TryGetValue(HostCurrencySetting, out string? configured)
-            && !string.IsNullOrWhiteSpace(configured)
-                ? configured
-                : FallbackCurrency;
+        // The retention period is the one setting whose absence is NOT zero. The legacy code carried its
+        // -1 sentinel here, and -1 meant "keep for ever" rather than "keep for minus one day", so
+        // collapsing it to zero would silently turn unlimited retention into none. It stays absent.
+        int? siteLogHistory = ReadInt(settings, SiteLogHistorySetting);
+
+        string? configuredCurrency = settings.GetValueOrDefault(HostCurrencySetting);
+        string currency = string.IsNullOrWhiteSpace(configuredCurrency)
+            ? FallbackCurrency
+            : configuredCurrency;
 
         return new PortalDefaults(currency, expiryDate, hostFee, hostSpace, pageQuota, userQuota, siteLogHistory);
     }
@@ -858,10 +1154,53 @@ public sealed class PortalService : IPortalService
     /// <param name="autoAssignment">Whether new members receive the role automatically.</param>
     /// <returns>An unsaved role aggregate.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy path created each role through a private helper that clamped a negative
     /// fee to zero and passed a monthly billing frequency with a zero period and no trial (L1390,
     /// L1393, L1396). Those values are reproduced literally, and the shared clamp is reused so that
     /// the rule lives in exactly one place.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the clamp replaces the VB runtime's inline-conditional intrinsic, and the substitution
+    /// needs justifying because it is NOT valid in general. The legacy statements each wrapped that
+    /// intrinsic in a narrowing conversion, testing the fee for being below zero and yielding zero when it
+    /// was - at <c>PortalController.vb:L395</c> for the service fee and L398 for the trial fee. That
+    /// intrinsic is an ordinary FUNCTION rather than an operator, so both of its value arguments are
+    /// EVALUATED BEFORE IT IS CALLED, whereas the C# conditional operator SHORT-CIRCUITS and evaluates
+    /// only the branch it selects. Substituting one for the other is therefore only faithful when neither
+    /// branch has a side effect, can throw, or is expensive - and here each branch is a literal zero or a
+    /// parameter already in hand, so nothing is observable in the difference and the substitution is
+    /// exact. A maximum against zero is used rather than a conditional because it states the intent -
+    /// never below zero - in one term. Where a future port meets that same intrinsic with arguments that
+    /// call a method, index a collection or read a property with a side effect, this rewrite would
+    /// silently change behaviour by no longer evaluating the discarded branch, so the two must not be
+    /// swapped without re-checking this reasoning.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy helper looked the role up BY NAME first -
+    /// <c>GetRoleByName(PortalId, roleName)</c> - and created a row only when none was found, otherwise
+    /// returning the existing identifier UNCHANGED. That create-or-reuse behaviour is a genuine rule
+    /// rather than an optimisation, because the same helper was reachable for a tenant that already
+    /// carried the role. It is preserved by construction on this path rather than by a lookup: these
+    /// three roles are built for a portal that is being created in the same transaction, so the tenant
+    /// provably carries no role of any name yet and a lookup could only ever miss. A caller adding a
+    /// role to an EXISTING tenant goes through the role service, which performs the name check.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the billing and trial codes are LOAD-BEARING DATA, not presentation. The legacy calls
+    /// passed the string literals <c>"M"</c> and <c>"N"</c>, which are stored in
+    /// <c>Roles.BillingFrequency</c>, a <c>char(1)</c> column, so the letters themselves are what the
+    /// schema holds. They are carried across as the enum members whose stored values are those exact
+    /// characters and are never renamed or normalised. The enum admits SIX codes rather than the four a
+    /// reader might assume from the calendar-interval letters alone, so no exhaustive handling may be
+    /// written on the assumption that there are four.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy helper also set <c>RoleGroupID</c> to its absent-Integer sentinel, <c>-1</c>,
+    /// as its "belongs to no group" convention. No sentinel is stored here: the grouping navigation is
+    /// simply left unset, so absence is represented by a null column rather than by a number that is
+    /// also a legitimate group identifier.
+    /// </para>
     /// </remarks>
     private static Role BuildStockRole(
         Portal portal,
@@ -1081,33 +1420,48 @@ public sealed class PortalService : IPortalService
     }
 
     /// <summary>
-    /// Reads a host setting as a whole number, treating a blank or unparsable value as absent.
+    /// Reads a host setting as a whole number, treating a missing, blank or unparsable value as absent.
     /// </summary>
     /// <param name="settings">The host settings.</param>
     /// <param name="name">The setting name.</param>
-    /// <param name="value">The parsed value when the setting was usable.</param>
-    /// <returns><see langword="true"/> when the setting was present and parsable.</returns>
-    private static bool TryReadInt(IReadOnlyDictionary<string, string> settings, string name, out int value)
+    /// <returns>The parsed value, or <see langword="null"/> when the setting was not usable.</returns>
+    /// <remarks>
+    /// Absence is returned as a nullable value rather than reported through an output argument, so this
+    /// member states its own outcome in its return type and every caller must decide what an absent
+    /// setting means for the value it is computing. That matters here because the answer is not uniform:
+    /// four of the settings this reads default to zero and one defaults to absent. Parsing is culture
+    /// invariant, because a host setting is stored configuration rather than user-entered text and must
+    /// read identically on every machine.
+    /// </remarks>
+    private static int? ReadInt(IReadOnlyDictionary<string, string> settings, string name)
     {
-        value = 0;
-        return settings.TryGetValue(name, out string? raw)
-            && !string.IsNullOrWhiteSpace(raw)
-            && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+        string? raw = settings.GetValueOrDefault(name);
+
+        return !string.IsNullOrWhiteSpace(raw)
+            && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+                ? parsed
+                : null;
     }
 
     /// <summary>
-    /// Reads a host setting as a monetary amount, treating a blank or unparsable value as absent.
+    /// Reads a host setting as a monetary amount, treating a missing, blank or unparsable value as absent.
     /// </summary>
     /// <param name="settings">The host settings.</param>
     /// <param name="name">The setting name.</param>
-    /// <param name="value">The parsed value when the setting was usable.</param>
-    /// <returns><see langword="true"/> when the setting was present and parsable.</returns>
-    private static bool TryReadDecimal(IReadOnlyDictionary<string, string> settings, string name, out decimal value)
+    /// <returns>The parsed value, or <see langword="null"/> when the setting was not usable.</returns>
+    /// <remarks>
+    /// Absence is returned as a nullable value for the reason given on its whole-number counterpart.
+    /// Parsing is culture invariant so that a stored amount is not reinterpreted by the host's locale -
+    /// a decimal separator read under the wrong culture would change the amount by orders of magnitude.
+    /// </remarks>
+    private static decimal? ReadDecimal(IReadOnlyDictionary<string, string> settings, string name)
     {
-        value = 0m;
-        return settings.TryGetValue(name, out string? raw)
-            && !string.IsNullOrWhiteSpace(raw)
-            && decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
+        string? raw = settings.GetValueOrDefault(name);
+
+        return !string.IsNullOrWhiteSpace(raw)
+            && decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal parsed)
+                ? parsed
+                : null;
     }
 
     /// <summary>

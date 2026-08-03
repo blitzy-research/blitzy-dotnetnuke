@@ -587,14 +587,7 @@ public sealed class RoleService : IRoleService
         if (existing is null)
         {
             await _roles.AddUserRoleAsync(
-                new UserRole
-                {
-                    UserId = request.UserId,
-                    RoleId = roleId,
-                    EffectiveDate = effectiveDate,
-                    ExpiryDate = expiryDate,
-                    IsTrialUsed = false,
-                },
+                RoleMappings.ToNewAssignment(roleId, request, effectiveDate, expiryDate),
                 cancellationToken).ConfigureAwait(false);
         }
         else
@@ -602,8 +595,7 @@ public sealed class RoleService : IRoleService
             // MIGRATION: the legacy member was an upsert (L295-L315) - it inserted when the member did
             // not yet hold the role and otherwise revised the two dates - so this member is idempotent
             // in exactly the same way. The trial-used fact is never reset by a renewal.
-            existing.EffectiveDate = effectiveDate;
-            existing.ExpiryDate = expiryDate;
+            RoleMappings.ApplyAssignmentUpdate(existing, effectiveDate, expiryDate);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
