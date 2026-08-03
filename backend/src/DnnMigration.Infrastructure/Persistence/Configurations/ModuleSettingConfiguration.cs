@@ -59,7 +59,7 @@ internal sealed class ModuleSettingConfiguration : IEntityTypeConfiguration<Modu
             .IsRequired();
 
         builder.HasOne(s => s.Module)
-            .WithMany(m => m.ModuleSettings)
+            .WithMany(m => m.Settings)
             .HasForeignKey(s => s.ModuleId)
             .HasConstraintName("FK_ModuleSettings_Modules")
             .OnDelete(DeleteBehavior.Cascade);

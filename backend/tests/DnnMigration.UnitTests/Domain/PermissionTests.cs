@@ -36,9 +36,9 @@ public class PermissionTests
     [Fact]
     public void CatalogueIdentity_IsThePrimaryKey()
     {
-        Permission entry = NewPermission(4, "VIEW");
-        Permission sameRow = NewPermission(4, "EDIT");
-        Permission otherRow = NewPermission(5, "VIEW");
+        Permission entry = NewPermission(4, PermissionKey.VIEW);
+        Permission sameRow = NewPermission(4, PermissionKey.EDIT);
+        Permission otherRow = NewPermission(5, PermissionKey.VIEW);
 
         // MIGRATION: identity-based comparison applies only once the persistence layer has declared
         // the identity real. That declaration is what this test stands in for: every candidate
@@ -65,13 +65,16 @@ public class PermissionTests
             PermissionId = 1,
             PermissionCode = "SYSTEM_MODULE_DEFINITION",
             ModuleDefinitionId = 7,
-            PermissionKey = "VIEW",
+            PermissionKey = PermissionKey.VIEW,
             PermissionName = "View Module",
         };
 
         entry.PermissionCode.Should().Be("SYSTEM_MODULE_DEFINITION");
         entry.ModuleDefinitionId.Should().Be(7);
-        entry.PermissionKey.Should().Be("VIEW");
+        entry.PermissionKey.Should().Be(
+            PermissionKey.VIEW,
+            "the key is the closed enumeration rather than free text, so a misspelling is now a "
+            + "compile error instead of a row that silently matches nothing");
         entry.PermissionName.Should().Be("View Module");
         entry.ModulePermissions.Should().NotBeNull().And.BeEmpty();
         entry.TabPermissions.Should().NotBeNull().And.BeEmpty();
@@ -79,8 +82,12 @@ public class PermissionTests
         Permission bare = new() { PermissionId = 2, ModuleDefinitionId = 7 };
 
         bare.PermissionCode.Should().BeEmpty();
-        bare.PermissionKey.Should().BeEmpty();
         bare.PermissionName.Should().BeEmpty();
+        bare.PermissionKey.Should().Be(
+            PermissionKey.VIEW,
+            "VIEW is the zero member, so an entry constructed without an explicit key reports it; the "
+            + "column is NOT NULL and the enumeration declares no absent member, so a caller that "
+            + "means something else must say so");
     }
 
     /// <summary>
@@ -382,7 +389,7 @@ public class PermissionTests
     /// <param name="permissionId">The identifier to carry.</param>
     /// <param name="permissionKey">The permission key.</param>
     /// <returns>The catalogue entry.</returns>
-    private static Permission NewPermission(int permissionId, string permissionKey) => new()
+    private static Permission NewPermission(int permissionId, PermissionKey permissionKey) => new()
     {
         PermissionId = permissionId,
         PermissionCode = "SYSTEM_MODULE_DEFINITION",

@@ -31,10 +31,11 @@ const USER: CurrentUser = {
 function session(accessToken: string, refreshToken: string): AuthSession {
   return {
     accessToken,
-    tokenType: 'Bearer',
     expiresAtUtc: '2100-01-01T00:00:00.000Z',
     refreshToken,
-    refreshTokenExpiresAtUtc: '2100-01-02T00:00:00.000Z',
+    mustChangePassword: false,
+    passwordExpiring: false,
+    mustUpdateProfile: false,
     user: USER,
   };
 }
@@ -42,11 +43,11 @@ function session(accessToken: string, refreshToken: string): AuthSession {
 function loginResponse(accessToken: string, refreshToken: string): LoginResponse {
   return {
     accessToken,
-    tokenType: 'Bearer',
-    expiresIn: 900,
     expiresAtUtc: '2100-01-01T00:00:00.000Z',
     refreshToken,
-    refreshTokenExpiresAtUtc: '2100-01-02T00:00:00.000Z',
+    mustChangePassword: false,
+    passwordExpiring: false,
+    mustUpdateProfile: false,
     user: USER,
   };
 }

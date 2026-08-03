@@ -235,11 +235,20 @@ public sealed class PortalService : IPortalService
             .ListAsync(null, cancellationToken)
             .ConfigureAwait(false);
 
+        // MIGRATION: dbo.PortalAlias.HTTPAlias permits null - the column is declared without a NOT NULL
+        // clause at Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider line 3807
+        // - so the domain property is nullable and the sentinel is restored here, at the boundary that
+        // publishes it. The legacy listing hydrated the column with
+        // Convert.ToString(dr("HTTPAlias")).ToLower at
+        // Library/Components/Portal/PortalAliasController.vb line 52, and Convert.ToString of DBNull
+        // yields the empty string, so a row holding no host name appeared in the list as an empty entry
+        // rather than being dropped. Preserving that keeps both the entry and the alias tally identical
+        // to what the legacy screen showed, which is what Rule T7 asks of a DTO boundary.
         Dictionary<int, List<string>> aliasesByPortal = allAliases
             .GroupBy(alias => alias.PortalId)
             .ToDictionary(
                 group => group.Key,
-                group => group.Select(alias => alias.HttpAlias)
+                group => group.Select(alias => alias.HttpAlias ?? string.Empty)
                               .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)
                               .ToList());
 
@@ -349,7 +358,7 @@ public sealed class PortalService : IPortalService
             defaults.SiteLogHistory,
             (request.HomeDirectory ?? string.Empty).Trim());
 
-        _portals.Add(portal);
+        await _portals.AddAsync(portal, cancellationToken).ConfigureAwait(false);
 
         var portalAlias = new PortalAlias
         {
@@ -397,7 +406,7 @@ public sealed class PortalService : IPortalService
             User = administrator,
             Portal = portal,
             CreatedDate = createdUtc,
-            Authorised = true,
+            IsAuthorised = true,
         });
 
         // MIGRATION: the legacy path assigned the new administrator to all three stock roles with an
@@ -489,7 +498,7 @@ public sealed class PortalService : IPortalService
         ArgumentNullException.ThrowIfNull(request);
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: true, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
             .ConfigureAwait(false);
         if (portal is null)
         {
@@ -514,7 +523,7 @@ public sealed class PortalService : IPortalService
     public async Task<Result> DeletePortalAsync(int portalId, CancellationToken cancellationToken = default)
     {
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: true, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
             .ConfigureAwait(false);
         if (portal is null)
         {
@@ -543,7 +552,7 @@ public sealed class PortalService : IPortalService
             _aliases.Remove(alias);
         }
 
-        _portals.Remove(portal);
+        await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -560,7 +569,7 @@ public sealed class PortalService : IPortalService
         CancellationToken cancellationToken = default)
     {
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         return portal is null
@@ -728,7 +737,7 @@ public sealed class PortalService : IPortalService
     private async Task<PortalDetailDto?> ReadDetailAsync(int portalId, CancellationToken cancellationToken)
     {
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: true, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
             .ConfigureAwait(false);
         if (portal is null)
         {
@@ -903,7 +912,7 @@ public sealed class PortalService : IPortalService
 
         _users.Remove(administrator);
         _aliases.Remove(alias);
-        _portals.Remove(portal);
+        await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 

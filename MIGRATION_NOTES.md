@@ -1091,6 +1091,62 @@ discovered.
   remains stored as it was; it simply cannot be *edited* with formatting
   affordances here.
 
+### Portal persistence contract: two reads omitted, two writes collapsed, and one call decomposed
+
+**Legacy behaviour.** The portal data surface was a block of **fifteen members**
+at `Library/Components/Providers/Data/DataProvider.vb` lines 92 to 107 - fifteen
+among the **269** `MustOverride` members declared on a single 397-line abstract
+class, reached through a reflection-resolved static singleton at lines 29 to 50.
+Every caller therefore depended on the whole installation's data surface in order
+to read one portal.
+
+**Target behaviour.** The portal aggregate owns a narrow contract of its own, and
+four of the fifteen legacy members do not survive as written.
+
+- **`GetExpiredPortals` (L96) is omitted.** It served host-level, super-user
+  administration, which is out of scope. Nothing enumerates portals by expiry
+  date, and no replacement mechanism is introduced in its place.
+- **`GetPortalSpaceUsed` (L103) is omitted.** It aggregated file-storage totals
+  for a portal. The legacy controller had *already* marked its counterpart
+  obsolete (`PortalController.vb` line 1596), the file-system subsystem is out of
+  scope, and there is **no `File` entity** among the domain entities for such a
+  total to be computed from. A portal's storage consumption is therefore not
+  reportable here.
+- **`UpdatePortalInfo` (L104, 27 positional arguments) and `UpdatePortalSetup`
+  (L105, 9 positional arguments) collapse into one entity-oriented update.** Both
+  legacy procedures wrote the *same* `Portals` row from opposite ends - one the
+  descriptive and configuration columns, the other the administrator and the
+  well-known page assignments. Splitting one row across two positional argument
+  lists made every caller responsible for supplying every column in the right
+  order, and made a partial update indistinguishable from an intentional
+  overwrite with defaults.
+- **`AddPortalInfo` (L93, 14 positional arguments) is decomposed rather than
+  ported.** Its parameter list included a given name, surname, username, password
+  and address: it did not merely insert a portal row, it **also created the
+  portal's administrator account**. Two aggregates were written by one call. The
+  portal insert now maps to the nine-argument, portal-row-only `CreatePortal`
+  (L94), and administrator creation moves to the application service, which
+  stages both aggregates and commits them through a single unit of work.
+
+**Why the differences are deliberate.** Reproducing the 269-member surface would
+have carried the coupling that made the legacy data layer impossible to test in
+isolation. Collapsing the two update procedures is what lets an entity carry its
+own modified state instead of every caller restating all 27 columns positionally.
+Separating administrator creation from portal insertion is what allows the
+five-table creation sequence - portals, aliases, roles, pages and modules, issued
+by `PortalController.vb` line 980 as five independent statement sequences that
+could leave a half-created portal unrecoverable - to commit indivisibly.
+
+**Operational consequence.** No portal-storage figure and no expiring-portal list
+is available from this contract. Portal creation and update are unchanged in
+outcome, and are now atomic where they previously were not. The staged-write
+contract also means an insert yields **no identifier**: the generated key becomes
+readable on the entity only once the unit of work has committed, because the
+store does not assign it before then.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IPortalRepository.cs`.
+
 ### Visual system: three token scales are net additions, and the legacy font stacks are consolidated
 
 **Legacy behaviour.** The legacy portal stylesheets are the only design source

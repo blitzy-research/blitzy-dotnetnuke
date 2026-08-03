@@ -190,9 +190,7 @@ public sealed class AuthService : IAuthService
     /// </para>
     /// </remarks>
     public async Task<Result<LoginResponse>> LoginAsync(
-        int portalId,
         LoginRequest request,
-        string? ipAddress,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -204,13 +202,19 @@ public sealed class AuthService : IAuthService
                 "An account name and a credential are both required.");
         }
 
-        // The network address is recorded by the api layer's structured request log rather than here, and
-        // is never an authorisation input; it is accepted so that the contract matches what the legacy
-        // call site supplied.
-        _ = ipAddress;
+        // The tenant is assigned by the api layer from the alias-resolved request, and is unbindable from
+        // the request body. Its absence means the transport could not determine which tenant the
+        // credential was presented to, which is a malformed request rather than a rejected credential --
+        // and it must never be defaulted, because zero and minus one are both real tenants.
+        if (request.PortalId is not int portalId)
+        {
+            return Result<LoginResponse>.Failure(
+                RequestInvalidCode,
+                "The tenant the credential is being presented to could not be determined.");
+        }
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         if (portal is null)
@@ -300,9 +304,21 @@ public sealed class AuthService : IAuthService
             .ConfigureAwait(false);
 
         ResultReason? advisory = DetectShippedCredential(account, request.Username, request.Password);
-        return advisory is ResultReason reason
-            ? Result<LoginResponse>.Success(response, reason)
-            : Result<LoginResponse>.Success(response);
+        if (advisory is not ResultReason reason)
+        {
+            return Result<LoginResponse>.Success(response);
+        }
+
+        // MIGRATION: the legacy sign-in status enumeration carried two success-with-caveat values that
+        // UserController.vb:L1144-L1152 promoted when a shipped default credential was presented - one for
+        // the portal administrator account, one for the host account. Sign-in legitimately succeeded in
+        // both cases, and forcing a credential change was the remediation, so both fold onto the response's
+        // must-change advisory rather than onto a status field: no legacy status enumeration reaches the
+        // wire. The reason accompanying this successful outcome keeps the two cases distinguishable to the
+        // API edge, which is where they are told apart.
+        response.MustChangePassword = true;
+
+        return Result<LoginResponse>.Success(response, reason);
     }
 
     /// <inheritdoc />
@@ -345,7 +361,7 @@ public sealed class AuthService : IAuthService
         int portalId = response.User.PortalId;
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         User? account = await ResolveAccountByIdAsync(portalId, response.User.UserId, cancellationToken)
@@ -410,7 +426,7 @@ public sealed class AuthService : IAuthService
         }
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         User? account = await ResolveAccountByIdAsync(portalId, userId, cancellationToken)
@@ -546,6 +562,14 @@ public sealed class AuthService : IAuthService
 
         LoginResponse response = issued.Value;
         response.User = snapshot;
+
+        // MIGRATION: the administrator-forced credential update was the highest-precedence advisory the
+        // legacy post-credential check reported, read from the account row's own update flag
+        // (UserController.vb:L1175-L1177, over the membership property at UserMembership.vb:L323). The
+        // token service is deliberately not told it - it holds no account row - so the advisory is set
+        // here, where the row is already in hand, and travels as a boolean rather than as a status value.
+        response.MustChangePassword = account.UpdatePassword;
+
         return response;
     }
 

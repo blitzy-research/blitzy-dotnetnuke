@@ -27,10 +27,11 @@ const USER: CurrentUser = {
 function sessionExpiringAt(expiresAtUtc: string, accessToken = 'access-1'): AuthSession {
   return {
     accessToken,
-    tokenType: 'Bearer',
     expiresAtUtc,
     refreshToken: 'refresh-1',
-    refreshTokenExpiresAtUtc: '2100-01-01T00:00:00.000Z',
+    mustChangePassword: false,
+    passwordExpiring: false,
+    mustUpdateProfile: false,
     user: USER,
   };
 }
@@ -194,16 +195,14 @@ describe('TokenStorageService', () => {
   });
 
   describe('sessionFromLoginResponse', () => {
-    it('drops the relative lifetime and keeps the absolute expiry', () => {
-      // Keeping both would create two representations of one fact that drift apart the
-      // moment they are stored.
+    it('keeps the single absolute expiry and every advisory flag', () => {
       const response: LoginResponse = {
         accessToken: 'access-9',
-        tokenType: 'Bearer',
-        expiresIn: 900,
         expiresAtUtc: '2100-01-01T00:00:00.000Z',
         refreshToken: 'refresh-9',
-        refreshTokenExpiresAtUtc: '2100-01-02T00:00:00.000Z',
+        mustChangePassword: true,
+        passwordExpiring: true,
+        mustUpdateProfile: true,
         user: USER,
       };
 
@@ -213,7 +212,42 @@ describe('TokenStorageService', () => {
       expect(session.expiresAtUtc).toBe('2100-01-01T00:00:00.000Z');
       expect(session.refreshToken).toBe('refresh-9');
       expect(session.user).toBe(USER);
-      expect(Object.keys(session)).not.toContain('expiresIn');
+
+      // Carried through so a reload does not lose a prompt the caller has not acted on.
+      expect(session.mustChangePassword).toBeTrue();
+      expect(session.passwordExpiring).toBeTrue();
+      expect(session.mustUpdateProfile).toBeTrue();
+
+      // The server publishes one expiry representation and no bearer-scheme member, so
+      // neither a relative lifetime nor a refresh-token expiry can reach stored state.
+      const keys = Object.keys(session);
+      expect(keys).not.toContain('expiresIn');
+      expect(keys).not.toContain('tokenType');
+      expect(keys).not.toContain('refreshTokenExpiresAtUtc');
+    });
+
+    it('carries a cleared advisory through as false rather than dropping it', () => {
+      // `false` means "no advisory" and is always present on the wire, so there is no third
+      // state: a missing key and an explicit false must never become indistinguishable.
+      const response: LoginResponse = {
+        accessToken: 'access-10',
+        expiresAtUtc: '2100-01-01T00:00:00.000Z',
+        refreshToken: 'refresh-10',
+        mustChangePassword: false,
+        passwordExpiring: false,
+        mustUpdateProfile: false,
+        user: USER,
+      };
+
+      const session = sessionFromLoginResponse(response);
+      const keys = Object.keys(session);
+
+      expect(keys).toContain('mustChangePassword');
+      expect(keys).toContain('passwordExpiring');
+      expect(keys).toContain('mustUpdateProfile');
+      expect(session.mustChangePassword).toBeFalse();
+      expect(session.passwordExpiring).toBeFalse();
+      expect(session.mustUpdateProfile).toBeFalse();
     });
   });
 });

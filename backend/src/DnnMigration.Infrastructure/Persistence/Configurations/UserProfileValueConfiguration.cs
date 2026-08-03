@@ -88,7 +88,7 @@ internal sealed class UserProfileValueConfiguration : IEntityTypeConfiguration<U
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(v => v.PropertyDefinition)
-            .WithMany(d => d.UserProfileValues)
+            .WithMany(d => d.ProfileValues)
             .HasForeignKey(v => v.PropertyDefinitionId)
             .HasConstraintName("FK_UserProfile_ProfilePropertyDefinition")
             .OnDelete(DeleteBehavior.Cascade);

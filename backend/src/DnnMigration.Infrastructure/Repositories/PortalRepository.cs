@@ -81,7 +81,20 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
-    public async Task<Portal?> GetAsync(int portalId, bool includeAliases = false, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Portal>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        // Ordered for the same reason the paged read is ordered: a caller that walks the whole
+        // installation must see a stable sequence between calls. The primary key terminates the
+        // order so tenants sharing a name still have a defined relative position.
+        return await _context.Portals
+            .OrderBy(p => p.PortalName)
+            .ThenBy(p => p.PortalId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<Portal?> GetByIdAsync(int portalId, bool includeAliases = false, CancellationToken cancellationToken = default)
     {
         IQueryable<Portal> query = _context.Portals;
 
@@ -98,9 +111,71 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    public async Task<Portal?> GetByAliasAsync(string httpAlias, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpAlias);
+
+        string wanted = httpAlias.Trim().ToLowerInvariant();
+
+        if (wanted.Length is 0)
+        {
+            return null;
+        }
+
+        // MIGRATION: the legacy tenant-resolution procedure matched the alias with a
+        // leading-and-trailing wildcard and then took the lowest matching identifier, so one
+        // tenant's alias being a substring of another's could resolve a request to the wrong
+        // tenant. The comparison is an equality test here. Case is normalised on both sides so
+        // the result does not depend on the collation of the installation.
+        return await _context.Portals
+            .Where(p => p.PortalAliases.Any(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted))
+            .OrderBy(p => p.PortalId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<Portal?> GetByTabAsync(int tabId, string httpAlias, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpAlias);
+
+        string wanted = httpAlias.Trim().ToLowerInvariant();
+
+        if (wanted.Length is 0)
+        {
+            return null;
+        }
+
+        // Both halves of the legacy check are required: the alias must resolve to a tenant AND
+        // the page must belong to that same tenant. Evaluating them as one predicate is what
+        // stops a page identifier from one tenant being read under another tenant's alias.
+        return await _context.Portals
+            .Where(p => p.PortalAliases.Any(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted)
+                && p.Tabs.Any(t => t.TabId == tabId))
+            .OrderBy(p => p.PortalId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public Task<bool> ExistsAsync(int portalId, CancellationToken cancellationToken = default)
     {
         return _context.Portals.AnyAsync(p => p.PortalId == portalId, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TabBelongsToPortalAsync(int portalId, int tabId, CancellationToken cancellationToken = default)
+    {
+        // Asked of the page table rather than through the portal's navigation, so the answer is
+        // one existence probe. A page that does not exist and a page belonging to another tenant
+        // are both false, which is exactly what the legacy reader-returns-no-row result meant.
+        return _context.Tabs.AnyAsync(t => t.TabId == tabId && t.PortalId == portalId, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        return _context.Portals.CountAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -171,16 +246,56 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
-    public void Add(Portal portal)
+    public Task AddAsync(Portal portal, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(portal);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Staged, not written. The key is assigned when the unit of work commits, which is why
+        // this member yields no identifier: returning one would force a flush here and split the
+        // multi-table portal creation into independently durable statements.
         _context.Portals.Add(portal);
+
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
-    public void Remove(Portal portal)
+    public Task UpdateAsync(Portal portal, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(portal);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // A portal read through this repository is already tracked, so its modifications are
+        // staged by the tracker and this call is the caller's explicit statement of intent. An
+        // untracked instance - one rebuilt outside this context - is attached and marked
+        // modified so the same call works for it too, which keeps the contract honest for a
+        // caller that did not obtain the entity from a read member here.
+        if (_context.Entry(portal).State is EntityState.Detached)
+        {
+            _context.Portals.Update(portal);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteAsync(int portalId, CancellationToken cancellationToken = default)
+    {
+        // Resolved before removal because the contract identifies its target by identifier, as
+        // the legacy procedure did. When the caller already holds the entity, this resolves from
+        // the change tracker without a round trip. Dependent rows are left to the schema's own
+        // referential rules rather than a deletion order encoded here.
+        Portal? portal = await _context.Portals
+            .FirstOrDefaultAsync(p => p.PortalId == portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (portal is null)
+        {
+            // Nothing to stage. Absence is not an error: a caller that has already established
+            // absence need not distinguish the two cases.
+            return;
+        }
+
         _context.Portals.Remove(portal);
     }
 

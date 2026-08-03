@@ -122,17 +122,31 @@ public static class UserMappings
         return new ProfilePropertyDefinitionDto
         {
             PropertyDefinitionId = definition.PropertyDefinitionId,
-            PortalId = definition.PortalId,
+
+            // MIGRATION: the two encodings of "host-level" meet here, and this is the only place
+            // they are allowed to. 03.03.03 lines 77-83 made ProfilePropertyDefinition.PortalID
+            // nullable and migrated the rows holding the legacy -1 with
+            // "SET PortalId = NULL WHERE PortalId = -1", so the entity carries int? and the domain
+            // never restores the sentinel. The contract, by its own deliberate decision recorded on
+            // ProfilePropertyDefinitionDto.PortalId, keeps the non-nullable int and the legacy -1
+            // encoding because -1 is what the legacy class published to its consumers, and
+            // Rule T7 preserves an externally observable sentinel at the boundary rather than
+            // letting serialisation turn it into an absent value. Translating between the two is
+            // therefore a mapping concern, and this is the mapping. It is one-way: the inbound path
+            // never folds a -1 back into a null, because a route-supplied portal id of -1 addresses
+            // the genuine portal that Portals.PortalID's IDENTITY(-1, 1) seed creates.
+            PortalId = definition.PortalId ?? -1,
+
             ModuleDefId = definition.ModuleDefinitionId,
             DataType = definition.DataType,
             DefaultValue = definition.DefaultValue,
             PropertyCategory = definition.PropertyCategory,
             PropertyName = definition.PropertyName,
             Length = definition.Length,
-            Required = definition.Required,
+            Required = definition.IsRequired,
             ValidationExpression = definition.ValidationExpression,
             ViewOrder = definition.ViewOrder,
-            Visible = definition.Visible,
+            Visible = definition.IsVisible,
             Visibility = defaultVisibility,
         };
     }
@@ -256,9 +270,14 @@ public static class UserMappings
 
         var definition = new ProfilePropertyDefinition
         {
+            // MIGRATION: assigned straight through, deliberately. The portal identifier here is a
+            // resolved tenant scope taken from the route, not a sentinel, and -1 is a real portal
+            // because Portals.PortalID is IDENTITY(-1, 1). Folding -1 into the null that the
+            // terminal schema uses for host-level ownership would silently reassign the definition
+            // away from the portal the caller named.
             PortalId = portalId,
             ModuleDefinitionId = request.ModuleDefId,
-            Deleted = false,
+            IsDeleted = false,
         };
 
         ApplyDefinitionCore(definition, request);
@@ -292,9 +311,9 @@ public static class UserMappings
         definition.PropertyCategory = request.PropertyCategory;
         definition.PropertyName = request.PropertyName;
         definition.Length = Math.Max(request.Length, 0);
-        definition.Required = request.Required;
+        definition.IsRequired = request.Required;
         definition.ValidationExpression = request.ValidationExpression;
         definition.ViewOrder = request.ViewOrder;
-        definition.Visible = request.Visible;
+        definition.IsVisible = request.Visible;
     }
 }

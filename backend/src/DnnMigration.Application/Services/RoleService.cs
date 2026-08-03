@@ -199,7 +199,7 @@ public sealed class RoleService : IRoleService
             return Result<RoleDetailDto?>.Success(null);
         }
 
-        RoleDetailDto detail = await ProjectDetailAsync(role, cancellationToken).ConfigureAwait(false);
+        RoleDetailDto detail = RoleMappings.ToDetail(role);
         return Result<RoleDetailDto?>.Success(detail);
     }
 
@@ -287,7 +287,7 @@ public sealed class RoleService : IRoleService
                 "The role was created but could not be read back.");
         }
 
-        RoleDetailDto detail = await ProjectDetailAsync(stored, cancellationToken).ConfigureAwait(false);
+        RoleDetailDto detail = RoleMappings.ToDetail(stored);
         return Result<RoleDetailDto>.Success(detail);
     }
 
@@ -361,7 +361,7 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidatePortal(portalId);
 
-        RoleDetailDto detail = await ProjectDetailAsync(role, cancellationToken).ConfigureAwait(false);
+        RoleDetailDto detail = RoleMappings.ToDetail(role);
         return Result<RoleDetailDto>.Success(detail);
     }
 
@@ -576,7 +576,7 @@ public sealed class RoleService : IRoleService
         CancellationToken cancellationToken = default)
     {
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
         if (portal is null)
         {
@@ -804,33 +804,6 @@ public sealed class RoleService : IRoleService
         _cache.InvalidatePortal(portalId);
 
         return Result.Success();
-    }
-
-    /// <summary>
-    /// Projects a role onto the detail contract, resolving its group name and its member tally.
-    /// </summary>
-    /// <param name="role">The role to project.</param>
-    /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
-    /// <returns>The detail projection.</returns>
-    /// <remarks>
-    /// The member tally is taken from the total of a one-row assignment page, because the repository
-    /// contract exposes no bare count of assignments and inventing one would widen an abstraction that
-    /// is deliberately narrow.
-    /// </remarks>
-    private async Task<RoleDetailDto> ProjectDetailAsync(Role role, CancellationToken cancellationToken)
-    {
-        string? roleGroupName = null;
-        if (role.RoleGroupId is int groupId)
-        {
-            RoleGroup? group = await _roles.GetGroupAsync(groupId, cancellationToken).ConfigureAwait(false);
-            roleGroupName = group?.RoleGroupName;
-        }
-
-        PagedResult<UserRole> firstAssignmentPage = await _roles
-            .ListAssignmentsAsync(role.RoleId, 0, 1, cancellationToken)
-            .ConfigureAwait(false);
-
-        return RoleMappings.ToDetail(role, roleGroupName, firstAssignmentPage.TotalCount);
     }
 
     /// <summary>

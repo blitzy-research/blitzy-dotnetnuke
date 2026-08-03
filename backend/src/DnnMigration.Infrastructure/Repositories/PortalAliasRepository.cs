@@ -82,8 +82,15 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
 
         // Host names are case-insensitive, so the comparison is lower-cased on both sides rather
         // than left to the installation's collation. The match is exact - see the type remarks.
+        //
+        // The null test is required rather than defensive: dbo.PortalAlias.HTTPAlias is declared
+        // without a NOT NULL clause at
+        // Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider line 3807, so the
+        // domain property is nullable and is left that way here. It translates to IS NOT NULL, which
+        // is what SQL already does with a null on either side of an equality, so no row that used to
+        // match stops matching - and a row holding no host name cannot be reached by a blank one.
         return _context.PortalAliases
-            .FirstOrDefaultAsync(a => a.HttpAlias.ToLower() == wanted, cancellationToken);
+            .FirstOrDefaultAsync(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -93,8 +100,10 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
 
         string wanted = httpAlias.Trim().ToLowerInvariant();
 
+        // Null-tested for the same reason as the lookup above: the column permits null, so a row
+        // holding no host name is not a candidate for any host name.
         IQueryable<PortalAlias> query = _context.PortalAliases
-            .Where(a => a.HttpAlias.ToLower() == wanted);
+            .Where(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted);
 
         if (excludingPortalAliasId.HasValue)
         {

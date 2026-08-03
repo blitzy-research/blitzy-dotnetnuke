@@ -79,7 +79,7 @@ internal sealed class UserPortalConfiguration : IEntityTypeConfiguration<UserPor
             .HasColumnType("datetime")
             .IsRequired();
 
-        builder.Property(m => m.Authorised)
+        builder.Property(m => m.IsAuthorised)
             .HasColumnName("Authorised")
             .HasColumnType("bit")
             .IsRequired();

@@ -601,7 +601,7 @@ public class BcryptPasswordHasherTests
             users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never());
         harness.Portals.Verify(
-            portals => portals.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            portals => portals.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
             Times.Never(),
             "a request that cannot possibly succeed is refused without touching the store at all");
     }
@@ -616,7 +616,7 @@ public class BcryptPasswordHasherTests
         Harness harness = Harness.SignedInSuccessfully();
 
         await Assert.ThrowsAsync<ArgumentNullException>(
-            () => harness.Service.LoginAsync(PortalId, null!, null, CancellationToken.None));
+            () => harness.Service.LoginAsync(null!, CancellationToken.None));
     }
 
     /// <summary>
@@ -719,7 +719,7 @@ public class BcryptPasswordHasherTests
             harness.Clock.SetupGet(clock => clock.UtcNow).Returns(Now);
 
             harness.Portals
-                .Setup(portals => portals.GetAsync(
+                .Setup(portals => portals.GetByIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
@@ -800,9 +800,7 @@ public class BcryptPasswordHasherTests
                 {
                     AccessToken = "access-token",
                     RefreshToken = "refresh-token",
-                    ExpiresIn = 1800,
                     ExpiresAtUtc = Now.AddMinutes(30),
-                    RefreshTokenExpiresAtUtc = Now.AddDays(7),
                 }));
 
             return harness;
@@ -816,9 +814,7 @@ public class BcryptPasswordHasherTests
         /// <returns>The outcome.</returns>
         public Task<Result<LoginResponse>> LoginAsync(string password, string username = AccountName)
             => Service.LoginAsync(
-                PortalId,
-                new LoginRequest { Username = username, Password = password },
-                ipAddress: null,
+                new LoginRequest { PortalId = PortalId, Username = username, Password = password },
                 CancellationToken.None);
     }
 }

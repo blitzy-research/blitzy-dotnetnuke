@@ -74,17 +74,28 @@ public class PermissionEvaluatorTests
     /// <summary>
     /// The catalogue is projected upper-cased, without duplicates, and in ordinal order.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the upper-casing is now structural rather than defensive. Permission.PermissionKey is
+    /// the closed PermissionKey enumeration, whose member names are the stored spellings, so a catalogue
+    /// row carrying mixed case or surrounding whitespace is no longer representable at the entity
+    /// boundary at all - the persistence mapping resolves the stored text to a member on the way in and
+    /// re-emits the canonical name on the way out. What this test still pins is the part the service owns
+    /// and a closed vocabulary does not give away for free: duplicate rows collapse, and the answer is
+    /// ordered ordinally rather than in whatever order the store returned. The equivalent hazard for text
+    /// that never passes through the enumeration is covered by
+    /// <see cref="EffectiveKeys_DropAnUnusableStoredKey"/> on the grant path.
+    /// </remarks>
     [Fact]
     public async Task Catalogue_IsUpperCasedDistinctAndOrdinallySorted()
     {
         Harness harness = Harness.Ready();
         harness.Catalogue =
         [
-            Entry("view"),
-            Entry(" Edit "),
-            Entry("WRITE"),
-            Entry("read"),
-            Entry("VIEW"),
+            Entry(PermissionKey.VIEW),
+            Entry(PermissionKey.EDIT),
+            Entry(PermissionKey.WRITE),
+            Entry(PermissionKey.READ),
+            Entry(PermissionKey.VIEW),
         ];
 
         Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
@@ -93,25 +104,34 @@ public class PermissionEvaluatorTests
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(
             new[] { "EDIT", "READ", "VIEW", "WRITE" },
-            "the stored rows carry mixed case and padding, and a caller comparing keys must not have to "
-            + "know that");
+            "the catalogue holds one row per key per scope per definition, so the same key arrives "
+            + "repeatedly, and a caller comparing keys must not have to de-duplicate or sort them");
     }
 
     /// <summary>
-    /// A stored row with no usable key contributes nothing.
+    /// A grant naming no usable key contributes nothing.
     /// </summary>
     /// <param name="stored">The stored key text.</param>
+    /// <remarks>
+    /// MIGRATION: this covers what <see cref="Catalogue_IsUpperCasedDistinctAndOrdinallySorted"/> no
+    /// longer can. The effective-key reads answer with the text the grant rows actually carried, which
+    /// the closed enumeration never filters, so a blank or whitespace-only key remains reachable on this
+    /// path and must still be dropped rather than surfaced as an empty permission.
+    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task Catalogue_DropsAnUnusableKey(string stored)
+    public async Task EffectiveKeys_DropAnUnusableStoredKey(string stored)
     {
         Harness harness = Harness.Ready();
-        harness.Catalogue = [Entry(stored), Entry("VIEW")];
+        harness.PortalKeys = [stored, "VIEW"];
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<string>> result = await harness.Service.GetEffectivePermissionKeysAsync(
+            PortalId,
+            UserId,
             cancellationToken: CancellationToken.None);
 
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "VIEW" });
     }
 
@@ -375,7 +395,13 @@ public class PermissionEvaluatorTests
     public async Task EffectiveKeys_ForAHostAccountAreTheWholeCatalogue()
     {
         Harness harness = Harness.Ready();
-        harness.Catalogue = [Entry("VIEW"), Entry("EDIT"), Entry("READ"), Entry("WRITE")];
+        harness.Catalogue =
+        [
+            Entry(PermissionKey.VIEW),
+            Entry(PermissionKey.EDIT),
+            Entry(PermissionKey.READ),
+            Entry(PermissionKey.WRITE),
+        ];
         harness.Account.IsSuperUser = true;
 
         Result<IReadOnlyList<string>> result = await harness.Service.GetEffectivePermissionKeysAsync(
@@ -409,7 +435,7 @@ public class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
         harness.Account.IsSuperUser = true;
-        harness.Catalogue = [Entry("VIEW")];
+        harness.Catalogue = [Entry(PermissionKey.VIEW)];
         harness.Modules
             .Setup(modules => modules.GetAsync(
                 It.IsAny<int>(),
@@ -1234,7 +1260,7 @@ public class PermissionEvaluatorTests
                 DisplayName = "Host Account",
                 IsSuperUser = true,
             });
-        host.Catalogue = [Entry("VIEW")];
+        host.Catalogue = [Entry(PermissionKey.VIEW)];
 
         Result<IReadOnlyList<string>> hostAnswer = await host.Service.GetEffectivePermissionKeysAsync(
             PortalId,
@@ -1332,17 +1358,17 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// Builds a catalogue row carrying a stored key.
+    /// Builds a catalogue row naming one permission key.
     /// </summary>
-    /// <param name="permissionKey">The stored key text.</param>
+    /// <param name="permissionKey">The key the row names.</param>
     /// <returns>The catalogue row.</returns>
-    private static Permission Entry(string permissionKey) => new()
+    private static Permission Entry(PermissionKey permissionKey) => new()
     {
         PermissionId = 1,
         PermissionCode = "SYSTEM_MODULE_DEFINITION",
         ModuleDefinitionId = 1,
         PermissionKey = permissionKey,
-        PermissionName = permissionKey,
+        PermissionName = permissionKey.ToString(),
     };
 
     /// <summary>

@@ -57,9 +57,9 @@ public interface IUserRepository
     /// <para>
     /// MIGRATION: replaces the <c>ByRef totalRecords</c> paging idiom used throughout
     /// <c>UserController.vb</c>; the count travels with the page inside <see cref="PagedResult{T}"/>.
-    /// The authorisation filter reads <see cref="UserPortal.Authorised"/>, whose British spelling is
-    /// the column name added to <c>UserPortals</c> in the 03.02.03 upgrade script and is preserved
-    /// deliberately.
+    /// The authorisation filter reads <see cref="UserPortal.IsAuthorised"/>, which maps to the
+    /// British-spelled <c>Authorised</c> column added to <c>UserPortals</c> in the 03.02.03 upgrade
+    /// script; that column spelling is preserved deliberately.
     /// </para>
     /// <para>
     /// MIGRATION: the username, email and profile-property filters are matched as prefixes, not as

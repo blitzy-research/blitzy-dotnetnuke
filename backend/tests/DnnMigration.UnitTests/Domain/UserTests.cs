@@ -101,7 +101,7 @@ public class UserTests
     {
         UserPortal membership = new() { UserPortalId = 1, UserId = 1, PortalId = 0 };
 
-        membership.Authorised.Should().BeTrue(
+        membership.IsAuthorised.Should().BeTrue(
             "the legacy column spelling is Authorised and its default admits the member");
     }
 

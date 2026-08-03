@@ -3,240 +3,472 @@ using DnnMigration.Domain.Common;
 
 namespace DnnMigration.Application.Abstractions;
 
-// MIGRATION: this contract owns the sign-in USE CASE; ITokenService owns the token MECHANISM. The
-// division is not stylistic. ITokenService already declares issuing, refreshing and revoking, and
-// its own documentation at ITokenService.cs:L168 says its issuing member is "called by the sign-in
-// service at the end of a successful sign-in" - this is that service. Nothing here restates a token
-// member as a pass-through, because a second declaration of the same operation would be a second
-// place for its contract to drift.
+// ---------------------------------------------------------------------------
+// Rule T5 annotations for the shape of this contract.
 //
-// MIGRATION: the legacy sign-in decision was spread across three files, and this contract collapses
-// it into one member. The screen's submit handler at
-// Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L160-L197 called
-// UserController.ValidateUser at L164 with eight arguments, one of them a by-reference status; that
-// method, at Library/Components/Users/UserController.vb:L1132-L1157, delegated to the membership
-// provider at L1136 and then re-graded the status; and the provider itself, at
-// Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb:L1429-L1513,
-// made the actual decision. The by-reference status argument becomes the reason code on the
-// returned result, and the screen's message-string branching becomes the caller's business.
-//
-// MIGRATION: the fixed authentication-mechanism argument is dropped. The legacy call supplied the
-// literal "DNN" twice, at Login.ascx.vb:L164 and again at L191, and the provider branched on it at
-// AspNetMembershipProvider.vb:L1439 and L1482 to choose between a password check and a token check.
-// The target has exactly one sign-in path, so a discriminator could hold only one value and is not
-// carried. LoginRequest records the same decision.
+// The legacy sign-in surface diverges from its replacement in more places than
+// any other part of this migration, so every difference is recorded rather than
+// left to be inferred from the absence of a member. Each entry names the legacy
+// file and line it was measured from. The behavioural consequences of each are
+// documented on the member that carries them and in MIGRATION_NOTES.md.
+// ---------------------------------------------------------------------------
+
+// MIGRATION: the by-reference loginStatus argument is gone. UserController.ValidateUser at
+// UserController.vb:L1132, called from Login.ascx.vb:L164, took eight positional arguments and
+// reported its verdict by mutating a status variable the caller had declared. That collapses into
+// the single sign-in member below, in the canonical shape for this migration: the mutated object
+// becomes the result value and the status enum becomes the reason code. The same treatment retires
+// the two other by-reference sites, UserLogin at UserController.vb:L991 and the seven-argument
+// ValidateUser at L1110. No member of this contract has a by-reference or output argument.
+
+// MIGRATION: every legacy member behind this contract was declared Shared -- the whole of
+// UserController is static, as are the ValidateUser and UserLogin overloads above. All of them
+// become instance members resolved from the container, so a test can substitute the store, the
+// credential comparison and the clock instead of reaching a real database.
+
+// MIGRATION: the fixed authentication-mechanism argument is dropped. Login.ascx.vb passed the
+// MIGRATION: literal "DNN" twice -- at L164 as the fourth argument, and again at L191 when it built
+// MIGRATION: the arguments of the authenticated-event it raised -- because the legacy platform
+// multiplexed several pluggable sign-in mechanisms behind one screen. The target has exactly one
+// path, so such a discriminator could hold only a single value. No selector is accepted from the
+// caller, none is inferred, and there is no external-provider member.
+
+// MIGRATION: the sign-in ticket is not reproduced. SetAuthCookie at UserController.vb:L919 issued
+// MIGRATION: the Forms-authentication ticket, and the CreatePersistentCookie argument at
+// MIGRATION: UserController.vb:L991 and L1024 governed its lifetime. A stateless bearer token has no
+// such ticket: the short-lived access token replaces the sustained session and the refresh token
+// replaces its persistence, both minted by the token contract. This surface therefore names no
+// browser state at all and carries no persistence flag.
+
+// MIGRATION: the credential store changes from reversible to one-way, and that is a security fix
+// rather than a refactor. The original schema held the value in clear text -- Users.Password is
+// declared nvarchar(20) NOT NULL at 01.00.00.SqlDataProvider:L97-L110 -- and the membership
+// provider was later configured with passwordFormat="Encrypted" and enablePasswordRetrieval="true"
+// at Website/release.config:L236-L246, decryptable with a key committed to source control at
+// Website/release.config:L89-L93. The replacement is a one-way hash behind the domain hashing
+// abstraction. That legacy file is evidence and is deliberately left byte-identical.
+
+// MIGRATION: credential retrieval is not carried forward at all. GetPassword at
+// UserController.vb:L433 returned the caller's own credential in clear text, and the recovery
+// MIGRATION: screen invoked it at SendPassword.ascx.vb:L198-L200 whenever retrieval was enabled. No
+// member of this contract returns, echoes, reconstructs or logs a credential, under any
+// configuration. A one-way hash makes recovery impossible by construction, which is the point of
+// adopting one.
+
+// MIGRATION: the credential question-and-answer pair is omitted. The recovery screen required it at
+// MIGRATION: SendPassword.ascx.vb:L167, and ChangePasswordQuestionAndAnswer at
+// MIGRATION: UserController.vb:L139 maintained it, but the shipped policy required no such pair and
+// its only real use was to authorise the retrieval that is no longer offered. No member accepts an
+// answer argument.
+
+// MIGRATION: no credential-recovery member is declared, and the omission is deliberate. The legacy
+// MIGRATION: screen's outcome was an electronic message sent at SendPassword.ascx.vb:L211, and the
+// mail subsystem it used is excluded from this migration, so nothing could be delivered. A member that
+// must not disclose whether an account exists, cannot transmit a credential and cannot send a
+// notification would report success unconditionally while doing nothing, which is worse than its
+// absence because it reads as a working feature. Administrative reset through the account
+// administration contract is the supported path, and this is a documented functional reduction.
+
+// MIGRATION: the authenticated-event model is not reproduced. UserUserControlBase.vb:L59-L65
+// declared seven user-lifecycle events, and the sign-in screen raised one at Login.ascx.vb:L193 by
+// MIGRATION: constructing UserAuthenticatedEventArgs and calling OnUserAuthenticated. No server-side
+// publisher is introduced: the client observes its own sign-in directly, and inventing one here
+// would be scope creep dressed as fidelity.
+
+// MIGRATION: the legacy null sentinels are not carried onto this surface. Null.vb:L38-L90 mapped
+// every primitive to a stand-in value, and the sign-in screen used two of them directly at
+// Login.ascx.vb:L165-L166; the integer stand-in was minus one and the string stand-in was the empty
+// string rather than a null reference. Neither can be reused as "absent" here, because minus one is
+// a real tenant: Portals.PortalID is declared IDENTITY(-1, 1) at 01.00.00.SqlDataProvider:L77, so
+// the first tenant created is zero and minus one is the one before it, while Users.UserID is
+// declared IDENTITY(1, 1) at L98. Absence is therefore expressed by a nullable type throughout,
+// and no numeric value is overloaded to mean it.
 
 /// <summary>
-/// The sign-in contract: it decides whether a submitted credential authenticates, applies the
-/// account-verification flow, and answers the authenticated caller's question about itself.
+/// The authentication contract: it decides whether a submitted credential is accepted, mints and
+/// rotates the caller's session, retires a session on request, and describes the authenticated
+/// caller to itself.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Outcome model.</b> Both members return a result. An <em>expected</em> refusal is a failed
-/// result carrying a stable code, never an exception; the API edge turns a code into a problem
-/// document and the client turns it into wording. An <em>unexpected</em> fault stays an exception
-/// and is shaped by the global handler at the edge.
+/// <b>What this contract owns, and what it does not.</b> It owns the sign-in <em>use case</em>. The
+/// token <em>mechanism</em> - minting, rotation, validation and revocation - belongs to
+/// <see cref="ITokenService"/>, which this contract delegates to; no member here restates one of
+/// its operations, because a second declaration of the same operation is a second place for that
+/// operation's contract to drift. The caller's asserted identity is read from
+/// <see cref="ICurrentUser"/>, which is injected rather than passed. Account creation, profile
+/// maintenance and the administrative credential reset belong to <see cref="IUserService"/>.
+/// Nothing here creates, updates or deletes an account, grants a role, or issues a token directly.
 /// </para>
 /// <para>
-/// <b>One answer for every rejected credential.</b> An unknown account name and a wrong password
-/// are reported identically, with code <c>INVALID_CREDENTIALS</c> and identical wording, because
-/// any difference between the two turns this member into an account-name oracle. The sign-in
-/// request validator states the same rule for its messages, and the two must not disagree.
+/// <b>Outcome model.</b> Every member returns a result. An <em>expected</em> refusal - and a wrong
+/// credential is the most expected refusal in the system - is a failed result carrying a stable
+/// code, never an exception: throwing would surface a rejected sign-in as a server fault instead of
+/// an authentication failure. An <em>unexpected</em> fault remains an exception and is shaped at
+/// the edge by the global handler. A success may itself carry an informational reason, which is how
+/// an accepted-but-insecure credential is reported without refusing it.
 /// </para>
 /// <para>
-/// <b>Refusal codes.</b> The set an implementation may raise is fixed:
-/// <c>INVALID_CREDENTIALS</c>, the submitted name and password did not match an account of this
-/// tenant; <c>ACCOUNT_LOCKED_OUT</c>, the account is locked and its automatic-unlock window has
-/// not elapsed; <c>VERIFICATION_REQUIRED</c>, the account is not yet approved, this tenant
-/// registers its users by verification, and no verification code accompanied the credential;
-/// <c>VERIFICATION_CODE_INVALID</c>, the same account state but a code was supplied and did not
-/// match; and <c>ACCOUNT_NOT_APPROVED</c>, the account is not yet approved and this tenant does
-/// <em>not</em> register by verification, so no code exists that would admit it and an
-/// administrator must act. A refusal from the token store propagates unchanged as
-/// <c>TOKEN_STORE_UNAVAILABLE</c> and is not re-coded here, so a caller can tell "your credential
-/// was refused" from "your credential was accepted and we could not record the session".
+/// <b>One answer for every rejected credential.</b> An unknown account name, a wrong credential, an
+/// account belonging to another tenant and a tenant that does not exist are all reported
+/// identically, with code <c>auth.invalid_credentials</c> and identical wording. Any difference
+/// between them turns the sign-in member into an oracle for account names or for the installation's
+/// tenants. The sign-in request validator states the same rule for its own messages and the two
+/// must not disagree.
 /// </para>
 /// <para>
-/// <b>The codes are upper snake case</b>, matching <see cref="ITokenService"/>, which is the other
-/// half of the same endpoint group and already reports <c>TOKEN_STORE_UNAVAILABLE</c> in that
-/// form. The domain-administration contracts in this folder use lower dotted codes instead. The
-/// inconsistency is pre-existing and is not resolved by inventing a third style here: matching the
-/// nearest neighbour keeps the two halves of one endpoint group legible together.
+/// <b>Refusal codes.</b> The vocabulary an implementation may raise:
+/// </para>
+/// <list type="bullet">
+///   <item>
+///     <term><c>auth.request_invalid</c></term>
+///     <description>
+///     The submission is not usable at all - no account name, no credential, or no tenant resolved
+///     for it to be presented to. It reports the shape of the request, never the state of an
+///     account.
+///     </description>
+///   </item>
+///   <item>
+///     <term><c>auth.invalid_credentials</c></term>
+///     <description>The uniform denial described above.</description>
+///   </item>
+///   <item>
+///     <term><c>auth.locked_out</c></term>
+///     <description>
+///     The account is locked and its automatic-unlock window has not elapsed. Raised only for a
+///     caller already entitled to that detail; every other caller receives the uniform denial,
+///     because "this account exists and is locked" is itself a disclosure.
+///     </description>
+///   </item>
+///   <item>
+///     <term><c>auth.invalid_refresh_token</c></term>
+///     <description>
+///     The presented refresh token is unknown, expired, already redeemed or revoked. The four are
+///     deliberately indistinguishable, so a guessed value cannot be confirmed to have once existed.
+///     </description>
+///   </item>
+///   <item>
+///     <term><c>auth.user_not_found</c></term>
+///     <description>
+///     Reserved for the caller-description member, where it is not raised in place of the uniform
+///     denial and discloses nothing an authenticated caller does not already know about itself.
+///     </description>
+///   </item>
+///   <item>
+///     <term><c>auth.verification_required</c>, <c>auth.verification_code_invalid</c>,
+///     <c>auth.account_not_approved</c></term>
+///     <description>
+///     The three account-approval outcomes, preserving the legacy message keys
+///     <c>EnterCode</c>, <c>InvalidCode</c> and <c>UserNotAuthorized</c> in that order. They are
+///     declared so that the approval flow described on <see cref="LoginAsync"/> can be reported
+///     unambiguously; the shipped implementation deliberately answers all three with the uniform
+///     denial instead, for the anti-disclosure reason recorded on that member.
+///     </description>
+///   </item>
+/// </list>
+/// <para>
+/// <b>Advisory codes on a successful result.</b> <c>auth.insecure_admin_password</c> and
+/// <c>auth.insecure_host_password</c> report that the credential was correct but is one of the
+/// values the platform shipped with. They accompany a <em>successful</em> result and never refuse
+/// the sign-in: refusing would lock an installation out of the two accounts every installation
+/// begins with.
 /// </para>
 /// <para>
-/// <b>A success may still carry an advisory.</b> The legacy flow graded two sign-ins as successful
-/// but insecure - <c>UserController.vb:L1144-L1153</c> re-graded a successful administrator whose
-/// password was still "admin" or "dnnadmin", and a successful host whose password was still "host"
-/// or "dnnhost" - and the screen warned rather than refused. That grading survives as an advisory
-/// reason on a <em>successful</em> result, code <c>INSECURE_DEFAULT_PASSWORD</c>, which is
-/// precisely the case the result type was built for: its own documentation at
-/// <c>Domain/Common/Result.cs:L195</c> names "the weak-password caveat the legacy login flow"
-/// as the reason a success can carry a reason. Refusing such a sign-in instead would lock an
-/// installation out of the two accounts every installation ships with.
+/// <b>Two code styles appear here, and that is intentional.</b> This contract's own codes are the
+/// lower-dotted <c>auth.</c> family, matching the domain-administration contracts in this folder.
+/// The single code propagated unchanged from <see cref="ITokenService"/> keeps that contract's
+/// upper-snake form, so a caller can tell "your credential was refused" from "your credential was
+/// accepted and the session could not be recorded" without either contract re-coding the other's
+/// failure.
 /// </para>
 /// <para>
-/// <b>Layering.</b> This contract names no store, no hashing algorithm, no token library and no
-/// web-framework type. It reads the submitted credential from a request contract, reaches accounts
-/// and roles through the domain repository abstractions, verifies the password through the domain
-/// password-hasher abstraction, and mints the session through <see cref="ITokenService"/>.
+/// <b>Nothing on this surface may reach a log.</b> The submitted credential exists in exactly one
+/// place - a property of <see cref="LoginRequest"/> - and it is never a return value, never part of
+/// a reason message, and never written to a log sink, an audit record, a trace, a metric or an
+/// exception message. The same holds for the verification code and for every token value. What may
+/// be recorded is the tenant, the account identifier where one was resolved, and the outcome code.
 /// </para>
 /// <para>
-/// <b>Implementer's checklist.</b> Decide in the order the members below prescribe and not in the
-/// order the legacy provider used - the difference is deliberate and is annotated on
-/// <see cref="LoginAsync"/>. Compare the password through the domain hasher, never by string
-/// equality, and never with an early return that shortens the comparison for an unknown account.
-/// Read the current instant through the injected clock. Emit no password, no verification code and
-/// no token value to any log, metric, trace or exception message; record the tenant, the account
-/// identifier where one was resolved, and the outcome code. Honour the cancellation token on every
-/// store round trip. Keep no per-caller state in a field.
+/// <b>Layering.</b> This contract names no store, no hashing algorithm, no token library, no
+/// serialisation format and no web-framework type. Accounts, roles and tenants are reached through
+/// the domain repository abstractions; the credential is compared through the domain hashing
+/// abstraction; the current instant is read through the domain clock; the session is minted through
+/// <see cref="ITokenService"/>. It follows that an implementation needs no reference to a
+/// persistence or authentication library, and reaching for one is the clearest sign that a
+/// transport or token type has leaked onto this surface.
+/// </para>
+/// <para>
+/// <b>Implementer's checklist.</b> Compare the credential through the domain hashing abstraction,
+/// never by string equality, and never with an early return that shortens the comparison for an
+/// unknown account. Read the current instant from the injected clock. Honour the cancellation token
+/// on every store round trip. Keep no per-caller state in a field - the implementation is registered
+/// with a scoped lifetime and is shared for the duration of one request only. Emit the outcome code
+/// and nothing sensitive. Return a failed result for every expected refusal.
 /// </para>
 /// </remarks>
 public interface IAuthService
 {
     /// <summary>
-    /// Exchanges a valid refresh token for a new token pair, retiring the presented token.
-    /// </summary>
-    /// <param name="request">The refresh token to redeem.</param>
-    /// <param name="cancellationToken">Token that cancels the operation.</param>
-    /// <returns>
-    /// A task producing a successful <see cref="Result{T}"/> carrying the new pair. Fails with
-    /// <c>auth.invalid_refresh_token</c> when the token is unknown, expired, already redeemed or revoked.
-    /// </returns>
-    /// <remarks>
-    /// Rotation is mandatory rather than optional: the presented token is retired as part of the same
-    /// operation, so replaying a captured refresh token fails and the replay is detectable. Claims are
-    /// re-resolved from stored state during the refresh, which is how a role granted after the previous
-    /// issue becomes effective.
-    /// </remarks>
-    Task<Result<LoginResponse>> RefreshAsync(
-        RefreshTokenRequest request,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Revokes a refresh token so it can no longer be redeemed.
-    /// </summary>
-    /// <param name="request">The refresh token to revoke.</param>
-    /// <param name="cancellationToken">Token that cancels the operation.</param>
-    /// <returns>
-    /// A task producing a successful <see cref="Result"/>, including when the token was already unknown
-    /// or already revoked - sign-out is idempotent, and reporting "no such token" would let a caller
-    /// probe which tokens exist.
-    /// </returns>
-    /// <remarks>
-    /// The caller's current access token is <em>not</em> invalidated, because a stateless bearer token
-    /// cannot be recalled; the client discards it and it lapses at its published expiry. This is the one
-    /// respect in which sign-out is weaker than the legacy cookie clearance, and it is why the access
-    /// token's lifetime is short.
-    /// </remarks>
-    Task<Result> LogoutAsync(
-        RefreshTokenRequest request,
-        CancellationToken cancellationToken = default);
-
-
-    /// <summary>
     /// Verifies a submitted credential against one tenant's accounts and, when it is accepted,
     /// mints the caller's session.
     /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the tenant the credential is being presented to, backed by
-    /// <c>Portals.PortalID</c>, which is declared <c>IDENTITY(-1, 1)</c>, so zero and minus one
-    /// are both real tenants and neither may be rejected as though it meant "absent".
-    /// </param>
     /// <param name="request">
-    /// The submitted credential, whose shape has already been checked by
-    /// <c>LoginRequestValidator</c>. Its verification-code member is consumed by this member and
-    /// by nothing else.
-    /// </param>
-    /// <param name="ipAddress">
-    /// The caller's address as the host observed it, or <see langword="null"/> when it cannot be
-    /// determined. It is recorded on the sign-in audit entry described below and never used to
-    /// decide the outcome, so a caller that cannot be attributed is refused or accepted on the
-    /// merits of its credential alone. It is a parameter rather than something this layer reads for
-    /// itself because the address is a property of the transport, which this layer cannot see.
+    /// The submission: the account name, the credential, the tenant it is being presented to, and
+    /// the optional account-verification code. Its shape has already been checked by
+    /// <c>LoginRequestValidator</c>; this member checks its truth. The tenant identifier on it is
+    /// populated by the api layer from the alias-resolved request context and cannot be bound from
+    /// the request body, so a caller cannot name a tenant it is not addressing. Implementations must
+    /// refuse a submission whose tenant is absent rather than defaulting one, because zero and minus
+    /// one are both real tenants.
     /// </param>
     /// <param name="cancellationToken">
-    /// Token observed while accounts, roles and the token store are read and written.
+    /// Token observed while accounts, roles and the session store are read and written.
     /// </param>
     /// <returns>
-    /// A successful result carrying the access-token and refresh-token pair, optionally with the
-    /// <c>INSECURE_DEFAULT_PASSWORD</c> advisory attached, or a failed result carrying one of the
-    /// codes listed on this interface.
+    /// A task producing a successful <see cref="Result{T}"/> carrying the token pair and the
+    /// caller's own description - optionally with the <c>auth.insecure_admin_password</c> or
+    /// <c>auth.insecure_host_password</c> advisory attached - or a failed result carrying
+    /// <c>auth.request_invalid</c> when the submission is unusable, <c>auth.invalid_credentials</c>
+    /// for every rejected credential, <c>auth.locked_out</c> for a locked account when the caller is
+    /// entitled to that detail, one of <c>auth.verification_required</c>,
+    /// <c>auth.verification_code_invalid</c> or <c>auth.account_not_approved</c> where an
+    /// implementation elects to report the approval outcome explicitly, or
+    /// <c>TOKEN_STORE_UNAVAILABLE</c> propagated unchanged when the credential was accepted and the
+    /// session could not be recorded.
     /// </returns>
     /// <remarks>
     /// <para>
     /// <b>The verification code is a one-time approval token, not a second factor.</b> That is a
-    /// measured fact, not an interpretation: the legacy provider compared the submitted code
-    /// against the composed value <c>portalId &amp; "-" &amp; userId</c> at
-    /// <c>AspNetMembershipProvider.vb:L1468</c> and, on a match, set the account approved at L1470
-    /// and persisted that change at L1473. An account therefore verified once and stayed verified.
-    /// </para>
-    /// <para>
-    /// <b>The code's composition must be preserved exactly.</b> It is not stored anywhere - no
-    /// column for it appears in the 88-script schema chain - it is recomputed from the tenant and
+    /// measured fact rather than an interpretation: the legacy provider compared the submitted code
+    /// against the composed value <c>portalId &amp; "-" &amp; userId</c> and, on a match, marked the
+    /// account approved and persisted that change. An account therefore verified once and stayed
+    /// verified. The composition must be preserved exactly, because the code is stored nowhere - no
+    /// column for it appears anywhere in the schema chain - and is recomputed from the tenant and
     /// account identifiers at the moment it is checked. Any account awaiting verification at the
-    /// moment of migration therefore still holds a code that this implementation can accept, and
-    /// changing the composition would strand every one of them.
+    /// moment of migration still holds a code this implementation can accept, and changing the
+    /// composition would strand every one of them.
     /// </para>
     /// <para>
-    /// <b>Which accounts the flow applies to.</b> The legacy guard at
-    /// <c>AspNetMembershipProvider.vb:L1466</c> entered the approval branch only when the account
-    /// was unapproved <em>and</em> was not a super user, so super users bypassed verification
-    /// entirely. That exemption is preserved. Whether an unapproved account is asked for a code or
-    /// refused outright depends on the tenant's registration mode: the screen consulted it at
-    /// <c>Login.ascx.vb:L170</c> and produced its "enter a code" prompt only for verified
-    /// registration, answering "not authorised" otherwise, which is the distinction between
-    /// <c>VERIFICATION_REQUIRED</c> and <c>ACCOUNT_NOT_APPROVED</c> here.
+    /// <b>Which accounts the approval flow applies to.</b> The legacy guard entered the approval
+    /// branch only when the account was unapproved <em>and</em> was not a super user, so super users
+    /// bypassed verification entirely; that exemption is preserved. Whether an unapproved account is
+    /// asked for a code or refused outright depends on the tenant's registration mode, which the
+    /// legacy screen consulted at <c>Login.ascx.vb:L170</c>: it produced its "enter a code" prompt
+    /// only for verified registration and answered "not authorised" otherwise. That is the
+    /// distinction between <c>auth.verification_required</c> and <c>auth.account_not_approved</c>.
+    /// An absent code and a blank code are the same submission, so both lead to the former and only
+    /// a supplied, non-matching code leads to <c>auth.verification_code_invalid</c>, reproducing the
+    /// legacy branch at <c>Login.ascx.vb:L177-L181</c> exactly.
     /// </para>
     /// <para>
-    /// <b>Required decision order.</b> Resolve the account within the tenant; verify the password;
-    /// then evaluate lockout and approval; then, when a correct code accompanied a correct
-    /// password on an unapproved account, approve the account and persist that; then issue the
-    /// token pair. Absent and blank verification codes are the same submission, as the request
-    /// contract records, so both lead to <c>VERIFICATION_REQUIRED</c> and only a supplied,
-    /// non-matching code leads to <c>VERIFICATION_CODE_INVALID</c> - which reproduces the legacy
-    /// branch at <c>Login.ascx.vb:L177-L181</c> exactly.
+    /// <b>Read the registration mode through the tenant aggregate, not from ambient state.</b> The
+    /// legacy screen read <c>PortalSettings.UserRegistration</c> - declared at
+    /// <c>PortalSettings.vb:L174</c> - from a per-request object the page framework had already
+    /// populated. That member is deliberately absent from <c>IPortalContext</c>, so an
+    /// implementation loads the tenant through <c>IPortalRepository</c> and reads the mode from the
+    /// aggregate. This layer never reaches into a request object for it.
+    /// </para>
+    /// <para>
+    /// <b>Required decision order.</b> Resolve the tenant, then the account within it; verify the
+    /// credential; then evaluate lockout and approval; then, where a correct code accompanied a
+    /// correct credential on an unapproved account, approve the account and persist that; then mint
+    /// the pair. Verifying the credential before disclosing an account's approval state reverses the
+    /// legacy order deliberately - see the annotation below - and a legitimate caller reaches the
+    /// same outcome by either order.
+    /// </para>
+    /// <para>
+    /// <b>The credential-migration obligation.</b> A legacy stored value cannot be verified against
+    /// a one-way hash, so after a <em>successful</em> verification the implementation must ask the
+    /// domain hashing abstraction whether the stored value is outdated and, if it is, replace it
+    /// with a current hash inside the same operation. This is entirely transparent to the caller: it
+    /// changes no part of this signature, adds nothing to the response, and is neither a member, a
+    /// flag nor a reason code. An account whose stored value cannot be verified at all needs an
+    /// administrative reset instead, which the account-administration contract owns.
+    /// </para>
+    /// <para>
+    /// <b>The effective legacy verdict, preserved for reference.</b> The legacy screen computed
+    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c> at
+    /// <c>Login.ascx.vb:L187</c>, reached only through the else branch of the approval test at
+    /// <c>L168</c>. Against the seven-member status enumeration that yields:
+    /// </para>
+    /// <list type="table">
+    ///   <listheader>
+    ///     <term>Status (value)</term>
+    ///     <description>Legacy verdict at L187</description>
+    ///   </listheader>
+    ///   <item><term>LOGIN_FAILURE (0)</term><description>not authenticated</description></item>
+    ///   <item><term>LOGIN_SUCCESS (1)</term><description>authenticated</description></item>
+    ///   <item><term>LOGIN_SUPERUSER (2)</term><description>authenticated</description></item>
+    ///   <item>
+    ///     <term>LOGIN_USERLOCKEDOUT (3)</term>
+    ///     <description>authenticated - a locked account passed this test</description>
+    ///   </item>
+    ///   <item>
+    ///     <term>LOGIN_USERNOTAPPROVED (4)</term>
+    ///     <description>not authenticated - handled by the L168 branch, never reaching L187</description>
+    ///   </item>
+    ///   <item>
+    ///     <term>LOGIN_INSECUREADMINPASSWORD (5)</term>
+    ///     <description>authenticated, with an advisory</description>
+    ///   </item>
+    ///   <item>
+    ///     <term>LOGIN_INSECUREHOSTPASSWORD (6)</term>
+    ///     <description>authenticated, with an advisory</description>
+    ///   </item>
+    /// </list>
+    /// <para>
+    /// The row for status three is a defect, and it is recorded rather than silently corrected; the
+    /// annotation below states what this contract does about it and why. Statuses five and six are
+    /// advisories rather than refusals and are carried as an informational reason on a successful
+    /// result.
+    /// </para>
+    /// <para>
+    /// <b>Brute-force resistance is not a parameter of this member.</b> The legacy screen gated the
+    /// entire sign-in on an image challenge; its replacement is request rate limiting at the api
+    /// edge, which this contract cannot express and must not try to. The companion controls are the
+    /// credential-length bounds in the request validator and the failed-attempt bookkeeping that
+    /// locks an account, both of which an implementation is expected to apply.
     /// </para>
     /// </remarks>
-    // MIGRATION: verifying the password BEFORE disclosing an account's approval state reverses the
+    // MIGRATION: the image-based human-verification challenge is dropped, and it is a security-
+    // relevant reduction rather than a cosmetic one. The legacy gate existed at two sites -- the
+    // whole sign-in was conditional on it at Login.ascx.vb:L162, and the recovery screen repeated
+    // MIGRATION: the gate at SendPassword.ascx.vb:L176 -- and it was per-tenant configuration, read
+    // MIGRATION: from AuthenticationConfig.GetConfig(PortalId).UseCaptcha at Login.ascx.vb:L59-L61.
+    // The control implementing it belongs to Library/Controls, a tree this migration excludes, so
+    // there is nothing for a parameter here to bind to. The named compensating control is request
+    // rate limiting on the sign-in endpoint, configured in the api layer as a global limiter keyed
+    // by method and path rather than as an attribute a new controller could simply omit.
+
+    // MIGRATION: a locked account is refused here, and the legacy screen's own flag said otherwise.
+    // Login.ascx.vb:L187 computed its authenticated flag as "the status is not LOGIN_FAILURE", which
+    // is true for the locked-account status; what actually stopped the sign-in was the provider
+    // clearing its user object afterwards, leaving the screen holding an authenticated flag and no
+    // user. Depending on a null reference to contradict a boolean is not a behaviour worth
+    // reproducing, so this contract states the refusal once, as a failure, where it cannot be read
+    // two ways. The defect itself is annotated and NOT otherwise altered: the automatic-unlock
+    // window is preserved exactly, because the legacy check unlocked the account and continued
+    // rather than refusing, and an implementation must do the same before concluding that an account
+    // is locked. Which statuses ultimately authenticate is the implementation's decision and is
+    // stated in MIGRATION_NOTES.md; this contract's job is to make either decision expressible
+    // without ambiguity, which is why locked, unapproved, insecure-default and plain refusal all
+    // have their own codes.
+
+    // MIGRATION: verifying the credential BEFORE disclosing an account's approval state reverses the
     // legacy order and is a deliberate divergence. The legacy provider graded lockout and approval
-    // first and then skipped the credential check altogether for either state
-    // (AspNetMembershipProvider.vb:L1481), so a caller who supplied nothing but a valid account
-    // name learned that the account existed and was awaiting verification. A legitimate user's
-    // experience is unchanged, because a legitimate user supplies the correct password and reaches
-    // the same outcome by either order; only an enumerating caller is affected. The legacy
-    // behaviour is not preserved because preserving it would mean shipping the enumeration leak
-    // into new code.
-    //
-    // MIGRATION: approving an account only AFTER the password has been verified is the second
-    // deliberate divergence, and it closes a genuine legacy defect rather than a stylistic one.
-    // Because the legacy provider approved at L1470 before it checked any credential at L1481, a
-    // caller who could guess the composed code - and it is composed from two integers, so it is
-    // guessable - could permanently approve somebody else's pending account without ever holding
-    // its password. Requiring the password first makes the guessable code insufficient on its own.
-    // Rate limiting on the sign-in endpoint is the named compensating control for the guessing
-    // itself, and the code's composition is preserved for the parity reason given above.
-    //
-    // MIGRATION: a locked-out account is refused here, and the legacy screen's own flag said
-    // otherwise. Login.ascx.vb:L187 computed authenticated as "status is not LOGIN_FAILURE", which
-    // is TRUE for the locked-out status; what actually stopped the sign-in was the provider
-    // clearing its user object at AspNetMembershipProvider.vb:L1505-L1507, leaving the screen with
-    // an authenticated flag and no user. Depending on a null to contradict a boolean is not a
-    // behaviour worth reproducing. ACCOUNT_LOCKED_OUT is returned as a failure, so the refusal is
-    // stated once and cannot be read two ways. The automatic-unlock window is preserved: the
-    // legacy check at L1454-L1461 unlocked the account and continued rather than refusing, and an
-    // implementation must do the same before concluding that an account is locked.
-    //
-    // MIGRATION: the sign-in audit entry survives the change of mechanism. ValidateUser wrote an
-    // event-log row for the locked-out and outright-failure statuses only, at
-    // UserController.vb:L1138-L1141, passing the tenant, the submitted name, the tenant name and
-    // the caller's address. The storage provider behind it is excluded from this migration, so the
-    // entry becomes a structured log event carrying the same facts and the outcome code - and
-    // never the submitted password or verification code.
-    Task<Result<LoginResponse>> LoginAsync(
-        int portalId,
-        LoginRequest request,
-        string? ipAddress,
-        CancellationToken cancellationToken = default);
+    // first and then skipped the credential comparison altogether for either state, so a caller who
+    // supplied nothing but a valid account name learned that the account existed and was awaiting
+    // verification. A legitimate caller's experience is unchanged, because a legitimate caller
+    // supplies the correct credential and reaches the same outcome by either order; only an
+    // enumerating caller is affected. The legacy behaviour is not preserved because preserving it
+    // would mean shipping the enumeration leak into new code.
+
+    // MIGRATION: approving an account only AFTER the credential has been verified is the second
+    // deliberate divergence, and it closes a genuine legacy defect. Because the legacy provider
+    // approved the account before it compared any credential, a caller who could guess the composed
+    // code -- and it is composed from two integers, so it is guessable -- could permanently approve
+    // somebody else's pending account without ever holding its credential. Requiring the credential
+    // first makes the guessable code insufficient on its own, while the composition itself is
+    // preserved for the parity reason given above.
+
+    // MIGRATION: the re-hash on first successful sign-in is the credential-migration path, and it is
+    // an implementation obligation rather than part of this signature. The legacy value was
+    // reversibly encrypted and cannot be verified against a one-way hash, so a correct credential is
+    // re-hashed and persisted within the same sign-in, and an account whose stored value cannot be
+    // verified at all is left to administrative reset. Nothing about it is observable to the caller:
+    // it adds no member, no response field and no reason code.
+
+    // MIGRATION: the three approval outcomes keep their legacy identities but not their legacy
+    // wording. Login.ascx.vb:L168-L185 selected between the resource keys EnterCode, InvalidCode and
+    // UserNotAuthorized, which the page framework then resolved through its localisation pipeline
+    // against the App_LocalResources files. That pipeline is not ported: these are stable machine
+    // codes, the client supplies the wording, and the legacy resource files remain the authority for
+    // what that wording should say.
+
+    // MIGRATION: the two insecure-default statuses become advisories on a successful result rather
+    // than refusals, and the independent five-member validity status is treated the same way. The
+    // legacy re-grading marked a successful administrator whose credential was still the shipped one
+    // and a successful host in the same position, and the screen warned rather than refused. The
+    // validity status - valid, expired, expiring, update-profile and update-credential - is likewise
+    // a "you are in, and you must act" outcome for its middle members; neither enumeration appears
+    // on this surface, and both are reported as reason codes.
+    Task<Result<LoginResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Exchanges a valid refresh token for a new token pair, retiring the presented token.
+    /// </summary>
+    /// <param name="request">The refresh token to redeem.</param>
+    /// <param name="cancellationToken">Token observed while the session store is read and written.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> carrying the new pair, or a failed
+    /// result carrying <c>auth.invalid_refresh_token</c> when the presented token is unknown,
+    /// expired, already redeemed or revoked, or when the account it names no longer exists. Those
+    /// causes are deliberately indistinguishable to the caller. <c>TOKEN_STORE_UNAVAILABLE</c>
+    /// propagates unchanged when the successor pair could not be recorded.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Rotation is mandatory, not optional.</b> The presented token is retired as part of the
+    /// same operation that mints its successor, so replaying a captured refresh token fails and the
+    /// replay is detectable. An implementation delegates both halves to <see cref="ITokenService"/>
+    /// so that retirement and issue cannot be separated by a failure between them.
+    /// </para>
+    /// <para>
+    /// <b>The caller's description is re-read, not copied.</b> Roles and permission keys are resolved
+    /// from stored state during the exchange rather than carried over from the retired token, which
+    /// is how a role granted - or withdrawn - since the previous exchange becomes effective. This is
+    /// the only mechanism by which an entitlement change reaches a signed-in caller before its access
+    /// token expires.
+    /// </para>
+    /// <para>
+    /// No credential is involved: this member neither accepts nor consults one, and it is the reason
+    /// the access token can be short-lived without asking the caller to sign in repeatedly.
+    /// </para>
+    /// </remarks>
+    Task<Result<LoginResponse>> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retires a session by revoking the refresh token that sustains it.
+    /// </summary>
+    /// <param name="request">
+    /// The refresh token to revoke. There is no separate sign-out contract: the token is the only
+    /// thing a sign-out can act upon, so the refresh contract is reused deliberately.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the session store is written.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/>, including when the token was already
+    /// unknown or already revoked - sign-out is idempotent, and reporting "no such token" would let a
+    /// caller probe which tokens exist. <c>TOKEN_STORE_UNAVAILABLE</c> propagates unchanged when the
+    /// revocation could not be recorded, because a sign-out that silently failed to revoke anything
+    /// must not be reported as a sign-out.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Read the honest semantics before relying on this member.</b> It revokes the presented
+    /// refresh token, which breaks the rotation chain and prevents any further session from being
+    /// minted from it. It does <em>nothing</em> to the access token the caller is currently holding:
+    /// a stateless bearer token cannot be recalled, so that token remains valid until its published
+    /// expiry and the client must discard it. This is the one respect in which sign-out is weaker
+    /// than the cookie clearance it replaces, and it is precisely why the access token's lifetime is
+    /// short.
+    /// </para>
+    /// <para>
+    /// <b>There is no deny list, and adding one would be a regression.</b> Recording issued access
+    /// tokens so they could be rejected individually would reintroduce the per-caller server-side
+    /// session state this migration exists to remove, and would make every authenticated request
+    /// depend on a store read. No member of this contract, and no type it names, maintains such a
+    /// record.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: FormsAuthentication.SignOut at PortalSecurity.vb:L77 has no stateless counterpart.
+    // MIGRATION: that helper performed six server-side actions: the ticket abandonment itself, and
+    // clearing the language, authentication, portalaliasid and portalroles cookies -- the last two
+    // MIGRATION: by back-dating their Expires thirty years, with the static ClearRoles helper
+    // repeating the portalroles clear. Five of the six manipulated browser state that no longer
+    // exists in this design, and the sixth abandoned a server-side ticket that no longer exists
+    // either. What survives is the revocation of the refresh token; the access token lapses at its
+    // own expiry and the client discards it.
+    Task<Result> LogoutAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Describes the caller of the current request to itself, resolving the identity the caller's
@@ -246,39 +478,44 @@ public interface IAuthService
     /// Token observed while the account, its roles and its permission keys are read.
     /// </param>
     /// <returns>
-    /// A successful result carrying the caller's own description, or a successful result whose
-    /// value is <see langword="null"/> when the account the token names no longer exists. Absent
-    /// is not a failure, so this member documents no refusal code.
+    /// A task producing a successful <see cref="Result{T}"/> carrying the caller's own description,
+    /// or a successful result whose value is <see langword="null"/> when the caller is not
+    /// authenticated or the account its token names no longer exists. Absence is reported as a
+    /// successful result with no value rather than as a refusal, so this member documents no code of
+    /// its own; <c>auth.user_not_found</c> is reserved for an implementation that elects to report
+    /// the vanished-account case explicitly instead.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// <b>It takes no identifier, and that is the contract.</b> The subject is the caller, read
-    /// from the request's own claims through <see cref="ICurrentUser"/>. Accepting an account or
-    /// tenant identifier would turn a member that describes the caller into one that describes
-    /// anybody, and reading another account is what the account-administration contract's own read
-    /// is for, behind its own authorisation.
+    /// <b>It takes no identifier, and that is the contract.</b> The subject is the caller, read from
+    /// the request's own claims through <see cref="ICurrentUser"/>, which is injected rather than
+    /// passed. Accepting an account or tenant identifier would turn a member that describes the
+    /// caller into one that describes anybody, and reading another account is what the
+    /// account-administration contract's own read is for, behind its own authorisation.
     /// </para>
     /// <para>
-    /// <b>Why it can answer "absent" at all.</b> A bearer token asserts its own validity and is
-    /// not revoked by anything the server does, so an account may be deleted while a token naming
-    /// it is still within its lifetime. The nullable payload is how that window is reported: the
-    /// caller is authenticated and the subject is gone, which is a legitimate answer rather than a
-    /// fault.
+    /// <b>Why absence is a success and not a failure.</b> A bearer token asserts its own validity and
+    /// is not recalled by anything the server does, so an account may be deleted, or a tenant
+    /// removed, while a token naming it is still within its lifetime. The caller is then
+    /// legitimately authenticated and the subject is legitimately gone - a true answer, not a fault.
+    /// Reporting it as a failed result would oblige the api edge to choose an error status for a
+    /// request that did not fail. A null value on a successful result is the documented way this
+    /// codebase expresses "absent", and this member relies on it.
     /// </para>
     /// <para>
-    /// <b>Claims are not trusted as the whole answer.</b> The roles and permission keys are read
-    /// from the store rather than copied out of the token, because a token minted before a role
-    /// was withdrawn still asserts it; the token establishes <em>who</em> is asking, and the store
-    /// establishes what they may now do. This member is therefore a read and not a projection of
-    /// the token.
+    /// <b>Claims are not trusted as the whole answer.</b> Roles and permission keys are read from
+    /// the store rather than copied out of the token, because a token minted before a role was
+    /// withdrawn still asserts it: the token establishes <em>who</em> is asking and the store
+    /// establishes what they may now do. This member is therefore a read, not a projection of the
+    /// token.
     /// </para>
     /// </remarks>
-    // MIGRATION: this member is net-new and has no legacy predecessor to transliterate. The legacy
-    // application answered the same question without a call, by reading the ambient per-request
-    // UserInfo that its page base classes exposed; the target has no ambient request state in this
-    // layer, so the question becomes an explicit read. The projection it fills, CurrentUserDto,
-    // carries the tenant name alongside the account so that a client can render its own header
-    // without a second request.
-    Task<Result<CurrentUserDto?>> GetCurrentUserAsync(
-        CancellationToken cancellationToken = default);
+    // MIGRATION: the legacy answer to this question was an ambient read with no call and no failure
+    // MIGRATION: mode. GetCurrentUserInfo at UserController.vb:L381 returned the per-request user
+    // object the page base classes had already populated, and for an anonymous caller it returned a
+    // MIGRATION: newly constructed, empty UserInfo rather than Nothing -- an object that was
+    // indistinguishable from a real account until its fields were inspected. That sentinel is not
+    // reproduced: absence is stated explicitly, and no empty stand-in is ever returned in place of a
+    // caller.
+    Task<Result<CurrentUserDto?>> GetCurrentUserAsync(CancellationToken cancellationToken = default);
 }

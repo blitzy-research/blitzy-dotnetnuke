@@ -258,7 +258,7 @@ public sealed class TabService : ITabService
             List<Tab> tree = siblingSet.Where(candidate => candidate.TabId != tab.TabId).ToList();
             tree.Add(tab);
 
-            Portal? portal = await _portals.GetAsync(portalId, includeAliases: false, cancellationToken)
+            Portal? portal = await _portals.GetByIdAsync(portalId, includeAliases: false, cancellationToken)
                 .ConfigureAwait(false);
             RecomputeTree(tree, portal?.AdminTabId);
         }

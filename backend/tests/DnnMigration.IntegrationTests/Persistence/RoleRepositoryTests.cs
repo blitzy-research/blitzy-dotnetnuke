@@ -700,7 +700,7 @@ public sealed class RoleRepositoryTests
             UserQuota = 0,
         };
 
-        portals.Add(portal);
+        await portals.AddAsync(portal);
         await unitOfWork.SaveChangesAsync();
 
         return portal.PortalId;
@@ -715,11 +715,11 @@ public sealed class RoleRepositoryTests
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Portal? doomed = await portals.GetAsync(portalId);
+        Portal? doomed = await portals.GetByIdAsync(portalId);
 
         if (doomed is not null)
         {
-            portals.Remove(doomed);
+            await portals.DeleteAsync(doomed.PortalId);
             await unitOfWork.SaveChangesAsync();
         }
     }

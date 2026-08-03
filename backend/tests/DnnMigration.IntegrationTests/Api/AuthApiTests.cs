@@ -96,11 +96,20 @@ public sealed class AuthApiTests
         LoginResponse issued = await ReadLoginAsync(response);
 
         issued.AccessToken.Should().NotBeNullOrWhiteSpace();
-        issued.TokenType.Should().Be("Bearer");
-        issued.ExpiresIn.Should().BeGreaterThan(0);
-        issued.ExpiresAtUtc.Should().BeAfter(DateTime.UtcNow);
         issued.RefreshToken.Should().NotBeNullOrWhiteSpace();
-        issued.RefreshTokenExpiresAtUtc.Should().BeAfter(issued.ExpiresAtUtc);
+        issued.ExpiresAtUtc.Should().BeAfter(
+            DateTime.UtcNow,
+            "exactly one expiry is published, as an absolute instant in UTC, so a client can schedule a "
+            + "refresh instead of discovering expiry through a rejected request");
+
+        // The response publishes no bearer-scheme member, no remaining-seconds duration and no refresh
+        // token expiry. The scheme is fixed by this contract rather than restated per response, a single
+        // expiry representation cannot disagree with itself, and the refresh token's expiry is rotation
+        // state the store owns rather than something a client should reason around.
+        issued.MustChangePassword.Should().BeFalse(
+            "the seeded account carries no forced credential update and is not using a shipped credential");
+        issued.PasswordExpiring.Should().BeFalse("the seeded account's credential is not near expiry");
+        issued.MustUpdateProfile.Should().BeFalse("the seeded account's profile needs no completion");
 
         issued.User.UserId.Should().Be(_fixture.Seed.AdminUserId);
         issued.User.PortalId.Should().Be(_fixture.Seed.PortalId);

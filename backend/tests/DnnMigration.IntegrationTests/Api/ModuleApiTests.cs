@@ -128,7 +128,10 @@ public sealed class ModuleApiTests
         created.ModuleDefId.Should().Be(_fixture.Seed.ModuleDefinitionId);
         created.FriendlyName.Should().Be(IntegrationSeed.ModuleDefinitionFriendlyName);
         created.ModuleTitle.Should().Be(request.ModuleTitle);
-        created.PaneName.Should().Be(request.PaneName);
+        created.IconFile.Should().Be(
+            request.IconFile,
+            "a placement fact the detail contract does carry, the pane having moved to the settings "
+            + "contract that owns the placement scope");
         created.Visibility.Should().Be(ModuleVisibility.Maximized);
         created.DisplayTitle.Should().BeTrue();
         created.IsDeleted.Should().BeFalse();
@@ -470,7 +473,6 @@ public sealed class ModuleApiTests
 
         ModuleDetailDto updated = await ReadDetailAsync(response);
         updated.ModuleTitle.Should().Be(request.ModuleTitle);
-        updated.PaneName.Should().Be("LeftPane");
         updated.ModuleOrder.Should().Be(6);
         updated.Visibility.Should().Be(ModuleVisibility.Minimized);
         updated.DisplayTitle.Should().BeFalse();
@@ -503,6 +505,14 @@ public sealed class ModuleApiTests
     /// because the legacy screen posted an empty text box as an empty value. Without this an operator could
     /// set a colour but never remove one.
     /// </para>
+    /// <para>
+    /// The write goes to the module route because these fields are submitted on the update request, but the
+    /// READ goes to the settings route, because the settings projection is the contract that owns the
+    /// placement scope. The detail projection deliberately does not restate the appearance columns - they
+    /// exist to drive server-side markup, which this migration excludes - so this test crosses the two
+    /// contracts on purpose and would be asserting nothing if it read the appearance back from the detail
+    /// contract.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -530,11 +540,11 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
         using HttpResponseMessage reread = await client.GetAsync(
-            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+            ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
 
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        ModuleDetailDto persisted = await ReadDetailAsync(reread);
+        ModuleSettingsDto persisted = await ReadSettingsAsync(reread);
         persisted.Alignment.Should().Be("right");
         persisted.Color.Should().Be("#003366", "the column holds 20 characters, so a hex triplet fits");
         persisted.Border.Should().Be("1", "the column holds exactly one character");
@@ -551,9 +561,9 @@ public sealed class ModuleApiTests
         cleared.StatusCode.Should().Be(HttpStatusCode.OK);
 
         using HttpResponseMessage afterClear = await client.GetAsync(
-            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+            ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
 
-        ModuleDetailDto emptied = await ReadDetailAsync(afterClear);
+        ModuleSettingsDto emptied = await ReadSettingsAsync(afterClear);
         emptied.Alignment.Should().BeNull();
         emptied.Color.Should().BeNull();
         emptied.Border.Should().BeNull();
@@ -1091,6 +1101,25 @@ public sealed class ModuleApiTests
 
         detail.Should().NotBeNull();
         return detail!;
+    }
+
+    /// <summary>
+    /// Reads a module settings representation from a response, failing the test when it is absent.
+    /// </summary>
+    /// <param name="response">The response to read.</param>
+    /// <returns>The representation.</returns>
+    /// <remarks>
+    /// The settings projection is the contract that owns the placement scope - the pane, the appearance
+    /// columns and both key-value collections - so a test asserting on any of those reads through here
+    /// rather than through <see cref="ReadDetailAsync"/>.
+    /// </remarks>
+    private static async Task<ModuleSettingsDto> ReadSettingsAsync(HttpResponseMessage response)
+    {
+        ModuleSettingsDto? settings = await response.Content
+            .ReadFromJsonAsync<ModuleSettingsDto>(ApiTestFixture.Json);
+
+        settings.Should().NotBeNull();
+        return settings!;
     }
 
     /// <summary>Builds the collection route for a tenant's modules.</summary>

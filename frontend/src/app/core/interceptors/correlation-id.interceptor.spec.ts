@@ -48,6 +48,56 @@
 // calls is the interceptor itself.
 //
 // ---------------------------------------------------------------------------
+// EVERY URL BELOW IS RELATIVE, AND THAT IS A CONTRACT RATHER THAN A HABIT
+// ---------------------------------------------------------------------------
+// Every request issued and every `expectOne` matcher used in this file addresses a
+// RELATIVE path beginning `/api/v1/`. No absolute host appears anywhere, and none
+// may be introduced.
+//
+// The reason is that specs see the PRODUCTION environment. `angular.json` declares
+// no `configurations` block at all on the `test` target, so that target has no
+// `fileReplacements`; the module that reaches a spec is therefore
+// `src/environments/environment.ts`, which is itself the production file
+// (`production: true`, `apiBaseUrl: '/api/v1'`). The replacements run the other way
+// round from the usual arrangement - the `production` build configuration lists
+// none, while `development` is the one that swaps in `environment.development.ts` -
+// so a spec written against an absolute development host would be asserting a base
+// URL that this compilation never sees.
+//
+// The relative base is also load-bearing at run time, and its failure mode is
+// invisible to every compiler and every unit test. `docker/nginx.conf` proxies
+// `/api/` through to the API container, so the browser reaches the API through the
+// very origin that served the application. An absolute value naming the API
+// service by its compose service name would resolve only from inside the Docker
+// network - that hostname does not resolve in a browser at all - and would
+// additionally turn every call into a cross-origin request subject to the API's
+// CORS policy. Both containers would still build and both would still report
+// healthy, and the end-to-end validation gate would fail anyway. Pinning the
+// relative shape here is what keeps that from reaching a container image.
+//
+// ---------------------------------------------------------------------------
+// THE OTHER HALF OF THE LOOP IS SERVER-SIDE AND CANNOT BE ASSERTED HERE
+// ---------------------------------------------------------------------------
+// Recorded rather than tested, because no client-side assertion can reach it. The
+// API's `CorrelationIdMiddleware` consumes this header, keeps the inbound value
+// when it passes the same four clauses the interceptor validates against, and
+// pushes it onto the server's structured logging scope - which is the join between
+// a browser-side observation and the server log lines for the same request.
+//
+// On a failure the value also commonly surfaces in the response body:
+// `GlobalExceptionHandler` writes an RFC 7807 `ProblemDetails` whose `traceId` is
+// derived as `Activity.Current?.Id ?? httpContext?.TraceIdentifier`. That is why
+// `traceId` matching this header is the common case rather than a guarantee - an
+// ambient trace, when one is running, wins over the request identifier the
+// middleware aligns to this value.
+//
+// On a SUCCESS there is no body-borne appearance at all: `Dtos/Common/ApiMeta.cs`
+// deliberately declares no `CorrelationId`, `TraceId` or `RequestId` member, so the
+// response header is the only carrier. That asymmetry is the reason the specs below
+// pin the REQUEST header so precisely: it is the one end of the loop this
+// application controls and the one a regression here would silently sever.
+//
+// ---------------------------------------------------------------------------
 // SPEC ORDER IS RANDOMISED
 // ---------------------------------------------------------------------------
 // `karma.conf.js` deliberately leaves Jasmine's `random` at its default of `true`.
@@ -117,6 +167,18 @@ const PORTAL_LIST_URL = '/api/v1/portals';
 const ROLE_LIST_URL = '/api/v1/roles';
 
 /**
+ * The identifier of the portal a delete spec addresses.
+ *
+ * `0` rather than `1`, because the legacy `Portals.PortalID` column is declared
+ * `IDENTITY(-1,1)`: the first real portal is `0` and `-1` is simultaneously a
+ * legitimate row identifier and the legacy `Null.NullInteger` sentinel. Nothing in
+ * this interceptor interprets the value - it is a path segment here and no more -
+ * but choosing a realistic one keeps the fixture honest about the schema this
+ * migration maps onto.
+ */
+const DELETED_PORTAL_ID = 0;
+
+/**
  * A caller-supplied identifier that is deliberately *not* UUID-shaped.
  *
  * The interceptor neither validates nor normalises an inbound value - it forwards
@@ -137,6 +199,27 @@ const ACCEPT_HEADER = 'Accept';
 
 /** The value of {@link ACCEPT_HEADER}. */
 const ACCEPT_HEADER_VALUE = 'application/json';
+
+/**
+ * The credential header the next interceptor in the real chain attaches.
+ *
+ * Named here so the ordering specs can assert against the same spelling the
+ * negative spec uses, and so that "the identifier is stamped before credentials are
+ * attached" is expressed once rather than as a scattered string literal.
+ */
+const AUTHORIZATION_HEADER = 'Authorization';
+
+/**
+ * An obviously synthetic credential for the ordering probe to attach.
+ *
+ * Deliberately unmistakable as a placeholder. It is not a token, is not derived
+ * from one, authorises nothing and matches no real credential format - the probe
+ * only needs *some* value to prove a header was added after the identifier, and a
+ * value that could be mistaken for a live credential has no place in a fixture.
+ * Nothing in this suite reads, decodes or transmits it beyond the in-memory
+ * testing backend.
+ */
+const FAKE_BEARER_CREDENTIAL = 'Bearer fake-access-token';
 
 /** A request body, expected to survive the header clone by identity. */
 const REQUEST_BODY: Readonly<Record<string, string>> = {
@@ -579,6 +662,46 @@ describe('correlationIdInterceptor', () => {
       expect(httpMock.expectOne(PORTAL_LIST_URL).request.body).toEqual(REQUEST_BODY);
     });
 
+    it('stamps a bodyless mutating request', () => {
+      httpClient.delete(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).subscribe();
+
+      // The third verb completes the method-agnosticism claim. The interceptor
+      // branches on the inbound header alone and never inspects the method, so a
+      // regression that started keying off the verb - stamping only requests with a
+      // body, say - would pass the GET and POST specs above and fail here.
+      // A delete is also the request whose identifier matters most in a log: it is
+      // the one whose effect cannot be re-read afterwards.
+      expect(
+        identifierOn(httpMock.expectOne(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).request),
+      ).toMatch(CANONICAL_UUID_PATTERN);
+    });
+
+    it('sends that request under the method the caller chose', () => {
+      httpClient.delete(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).subscribe();
+
+      // Stamping the header must not disturb the verb: the clone carries the method
+      // across, and a delete that arrived as anything else would be a different
+      // operation entirely.
+      expect(httpMock.expectOne(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).request.method).toBe(
+        'DELETE',
+      );
+    });
+
+    it('gives all three verbs an identifier, and a different one each', () => {
+      httpClient.get(PORTAL_LIST_URL).subscribe();
+      httpClient.post(PORTAL_LIST_URL, REQUEST_BODY).subscribe();
+      httpClient.delete(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).subscribe();
+
+      const identifiers = httpMock
+        .match(() => true)
+        .map((pending) => identifierOn(pending.request) ?? MISSING_IDENTIFIER);
+
+      // Three requests, three identifiers, none missing - asserted as a set so the
+      // spec states "all distinct" rather than enumerating pairs.
+      expect(new Set(identifiers).size).toBe(3);
+      expect(identifiers).not.toContain(MISSING_IDENTIFIER);
+    });
+
     it('gives two concurrent client calls two different identifiers', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       httpClient.get(ROLE_LIST_URL).subscribe();
@@ -590,28 +713,62 @@ describe('correlationIdInterceptor', () => {
   });
 
   describe('position in the interceptor chain', () => {
+    // WHY THIS BLOCK EXISTS, AND WHAT IT DOES *NOT* CLAIM.
+    //
+    // `withInterceptors([A, B, C])` composes as `A(next = B(next = C(next =
+    // backend)))`. On the REQUEST path that means A runs first, so the correlation
+    // identifier is attached before the auth interceptor can add `Authorization`
+    // and before anything downstream can short-circuit, retry or fail the request.
+    // That is the claim this block makes observable, and it is correct.
+    //
+    // D-I1. The same composition makes the RESPONSE path the exact reverse -
+    // `backend -> C -> B -> A` - so the outermost interceptor is the LAST to see a
+    // response, not the first. The migration plan's stated rationale for putting
+    // error translation last, that doing so lets it "observe the final response
+    // after any 401 refresh-and-retry", is therefore inverted with respect to the
+    // ordering it prescribes: registered third, the error interceptor sees a
+    // response BEFORE the two interceptors registered ahead of it do. The
+    // prescribed ORDER is nonetheless right for an independent reason - the auth
+    // interceptor is the one that swallows a recovered 401, and it can only do that
+    // from inside, which is where being registered second puts it.
+    //
+    // None of that is this file's business to fix. This interceptor touches no
+    // response at all - a property asserted directly under "what it deliberately
+    // does not do" - so the response-path ordering has no observable consequence
+    // here. The correction belongs to `auth.interceptor.ts` and
+    // `error.interceptor.ts`, and is recorded here only so that a reader who
+    // arrives via the plan's rationale is not misled by it.
     let httpClient: HttpClient;
     let httpMock: HttpTestingController;
-    let observedByTheNextInterceptor: (string | null)[];
+    let identifierSeenByProbe: (string | null)[];
+    let authorizationSeenByProbe: (string | null)[];
 
     beforeEach(() => {
-      observedByTheNextInterceptor = [];
+      identifierSeenByProbe = [];
+      authorizationSeenByProbe = [];
 
-      // A second interceptor registered *after* the one under test. On the request
-      // path `withInterceptors([A, B])` composes as A then B, so B observes
-      // whatever A has already done. This is how the interceptor's documented
-      // claim - that the identifier is attached "before the auth interceptor adds
-      // `Authorization` and before anything downstream can short-circuit" - becomes
-      // observable rather than merely asserted in prose.
-      const observingInterceptor: HttpInterceptorFn = (request, next) => {
-        observedByTheNextInterceptor.push(identifierOn(request));
+      // A stand-in for the auth interceptor, registered *after* the one under test
+      // exactly as `app.config.ts` registers the real one. It records what it can
+      // see the moment it runs and only then adds its own header, which is what
+      // turns the ordering claim into two independent observations: the correlation
+      // identifier is already present when credential handling begins, and the
+      // credential header is not yet present when the identifier is stamped.
+      //
+      // Deliberately LOCAL and NOT exported. It is a probe, not production API, and
+      // it must never be mistaken for one - the real credential handling lives in
+      // `auth.interceptor.ts` and does considerably more than this.
+      const orderProbeInterceptor: HttpInterceptorFn = (request, next) => {
+        identifierSeenByProbe.push(identifierOn(request));
+        authorizationSeenByProbe.push(request.headers.get(AUTHORIZATION_HEADER));
 
-        return next(request);
+        return next(
+          request.clone({ setHeaders: { [AUTHORIZATION_HEADER]: FAKE_BEARER_CREDENTIAL } }),
+        );
       };
 
       TestBed.configureTestingModule({
         providers: [
-          provideHttpClient(withInterceptors([correlationIdInterceptor, observingInterceptor])),
+          provideHttpClient(withInterceptors([correlationIdInterceptor, orderProbeInterceptor])),
           provideHttpClientTesting(),
         ],
       });
@@ -628,7 +785,18 @@ describe('correlationIdInterceptor', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       httpMock.expectOne(PORTAL_LIST_URL).flush(null);
 
-      expect(observedByTheNextInterceptor).toEqual([jasmine.stringMatching(CANONICAL_UUID_PATTERN)]);
+      expect(identifierSeenByProbe).toEqual([jasmine.stringMatching(CANONICAL_UUID_PATTERN)]);
+    });
+
+    it('runs before the credential header is attached', () => {
+      httpClient.get(PORTAL_LIST_URL).subscribe();
+      httpMock.expectOne(PORTAL_LIST_URL).flush(null);
+
+      // The other half of the same ordering claim. Asserting only that the probe saw
+      // the identifier would be satisfied by either order if some later change also
+      // stamped the identifier late; asserting that the probe had not yet added its
+      // own header pins the direction unambiguously.
+      expect(authorizationSeenByProbe).toEqual([null]);
     });
 
     it('hands the later interceptor the identifier that reaches the backend', () => {
@@ -636,11 +804,61 @@ describe('correlationIdInterceptor', () => {
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
       pending.flush(null);
 
-      expect(observedByTheNextInterceptor).toEqual([identifierOn(pending.request)]);
+      expect(identifierSeenByProbe).toEqual([identifierOn(pending.request)]);
+    });
+
+    it('lets the later interceptor add its header without disturbing the identifier', () => {
+      httpClient.get(PORTAL_LIST_URL).subscribe();
+      const pending = httpMock.expectOne(PORTAL_LIST_URL);
+      pending.flush(null);
+
+      // Both headers arrive together. This is the shape a real authenticated call
+      // has on the wire, and it proves the two interceptors compose rather than
+      // overwrite one another's work.
+      expect([
+        identifierOn(pending.request),
+        pending.request.headers.get(AUTHORIZATION_HEADER),
+      ]).toEqual([jasmine.stringMatching(CANONICAL_UUID_PATTERN), FAKE_BEARER_CREDENTIAL]);
+    });
+
+    it('gives the first attempt and a downstream re-send the same identifier', () => {
+      httpClient.get(PORTAL_LIST_URL).subscribe();
+      const pending = httpMock.expectOne(PORTAL_LIST_URL);
+      pending.flush(null);
+
+      // The mechanism the preservation contract exists to serve, observed end to
+      // end. `auth.interceptor.ts` recovers a 401 by re-sending the request object
+      // it was handed - one this interceptor has already stamped - so the retry
+      // carries the first attempt's identifier rather than a second one. Feeding the
+      // request the probe forwarded back through the interceptor reproduces exactly
+      // that re-entry, and the identifier must survive it unchanged.
+      const reSent = runInterceptor(pending.request).forwarded[0];
+
+      expect(identifierOn(reSent)).toBe(identifierOn(pending.request));
     });
   });
 
   describe('a request that already carries the header', () => {
+    // WHY PRESERVATION IS THE CONTRACT, AND WHICH CONCRETE MECHANISM DEPENDS ON IT.
+    //
+    // The consumer is `auth.interceptor.ts`. When the API answers 401 it renews the
+    // session and retries ONCE, and it builds that retry by cloning the ORIGINAL
+    // request object it was handed - the very object this interceptor, sitting
+    // outside it, has already stamped - adding only a refreshed bearer token. The
+    // retry therefore re-enters the chain carrying an identifier that is already
+    // present.
+    //
+    // If this interceptor overwrote a value it found, the retry would be issued
+    // under a second identifier and one logical operation - "the caller asked for
+    // this resource, was challenged, and was served after renewal" - would be split
+    // across two unrelated identifiers in the server logs. The operator reading
+    // those logs would see an unexplained 401 and an unexplained success with
+    // nothing tying them together, which is precisely the failure correlation exists
+    // to prevent. Preserving the value is what makes both attempts joinable as one.
+    //
+    // Preservation is conditional on the value being one the API will actually
+    // honour; the clauses, and why forwarding an unusable value would preserve
+    // nothing at all, are exercised in the block that follows this one.
     it('forwards the very same request object rather than a clone', () => {
       const original = fullyPopulatedRequest(CORRELATION_ID_HEADER);
 
@@ -1140,7 +1358,7 @@ describe('correlationIdInterceptor', () => {
       // Attaching credentials is the auth interceptor's job. This one is registered
       // ahead of it precisely so that the identifier exists before any credential
       // handling happens, and it must not stray into that territory.
-      expect(forwarded.headers.has('Authorization')).toBeFalse();
+      expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBeFalse();
     });
 
     it('reads no response and rewrites no event', () => {

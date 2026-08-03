@@ -143,12 +143,15 @@ public sealed class AuthController : ControllerBase
             return ValidationProblem(ModelState);
         }
 
+        // Assigned here rather than accepted from the body: the property is excluded from
+        // serialisation, so this assignment is the only way the tenant can reach the service, and the
+        // value written is always the one the transport resolved. The caller's network address is not
+        // passed at all - it is an attribute of the connection, recorded by the structured request log,
+        // and never an input to the sign-in decision.
+        request.PortalId = resolvedPortalId.Value;
+
         Result<LoginResponse> outcome = await _auth
-            .LoginAsync(
-                resolvedPortalId.Value,
-                request,
-                HttpContext.Connection.RemoteIpAddress?.ToString(),
-                cancellationToken)
+            .LoginAsync(request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);

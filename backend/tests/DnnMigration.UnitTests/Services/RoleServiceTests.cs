@@ -387,11 +387,17 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The detail projection names the group that classifies the role.
+    /// The detail projection carries the identifier of the group that classifies the role, and resolves
+    /// its name no further.
     /// </summary>
+    /// <remarks>
+    /// The group is identified, not named. A caller that needs the name reads it from the group
+    /// contract, exactly as the legacy editor did: it had already bound a drop-down of the portal's
+    /// groups, so it resolved the name locally rather than having the role row carry it.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task GetRole_NamesTheClassifyingGroup()
+    public async Task GetRole_CarriesTheClassifyingGroupIdentifierWithoutResolvingItsName()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -407,15 +413,17 @@ public class RoleServiceTests
             .GetRoleAsync(PortalId, RoleId, CancellationToken.None);
 
         outcome.Value!.RoleGroupId.Should().Be(RoleGroupId);
-        outcome.Value!.RoleGroupName.Should().Be(RoleGroupName);
+        harness.Roles.Verify(
+            r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
-    /// An unclassified role carries no group name and provokes no group lookup.
+    /// An unclassified role carries a null group identifier and provokes no group lookup.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task GetRole_LeavesTheGroupNameAbsentWhenTheRoleIsUnclassified()
+    public async Task GetRole_LeavesTheGroupIdentifierAbsentWhenTheRoleIsUnclassified()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -424,19 +432,26 @@ public class RoleServiceTests
         Result<RoleDetailDto?> outcome = await harness.Service
             .GetRoleAsync(PortalId, RoleId, CancellationToken.None);
 
-        outcome.Value!.RoleGroupName.Should().BeNull();
+        outcome.Value!.RoleGroupId.Should().BeNull();
         harness.Roles.Verify(
             r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
     /// <summary>
-    /// The member count comes from the assignment store's total rather than from the size of the single
-    /// probe page the projection reads.
+    /// Reading one role reads no page of assignments, because the detail contract carries no member
+    /// tally to populate.
     /// </summary>
+    /// <remarks>
+    /// This is a round-trip guard, not a projection assertion. An earlier revision of the contract
+    /// carried a member count and the service produced it by reading the total off a one-row page of
+    /// assignments, so a single-role request cost two extra queries - one for the group, one for the
+    /// count - to populate two members no legacy role screen displayed. Both are gone, and this test
+    /// fails if either read is reintroduced.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task GetRole_CountsMembersFromTheAssignmentTotalRatherThanTheReturnedPage()
+    public async Task GetRole_ReadsNoAssignmentPageBecauseTheContractCarriesNoMemberTally()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -449,10 +464,11 @@ public class RoleServiceTests
         Result<RoleDetailDto?> outcome = await harness.Service
             .GetRoleAsync(PortalId, RoleId, CancellationToken.None);
 
-        outcome.Value!.UserCount.Should().Be(412);
+        outcome.Value!.RoleId.Should().Be(RoleId);
         harness.Roles.Verify(
-            r => r.ListAssignmentsAsync(RoleId, 0, 1, It.IsAny<CancellationToken>()),
-            Times.Once);
+            r => r.ListAssignmentsAsync(
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -1875,7 +1891,7 @@ public class RoleServiceTests
         await harness.Service.RemoveUserFromRoleAsync(PortalId, RoleId, UserId, CancellationToken.None);
 
         harness.Portals.Verify(
-            p => p.GetAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            p => p.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
             Times.Once);
         harness.Portals.Verify(
             p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
@@ -2905,7 +2921,7 @@ public class RoleServiceTests
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
             harness.Portals
-                .Setup(p => p.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRow);
 
             harness.Roles

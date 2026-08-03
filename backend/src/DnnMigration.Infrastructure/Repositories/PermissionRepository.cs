@@ -270,10 +270,15 @@ internal sealed class PermissionRepository : IPermissionRepository
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration and the column
+        // stores its member name, so the union carries the enumeration and the name is taken here,
+        // client side, once the rows have landed. PermissionGrant deliberately keeps a string: it
+        // models what the row said, and the evaluator is the component that decides what an
+        // unrecognised key means.
         List<PermissionGrant> grants = rows.ConvertAll(row => new PermissionGrant(
             (PermissionScopeKind)row.ScopeKind,
             row.ScopeId,
-            row.PermissionKey,
+            row.PermissionKey.ToString(),
             row.AllowAccess));
 
         return _evaluator.Reduce(grants);
@@ -294,13 +299,14 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         ArgumentNullException.ThrowIfNull(roleNames);
 
-        string wanted = permissionKey.ToString().ToLowerInvariant();
-
-        // Only the grants naming this key are fetched, but the verdict itself is the evaluator's, so a
-        // decision and a listing are answered by the same rule and cannot contradict one another.
+        // MIGRATION: the key is compared as the enumeration itself rather than as lower-cased text.
+        // The property is a closed enumeration mapped to the varchar column by a string conversion, so
+        // the provider compares the canonical member name against the column and the comparison stays
+        // case-insensitive by virtue of the database collation - which is exactly what the previous
+        // explicit lower-casing was reproducing, without it a query could no longer index-seek.
         List<PermissionGrant> grants = await ProjectModuleGrants(
                 ApplicableModuleGrants(moduleId, userId, roleNames)
-                    .Where(p => p.Permission!.PermissionKey.ToLower() == wanted))
+                    .Where(p => p.Permission!.PermissionKey == permissionKey))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -318,11 +324,10 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         ArgumentNullException.ThrowIfNull(roleNames);
 
-        string wanted = permissionKey.ToString().ToLowerInvariant();
-
+        // MIGRATION: the same enumeration comparison as HasModulePermissionAsync, for the same reason.
         List<PermissionGrant> grants = await ProjectTabGrants(
                 ApplicableTabGrants(tabId, userId, roleNames)
-                    .Where(p => p.Permission!.PermissionKey.ToLower() == wanted))
+                    .Where(p => p.Permission!.PermissionKey == permissionKey))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -456,10 +461,14 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// </remarks>
     private static IQueryable<PermissionGrant> ProjectModuleGrants(IQueryable<ModulePermission> grants)
     {
+        // MIGRATION: the key crosses as the enumeration member's name. The column already holds that
+        // name - the mapping applies a string conversion rather than an ordinal one - and constructing
+        // PermissionGrant is a client projection over the materialised rows, so the name is taken after
+        // the column has been read and the emitted SQL still selects the same three columns.
         return grants.Select(p => new PermissionGrant(
             PermissionScopeKind.Module,
             p.ModuleId,
-            p.Permission!.PermissionKey,
+            p.Permission!.PermissionKey.ToString(),
             p.AllowAccess));
     }
 
@@ -468,10 +477,11 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// <returns>A projection carrying the page scope discriminator.</returns>
     private static IQueryable<PermissionGrant> ProjectTabGrants(IQueryable<TabPermission> grants)
     {
+        // MIGRATION: as ProjectModuleGrants, the key crosses as the enumeration member's name.
         return grants.Select(p => new PermissionGrant(
             PermissionScopeKind.Tab,
             p.TabId,
-            p.Permission!.PermissionKey,
+            p.Permission!.PermissionKey.ToString(),
             p.AllowAccess));
     }
 }

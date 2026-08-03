@@ -40,10 +40,11 @@ function userWith(permissions: readonly string[], isSuperUser = false): CurrentU
 function sessionWith(permissions: readonly string[], isSuperUser = false): AuthSession {
   return {
     accessToken: 'access-1',
-    tokenType: 'Bearer',
     expiresAtUtc: '2100-01-01T00:00:00.000Z',
     refreshToken: 'refresh-1',
-    refreshTokenExpiresAtUtc: '2100-01-02T00:00:00.000Z',
+    mustChangePassword: false,
+    passwordExpiring: false,
+    mustUpdateProfile: false,
     user: userWith(permissions, isSuperUser),
   };
 }

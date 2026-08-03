@@ -895,7 +895,7 @@ public class PortalServiceTests
         UserPortal membership = harness.AddedMemberships.Should().ContainSingle().Which;
         membership.User.Should().BeSameAs(administrator);
         membership.Portal.Should().BeSameAs(harness.AddedPortals.Single());
-        membership.Authorised.Should().BeTrue();
+        membership.IsAuthorised.Should().BeTrue();
         membership.CreatedDate.Should().Be(Now);
 
         harness.AddedAssignments.Should().HaveCount(3);
@@ -1473,10 +1473,10 @@ public class PortalServiceTests
         await harness.Service.GetPortalSettingsAsync(PortalId, CancellationToken.None);
 
         harness.Portals.Verify(
-            p => p.GetAsync(PortalId, false, It.IsAny<CancellationToken>()),
+            p => p.GetByIdAsync(PortalId, false, It.IsAny<CancellationToken>()),
             Times.Once);
         harness.Portals.Verify(
-            p => p.GetAsync(PortalId, true, It.IsAny<CancellationToken>()),
+            p => p.GetByIdAsync(PortalId, true, It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -2094,7 +2094,7 @@ public class PortalServiceTests
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
             harness.Portals
-                .Setup(p => p.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRow);
             harness.Portals
                 .Setup(p => p.CountUsersAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -2122,18 +2122,38 @@ public class PortalServiceTests
                     0,
                     1));
             harness.Portals
-                .Setup(p => p.Add(It.IsAny<Portal>()))
-                .Callback<Portal>(portal =>
+                .Setup(p => p.AddAsync(It.IsAny<Portal>(), It.IsAny<CancellationToken>()))
+                .Callback<Portal, CancellationToken>((portal, _) =>
                 {
                     harness.AddedPortals.Add(portal);
                     if (harness.EchoCreatedPortal)
                     {
                         harness.PortalRow = portal;
                     }
-                });
+                })
+                .Returns(Task.CompletedTask);
             harness.Portals
-                .Setup(p => p.Remove(It.IsAny<Portal>()))
-                .Callback<Portal>(harness.RemovedPortals.Add);
+                .Setup(p => p.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((portalId, _) =>
+                {
+                    // The contract identifies its deletion target by identifier, as the legacy
+                    // procedure did, so the harness resolves the identifier back to the entity it
+                    // already knows about. That keeps RemovedPortals a list of entities and lets
+                    // the suite go on asserting *which* tenant was removed by reference rather
+                    // than merely that some identifier was passed.
+                    Portal? removed = harness.AddedPortals.Find(candidate => candidate.PortalId == portalId);
+
+                    if (removed is null && harness.PortalRow is Portal known && known.PortalId == portalId)
+                    {
+                        removed = known;
+                    }
+
+                    if (removed is not null)
+                    {
+                        harness.RemovedPortals.Add(removed);
+                    }
+                })
+                .Returns(Task.CompletedTask);
 
             harness.Aliases
                 .Setup(a => a.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))

@@ -14,11 +14,12 @@ namespace DnnMigration.Application.Mapping;
 /// below is a named assignment.
 /// </para>
 /// <para>
-/// The spelling difference between the stored column and the wire contract is deliberate and is
-/// resolved here, in one place: the column, and therefore the entity property, is <c>KeyWords</c>
-/// with a capital <c>W</c>, while the transfer contract spells it <c>Keywords</c>. Neither side is
-/// renamed to match the other - the column name is fixed by the shipped schema and the wire name is
-/// fixed by the published contract - so the mapping absorbs the difference.
+/// The keyword spelling difference is resolved in the persistence layer rather than here. The
+/// column is <c>KeyWords</c> with a capital <c>W</c>, fixed by the shipped schema, while both the
+/// entity member and the transfer contract spell it <c>Keywords</c>, the idiomatic single word that
+/// also matches the caption the legacy screens showed. <c>TabConfiguration</c> reconciles the two
+/// with an explicit <c>HasColumnName("KeyWords")</c>, so the projections below are a plain
+/// like-named assignment and the bridge exists in exactly one place.
 /// </para>
 /// <para>
 /// Whether a page has children is not stored against the page. It is computed once for a whole set by
@@ -80,7 +81,7 @@ public static class TabMappings
             DisableLink = tab.DisableLink,
             Title = tab.Title,
             Description = tab.Description,
-            Keywords = tab.KeyWords,
+            Keywords = tab.Keywords,
             IsDeleted = tab.IsDeleted,
             Url = tab.Url,
             SkinSrc = tab.SkinSrc,
@@ -101,11 +102,36 @@ public static class TabMappings
     /// <param name="tab">The tracked page to modify.</param>
     /// <param name="request">The submitted values.</param>
     /// <remarks>
-    /// Five stored members are deliberately not written from a request, because the request contract
-    /// does not carry them: the skin and container sources, the materialised hierarchy path, the depth
-    /// and the recycle-bin flag. The first two belong to the excluded skinning subsystem; the path and
-    /// depth are derived from the parent chain and are maintained by the write path rather than
-    /// submitted; and the recycle-bin flag is moved by a deletion, never by an edit.
+    /// <para>
+    /// All seventeen members the request carries are written, in the order the request declares them.
+    /// The request shape is itself the terminal update procedure's eighteen mutable fields minus the
+    /// one server-derived field among them, so this method writes exactly what that procedure wrote.
+    /// </para>
+    /// <para>
+    /// Exactly three stored members are deliberately not written, because the request contract does
+    /// not carry them and must not: the sibling order, the depth and the materialised hierarchy path.
+    /// All three are server-derived. The legacy update procedure's parameter list omits the order and
+    /// the depth outright and its <c>UPDATE</c> body sets neither, while the legacy controller passed
+    /// <c>0</c> for both precisely so that its ordering routine would recompute them; the path was
+    /// assigned exclusively by the legacy path generator and cascaded recursively to every descendant
+    /// whenever a name or a parent changed. The page service recomputes all three after this method
+    /// returns, so writing them here would be both redundant and unsafe.
+    /// </para>
+    /// <para>
+    /// The skin source, the container source and the recycle-bin flag <em>are</em> written. The first
+    /// two are genuine columns the terminal procedure persists, and blanking them on every edit would
+    /// silently destroy an administrator's stored choice; they are carried as opaque tokens, since the
+    /// skinning subsystem itself is out of scope. The recycle-bin flag is written because both legacy
+    /// recycle-bin transitions - soft delete and restore - were plain writes of that flag through this
+    /// very update path, and the page surface exposes no delete or restore route through which they
+    /// could otherwise be reached.
+    /// </para>
+    /// <para>
+    /// Neither the page identifier nor the portal identifier is written. The former is the route's
+    /// authoritative value and identifies the already-loaded aggregate; the latter is absent from the
+    /// request entirely, because the legacy procedure accepted no portal argument and a page therefore
+    /// cannot be moved between tenants through this path.
+    /// </para>
     /// </remarks>
     public static void ApplyUpdate(Tab tab, UpdateTabRequest request)
     {
@@ -115,17 +141,19 @@ public static class TabMappings
         tab.TabName = request.TabName;
         tab.Title = request.Title;
         tab.Description = request.Description;
-        tab.KeyWords = request.Keywords;
+        tab.Keywords = request.Keywords;
+        tab.ParentId = request.ParentId;
         tab.IsVisible = request.IsVisible;
         tab.DisableLink = request.DisableLink;
-        tab.ParentId = request.ParentId;
-        tab.TabOrder = request.TabOrder;
         tab.IconFile = request.IconFile;
+        tab.SkinSrc = request.SkinSrc;
+        tab.ContainerSrc = request.ContainerSrc;
         tab.Url = request.Url;
         tab.StartDate = request.StartDate;
         tab.EndDate = request.EndDate;
         tab.RefreshInterval = request.RefreshInterval;
         tab.PageHeadText = request.PageHeadText;
         tab.IsSecure = request.IsSecure;
+        tab.IsDeleted = request.IsDeleted;
     }
 }

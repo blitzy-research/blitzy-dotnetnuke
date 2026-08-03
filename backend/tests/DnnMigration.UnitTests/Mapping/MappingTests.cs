@@ -503,10 +503,10 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The page detail projection carries every editable column, bridging the keyword spelling.
+    /// The page detail projection carries every editable column, keywords included.
     /// </summary>
     [Fact]
-    public void TabToDetail_CarriesEveryColumnAndBridgesTheKeywordSpelling()
+    public void TabToDetail_CarriesEveryColumn()
     {
         Tab tab = FullTab();
 
@@ -537,13 +537,14 @@ public class MappingTests
 
         dto.Keywords.Should().Be(
             "reports,measured",
-            "the response spells the field Keywords while the column it carries is KeyWords - the bridge "
-            + "is deliberate and dropping it would silently lose the value");
+            "the entity and the response both spell the field Keywords while the column behind it is "
+            + "spelled KeyWords - the bridge belongs to TabConfiguration.HasColumnName, so this "
+            + "projection is a plain like-named assignment and must not silently lose the value");
     }
 
     /// <summary>
-    /// Applying a page update overwrites the editable columns and touches neither identity, ownership,
-    /// the computed tree position nor the skin wiring.
+    /// Applying a page update overwrites all seventeen editable columns and touches neither identity,
+    /// ownership, nor the server-computed tree position.
     /// </summary>
     [Fact]
     public void TabApplyUpdate_OverwritesEditableColumnsAndLeavesTheComputedTreeAlone()
@@ -556,17 +557,19 @@ public class MappingTests
             Title = "Renamed Title",
             Description = "Renamed description",
             Keywords = "renamed,keywords",
+            ParentId = 5,
             IsVisible = false,
             DisableLink = false,
-            ParentId = 5,
-            TabOrder = 12,
             IconFile = "renamed.gif",
+            SkinSrc = "[G]Skins/Default/Plain.ascx",
+            ContainerSrc = "[G]Containers/Default/Grey.ascx",
             Url = "~/Renamed.aspx",
             StartDate = new DateTime(2027, 5, 6, 0, 0, 0, DateTimeKind.Utc),
             EndDate = new DateTime(2027, 6, 7, 0, 0, 0, DateTimeKind.Utc),
             RefreshInterval = 90,
             PageHeadText = "<meta name=\"renamed\" />",
             IsSecure = false,
+            IsDeleted = false,
         };
 
         TabMappings.ApplyUpdate(tab, request);
@@ -574,11 +577,10 @@ public class MappingTests
         tab.TabName.Should().Be("Renamed Page");
         tab.Title.Should().Be("Renamed Title");
         tab.Description.Should().Be("Renamed description");
-        tab.KeyWords.Should().Be("renamed,keywords");
+        tab.Keywords.Should().Be("renamed,keywords");
+        tab.ParentId.Should().Be(5);
         tab.IsVisible.Should().BeFalse();
         tab.DisableLink.Should().BeFalse();
-        tab.ParentId.Should().Be(5);
-        tab.TabOrder.Should().Be(12);
         tab.IconFile.Should().Be("renamed.gif");
         tab.Url.Should().Be("~/Renamed.aspx");
         tab.StartDate.Should().Be(new DateTime(2027, 5, 6, 0, 0, 0, DateTimeKind.Utc));
@@ -587,14 +589,24 @@ public class MappingTests
         tab.PageHeadText.Should().Be("<meta name=\"renamed\" />");
         tab.IsSecure.Should().BeFalse();
 
+        tab.SkinSrc.Should().Be(
+            "[G]Skins/Default/Plain.ascx",
+            "the skin source is a genuine column the terminal update procedure writes, so the request "
+            + "carries it and the mapper must apply it - skinning being out of scope makes the value "
+            + "opaque, not unwritable");
+        tab.ContainerSrc.Should().Be("[G]Containers/Default/Grey.ascx");
+        tab.IsDeleted.Should().BeFalse(
+            "both legacy recycle-bin transitions were plain writes of this flag through this very "
+            + "update path, and the page surface exposes no delete or restore route, so the request "
+            + "carries the flag and restoring is expressed by submitting false");
+
         tab.TabId.Should().Be(0, "an update never moves a row");
         tab.PortalId.Should().Be(-1, "a page cannot be moved between tenants by editing it");
-        tab.IsDeleted.Should().BeTrue("deletion is its own operation, not a field on the edit form");
-        tab.SkinSrc.Should().Be(
-            "[G]Skins/Default/Home.ascx",
-            "skinning is out of scope, so the request carries no skin fields and the mapper must not "
-            + "blank the stored ones");
-        tab.ContainerSrc.Should().Be("[G]Containers/Default/Blue.ascx");
+        tab.TabOrder.Should().Be(
+            4,
+            "the sibling order is server-owned: the legacy update procedure neither accepted nor wrote "
+            + "it, so the request carries no ordinal and the mapper leaves the stored one for the "
+            + "renumbering pass to recompute");
         tab.Level.Should().Be(
             2,
             "the depth and the path are recomputed for the whole tenant after the write, so the mapper "
@@ -644,41 +656,79 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The role detail projection adds the group name and the member count, neither of which is a column
-    /// on the role row.
+    /// The role detail projection carries every one of the fourteen members it declares, each drawn
+    /// from a column on the single role row it is handed.
     /// </summary>
     [Fact]
-    public void RoleToDetail_AddsTheResolvedGroupNameAndMemberCount()
+    public void RoleToDetail_CarriesEveryColumnOfTheRoleRow()
     {
         Role role = FullRole();
 
-        RoleDetailDto dto = RoleMappings.ToDetail(role, roleGroupName: "Paid Tiers", userCount: 12);
+        RoleDetailDto dto = RoleMappings.ToDetail(role);
 
         dto.RoleId.Should().Be(0);
-        dto.PortalId.Should().Be(-1);
-        dto.RoleName.Should().Be("Gold Members");
         dto.RoleGroupId.Should().Be(6);
-        dto.RoleGroupName.Should().Be("Paid Tiers");
-        dto.RsvpCode.Should().Be("GOLD2026");
-        dto.IconFile.Should().Be("gold.gif");
-        dto.UserCount.Should().Be(12);
+        dto.RoleName.Should().Be("Gold Members");
+        dto.Description.Should().Be("A measured role");
+        dto.BillingFrequency.Should().Be(BillingFrequency.Month);
         dto.ServiceFee.Should().Be(19.99m);
         dto.TrialFrequency.Should().Be(BillingFrequency.Day);
+        dto.TrialPeriod.Should().Be(14);
+        dto.BillingPeriod.Should().Be(1);
+        dto.TrialFee.Should().Be(0m);
+        dto.IsPublic.Should().BeTrue();
+        dto.AutoAssignment.Should().BeTrue();
+        dto.RsvpCode.Should().Be("GOLD2026");
+        dto.IconFile.Should().Be("gold.gif");
     }
 
     /// <summary>
-    /// An ungrouped role projects a null group name rather than an empty one.
+    /// The detail projection carries no member that is not a column on the role row, so neither the
+    /// owning portal nor any join denormalisation appears on it.
     /// </summary>
+    /// <remarks>
+    /// Asserted over the declared surface rather than member by member, so adding a portal identifier,
+    /// a group name or a member tally back onto the contract fails here rather than passing silently.
+    /// </remarks>
     [Fact]
-    public void RoleToDetail_LeavesTheGroupNameAbsentWhenThereIsNoGroup()
+    public void RoleDetail_DeclaresNoPortalIdentifierAndNoJoinDenormalisation()
     {
-        Role role = FullRole();
-        role.RoleGroupId = null;
+        string[] declared = typeof(RoleDetailDto)
+            .GetProperties()
+            .Select(property => property.Name)
+            .ToArray();
 
-        RoleDetailDto dto = RoleMappings.ToDetail(role, roleGroupName: null, userCount: 0);
+        declared.Should().HaveCount(14);
+        declared.Should().NotContain("PortalId");
+        declared.Should().NotContain("RoleGroupName");
+        declared.Should().NotContain("UserCount");
+        declared.Should().NotContain("MemberCount");
+        declared.Should().NotContain("RsvpLink");
+        declared.Should().NotContain("RoleStatus");
+    }
 
-        dto.RoleGroupId.Should().BeNull();
-        dto.RoleGroupName.Should().BeNull();
+    /// <summary>
+    /// An ungrouped role projects a null group identifier, and a role in the group whose identifier is
+    /// zero projects that zero faithfully rather than treating it as absent.
+    /// </summary>
+    /// <remarks>
+    /// The second case is the one worth guarding: <c>RoleGroups.RoleGroupID</c> is seeded
+    /// <c>IDENTITY(0,1)</c>, so zero identifies the first group ever created and is not a stand-in for
+    /// "no group". The legacy interface encoded the absent case as -1, which never reached the column
+    /// because the foreign key would have rejected it.
+    /// </remarks>
+    [Fact]
+    public void RoleToDetail_DistinguishesAnUngroupedRoleFromTheGroupIdentifiedByZero()
+    {
+        Role ungrouped = FullRole();
+        ungrouped.RoleGroupId = null;
+
+        RoleMappings.ToDetail(ungrouped).RoleGroupId.Should().BeNull();
+
+        Role inFirstGroup = FullRole();
+        inFirstGroup.RoleGroupId = 0;
+
+        RoleMappings.ToDetail(inFirstGroup).RoleGroupId.Should().Be(0);
     }
 
     /// <summary>
@@ -890,7 +940,7 @@ public class MappingTests
         RoleGroup group = new() { RoleGroupName = "Group" };
 
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToListItem(null!); });
-        Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDetail(null!, null, 0); });
+        Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDetail(null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDto(null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToNewRole(-1, null!); });
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyUpdate(null!, new UpdateRoleRequest()));
@@ -988,7 +1038,6 @@ public class MappingTests
         dto.ModuleDefId.Should().Be(4);
         dto.FriendlyName.Should().Be("Announcements");
         dto.ModuleTitle.Should().Be("Measured Module");
-        dto.PaneName.Should().Be("RightPane", "the pane belongs to the placement");
         dto.ModuleOrder.Should().Be(6);
         dto.AllTabs.Should().BeTrue();
         dto.IsDeleted.Should().BeTrue();
@@ -1001,38 +1050,62 @@ public class MappingTests
         dto.IconFile.Should().Be("module.gif");
         dto.Visibility.Should().Be(ModuleVisibility.Minimized);
         dto.DisplayTitle.Should().BeFalse();
+
+        dto.DesktopModuleId.Should().Be(
+            0,
+            "the fixture loads no definition, and the package key's stored default is 0 - which is a "
+            + "legitimate value rather than a marker of absence");
+        dto.ModuleName.Should().BeNull("the package projection cannot resolve without a definition");
+        dto.Description.Should().BeNull();
+        dto.Version.Should().BeNull();
     }
 
     /// <summary>
-    /// The detail projection reports an unresolved name as empty, because its field cannot be absent.
+    /// The detail projection reports an unresolved definition name as absent rather than inventing one.
     /// </summary>
+    /// <remarks>
+    /// The four catalogue projections on the detail contract are all nullable precisely because each is the
+    /// result of a join that may not resolve. Reporting an empty string instead would be indistinguishable
+    /// from a definition genuinely named with one, and the legacy layer's conflation of the two - its
+    /// absent-string constant evaluates to the empty string - is exactly what this contract undoes.
+    /// </remarks>
     [Fact]
-    public void ModuleToDetail_ReportsAnUnresolvedNameAsEmpty()
+    public void ModuleToDetail_ReportsAnUnresolvedNameAsAbsent()
     {
         ModuleMappings.ToDetail(FullModule(), FullPlacement(), friendlyName: null)
-            .FriendlyName.Should().BeEmpty(
-                "the detail field is not nullable, so the fallback chain ends at an empty name rather "
-                + "than at null");
+            .FriendlyName.Should().BeNull(
+                "the fallback chain ends at null, so an unresolved join stays distinguishable from a "
+                + "definition whose name is genuinely blank");
     }
 
     /// <summary>
-    /// Both read projections carry the placement's appearance fields, and neither invents a container.
+    /// The placement's appearance fields are carried by the settings projection, which owns the placement
+    /// scope, and are deliberately absent from the detail projection; neither invents a container.
     /// </summary>
     /// <remarks>
     /// These five columns are editable on the legacy screen — <c>modulesettings.ascx</c> renders cboAlign,
     /// txtColor, txtBorder, chkDisplayPrint and chkDisplaySyndicate, and
     /// <c>ModuleSettings.ascx.vb:L345-L347,L381-L382</c> writes every one of them — so a read contract that
-    /// omitted them would hand a client no way to show the operator what is currently stored. That is the
-    /// exact defect this test exists to prevent recurring: the fields were absent from all three module
-    /// contracts until the frontend screen needed them.
+    /// omitted them everywhere would hand a client no way to show the operator what is currently stored.
+    /// That is the defect this test exists to prevent recurring, and it is why the assertions below are
+    /// positive on <see cref="ModuleSettingsDto"/>: the capability must remain reachable.
     /// <para>
-    /// The container is asserted absent rather than merely unmentioned. A module container is a skin
-    /// object and skinning is excluded by AAP 0.2.2.4, so surfacing it would widen the contract past the
-    /// agreed scope even though the column is mapped and preserved.
+    /// It is reachable there and ONLY there. The legacy screen presented these fields under its "Page
+    /// Settings" caption — "settings specific to this particular occurrence of the Module for this Page" —
+    /// so the settings contract, served by <c>GET</c> and <c>PUT /api/v1/modules/{id}/settings</c>, is the
+    /// contract that owns them. <see cref="ModuleDetailDto"/> deliberately does not restate them: they
+    /// exist to drive server-side markup generation, and both server-side rendering and the postback
+    /// presentation model are excluded from this migration. Their absence there is asserted rather than
+    /// merely assumed, so a later change that quietly reintroduces them fails here.
+    /// </para>
+    /// <para>
+    /// The container is asserted absent from every contract. A module container is a skin object and
+    /// skinning is excluded by AAP 0.2.2.4, so surfacing it would widen the contract past the agreed scope
+    /// even though the column is mapped and preserved.
     /// </para>
     /// </remarks>
     [Fact]
-    public void ModuleReadProjections_CarryTheAppearanceFieldsAndOfferNoContainer()
+    public void ModuleReadProjections_CarryTheAppearanceFieldsOnSettingsOnlyAndOfferNoContainer()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
@@ -1040,17 +1113,27 @@ public class MappingTests
         ModuleDetailDto detail = ModuleMappings.ToDetail(module, placement, "Announcements");
         ModuleSettingsDto settings = ModuleMappings.ToSettings(module, placement, [], []);
 
-        detail.Alignment.Should().Be("left");
-        detail.Color.Should().Be("#EEEEEE");
-        detail.Border.Should().Be("1");
-        detail.DisplayPrint.Should().BeFalse("a stored false must read back as false, not as the column default");
-        detail.DisplaySyndicate.Should().BeFalse();
-
         settings.Alignment.Should().Be("left");
         settings.Color.Should().Be("#EEEEEE");
         settings.Border.Should().Be("1");
-        settings.DisplayPrint.Should().BeFalse();
+        settings.DisplayPrint.Should().BeFalse(
+            "a stored false must read back as false, not as the column default");
         settings.DisplaySyndicate.Should().BeFalse();
+
+        foreach (string omitted in new[]
+        {
+            "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
+        })
+        {
+            typeof(ModuleDetailDto).GetProperty(omitted).Should().BeNull(
+                $"the placement's {omitted} drives server-side markup, which this migration excludes, so "
+                + "the detail contract defers it to the settings contract instead of restating it");
+        }
+
+        detail.TabModuleId.Should().Be(
+            placement.TabModuleId,
+            "the detail contract still identifies which placement it describes, which is what a caller "
+            + "needs in order to fetch that placement's settings");
 
         typeof(ModuleDetailDto).GetProperty("ContainerSrc").Should().BeNull(
             "containers are skin objects and skinning is excluded by AAP 0.2.2.4");
@@ -1997,16 +2080,16 @@ public class MappingTests
             "the tenant comes from the route, so a body claiming another tenant cannot define a property "
             + "somewhere else");
         definition.ModuleDefinitionId.Should().Be(4);
-        definition.Deleted.Should().BeFalse();
+        definition.IsDeleted.Should().BeFalse();
         definition.DataType.Should().Be(349);
         definition.DefaultValue.Should().Be("a default");
         definition.PropertyCategory.Should().Be("Contact Information");
         definition.PropertyName.Should().Be("Telephone");
         definition.Length.Should().Be(0, "a negative width is floored rather than stored");
-        definition.Required.Should().BeTrue();
+        definition.IsRequired.Should().BeTrue();
         definition.ValidationExpression.Should().Be(@"^\d+$");
         definition.ViewOrder.Should().Be(3);
-        definition.Visible.Should().BeTrue();
+        definition.IsVisible.Should().BeTrue();
         definition.PropertyDefinitionId.Should().Be(0, "the store issues the key, not the caller");
     }
 
@@ -2041,10 +2124,10 @@ public class MappingTests
         definition.PropertyCategory.Should().Be("Renamed Category");
         definition.PropertyName.Should().Be("Mobile");
         definition.Length.Should().Be(20);
-        definition.Required.Should().BeFalse();
+        definition.IsRequired.Should().BeFalse();
         definition.ValidationExpression.Should().BeNull();
         definition.ViewOrder.Should().Be(7);
-        definition.Visible.Should().BeFalse();
+        definition.IsVisible.Should().BeFalse();
 
         definition.PropertyDefinitionId.Should().Be(9, "an update never moves a row");
         definition.PortalId.Should().Be(-1, "a definition cannot be moved between tenants by editing it");
@@ -2052,7 +2135,7 @@ public class MappingTests
             4,
             "the module a definition belongs to is fixed when it is created, so the update path leaves it "
             + "untouched even though the response object carries the field");
-        definition.Deleted.Should().BeFalse("deletion is its own operation");
+        definition.IsDeleted.Should().BeFalse("deletion is its own operation");
     }
 
     /// <summary>
@@ -2151,7 +2234,7 @@ public class MappingTests
         DisableLink = true,
         Title = "Reports Title",
         Description = "Reports description",
-        KeyWords = "reports,measured",
+        Keywords = "reports,measured",
         IsDeleted = true,
         Url = "~/Reports.aspx",
         SkinSrc = "[G]Skins/Default/Home.ascx",
@@ -2285,16 +2368,16 @@ public class MappingTests
         PropertyDefinitionId = 9,
         PortalId = -1,
         ModuleDefinitionId = 4,
-        Deleted = false,
+        IsDeleted = false,
         DataType = 349,
         DefaultValue = "a default",
         PropertyCategory = "Contact Information",
         PropertyName = "Telephone",
         Length = 30,
-        Required = true,
+        IsRequired = true,
         ValidationExpression = @"^\d+$",
         ViewOrder = 3,
-        Visible = true,
+        IsVisible = true,
     };
 
     /// <summary>

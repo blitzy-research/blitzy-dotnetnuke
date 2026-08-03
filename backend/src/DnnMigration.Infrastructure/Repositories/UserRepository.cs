@@ -118,7 +118,7 @@ internal sealed class UserRepository : IUserRepository
 
         IQueryable<User> filtered = includeUnauthorised
             ? root.Where(u => _context.UserPortals.Any(m => m.UserId == u.UserId && m.PortalId == portalId))
-            : root.Where(u => _context.UserPortals.Any(m => m.UserId == u.UserId && m.PortalId == portalId && m.Authorised));
+            : root.Where(u => _context.UserPortals.Any(m => m.UserId == u.UserId && m.PortalId == portalId && m.IsAuthorised));
 
         if (!includeSuperUsers)
         {

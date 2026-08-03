@@ -45,7 +45,7 @@ public sealed class PortalRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-        Portal? portal = await portals.GetAsync(_fixture.Seed.PortalId);
+        Portal? portal = await portals.GetByIdAsync(_fixture.Seed.PortalId);
 
         portal.Should().NotBeNull();
         portal!.PortalId.Should().Be(_fixture.Seed.PortalId);
@@ -81,7 +81,7 @@ public sealed class PortalRepositoryTests
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
 
         (await portals.ExistsAsync(-1)).Should().BeTrue();
-        (await portals.GetAsync(-1)).Should().NotBeNull();
+        (await portals.GetByIdAsync(-1)).Should().NotBeNull();
     }
 
     /// <summary>Aliases load only when the caller asks for them.</summary>
@@ -98,7 +98,7 @@ public sealed class PortalRepositoryTests
         {
             IPortalRepository portals = withAliases.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-            Portal? portal = await portals.GetAsync(_fixture.Seed.PortalId, includeAliases: true);
+            Portal? portal = await portals.GetByIdAsync(_fixture.Seed.PortalId, includeAliases: true);
 
             portal.Should().NotBeNull();
             portal!.PortalAliases.Should().NotBeEmpty();
@@ -109,7 +109,7 @@ public sealed class PortalRepositoryTests
         using IServiceScope withoutAliases = _fixture.Services.CreateScope();
         IPortalRepository bare = withoutAliases.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-        Portal? unloaded = await bare.GetAsync(_fixture.Seed.PortalId);
+        Portal? unloaded = await bare.GetByIdAsync(_fixture.Seed.PortalId);
 
         unloaded.Should().NotBeNull();
         unloaded!.PortalAliases.Should().BeEmpty();
@@ -123,7 +123,7 @@ public sealed class PortalRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-        (await portals.GetAsync(UnknownPortalId)).Should().BeNull();
+        (await portals.GetByIdAsync(UnknownPortalId)).Should().BeNull();
         (await portals.ExistsAsync(UnknownPortalId)).Should().BeFalse();
     }
 
@@ -555,7 +555,7 @@ public sealed class PortalRepositoryTests
 
         configure?.Invoke(portal);
 
-        portals.Add(portal);
+        await portals.AddAsync(portal);
         await unitOfWork.SaveChangesAsync();
 
         return portal.PortalId;
@@ -570,11 +570,11 @@ public sealed class PortalRepositoryTests
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Portal? doomed = await portals.GetAsync(portalId);
+        Portal? doomed = await portals.GetByIdAsync(portalId);
 
         if (doomed is not null)
         {
-            portals.Remove(doomed);
+            await portals.DeleteAsync(doomed.PortalId);
             await unitOfWork.SaveChangesAsync();
         }
     }

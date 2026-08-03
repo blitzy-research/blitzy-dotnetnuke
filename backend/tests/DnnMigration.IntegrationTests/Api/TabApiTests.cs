@@ -47,9 +47,6 @@ public sealed class TabApiTests
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
     private const int UnknownPortalId = 987654;
 
-    /// <summary>An ordinal far beyond any the renumbering pass produces.</summary>
-    private const int SubmittedOrdinal = 999;
-
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="TabApiTests"/> class.</summary>
@@ -321,7 +318,6 @@ public sealed class TabApiTests
             IsVisible = false,
             DisableLink = true,
             ParentId = _fixture.Seed.RootTabId,
-            TabOrder = 40,
             IconFile = "page.gif",
             Url = "https://example.com/target",
             RefreshInterval = 30,
@@ -367,49 +363,70 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// The submitted ordinal places the page among its siblings and is then replaced by the renumbering pass,
-    /// rather than being stored as given.
+    /// The sibling ordinal is server-owned: the write contract carries none, the renumbering pass assigns
+    /// it, and the existing relative order survives an edit unchanged.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This replaces an earlier test that submitted an ordinal and asserted it placed the page. That
+    /// premise no longer holds, and asserting it would have been wrong: the legacy update procedure
+    /// neither accepted nor wrote the order column, the legacy controller passed <c>0</c> for both the
+    /// order and the depth precisely so its ordering routine would recompute them, the legacy page form
+    /// carried no ordinal control at all, and the page surface deliberately exposes no reorder or move
+    /// endpoint. A client-supplied ordinal would therefore have been a capability the target does not
+    /// have. What is asserted instead is the invariant that survives: placement is the server's to
+    /// decide, and an ordinary edit does not disturb it.
+    /// </remarks>
     [Fact]
-    public async Task UpdateTab_UsesTheSubmittedOrdinalToPlaceRatherThanToStore()
+    public async Task UpdateTab_LeavesTheSiblingOrdinalToTheServer()
     {
+        const int seededFirstOrder = 100;
+        const int seededSecondOrder = 200;
+
         string firstName = "IOrderA" + Suffix();
         string secondName = "IOrderB" + Suffix();
 
-        int firstId = await CreateTabAsync(firstName, tabOrder: 100);
-        int secondId = await CreateTabAsync(secondName, tabOrder: 200);
+        int firstId = await CreateTabAsync(firstName, tabOrder: seededFirstOrder);
+        int secondId = await CreateTabAsync(secondName, tabOrder: seededSecondOrder);
 
         using HttpClient client = _fixture.CreateHostClient();
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(secondId),
-            NewUpdateRequest(secondName, SubmittedOrdinal),
+            NewUpdateRequest(secondName),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        TabDetailDto placedLast = await ReadDetailAsync(response);
+        TabDetailDto written = await ReadDetailAsync(response);
 
-        // The submitted value is not the stored value.
-        placedLast.TabOrder.Should().NotBe(SubmittedOrdinal);
-        placedLast.TabOrder.Should().BePositive();
+        // The server renumbers the whole tenant onto its own sequence, so the seeded value does not
+        // survive even though the request said nothing about the order.
+        written.TabOrder.Should().NotBe(
+            seededSecondOrder,
+            "the renumbering pass assigns every ordinal from its own sequence after the write");
+        written.TabOrder.Should().BePositive();
 
+        // The relative order is preserved, because the renumbering pass sorts siblings by their stored
+        // ordinal before reassigning.
         int firstOrder = await ReadOrderAsync(client, firstId);
-        firstOrder.Should().BeLessThan(placedLast.TabOrder);
+        firstOrder.Should().BeLessThan(
+            written.TabOrder,
+            "an edit must not reshuffle siblings that the caller did not mention");
 
-        // Submitting a low ordinal moves the same page ahead of its sibling, which is what "places" means.
-        using HttpResponseMessage moved = await client.PutAsJsonAsync(
+        // Repeating the identical request cannot move the page, because the contract carries no ordinal
+        // for a caller to vary.
+        using HttpResponseMessage repeated = await client.PutAsJsonAsync(
             TabRoute(secondId),
-            NewUpdateRequest(secondName, 1),
+            NewUpdateRequest(secondName),
             ApiTestFixture.Json);
 
-        moved.StatusCode.Should().Be(HttpStatusCode.OK);
+        repeated.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        TabDetailDto placedFirst = await ReadDetailAsync(moved);
+        TabDetailDto rewritten = await ReadDetailAsync(repeated);
 
-        placedFirst.TabOrder.Should().NotBe(1);
-        placedFirst.TabOrder.Should().BeLessThan(await ReadOrderAsync(client, firstId));
+        rewritten.TabOrder.Should().Be(written.TabOrder, "the renumbering pass is deterministic");
+        (await ReadOrderAsync(client, firstId)).Should().BeLessThan(rewritten.TabOrder);
     }
 
     /// <summary>
@@ -428,7 +445,7 @@ public sealed class TabApiTests
 
         using HttpClient client = _fixture.CreateHostClient();
 
-        UpdateTabRequest request = NewUpdateRequest(childName, 10);
+        UpdateTabRequest request = NewUpdateRequest(childName);
         request.ParentId = parentId;
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -464,7 +481,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest("CON", 10),
+            NewUpdateRequest("CON"),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -484,7 +501,7 @@ public sealed class TabApiTests
 
         using HttpClient client = _fixture.CreateHostClient();
 
-        UpdateTabRequest request = NewUpdateRequest(name, 10);
+        UpdateTabRequest request = NewUpdateRequest(name);
         request.ParentId = tabId;
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -512,7 +529,7 @@ public sealed class TabApiTests
 
         using HttpClient client = _fixture.CreateHostClient();
 
-        UpdateTabRequest request = NewUpdateRequest(ancestorName, 10);
+        UpdateTabRequest request = NewUpdateRequest(ancestorName);
         request.ParentId = descendantId;
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -544,7 +561,7 @@ public sealed class TabApiTests
 
         using HttpClient client = _fixture.CreateHostClient();
 
-        UpdateTabRequest request = NewUpdateRequest(name, 10);
+        UpdateTabRequest request = NewUpdateRequest(name);
         request.ParentId = UnknownTabId;
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -575,7 +592,7 @@ public sealed class TabApiTests
         string name = "ICross" + Suffix();
         int tabId = await CreateTabAsync(name);
 
-        UpdateTabRequest request = NewUpdateRequest(name, 10);
+        UpdateTabRequest request = NewUpdateRequest(name);
         request.ParentId = foreignParentId;
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -604,7 +621,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest("IAnon" + Suffix(), 10),
+            NewUpdateRequest("IAnon" + Suffix()),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -622,7 +639,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(UnknownTabId),
-            NewUpdateRequest("IGhost" + Suffix(), 10),
+            NewUpdateRequest("IGhost" + Suffix()),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -644,7 +661,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest(name, 10),
+            NewUpdateRequest(name),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -665,7 +682,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest(renamed, 10),
+            NewUpdateRequest(renamed),
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -697,7 +714,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage seeded = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest(original, 10),
+            NewUpdateRequest(original),
             ApiTestFixture.Json);
 
         seeded.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -712,7 +729,7 @@ public sealed class TabApiTests
 
         using HttpResponseMessage written = await client.PutAsJsonAsync(
             TabRoute(tabId),
-            NewUpdateRequest(renamed, 10),
+            NewUpdateRequest(renamed),
             ApiTestFixture.Json);
 
         written.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -728,17 +745,20 @@ public sealed class TabApiTests
 
     /// <summary>Builds a write request whose fields are all explicit, so nothing is asserted by default.</summary>
     /// <param name="tabName">The page name.</param>
-    /// <param name="tabOrder">The ordinal to submit.</param>
     /// <returns>The request.</returns>
-    private UpdateTabRequest NewUpdateRequest(string tabName, int tabOrder) => new()
+    /// <remarks>
+    /// The request carries no ordinal, no depth and no path: all three are server-owned, so the write
+    /// contract has no member for any of them and a caller cannot influence placement.
+    /// </remarks>
+    private UpdateTabRequest NewUpdateRequest(string tabName) => new()
     {
         TabName = tabName,
         Title = tabName,
         IsVisible = true,
         DisableLink = false,
         ParentId = _fixture.Seed.RootTabId,
-        TabOrder = tabOrder,
         IsSecure = false,
+        IsDeleted = false,
     };
 
     /// <summary>Reads the stored ordinal of one page.</summary>

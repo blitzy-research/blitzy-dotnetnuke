@@ -145,7 +145,7 @@ public sealed class UserRepositoryTests
 
             UserPortal? membership = await users.GetMembershipAsync(portalId, userId);
             membership.Should().NotBeNull();
-            membership!.Authorised.Should().BeFalse("the lookup found the account despite the membership being unauthorised");
+            membership!.IsAuthorised.Should().BeFalse("the lookup found the account despite the membership being unauthorised");
         }
         finally
         {
@@ -208,7 +208,7 @@ public sealed class UserRepositoryTests
         membership.Should().NotBeNull();
         membership!.UserId.Should().Be(_fixture.Seed.MemberUserId);
         membership.PortalId.Should().Be(_fixture.Seed.PortalId);
-        membership.Authorised.Should().BeTrue();
+        membership.IsAuthorised.Should().BeTrue();
 
         (await users.GetMembershipAsync(UnknownPortalId, _fixture.Seed.MemberUserId)).Should().BeNull();
         (await users.GetMembershipAsync(_fixture.Seed.PortalId, UnknownUserId)).Should().BeNull();
@@ -699,7 +699,7 @@ public sealed class UserRepositoryTests
                     UserId = userId,
                     PortalId = secondPortalId,
                     CreatedDate = DateTime.UtcNow,
-                    Authorised = true,
+                    IsAuthorised = true,
                 });
 
                 await unitOfWork.SaveChangesAsync();
@@ -800,7 +800,7 @@ public sealed class UserRepositoryTests
             UserQuota = 0,
         };
 
-        portals.Add(portal);
+        await portals.AddAsync(portal);
         await unitOfWork.SaveChangesAsync();
 
         return portal.PortalId;
@@ -815,11 +815,11 @@ public sealed class UserRepositoryTests
         IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Portal? doomed = await portals.GetAsync(portalId);
+        Portal? doomed = await portals.GetByIdAsync(portalId);
 
         if (doomed is not null)
         {
-            portals.Remove(doomed);
+            await portals.DeleteAsync(doomed.PortalId);
             await unitOfWork.SaveChangesAsync();
         }
     }
@@ -874,7 +874,7 @@ public sealed class UserRepositoryTests
                     UserId = userId,
                     PortalId = portalId.Value,
                     CreatedDate = DateTime.UtcNow,
-                    Authorised = authorised,
+                    IsAuthorised = authorised,
                 });
 
                 await unitOfWork.SaveChangesAsync();

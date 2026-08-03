@@ -16,11 +16,12 @@ namespace DnnMigration.Application.Mapping;
 /// so the enumeration that models it keeps the legacy character values rather than renumbering them.
 /// </para>
 /// <para>
-/// The role group name and the member tally are supplied as arguments rather than read from a
-/// navigation. Neither is a column on the role: the name belongs to the group the role points at, and
-/// the tally is a count of assignment rows. Passing them in keeps this type free of data access and
-/// keeps a list read from having to load a graph it does not need, since the list contract carries
-/// neither value.
+/// Neither role projection carries a join denormalisation. The group's name is not a column on the
+/// role - it belongs to the group the role points at, and therefore to <see cref="RoleGroupDto"/> -
+/// and a member tally is a count of assignment rows that no legacy role screen displayed. Excluding
+/// both is what keeps every projection here a pure function of the aggregate it is handed, so no
+/// mapping call can provoke a further read, and a caller never has to load a graph the contract does
+/// not expose.
 /// </para>
 /// </remarks>
 public static class RoleMappings
@@ -54,32 +55,46 @@ public static class RoleMappings
     /// Projects a role onto the full detail contract.
     /// </summary>
     /// <param name="role">The role to project.</param>
-    /// <param name="roleGroupName">Name of the group the role belongs to, or <see langword="null"/> when it belongs to none.</param>
-    /// <param name="userCount">The number of members holding the role.</param>
     /// <returns>The detail contract.</returns>
-    public static RoleDetailDto ToDetail(Role role, string? roleGroupName, int userCount)
+    /// <remarks>
+    /// Every one of the detail contract's fourteen members is drawn from a column on this one
+    /// aggregate, so the projection needs no argument beyond the role itself and can never trigger a
+    /// further read.
+    /// </remarks>
+    // MIGRATION: this projection deliberately carries NEITHER the owning portal identifier NOR any
+    // join denormalisation, matching the fourteen members RoleDetailDto actually declares.
+    //   * The portal identifier is omitted because the legacy editor never posted it either -
+    //     EditRoles.ascx.vb L232 assigned it from ambient page state - and the migrated route
+    //     /api/v1/portals/{portalId}/roles/{roleId} already carries it. The list projection above
+    //     omits it for the same reason, so the two role contracts stay consistent.
+    //   * The group's NAME and a member TALLY were both carried by an earlier revision of this
+    //     method, which took them as arguments because neither is a column on dbo.Roles. Their
+    //     removal is a behavioural improvement rather than a loss: the group name belongs to
+    //     RoleGroupDto and the legacy editor resolved it client-side from the group drop-down it had
+    //     already bound (BindGroups, EditRoles.ascx.vb L75-L78), while no legacy role screen showed
+    //     a member tally at all. Supplying them obliged the caller to issue two further reads per
+    //     single-role request - one for the group, one for the total of a one-row page of
+    //     assignments consulted purely for its count - so a detail read is now a single-row query.
+    public static RoleDetailDto ToDetail(Role role)
     {
         ArgumentNullException.ThrowIfNull(role);
 
         return new RoleDetailDto
         {
             RoleId = role.RoleId,
-            PortalId = role.PortalId,
+            RoleGroupId = role.RoleGroupId,
             RoleName = role.RoleName,
             Description = role.Description,
-            ServiceFee = role.ServiceFee,
-            BillingPeriod = role.BillingPeriod,
             BillingFrequency = role.BillingFrequency,
-            TrialFee = role.TrialFee,
-            TrialPeriod = role.TrialPeriod,
+            ServiceFee = role.ServiceFee,
             TrialFrequency = role.TrialFrequency,
+            TrialPeriod = role.TrialPeriod,
+            BillingPeriod = role.BillingPeriod,
+            TrialFee = role.TrialFee,
             IsPublic = role.IsPublic,
             AutoAssignment = role.AutoAssignment,
-            RoleGroupId = role.RoleGroupId,
-            RoleGroupName = roleGroupName,
             RsvpCode = role.RsvpCode,
             IconFile = role.IconFile,
-            UserCount = userCount,
         };
     }
 

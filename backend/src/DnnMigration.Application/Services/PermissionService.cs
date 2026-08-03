@@ -162,8 +162,13 @@ public sealed class PermissionService : IPermissionService
             await _permissions.ListAsync(permissionCode, moduleDefinitionId, cancellationToken)
                 .ConfigureAwait(false);
 
+        // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration, whose member
+        // NAME is the stored and wire value, so the projection is ToString() rather than a lookup and
+        // it can only ever yield VIEW, EDIT, READ or WRITE. Normalise still runs: it de-duplicates the
+        // catalogue and imposes the ordinal ordering the contract promises, and it is the same
+        // treatment the grant-derived answers below receive, which do arrive as arbitrary column text.
         return Result<IReadOnlyList<string>>.Success(Normalise(
-            catalogue.Select(entry => entry.PermissionKey)));
+            catalogue.Select(entry => entry.PermissionKey.ToString())));
     }
 
     /// <inheritdoc />
@@ -215,8 +220,10 @@ public sealed class PermissionService : IPermissionService
                 .ListAsync(permissionCode: null, moduleDefinitionId: null, cancellationToken)
                 .ConfigureAwait(false);
 
+            // MIGRATION: see GetPermissionKeysAsync - the enumeration member name is the stored value,
+            // so a host account is answered with the catalogue's own key names and nothing is translated.
             return Result<IReadOnlyList<string>>.Success(Normalise(
-                catalogue.Select(entry => entry.PermissionKey)));
+                catalogue.Select(entry => entry.PermissionKey.ToString())));
         }
 
         Module? module = null;

@@ -148,10 +148,18 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>A read answers <c>200 OK</c> and reports how many accounts hold the role.</summary>
+    /// <summary>A read answers <c>200 OK</c> and carries the stored role row.</summary>
+    /// <remarks>
+    /// The response does not echo the owning portal, and this test deliberately does not look for it.
+    /// Which tenant owns the role is established by the route that reached it, and that is asserted
+    /// where it belongs - by
+    /// <see cref="GetRole_WhenRoleBelongsToAnotherTenant_ReturnsNotFound"/>, which proves the same role
+    /// identifier is unreachable through a different portal's route. Trusting a self-reported
+    /// identifier in the payload would be the weaker of the two checks.
+    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetRole_ReturnsOkWithDetailAndMemberCount()
+    public async Task GetRole_ReturnsOkWithTheStoredRole()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
@@ -162,11 +170,7 @@ public sealed class RoleApiTests
 
         RoleDetailDto detail = await ReadDetailAsync(response);
         detail.RoleId.Should().Be(_fixture.Seed.AdministratorRoleId);
-        detail.PortalId.Should().Be(_fixture.Seed.PortalId);
         detail.RoleName.Should().Be(IntegrationSeed.AdministratorsRoleName);
-
-        // Both seeded administrative accounts hold it.
-        detail.UserCount.Should().BeGreaterThanOrEqualTo(2);
     }
 
     /// <summary>An unknown role answers <c>404 Not Found</c>.</summary>
@@ -224,7 +228,6 @@ public sealed class RoleApiTests
         created.IsPublic.Should().BeTrue();
         created.AutoAssignment.Should().BeFalse();
         created.RsvpCode.Should().Be(request.RsvpCode);
-        created.UserCount.Should().Be(0);
 
         // Roles.RoleID is IDENTITY(0, 1), so zero is a legitimate identifier and must not be read as absent.
         created.RoleId.Should().BeGreaterThanOrEqualTo(0);
@@ -272,7 +275,10 @@ public sealed class RoleApiTests
 
         RoleDetailDto created = await ReadDetailAsync(response);
         created.AutoAssignment.Should().BeTrue();
-        created.UserCount.Should().BeGreaterThanOrEqualTo(2);
+
+        // The tally is read from the assignment table directly rather than from the response, because the
+        // detail contract carries no member count - it holds only columns of the role row itself.
+        (await CountAssignmentsAsync(created.RoleId)).Should().BeGreaterThanOrEqualTo(2);
 
         using HttpResponseMessage members = await client.GetAsync(new Uri(
             $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles/{Route(created.RoleId)}/users"
@@ -352,8 +358,19 @@ public sealed class RoleApiTests
 
         RoleDetailDto accepted = await ReadDetailAsync(response);
         accepted.RoleName.Should().Be(held.RoleName);
-        accepted.PortalId.Should().Be(otherPortalId);
         accepted.RoleId.Should().NotBe(held.RoleId);
+
+        // Which tenant now owns the accepted role is proved by ROUTE rather than by a self-reported
+        // identifier in the payload: it is readable through the other portal and unreachable through the
+        // seeded one. That is the stronger of the two checks, and it is why the detail contract does not
+        // echo the owning portal back.
+        using HttpResponseMessage throughOwner = await client.GetAsync(
+            RoleRoute(otherPortalId, accepted.RoleId));
+        throughOwner.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage throughSeed = await client.GetAsync(
+            RoleRoute(_fixture.Seed.PortalId, accepted.RoleId));
+        throughSeed.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>A create naming a group the tenant does not hold answers <c>404 Not Found</c>.</summary>
@@ -1020,8 +1037,9 @@ public sealed class RoleApiTests
 
         classified.StatusCode.Should().Be(HttpStatusCode.Created);
         RoleDetailDto role = await ReadDetailAsync(classified);
+
+        // The role identifies its group; it does not name it. The name is the group contract's to carry.
         role.RoleGroupId.Should().Be(group.RoleGroupId);
-        role.RoleGroupName.Should().Be(group.RoleGroupName);
 
         using HttpResponseMessage refused = await client.DeleteAsync(
             RoleGroupRoute(_fixture.Seed.PortalId, group.RoleGroupId));

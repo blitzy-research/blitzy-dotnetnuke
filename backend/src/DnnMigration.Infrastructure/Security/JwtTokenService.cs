@@ -181,7 +181,7 @@ internal sealed class JwtTokenService : ITokenService
             return Task.FromResult(StoreUnavailable());
         }
 
-        LoginResponse response = BuildResponse(subject, issued.RefreshToken, issued.ExpiresAtUtc.Value);
+        LoginResponse response = BuildResponse(subject, issued.RefreshToken);
 
         return Task.FromResult(Result<LoginResponse>.Success(response));
     }
@@ -230,7 +230,7 @@ internal sealed class JwtTokenService : ITokenService
             return StoreUnavailable();
         }
 
-        LoginResponse response = BuildResponse(renewed, rotated.RefreshToken, rotated.ExpiresAtUtc.Value);
+        LoginResponse response = BuildResponse(renewed, rotated.RefreshToken);
 
         return Result<LoginResponse>.Success(response);
     }
@@ -355,20 +355,29 @@ internal sealed class JwtTokenService : ITokenService
     /// <summary>Builds the response pair for a snapshot and the refresh token just recorded.</summary>
     /// <param name="subject">The facts the access token is to assert.</param>
     /// <param name="refreshToken">The refresh token recorded for this pair.</param>
-    /// <param name="refreshTokenExpiresAtUtc">When that refresh token lapses.</param>
     /// <returns>The response pair.</returns>
     /// <remarks>
+    /// <para>
     /// The user projection carries only what this service was told: the identifier, the tenant, the
     /// sign-in name, the super-user flag and the two entitlement collections. The display name, the
     /// address and the tenant's name are deliberately left at their defaults, because this service is
     /// given none of them and inventing them would put unverified values on a contract. The sign-in
     /// service overwrites the projection with a fully populated one before the response leaves the
     /// application layer; the identifiers set here are what lets it find the account to do so.
+    /// </para>
+    /// <para>
+    /// Only the access token's own expiry is published. The bearer scheme, the access token's remaining
+    /// lifetime as a duration and the refresh token's expiry are all deliberately withheld even though
+    /// this method holds or could compute each of them: the scheme is fixed by the API contract rather
+    /// than restated per response, one expiry representation cannot disagree with itself, and the
+    /// refresh token's expiry is rotation state that belongs to the store. The three advisory booleans
+    /// on the response are likewise left at their defaults here, because this service is not told them -
+    /// the sign-in service sets them alongside the fully populated user projection.
+    /// </para>
     /// </remarks>
     private LoginResponse BuildResponse(
         RefreshTokenSubject subject,
-        string refreshToken,
-        DateTime refreshTokenExpiresAtUtc)
+        string refreshToken)
     {
         DateTime issuedAtUtc = _clock.UtcNow;
         DateTime expiresAtUtc = issuedAtUtc.AddMinutes(_options.ExpirationMinutes);
@@ -376,11 +385,8 @@ internal sealed class JwtTokenService : ITokenService
         return new LoginResponse
         {
             AccessToken = CreateAccessToken(subject, issuedAtUtc, expiresAtUtc),
-            TokenType = JwtBearerScheme,
-            ExpiresIn = (int)Math.Round((expiresAtUtc - issuedAtUtc).TotalSeconds, MidpointRounding.AwayFromZero),
             ExpiresAtUtc = expiresAtUtc,
             RefreshToken = refreshToken,
-            RefreshTokenExpiresAtUtc = refreshTokenExpiresAtUtc,
             User = new CurrentUserDto
             {
                 UserId = subject.UserId,
@@ -526,9 +532,6 @@ internal sealed class JwtTokenService : ITokenService
             TokenStoreUnavailableCode,
             "The refresh token could not be recorded, so no token pair was issued.");
     }
-
-    /// <summary>The authentication scheme name a caller presents the access token under.</summary>
-    private const string JwtBearerScheme = "Bearer";
 }
 
 /// <summary>

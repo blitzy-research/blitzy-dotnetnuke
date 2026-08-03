@@ -638,7 +638,10 @@ public class ModuleServiceTests
         detail.ModuleId.Should().Be(ModuleId);
         detail.PortalId.Should().Be(PortalId);
         detail.ModuleTitle.Should().Be(ModuleTitle);
-        detail.PaneName.Should().Be(DefaultPaneName);
+        detail.TabModuleId.Should().Be(
+            TabModuleId,
+            "the detail projection identifies the placement it describes, the pane itself having moved to "
+            + "the settings projection that owns the placement scope");
     }
 
     /// <summary>
@@ -2675,7 +2678,7 @@ public class ModuleServiceTests
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
             harness.Portals
-                .Setup(p => p.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRow);
 
             harness.Tabs

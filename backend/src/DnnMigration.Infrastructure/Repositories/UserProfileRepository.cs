@@ -20,7 +20,7 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// Definition removal is a hard delete, and <c>FK_UserProfile_ProfilePropertyDefinition</c> is
 /// declared <c>ON DELETE CASCADE</c>, so the store removes the answers with the definition.
 /// <see cref="GetDefinitionAsync"/> nevertheless loads
-/// <see cref="ProfilePropertyDefinition.UserProfileValues"/> so that the cascade is also performed by
+/// <see cref="ProfilePropertyDefinition.ProfileValues"/> so that the cascade is also performed by
 /// the change tracker as explicit statements. Without that, the delete would depend entirely on a
 /// database-level constraint and would silently orphan rows on any provider that does not enforce one
 /// - which is exactly the situation an integration run against a non-SQL-Server provider creates.
@@ -58,7 +58,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
 
         if (!includeDeleted)
         {
-            query = query.Where(d => !d.Deleted);
+            query = query.Where(d => !d.IsDeleted);
         }
 
         return await query
@@ -75,7 +75,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         // The answers are loaded with the definition so that removal cascades through the change
         // tracker as well as through the store constraint - see the type remarks.
         return _context.ProfilePropertyDefinitions
-            .Include(d => d.UserProfileValues)
+            .Include(d => d.ProfileValues)
             .FirstOrDefaultAsync(d => d.PropertyDefinitionId == propertyDefinitionId, cancellationToken);
     }
 

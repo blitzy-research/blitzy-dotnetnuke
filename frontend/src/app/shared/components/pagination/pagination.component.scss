@@ -1,12 +1,146 @@
+// =============================================================================
+//  pagination.component.scss — page navigation for a list screen
+// =============================================================================
+//
+//  ROLE
+//  ----
+//  Styles the five elements the committed template renders: the navigation
+//  landmark, the range summary, the control group, the four step buttons and the
+//  static position readout. Nothing else — this component holds no data and owns
+//  no other markup.
+//
+//  Every value resolves to a design token from src/styles/_tokens.scss. The only
+//  literals are the six the design system permits — `0`, `none`, `auto`,
+//  `inherit`, `currentColor`, `transparent` — plus structural CSS keywords, which
+//  name a layout mechanism rather than a design decision and so have no token to
+//  resolve to.
+//
+//  WHY THIS FILE IS SHORT, AND WHY THAT IS THE POINT
+//  ------------------------------------------------
+//  The shared forms partial already declares the house appearance for the bare
+//  `button` selector: type step, weight, line height, ink, fill, border, corner
+//  radius, both padding axes, cursor and text selection, plus its own `:hover`,
+//  `:active`, `:focus-visible` and `:disabled` treatments. A step button here IS
+//  a house button, so this file declares ONLY the delta that makes it a PAGER
+//  button — a uniform width — and inherits the rest.
+//
+//  That is a correctness requirement, not a brevity preference. Angular's emulated
+//  encapsulation appends an attribute selector to every rule below, so
+//  `.pagination__button` weighs one class plus one attribute, which OUTRANKS the
+//  global `button:disabled` rule of one type plus one pseudo-class. Restating the
+//  resting ink, fill or border here would therefore win against the global
+//  disabled treatment and silently repaint an unavailable button as an available
+//  one. Declaring none of them lets the global rules apply in their intended
+//  order, so the disabled appearance needs no code here at all and cannot drift
+//  from the rest of the application.
+//
+//  PROVENANCE — THIS COMPONENT IS A PURE NET ADDITION
+//  -------------------------------------------------
+// MIGRATION: there is NO legacy visual definition for this control to be faithful
+//  to, so every value below is a fresh token choice rather than a ported one.
+//  Verified first-hand against the read-only reference tree:
+//    * The legacy grid pager style class is named 4 times in the in-scope admin
+//      markup — Website/admin/Portal/portals.ascx L19,
+//      Website/admin/Users/users.ascx L30, Website/admin/Security/roles.ascx L32
+//      and Website/admin/Users/ProfileDefinitions.ascx L15 — and is defined ZERO
+//      times in any *.css file in the entire repository. The class was wired up
+//      and never styled.
+//    * Only 2 of the 8 in-scope grids actually paged at all: the paging control
+//      appears at portals.ascx L58 and users.ascx L83 and nowhere else.
+//  Both legacy stylesheets remain read-only reference inputs; this migration is
+//  purely additive and modifies no legacy file.
+//
+// MIGRATION: the legacy file-manager pager rule (default.css L263-271) was
+//  deliberately NOT borrowed, even though it is the closest thing in the legacy
+//  stylesheet to a pager. Two independent reasons: that whole family styles the
+//  file-management feature, which the migration places out of scope, so its
+//  vocabulary must not leak into an in-scope component; and it pins a fixed block
+//  size in device units, which the zero-hardcoded-values rule forbids outright and
+//  which would stop the control growing with the reader's type size.
+//
+// MIGRATION: the focus ring, the corner radius inherited from the house button,
+//  and the responsive reflow below are all NET ADDITIONS. Measured across all 34
+//  stylesheets under Website/, every one of these occurs ZERO times: any media
+//  at-rule, any corner-radius declaration, any box-shadow declaration, any focus
+//  pseudo-class and any outline declaration. The legacy portal had no focus
+//  treatment and no responsive behaviour whatsoever, so adding both changes
+//  nothing it rendered at rest — the accessibility gain has zero visual cost.
+//
+// MIGRATION: the three overlapping legacy font stacks collapse to the single base
+//  family token. The legacy body-text rule (default.css L92-97) declared one
+//  stack, and two further near-identical stacks appeared elsewhere in the same
+//  file. Tahoma resolves first in the consolidated token, so the rendered
+//  difference is imperceptible; recorded as a deliberate consolidation rather
+//  than absorbed silently.
+//
+// MIGRATION: the legacy admin command-link character is superseded rather than
+//  reproduced. That rule (default.css L442-446 with its link, visited, hover and
+//  active companions at L449-472) rendered pager affordances as UNDERLINED TEXT
+//  LINKS in the brand ink that switched to the danger red on hover. The design
+//  system instead renders an action as a bordered button, and the shared forms
+//  partial already carries the annotation recording that its hover deliberately
+//  does not spend the error colour on a benign interaction. Design-system
+//  compliance outranks legacy visual continuity, so this file adds no underline
+//  and declares no hover ink: the house button owns both. Two sibling shared
+//  components resolved the identical question the same way. A visible difference
+//  from the legacy rendering, recorded here.
+//
+//  REPORTED GAPS — DEGRADED, NEVER WORKED AROUND
+//  --------------------------------------------
+// MIGRATION: the hover-capability guard cannot be expressed. Wrapping hover in a
+//  pointer-capability query would prevent a sticky hover on a touch device, but
+//  raw media queries are barred outside the shared mixins partial and that partial
+//  exposes no hover-capability member. Reported as a gap and degraded to the
+//  unguarded hover the global button rule already provides.
+//
+// MIGRATION: no motion is declared, so the hover and focus changes are
+//  instantaneous. The shared mixins partial deliberately exports no duration,
+//  easing or reduced-motion member, a component may not author its own at-rule,
+//  and the legacy portal declared no transition, animation, keyframe or transform
+//  anywhere. The immediate change is therefore the compliant and the faithful
+//  behaviour at once.
+//
+// MIGRATION: the legacy disabled-text colour was a pale grey with roughly 1.8-to-1
+//  contrast against the page — effectively unreadable. It folds onto the muted-text
+//  token, which the token file documents as carrying the disabled role and which
+//  measures 4.73-to-1 on the fill the disabled rule pairs it with, clearing WCAG AA.
+//  A dedicated disabled-ink token does not exist in the vocabulary; that gap is
+//  reported rather than filled with a literal, and the substitution is applied by
+//  the global disabled rule, not here.
+//
+//  The tokens partial is deliberately NOT loaded. It emits a real document-root
+//  block, so loading it from a component would duplicate the whole token set into
+//  this component's stylesheet; `var(--token)` resolves at run time from the single
+//  global declaration and needs no `@use`. Only the mixins partial is loaded, and
+//  it emits nothing until a mixin is included. Sass modules are per-file and never
+//  ambient, so the load below is required even though the global stylesheet also
+//  loads this partial.
+// =============================================================================
+
 @use '../../../../styles/mixins' as mx;
 
+// A custom element has no intrinsic display, so an unset host would lay out
+// inline and collapse the block-level flex container below it. Declared block
+// rather than flex so the host stays a plain box and the landmark element owns
+// every layout decision — which keeps the responsive rule in one place.
 :host {
   display: block;
 }
 
+// The landmark. Authored narrow-first, matching the mixin partial's documented
+// direction: the stacked layout is unconditional and the wide one is layered on
+// top, so the two can never overlap and fight over source order.
+//
+// MIGRATION: the vertical separation replaces two literal line-break elements
+// that the legacy markup placed between the grid and its pager — portals.ascx L57
+// and users.ascx L82. A spacing token carries that gap instead, so it scales with
+// the reader's type size and can never be a stray element in the accessibility
+// tree. It is a single logical, single-side margin so a consuming feature can
+// still override it in one declaration.
 .pagination {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: var(--space-2);
   margin-block-start: var(--space-4);
 
@@ -18,16 +152,23 @@
   }
 }
 
-// MIGRATION: the legacy grid footer rendered its pager text one step below body size
-// on the grid's surface colour. The size is carried across; the surface is not, because
-// the pager here sits outside the table rather than inside its final row.
+// The range summary. A live region in the template, so it must stay in normal
+// flow and visible — hiding or collapsing it would silence the only announcement
+// a screen-reader user gets when the page changes.
+//
+// The base type step is used rather than a smaller one: this is the legacy body
+// text role, and the muted ink already supplies the de-emphasis. Muted on the page
+// fill measures 5.49-to-1, clearing WCAG AA for normal text.
 .pagination__status {
   margin: 0;
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   line-height: var(--line-height-base);
 }
 
+// The control group. Wraps rather than overflowing, so the four steps and the
+// readout stay reachable at any width without a horizontal scrollbar. The tight
+// gap keeps the steps reading as one group instead of four unrelated buttons.
 .pagination__controls {
   display: flex;
   flex-wrap: wrap;
@@ -35,46 +176,42 @@
   gap: var(--space-1);
 }
 
-// MIGRATION: the legacy pager rendered its page steps as text links in the brand
-// colour. They are buttons here, because they perform an action on the current page
-// rather than navigating to a new address - a link that does not go anywhere is a
-// documented accessibility defect. The brand colour and the absence of a filled
-// background preserve the legacy appearance.
+// The four step buttons — first, previous, next and last.
+//
+// A uniform minimum inline size is the ONLY appearance this file sets, and it is
+// genuinely pager-specific: each button holds a single punctuation glyph, and the
+// double-angle and single-angle glyphs have different advance widths, so without
+// a floor the four buttons would be visibly unequal and would shift as the label
+// set changed. A spacing token supplies the floor, and it is a MINIMUM rather than
+// a fixed size, so a longer label still grows the button instead of overflowing
+// it. Native buttons already centre their content, so no alignment is needed.
+//
+// Everything else — ink, fill, border, corner radius, both padding axes, type
+// step, weight, line height, cursor, hover, press and the entire disabled
+// appearance including the not-allowed cursor — is inherited from the house
+// button. See the specificity note in the header for why restating any of it here
+// would be a defect rather than a duplication.
 .pagination__button {
   min-inline-size: var(--space-7);
-  padding: var(--space-1) var(--space-2);
-  border: var(--border-width) var(--border-style) var(--color-border);
-  border-radius: var(--radius-sm);
-  background-color: var(--color-background);
-  color: var(--color-primary);
-  font-family: var(--font-family-base);
-  font-size: var(--font-size-md);
-  line-height: var(--line-height-none);
-  cursor: pointer;
 
-  &:hover:not(:disabled) {
-    border-color: var(--color-border-strong);
-    color: var(--color-primary-hover);
-  }
-
-  // The shared focus mixin is included rather than an outline being declared here, so
-  // the indicator matches every other focusable element and cannot drift. Suppressing
-  // the outline is never an option.
+  // Included even though the shared forms partial already rings every button, on
+  // the mixin's documented guarantee that it is idempotent. It makes the
+  // component's focus behaviour self-contained rather than dependent on a partial
+  // this file does not load, and it is the one accessibility affordance the legacy
+  // portal lacked entirely. No rule anywhere in this file suppresses an outline.
   @include mx.focus-ring;
-
-  // A disabled step is dimmed and shows the default cursor. It is left in the document
-  // rather than removed, so the control's width does not change as a person pages
-  // through - a pager that reflows under the pointer causes mis-clicks.
-  &:disabled {
-    color: var(--color-text-muted);
-    cursor: default;
-  }
 }
 
+// The position readout. Text rather than a control: there is nothing to activate,
+// and a disabled button here would put an unusable stop in the tab order.
+//
+// Tabular figures keep every digit on the same advance width, so the readout does
+// not change width as the page number gains a digit — without it the two buttons
+// to its right shift sideways mid-interaction and invite a mis-click.
 .pagination__position {
   padding-inline: var(--space-2);
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   font-variant-numeric: tabular-nums;
   line-height: var(--line-height-base);
 }

@@ -109,7 +109,10 @@ internal sealed class TabConfiguration : IEntityTypeConfiguration<Tab>
             .HasColumnName("Description")
             .HasMaxLength(500);
 
-        builder.Property(t => t.KeyWords)
+        // The member is spelled Keywords and the column is spelled KeyWords. This explicit
+        // HasColumnName is the single place that difference is reconciled: property modernisation
+        // must never rename a column, and no other layer reproduces the bridge.
+        builder.Property(t => t.Keywords)
             .HasColumnName("KeyWords")
             .HasMaxLength(500);
 

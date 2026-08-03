@@ -29,10 +29,29 @@
 //
 //  Restating any of those here would give one concern two declarations whose
 //  winner depends on load order - precisely the failure mode the fixed order below
-//  exists to prevent. A screen-reader-only utility class is deliberately not
-//  declared either: `_mixins.scss` already publishes `visually-hidden` as a MIXIN,
-//  no template in the workspace asks for such a class, and global CSS is never
-//  tree-shaken, so an unused class would ship to every reader on every route.
+//  exists to prevent.
+//
+//  Two of those omissions look like gaps and are not, so the evidence for each is
+//  recorded here rather than left to be rediscovered - both are the kind a later
+//  reader is tempted to "fix" into exactly the duplicate this file exists to avoid:
+//
+//    * The ROOT ELEMENT'S BOX is already declared. `app/app.component.scss` carries
+//      `:host { display: block; }` as its only rule, and under emulated
+//      encapsulation `:host` compiles to an attribute selector that matches the
+//      `app-root` element itself. Writing `app-root { display: block }` here would
+//      not add the declaration - it would give it a second, competing definition
+//      outside the component that owns it. The shell needs nothing further: its
+//      grid is height-driven by its own viewport-relative minimum, so it never
+//      depends on a height being chained down from `html` and `body`.
+//    * A SCREEN-READER-ONLY UTILITY CLASS is not declared, because nothing asks
+//      for one. `_mixins.scss` publishes `visually-hidden` as a MIXIN, and every
+//      consumer in the workspace reaches the behaviour either by including that
+//      mixin in its own rule or through the `data-visually-hidden` attribute that
+//      `_tables.scss` already handles - not one template references a
+//      `visually-hidden` CLASS. Global CSS is never tree-shaken, so declaring the
+//      class speculatively would ship dead bytes to every reader on every route.
+//      A component that needs the treatment includes the mixin, which is both the
+//      established pattern here and the only one Sass module scoping supports.
 //
 //  THE LOAD ORDER IS LOAD-BEARING, NOT ALPHABETICAL
 //  ------------------------------------------------
@@ -94,10 +113,13 @@
 //  dependency graph and no design-token source of any kind; the token vocabulary
 //  the `@use` list below installs is derived by measurement from
 //  `Website/Portals/_default/default.css` (1030 lines) and
-//  `Website/Portals/_default/portal.css` (275 lines), the latter of which is an
-//  override skeleton carrying semantic naming and almost no declarations. Both
-//  legacy stylesheets are read-only reference inputs and are unmodified by this
-//  migration.
+//  `Website/Portals/_default/portal.css` (275 lines). The second of those two
+//  contributes semantic naming and NOTHING ELSE: it opens 80 selector groups and
+//  every single one of them has an empty body, so the whole file measures zero
+//  declarations, zero colour values and zero lengths. Every measured value in the
+//  vocabulary therefore comes from `default.css` alone, and nothing is lost by not
+//  consulting the skeleton for values it does not contain. Both legacy stylesheets
+//  are read-only reference inputs and are unmodified by this migration.
 //
 //  MIGRATION: the legacy sheet declared three overlapping font stacks, and they
 //  are consolidated into the single `--font-family-base` token. The rendered
@@ -114,14 +136,36 @@
 //  MIGRATION: `--color-selected` diverges from the measured legacy selected-row
 //  declaration, which named two user-agent colour keywords rather than a palette
 //  value, and the value the token carries instead was used by only two legacy
-//  selectors, both of them members of the out-of-scope menu families. Two further
-//  legacy values are deliberately NOT tokenised at all - an incidental decoration
-//  colour used twice, and a symbol font family used four times - because the only
-//  selectors that consumed them belong to the excluded legacy menu and file
-//  management features, which have no target component. The precise legacy values
-//  behind all three decisions belong in the repository-root migration notes, which
-//  this file neither owns nor edits; they are reported by the agent that authored
-//  this file so that they can be captured there.
+//  selectors, both of them members of the out-of-scope menu families.
+//
+//  MIGRATION: two further legacy values are deliberately NOT tokenised, and their
+//  reasons are entirely different from one another, so they are recorded separately
+//  rather than as one bullet. Conflating them was an error in an earlier revision of
+//  this header, which attributed both to excluded features; only the second belongs
+//  there, and the measurement below is what corrected it.
+//
+//    * A SYMBOL FONT FAMILY, used four times. Every one of those four uses is on a
+//      menu-arrow selector of the two out-of-scope legacy menu families, which have
+//      no target component at all. Nothing in the target renders those glyphs, so
+//      there is nothing for a token to serve. Correctly excluded.
+//    * A TWICE-USED COLOUR, which is NOT decoration and NOT out of scope. It is the
+//      colour the legacy sheet gave its two GENERIC top-level heading elements, in
+//      the section its own comment banner marks as generic - so headings, which the
+//      target very much does render, are exactly what it styled. It is untokenised
+//      for a different reason: the colour vocabulary is closed, and all heading
+//      colour in the target resolves to the brand colour, which `_reset.scss`
+//      applies across the whole ramp. That substitution is PERCEPTIBLE and must not
+//      be filed alongside the near-black grey the reset partial also folds onto the
+//      brand colour: the grey differs from it by 12.63 to 1 against 12.61 to 1, a
+//      difference no observer can see, whereas this olive-tinted value measures
+//      about 5.9 to 1, so folding it in shifts the top two heading levels visibly
+//      and roughly doubles their contrast. The change is an accessibility gain, but
+//      it is a real visible change and is logged as one, not absorbed.
+//
+//  The precise legacy values behind all of the decisions above, and the contrast
+//  measurements supporting them, belong in the repository-root migration notes,
+//  which this file neither owns nor edits; they are reported by the agent that
+//  authored this file so that they can be captured there.
 
 @use './styles/tokens';
 @use './styles/reset';

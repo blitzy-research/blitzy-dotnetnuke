@@ -64,41 +64,74 @@ public static class ModuleMappings
     /// Projects a module and one of its placements onto the full detail contract.
     /// </summary>
     /// <param name="module">The module to project.</param>
-    /// <param name="placement">The placement whose page, order and appearance are reported.</param>
+    /// <param name="placement">The placement whose page, order, cache period, icon and visibility are reported.</param>
     /// <param name="friendlyName">The definition's display name, or <see langword="null"/> when it could not be resolved.</param>
     /// <returns>The detail contract.</returns>
+    /// <remarks>
+    /// <para>
+    /// The assignments below are grouped exactly as <see cref="ModuleDetailDto"/> groups its members, so
+    /// the owning table of every value is visible at the point of projection: the module row, then the
+    /// placement row, then the read-only catalogue projections.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the placement's appearance columns - pane, alignment, colour, border and the print and
+    /// syndication flags - are deliberately NOT projected here. They exist to drive server-side markup
+    /// generation, which this migration excludes, and they are carried instead by
+    /// <see cref="ModuleSettingsDto"/>, the contract that owns the placement scope. Nothing is lost and
+    /// nothing is duplicated. The container column is likewise preserved in the store but never surfaced,
+    /// a module container being a skin object.
+    /// </para>
+    /// </remarks>
     public static ModuleDetailDto ToDetail(Module module, TabModule placement, string? friendlyName)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(placement);
 
+        ModuleDefinition? definition = module.ModuleDefinition;
+        DesktopModule? package = definition?.DesktopModule;
+
         return new ModuleDetailDto
         {
+            // Identity, drawn from across all four tables.
             ModuleId = module.ModuleId,
             TabModuleId = placement.TabModuleId,
             TabId = placement.TabId,
             PortalId = module.PortalId,
             ModuleDefId = module.ModuleDefinitionId,
-            FriendlyName = friendlyName ?? module.ModuleDefinition?.FriendlyName ?? string.Empty,
+
+            // MIGRATION: the definition's package key defaults to 0 in the schema, so an unresolved
+            // definition and a definition whose package was never linked both report 0 - which is a
+            // legitimate stored value here and must not be read as "no package".
+            DesktopModuleId = definition?.DesktopModuleId ?? 0,
+
+            // Module scope: identical on every page the module appears on.
             ModuleTitle = module.ModuleTitle,
-            PaneName = placement.PaneName,
-            ModuleOrder = placement.ModuleOrder,
             AllTabs = module.AllTabs,
-            IsDeleted = module.IsDeleted,
-            InheritViewPermissions = module.InheritViewPermissions,
             Header = module.Header,
             Footer = module.Footer,
             StartDate = module.StartDate,
             EndDate = module.EndDate,
+
+            // MIGRATION: the stored column permits a null, but the legacy contract could not observe the
+            // difference - the absent-boolean sentinel is itself false, and the legacy object left this
+            // field at its type default rather than sentinel-initialising it. Coalescing to false is
+            // therefore faithful to the legacy reading rather than a loss of information.
+            InheritViewPermissions = module.InheritViewPermissions ?? false,
+            IsDeleted = module.IsDeleted,
+
+            // Placement scope: specific to this one occurrence of the module on this one page.
+            ModuleOrder = placement.ModuleOrder,
             CacheTime = placement.CacheTime,
             IconFile = placement.IconFile,
-            Alignment = placement.Alignment,
-            Color = placement.Color,
-            Border = placement.Border,
             Visibility = placement.Visibility,
             DisplayTitle = placement.DisplayTitle,
-            DisplayPrint = placement.DisplayPrint,
-            DisplaySyndicate = placement.DisplaySyndicate,
+
+            // Read-only catalogue projections. Each is nullable because the join may not resolve, even
+            // where the underlying column is declared NOT NULL in its own table.
+            FriendlyName = friendlyName ?? definition?.FriendlyName,
+            ModuleName = package?.ModuleName,
+            Description = package?.Description,
+            Version = package?.Version,
         };
     }
 

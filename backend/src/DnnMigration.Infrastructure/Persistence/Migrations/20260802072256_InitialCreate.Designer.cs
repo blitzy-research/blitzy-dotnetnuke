@@ -631,13 +631,20 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnName("DataType");
 
                     b.Property<string>("DefaultValue")
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)")
+                        .HasColumnType("ntext")
                         .HasColumnName("DefaultValue");
 
-                    b.Property<bool>("Deleted")
+                    b.Property<bool>("IsDeleted")
                         .HasColumnType("bit")
                         .HasColumnName("Deleted");
+
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("bit")
+                        .HasColumnName("Required");
+
+                    b.Property<bool>("IsVisible")
+                        .HasColumnType("bit")
+                        .HasColumnName("Visible");
 
                     b.Property<int>("Length")
                         .ValueGeneratedOnAdd()
@@ -649,7 +656,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("ModuleDefID");
 
-                    b.Property<int>("PortalId")
+                    b.Property<int?>("PortalId")
                         .HasColumnType("int")
                         .HasColumnName("PortalID");
 
@@ -665,22 +672,14 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(50)")
                         .HasColumnName("PropertyName");
 
-                    b.Property<bool>("Required")
-                        .HasColumnType("bit")
-                        .HasColumnName("Required");
-
                     b.Property<string>("ValidationExpression")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
                         .HasColumnName("ValidationExpression");
 
                     b.Property<int>("ViewOrder")
                         .HasColumnType("int")
                         .HasColumnName("ViewOrder");
-
-                    b.Property<bool>("Visible")
-                        .HasColumnType("bit")
-                        .HasColumnName("Visible");
 
                     b.HasKey("PropertyDefinitionId")
                         .HasName("PK_ProfilePropertyDefinition");
@@ -692,8 +691,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PortalId", "ModuleDefinitionId", "PropertyName")
                         .IsUnique()
-                        .HasDatabaseName("IX_ProfilePropertyDefinition")
-                        .HasFilter("[ModuleDefID] IS NOT NULL");
+                        .HasDatabaseName("IX_ProfilePropertyDefinition");
 
                     b.ToTable("ProfilePropertyDefinition", "dbo");
                 });
@@ -760,7 +758,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnName("RSVPCode");
 
                     b.Property<decimal?>("ServiceFee")
-                        .HasColumnType("decimal(5,2)")
+                        .HasColumnType("money")
                         .HasColumnName("ServiceFee");
 
                     b.Property<decimal?>("TrialFee")
@@ -875,7 +873,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnType("bit")
                         .HasColumnName("IsVisible");
 
-                    b.Property<string>("KeyWords")
+                    b.Property<string>("Keywords")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)")
                         .HasColumnName("KeyWords");
@@ -1178,13 +1176,13 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("PortalId");
 
-                    b.Property<bool>("Authorised")
-                        .HasColumnType("bit")
-                        .HasColumnName("Authorised");
-
                     b.Property<DateTime>("CreatedDate")
                         .HasColumnType("datetime")
                         .HasColumnName("CreatedDate");
+
+                    b.Property<bool>("IsAuthorised")
+                        .HasColumnType("bit")
+                        .HasColumnName("Authorised");
 
                     b.Property<int>("UserPortalId")
                         .ValueGeneratedOnAdd()
@@ -1368,7 +1366,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("DnnMigration.Domain.Entities.ModuleSetting", b =>
                 {
                     b.HasOne("DnnMigration.Domain.Entities.Module", "Module")
-                        .WithMany("ModuleSettings")
+                        .WithMany("Settings")
                         .HasForeignKey("ModuleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
@@ -1432,7 +1430,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("PortalId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
                         .HasConstraintName("FK_ProfilePropertyDefinition_Portals");
 
                     b.Navigation("ModuleDefinition");
@@ -1583,7 +1580,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("DnnMigration.Domain.Entities.UserProfileValue", b =>
                 {
                     b.HasOne("DnnMigration.Domain.Entities.ProfilePropertyDefinition", "PropertyDefinition")
-                        .WithMany("UserProfileValues")
+                        .WithMany("ProfileValues")
                         .HasForeignKey("PropertyDefinitionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
@@ -1633,7 +1630,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                 {
                     b.Navigation("ModulePermissions");
 
-                    b.Navigation("ModuleSettings");
+                    b.Navigation("Settings");
 
                     b.Navigation("TabModules");
                 });
@@ -1673,7 +1670,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("DnnMigration.Domain.Entities.ProfilePropertyDefinition", b =>
                 {
-                    b.Navigation("UserProfileValues");
+                    b.Navigation("ProfileValues");
                 });
 
             modelBuilder.Entity("DnnMigration.Domain.Entities.Role", b =>

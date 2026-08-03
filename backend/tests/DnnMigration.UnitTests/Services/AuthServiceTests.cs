@@ -78,9 +78,59 @@ public class AuthServiceTests
         MethodInfo login = typeof(IAuthService).GetMethod(nameof(IAuthService.LoginAsync))!;
 
         login.GetParameters().Select(parameter => parameter.Name).Should().BeEquivalentTo(
-            new[] { "portalId", "request", "ipAddress", "cancellationToken" },
+            new[] { "request", "cancellationToken" },
             options => options.WithStrictOrdering());
         login.ReturnType.Should().Be(typeof(Task<Result<LoginResponse>>));
+    }
+
+    /// <summary>
+    /// The sign-in operation accepts the submitted request and a cancellation token, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Asserted deliberately rather than left to the shape test above. The tenant travels on the request
+    /// and the caller's network address does not travel at all, so a future parameter added for either
+    /// would be a regression against the fixed signature this migration prescribes: everything the
+    /// operation needs about the submission is on the submission.
+    /// </remarks>
+    [Fact]
+    public void AuthenticationContract_TakesNoTenantOrNetworkAddressArgument()
+    {
+        MethodInfo login = typeof(IAuthService).GetMethod(nameof(IAuthService.LoginAsync))!;
+
+        login.GetParameters().Should().HaveCount(2);
+        login.GetParameters()[0].ParameterType.Should().Be(typeof(LoginRequest));
+        login.GetParameters()[1].ParameterType.Should().Be(typeof(CancellationToken));
+        login.GetParameters()[1].HasDefaultValue.Should().BeTrue();
+        login.GetParameters().Should().NotContain(parameter => parameter.ParameterType == typeof(string));
+        login.GetParameters().Should().OnlyContain(parameter => !parameter.ParameterType.IsByRef);
+    }
+
+    /// <summary>
+    /// The tenant is read from the request rather than from any ambient source, and its absence is
+    /// refused as a malformed request rather than as a rejected credential.
+    /// </summary>
+    /// <remarks>
+    /// Zero and minus one are both real tenants, so the absent tenant cannot be defaulted to either.
+    /// Refusing it with the request-shape reason keeps it distinguishable from a wrong credential, which
+    /// matters because the two have different causes and different fixes.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_RefusesASubmissionWhoseTenantWasNeverAssigned()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<LoginResponse> result = await harness.Service.LoginAsync(
+            new LoginRequest { Username = AccountName, Password = RawPassword },
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(RequestInvalidCode);
+        harness.Users.Verify(
+            users => users.GetByUsernameAsync(
+                It.IsAny<int?>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -96,7 +146,7 @@ public class AuthServiceTests
     {
         Harness harness = Harness.Ready();
         harness.Portals
-            .Setup(portals => portals.GetAsync(
+            .Setup(portals => portals.GetByIdAsync(
                 It.IsAny<int>(),
                 It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
@@ -480,28 +530,33 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// The network address is accepted and changes nothing.
+    /// The caller's network address cannot influence the outcome, because it never reaches this layer.
     /// </summary>
-    /// <param name="address">The address supplied by the caller.</param>
     /// <remarks>
-    /// The address exists on the contract because the legacy call site supplied one. It is recorded by the
-    /// request log rather than here, and it is never an authorisation input: an address that could grant or
-    /// deny access would be a header a caller controls.
+    /// The legacy call site supplied an address as its seventh argument and the legacy service did nothing
+    /// with it but record it. It is now recorded by the Api layer's structured request log instead, and is
+    /// absent from this contract altogether - which is a stronger guarantee than accepting and ignoring
+    /// it, because an address that could grant or deny access would be an input a caller controls. This
+    /// test asserts the absence, since that is now the whole of the behaviour.
     /// </remarks>
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("203.0.113.7")]
-    [InlineData("not-an-address")]
-    public async Task SignIn_AcceptsAnyNetworkAddressAndIsUnaffectedByIt(string? address)
+    [Fact]
+    public async Task SignIn_CannotBeInfluencedByTheCallersNetworkAddress()
     {
+        typeof(IAuthService)
+            .GetMethod(nameof(IAuthService.LoginAsync))!
+            .GetParameters()
+            .Should()
+            .NotContain(parameter => parameter.ParameterType == typeof(string));
+
+        typeof(LoginRequest)
+            .GetProperties()
+            .Should()
+            .NotContain(property => property.Name.Contains("Address", StringComparison.Ordinal)
+                || property.Name.Contains("Ip", StringComparison.Ordinal));
+
         Harness harness = Harness.Ready();
 
-        Result<LoginResponse> result = await harness.Service.LoginAsync(
-            PortalId,
-            new LoginRequest { Username = AccountName, Password = RawPassword },
-            address,
-            CancellationToken.None);
+        Result<LoginResponse> result = await harness.LoginAsync();
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         harness.Tokens.Verify(
@@ -535,9 +590,7 @@ public class AuthServiceTests
         Harness harness = Harness.Ready();
 
         Result<LoginResponse> result = await harness.Service.LoginAsync(
-            PortalId,
-            new LoginRequest { Username = username, Password = password },
-            ipAddress: null,
+            new LoginRequest { PortalId = PortalId, Username = username, Password = password },
             CancellationToken.None);
 
         result.IsFailure.Should().BeTrue();
@@ -565,6 +618,73 @@ public class AuthServiceTests
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Once());
+    }
+
+    /// <summary>
+    /// A shipped credential raises the must-change advisory on the response body, never as a status field.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy sign-in status enumeration carried two success-with-caveat values, promoted at
+    /// UserController.vb:L1144-L1152 when a known default credential was presented. Neither reaches the wire
+    /// as a status; both fold onto the response's must-change advisory, because forcing a credential change
+    /// was the legacy remediation for both. The accompanying reason is what keeps the two cases apart for the
+    /// API edge.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_WithAShippedCredential_RaisesTheMustChangeAdvisoryOnTheBody()
+    {
+        Harness harness = Harness.Ready();
+        harness.ScopedAccount!.Username = "admin";
+
+        Result<LoginResponse> result = await harness.LoginAsync(username: "admin", password: "dnnadmin");
+
+        result.IsSuccess.Should().BeTrue("a shipped credential is still a valid credential");
+        result.Reason!.Code.Should().Be(InsecureAdminPasswordCode);
+        result.Value.MustChangePassword.Should().BeTrue(
+            "forcing a credential change is the legacy remediation for a shipped credential");
+        result.Value.PasswordExpiring.Should().BeFalse("only the must-change advisory applies here");
+        result.Value.MustUpdateProfile.Should().BeFalse("only the must-change advisory applies here");
+    }
+
+    /// <summary>
+    /// A forced credential update recorded on the account row reaches the response as the advisory boolean.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this was the highest-precedence value of the legacy post-credential check, read from the
+    /// account row's own update flag (UserController.vb:L1175-L1177, over the membership property at
+    /// UserMembership.vb:L323) and blocking in the legacy screen.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_WithAForcedCredentialUpdate_RaisesTheMustChangeAdvisory()
+    {
+        Harness harness = Harness.Ready();
+        harness.ScopedAccount!.UpdatePassword = true;
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.MustChangePassword.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// An ordinary sign-in raises no advisory, and says so explicitly rather than by omission.
+    /// </summary>
+    /// <remarks>
+    /// All three advisories are plain booleans, so "no advisory" is a written <see langword="false"/> rather
+    /// than an absent field. The legacy null test treated a false boolean as absent, which is precisely the
+    /// ambiguity a nullable form would have reintroduced here.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_WithNothingOutstanding_RaisesNoAdvisory()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.MustChangePassword.Should().BeFalse();
+        result.Value.PasswordExpiring.Should().BeFalse();
+        result.Value.MustUpdateProfile.Should().BeFalse();
     }
 
     /// <summary>
@@ -811,7 +931,7 @@ public class AuthServiceTests
             harness.Clock.SetupGet(clock => clock.UtcNow).Returns(Now);
 
             harness.Portals
-                .Setup(portals => portals.GetAsync(
+                .Setup(portals => portals.GetByIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
@@ -910,9 +1030,7 @@ public class AuthServiceTests
                 {
                     AccessToken = "access-token",
                     RefreshToken = "refresh-token",
-                    ExpiresIn = 3600,
                     ExpiresAtUtc = Now.AddMinutes(60),
-                    RefreshTokenExpiresAtUtc = Now.AddDays(7),
                 }));
 
             return harness;
@@ -932,14 +1050,13 @@ public class AuthServiceTests
             string? verificationCode = null,
             int portalId = PortalId)
             => Service.LoginAsync(
-                portalId,
                 new LoginRequest
                 {
+                    PortalId = portalId,
                     Username = username,
                     Password = password,
                     VerificationCode = verificationCode,
                 },
-                ipAddress: null,
                 CancellationToken.None);
     }
 }

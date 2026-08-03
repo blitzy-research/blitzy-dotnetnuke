@@ -51,13 +51,15 @@ export interface LoginResponse {
   /** The bearer token presented on subsequent requests. */
   readonly accessToken: string;
 
-  /** The scheme to present the access token under. Always `Bearer`. */
-  readonly tokenType: string;
-
-  /** Lifetime of the access token in seconds, from the moment it was issued. */
-  readonly expiresIn: number;
-
-  /** Absolute expiry of the access token, as an ISO 8601 instant in UTC. */
+  /**
+   * Absolute expiry of the access token, as an ISO 8601 instant in UTC.
+   *
+   * The only expiry the server publishes. It deliberately sends neither a
+   * remaining-seconds duration — one expiry representation cannot disagree with
+   * itself — nor an expiry for the refresh token, which is rotation state the
+   * server owns. There is likewise no `tokenType` member: the scheme is fixed by
+   * the API contract as `Bearer` rather than restated in every response.
+   */
   readonly expiresAtUtc: string;
 
   /**
@@ -70,8 +72,36 @@ export interface LoginResponse {
    */
   readonly refreshToken: string;
 
-  /** Absolute expiry of the refresh token, as an ISO 8601 instant in UTC. */
-  readonly refreshTokenExpiresAtUtc: string;
+  /**
+   * Whether the caller must change their credential before continuing.
+   *
+   * MIGRATION: the legacy post-credential check reported one of five values with
+   * a fixed precedence, so only ever one condition surfaced. Three independent
+   * booleans replace it, which can express combinations the legacy could not.
+   * This one covers both blocking credential cases — an administrator-forced
+   * update and an already-expired credential — and also the two success-with-
+   * caveat sign-in statuses raised when a shipped default credential is still in
+   * use, because forcing a change was the legacy remediation for those too.
+   * BLOCKING: the legacy interstitial offered no way past it.
+   */
+  readonly mustChangePassword: boolean;
+
+  /**
+   * Whether the caller's credential is approaching expiry.
+   *
+   * NON-BLOCKING, and the only one of the three that was: the legacy screen
+   * showed the same interstitial but enabled its "proceed anyway" panel for this
+   * case alone. Treat it as a prompt the caller may decline, never as a gate.
+   */
+  readonly passwordExpiring: boolean;
+
+  /**
+   * Whether the caller must complete or correct their profile before continuing.
+   *
+   * BLOCKING. The legacy flow sent this case to a different step rather than to
+   * the credential interstitial.
+   */
+  readonly mustUpdateProfile: boolean;
 
   /** The signed-in identity, including the roles and permissions it holds. */
   readonly user: CurrentUser;
@@ -135,20 +165,21 @@ export interface CurrentUser {
  */
 export interface AuthSession {
   readonly accessToken: string;
-  readonly tokenType: string;
   readonly expiresAtUtc: string;
   readonly refreshToken: string;
-  readonly refreshTokenExpiresAtUtc: string;
+  readonly mustChangePassword: boolean;
+  readonly passwordExpiring: boolean;
+  readonly mustUpdateProfile: boolean;
   readonly user: CurrentUser;
 }
 
 /**
  * Projects a login or refresh response into the session shape that is kept.
  *
- * `expiresIn` is deliberately dropped: it is a relative lifetime that is only
- * meaningful at the instant of issue, and keeping it alongside the absolute
- * expiry would create two representations of one fact that drift apart the moment
- * they are stored.
+ * The three advisory booleans are kept alongside the pair so that a reload does
+ * not lose a prompt the caller has not yet acted on. They stay plain booleans
+ * rather than optional ones: `false` means "no advisory" and is always present on
+ * the wire, so there is no third state to model.
  *
  * @param response A successful login or refresh response.
  * @returns The session to store.
@@ -156,10 +187,11 @@ export interface AuthSession {
 export function sessionFromLoginResponse(response: LoginResponse): AuthSession {
   return {
     accessToken: response.accessToken,
-    tokenType: response.tokenType,
     expiresAtUtc: response.expiresAtUtc,
     refreshToken: response.refreshToken,
-    refreshTokenExpiresAtUtc: response.refreshTokenExpiresAtUtc,
+    mustChangePassword: response.mustChangePassword,
+    passwordExpiring: response.passwordExpiring,
+    mustUpdateProfile: response.mustUpdateProfile,
     user: response.user,
   };
 }

@@ -1,4 +1,3 @@
-using System.Globalization;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
@@ -195,28 +194,36 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>
-    /// The hosting charge is stored as text, which is what makes its value converter mandatory rather than
-    /// decorative.
+    /// The hosting charge is stored as a monetary type, not as text, so no value converter stands between
+    /// the decimal property and the column.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The property is a <see cref="decimal"/> and the column is <c>nvarchar(10)</c>. Removing the converter
-    /// would not fail to compile; it would fail at the first read of the table. Asserting the store type
-    /// records why the converter is there.
+    /// The column began life as <c>nvarchar(10)</c> in the baseline script, but the <c>Tmp_Portals</c>
+    /// rebuild retyped it with an explicit <c>CONVERT(money, HostFee)</c>
+    /// (<c>01.00.05.SqlDataProvider:L1376,L1412</c>) and <c>03.01.01.SqlDataProvider:L1118</c> re-asserted
+    /// <c>ALTER TABLE Portals ALTER COLUMN HostFee money NOT NULL</c>. No later script revisits it, so
+    /// <c>money</c> is the terminal type. Asserting the store type is what stops a converter from being
+    /// reintroduced: binding this column as text would read a genuine installation incorrectly and would
+    /// make the stored value depend on the writing server's culture.
     /// </remarks>
     [Fact]
-    public async Task HostFee_IsStoredAsTextRatherThanANumber()
+    public async Task HostFee_IsStoredAsMoneyRatherThanText()
     {
         string dataType = await _fixture.Database.ScalarAsync<string>(
             "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
             + "WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Portals' AND COLUMN_NAME = 'HostFee'");
 
-        int length = await _fixture.Database.ScalarAsync<int>(
-            "SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS "
-            + "WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Portals' AND COLUMN_NAME = 'HostFee'");
+        // A monetary column has no character length at all, so the catalogue reports null for it. The
+        // count is asked for rather than the length itself because the scalar helper treats a null
+        // result as a failed statement.
+        int textLengthCount = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            + "WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Portals' AND COLUMN_NAME = 'HostFee' "
+            + "AND CHARACTER_MAXIMUM_LENGTH IS NOT NULL");
 
-        dataType.Should().Be("nvarchar");
-        length.Should().Be(10);
+        dataType.Should().Be("money");
+        textLengthCount.Should().Be(0, "a monetary column carries no character maximum length");
     }
 
     /// <summary>Both billing frequencies are stored as a single non-Unicode character.</summary>
@@ -288,19 +295,19 @@ public sealed class DnnDbContextTests
                 SiteLogHistory = 7,
             };
 
-            portals.Add(portal);
+            await portals.AddAsync(portal);
             await unitOfWork.SaveChangesAsync();
 
             portalId = portal.PortalId;
         }
 
-        // The stored hosting charge is the culture-invariant text form of the decimal, which is the whole
-        // reason the converter exists; a machine with a comma decimal separator must still write "12.5".
-        string storedFee = await _fixture.Database.ScalarAsync<string>(
+        // The hosting charge lands in a monetary column as a number, so it round-trips exactly and its
+        // stored form does not depend on the writing server's decimal separator.
+        decimal storedFee = await _fixture.Database.ScalarAsync<decimal>(
             "SELECT [HostFee] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
             new Dictionary<string, object?> { ["portalId"] = portalId });
 
-        storedFee.Should().Be(12.5m.ToString(CultureInfo.InvariantCulture));
+        storedFee.Should().Be(12.5m);
 
         string storedGuid = await _fixture.Database.ScalarAsync<string>(
             "SELECT CAST([GUID] AS nvarchar(36)) FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
@@ -324,7 +331,7 @@ public sealed class DnnDbContextTests
         {
             IPortalRepository portals = reading.ServiceProvider.GetRequiredService<IPortalRepository>();
 
-            Portal? reread = await portals.GetAsync(portalId);
+            Portal? reread = await portals.GetByIdAsync(portalId);
 
             reread.Should().NotBeNull();
             reread!.PortalName.Should().Be(FormattableString.Invariant($"Mapping Portal {suffix}"));
@@ -345,10 +352,10 @@ public sealed class DnnDbContextTests
             IPortalRepository portals = removing.ServiceProvider.GetRequiredService<IPortalRepository>();
             IUnitOfWork unitOfWork = removing.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            Portal? doomed = await portals.GetAsync(portalId);
+            Portal? doomed = await portals.GetByIdAsync(portalId);
             doomed.Should().NotBeNull();
 
-            portals.Remove(doomed!);
+            await portals.DeleteAsync(doomed!.PortalId);
             await unitOfWork.SaveChangesAsync();
         }
 

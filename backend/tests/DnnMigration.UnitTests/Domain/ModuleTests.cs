@@ -248,7 +248,7 @@ public class ModuleTests
         Tab tab = new() { TabId = 1, TabName = "Reports" };
 
         module.TabModules.Should().NotBeNull().And.BeEmpty();
-        module.ModuleSettings.Should().NotBeNull().And.BeEmpty();
+        module.Settings.Should().NotBeNull().And.BeEmpty();
         module.ModulePermissions.Should().NotBeNull().And.BeEmpty();
         tab.Children.Should().NotBeNull().And.BeEmpty();
         tab.TabModules.Should().NotBeNull().And.BeEmpty();

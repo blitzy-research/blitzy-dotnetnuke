@@ -57,14 +57,14 @@ CREATE TABLE [dbo].[Portals] (
     [BannerAdvertising] int NOT NULL DEFAULT 0,
     [AdministratorId] int NULL,
     [Currency] char(3) NULL,
-    [HostFee] nvarchar(10) NOT NULL,
+    [HostFee] money NOT NULL DEFAULT 0.0,
     [HostSpace] int NOT NULL DEFAULT 0,
     [AdministratorRoleId] int NULL,
     [RegisteredRoleId] int NULL,
     [Description] nvarchar(500) NULL,
     [KeyWords] nvarchar(500) NULL,
     [BackgroundFile] nvarchar(50) NULL,
-    [GUID] uniqueidentifier NOT NULL,
+    [GUID] uniqueidentifier NOT NULL DEFAULT (newid()),
     [PaymentProcessor] nvarchar(50) NULL,
     [ProcessorUserId] nvarchar(50) NULL,
     [ProcessorPassword] nvarchar(50) NULL,
@@ -72,8 +72,8 @@ CREATE TABLE [dbo].[Portals] (
     [HomeTabId] int NULL,
     [LoginTabId] int NULL,
     [UserTabId] int NULL,
-    [DefaultLanguage] nvarchar(6) NOT NULL DEFAULT N'en-US',
-    [TimezoneOffset] int NOT NULL,
+    [DefaultLanguage] nvarchar(10) NOT NULL DEFAULT N'en-US',
+    [TimezoneOffset] int NOT NULL DEFAULT -8,
     [AdminTabId] int NULL,
     [HomeDirectory] varchar(100) NOT NULL DEFAULT '',
     [SplashTabId] int NULL,
@@ -235,16 +235,16 @@ GO
 
 CREATE TABLE [dbo].[ProfilePropertyDefinition] (
     [PropertyDefinitionID] int NOT NULL IDENTITY,
-    [PortalID] int NOT NULL,
+    [PortalID] int NULL,
     [ModuleDefID] int NULL,
     [Deleted] bit NOT NULL,
     [DataType] int NOT NULL,
-    [DefaultValue] nvarchar(50) NULL,
+    [DefaultValue] ntext NULL,
     [PropertyCategory] nvarchar(50) NOT NULL,
     [PropertyName] nvarchar(50) NOT NULL,
     [Length] int NOT NULL DEFAULT 0,
     [Required] bit NOT NULL,
-    [ValidationExpression] nvarchar(100) NULL,
+    [ValidationExpression] nvarchar(2000) NULL,
     [ViewOrder] int NOT NULL,
     [Visible] bit NOT NULL,
     CONSTRAINT [PK_ProfilePropertyDefinition] PRIMARY KEY ([PropertyDefinitionID]),
@@ -449,7 +449,7 @@ CREATE INDEX [IX_PortalDesktopModules_DesktopModuleID] ON [dbo].[PortalDesktopMo
 GO
 
 
-CREATE UNIQUE INDEX [IX_ProfilePropertyDefinition] ON [dbo].[ProfilePropertyDefinition] ([PortalID], [ModuleDefID], [PropertyName]) WHERE [ModuleDefID] IS NOT NULL;
+CREATE UNIQUE INDEX [IX_ProfilePropertyDefinition] ON [dbo].[ProfilePropertyDefinition] ([PortalID], [ModuleDefID], [PropertyName]);
 GO
 
 

@@ -678,7 +678,7 @@ public sealed class UserService : IUserService
         {
             PortalId = portalId,
             CreatedDate = now,
-            Authorised = request.Authorize,
+            IsAuthorised = request.Authorize,
         });
 
         IReadOnlyList<Role> automatic =
@@ -768,7 +768,7 @@ public sealed class UserService : IUserService
         }
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         try
@@ -839,7 +839,7 @@ public sealed class UserService : IUserService
         }
 
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         if (portal?.AdministratorId == userId)
@@ -1314,7 +1314,7 @@ public sealed class UserService : IUserService
 
         foreach (ProfilePropertyDefinition definition in definitions)
         {
-            if (!definition.Required)
+            if (!definition.IsRequired)
             {
                 continue;
             }
@@ -1414,7 +1414,11 @@ public sealed class UserService : IUserService
             .GetDefinitionAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (definition is null || definition.PortalId != portalId || definition.Deleted)
+        // MIGRATION: PortalId is int? because 03.03.03 lines 77-83 made the column nullable and
+        // migrated the legacy host-level -1 to NULL. The lifted comparison therefore also reads a
+        // host-level definition as an absence for a portal-scoped request, which is the honest
+        // answer: such a definition belongs to no single portal.
+        if (definition is null || definition.PortalId != portalId || definition.IsDeleted)
         {
             // The contract declares absence as a null value on a non-nullable type parameter.
             return Result<ProfilePropertyDefinitionDto?>.Success(null);
@@ -1554,7 +1558,7 @@ public sealed class UserService : IUserService
                     $"Profile property definition {propertyDefinitionId} does not exist in portal {portalId}."));
         }
 
-        foreach (UserProfileValue value in definition.UserProfileValues.ToList())
+        foreach (UserProfileValue value in definition.ProfileValues.ToList())
         {
             _profiles.RemoveValue(value);
         }

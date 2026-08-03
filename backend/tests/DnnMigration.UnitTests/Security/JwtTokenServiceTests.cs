@@ -366,18 +366,29 @@ public class JwtTokenServiceTests
     }
 
     /// <summary>
-    /// A token response describes a bearer token before anything is put into it.
+    /// A token response raises no advisory and carries no credential before anything is put into it.
     /// </summary>
+    /// <remarks>
+    /// The three advisory booleans are the boundary form of the legacy post-credential validation
+    /// enumeration, and each must default to the "no advisory" value. They are deliberately plain
+    /// booleans rather than nullable ones: the legacy null test reported "absent" for a false boolean
+    /// itself, so a third state would advertise a distinction the source data cannot make.
+    /// </remarks>
     [Fact]
-    public void TokenResponse_DescribesABearerTokenByDefault()
+    public void TokenResponse_RaisesNoAdvisoryAndCarriesNoCredentialByDefault()
     {
         LoginResponse response = new();
 
-        response.TokenType.Should().Be(
-            "Bearer",
-            "the client sends the token back in an Authorization header whose scheme is this value");
         response.AccessToken.Should().BeEmpty();
         response.RefreshToken.Should().BeEmpty();
+        response.ExpiresAtUtc.Should().Be(
+            default,
+            "the expiry is assigned by the issuing service and is never computed by the contract itself");
+
+        response.MustChangePassword.Should().BeFalse("false means no advisory was raised");
+        response.PasswordExpiring.Should().BeFalse("false means no advisory was raised");
+        response.MustUpdateProfile.Should().BeFalse("false means no advisory was raised");
+
         response.User.Should().NotBeNull(
             "the snapshot is always present, so a caller never has to null-check the identity it just "
             + "authenticated");
@@ -655,7 +666,7 @@ public class JwtTokenServiceTests
     {
         Harness harness = Harness.SignedInSuccessfully();
         harness.Portals
-            .Setup(portals => portals.GetAsync(
+            .Setup(portals => portals.GetByIdAsync(
                 It.IsAny<int>(),
                 It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
@@ -1056,18 +1067,14 @@ public class JwtTokenServiceTests
             {
                 AccessToken = "issued-access-token",
                 RefreshToken = "issued-refresh-token",
-                ExpiresIn = 3600,
                 ExpiresAtUtc = Now.AddMinutes(60),
-                RefreshTokenExpiresAtUtc = Now.AddDays(7),
             };
 
             RotatedResponse = new LoginResponse
             {
                 AccessToken = RotatedAccessToken,
                 RefreshToken = "rotated-refresh-token",
-                ExpiresIn = 3600,
                 ExpiresAtUtc = Now.AddMinutes(60),
-                RefreshTokenExpiresAtUtc = Now.AddDays(7),
                 User = new CurrentUserDto { UserId = UserId, PortalId = PortalId },
             };
 
@@ -1136,7 +1143,7 @@ public class JwtTokenServiceTests
             harness.Clock.SetupGet(clock => clock.UtcNow).Returns(Now);
 
             harness.Portals
-                .Setup(portals => portals.GetAsync(
+                .Setup(portals => portals.GetByIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
@@ -1226,9 +1233,7 @@ public class JwtTokenServiceTests
         /// <returns>The outcome.</returns>
         public Task<Result<LoginResponse>> LoginAsync()
             => Service.LoginAsync(
-                PortalId,
-                new LoginRequest { Username = AccountName, Password = RawPassword },
-                ipAddress: null,
+                new LoginRequest { PortalId = PortalId, Username = AccountName, Password = RawPassword },
                 CancellationToken.None);
 
         /// <summary>

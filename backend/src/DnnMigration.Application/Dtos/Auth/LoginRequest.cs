@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DnnMigration.Application.Dtos.Auth;
 
 /// <summary>
@@ -51,6 +53,39 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// </remarks>
 public sealed class LoginRequest
 {
+    /// <summary>
+    /// Gets or sets the tenant the credential is being presented to. Populated by the Api layer,
+    /// never by the caller.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This member is not part of the wire contract.</b> It is excluded from serialisation, so a
+    /// value placed in the request body is not merely ignored - it can never be bound in the first
+    /// place. The Api layer assigns it after the body has been validated, taking the tenant that the
+    /// alias-resolution middleware resolved from the request host and falling back to the explicit
+    /// query parameter only when the host matches no configured alias. That ordering is what closes
+    /// the tenant-crossing vector: the transport decides which tenant a credential is presented to,
+    /// and a caller cannot name a site it is not addressing.
+    /// </para>
+    /// <para>
+    /// <b>Why it is carried here rather than passed separately.</b> The sign-in operation takes this
+    /// type and a cancellation token, and nothing else - a signature fixed by the migration plan
+    /// because it is what the legacy eight-argument call collapses into. The tenant has to reach the
+    /// service somehow, and it cannot be read from the request context inside the service: sign-in
+    /// deliberately supports a host with no alias row, in which case that context is unresolved and
+    /// only the explicit value exists. So the tenant travels on this type, assigned by the one layer
+    /// entitled to determine it.
+    /// </para>
+    /// <para>
+    /// <b>Nullable, and never defaulted.</b> Absence is a null reference, never a numeric stand-in:
+    /// <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c>, so both zero and minus one are
+    /// real tenants and neither can be borrowed to mean "unspecified". A sign-in whose tenant is
+    /// absent is refused rather than attributed to a default.
+    /// </para>
+    /// </remarks>
+    [JsonIgnore]
+    public int? PortalId { get; set; }
+
     /// <summary>
     /// Gets or sets the sign-in name supplied by the caller.
     /// </summary>
@@ -167,9 +202,9 @@ public sealed class LoginRequest
     /// <para>
     /// <b>The sign-in service is the only consumer.</b> <c>IAuthService.LoginAsync</c> reads
     /// this member and nothing else does, and it is that contract - not this one - that
-    /// declares the two outcomes the code produces: <c>VERIFICATION_REQUIRED</c> when the
+    /// declares the two outcomes the code produces: <c>auth.verification_required</c> when the
     /// account awaits verification and no code accompanied the credential, and
-    /// <c>VERIFICATION_CODE_INVALID</c> when a code was supplied and did not match.
+    /// <c>auth.verification_code_invalid</c> when a code was supplied and did not match.
     /// Composition of the value itself is measured and preserved there.
     /// </para>
     /// </remarks>
@@ -219,14 +254,20 @@ public sealed class LoginRequest
     // of those values into the legacy call as its first, sixth and seventh
     // arguments -- the tenant key, the tenant display name and the network
     // address. All three were ambient server-side values read from the Web Forms
-    // page, never posted by the browser. Taking the first two from a request
+    // page, never posted by the browser. Accepting the first two from a request
     // body would open a tenant-crossing vector, because a caller could name a
     // site it was not actually addressing; the target instead resolves them once
-    // per request in the Api layer's alias-resolution middleware and exposes
-    // them through a scoped, get-only context abstraction that a data carrier
-    // like this one has no business naming. Taking the third would let an
-    // attacker choose the audit trail recorded against their own sign-in
-    // attempt, which is a spoofing surface, so it is read from the connection.
+    // per request in the Api layer's alias-resolution middleware. The tenant key
+    // is therefore declared on this type but excluded from serialisation and
+    // assigned by that layer, which is a stronger guarantee than omitting the
+    // member would give -- an unbindable member cannot be supplied at all,
+    // whereas a member the service reads from elsewhere still has to be trusted
+    // to have been read from the right place. The tenant display name is not
+    // carried at all: nothing in the sign-in decision needs it, and the response
+    // projection reads it from the tenant aggregate. Accepting the third would
+    // let an attacker choose the audit trail recorded against their own sign-in
+    // attempt, which is a spoofing surface, so it is read from the connection by
+    // the Api layer's structured request log and never travels on this type.
 
     // MIGRATION: No "keep me signed in" flag is carried forward. The legacy
     // checkbox for it belongs to Website/admin/Authentication/Login.ascx:L29 --

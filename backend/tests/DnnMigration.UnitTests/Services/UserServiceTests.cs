@@ -916,7 +916,7 @@ public class UserServiceTests
         UserPortal membership = created.UserPortals.Should().ContainSingle().Which;
         membership.PortalId.Should().Be(PortalId);
         membership.CreatedDate.Should().Be(Now);
-        membership.Authorised.Should().BeTrue();
+        membership.IsAuthorised.Should().BeTrue();
 
         created.UserRoles.Select(assignment => assignment.RoleId).Should().Equal(new[] { 5, 6 });
         outcome.Value.Roles.Should().Equal(new[] { "Registered Users", "Subscribers" });
@@ -937,7 +937,7 @@ public class UserServiceTests
         Result<UserDetailDto> outcome = await harness.Service
             .CreateUserAsync(PortalId, request, CancellationToken.None);
 
-        harness.AddedUsers.Single().UserPortals.Single().Authorised.Should().BeFalse();
+        harness.AddedUsers.Single().UserPortals.Single().IsAuthorised.Should().BeFalse();
         harness.CreatedCredentials.Should().ContainSingle().Which.IsApproved.Should().BeFalse();
         outcome.Value.IsApproved.Should().BeFalse();
     }
@@ -2319,7 +2319,7 @@ public class UserServiceTests
     public async Task UpdateProfile_RefusesAnOmittedOrBlankRequiredProperty(string? submittedValue)
     {
         Harness harness = Harness.Ready();
-        harness.DefinitionFor(CityPropertyId).Required = true;
+        harness.DefinitionFor(CityPropertyId).IsRequired = true;
 
         UserProfileDto profile = submittedValue is null
             ? Profile((StreetPropertyId, "Fleet Street"))
@@ -2531,7 +2531,7 @@ public class UserServiceTests
         foreign.Value.Should().BeNull();
 
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
-        harness.LookupDefinition.Deleted = true;
+        harness.LookupDefinition.IsDeleted = true;
 
         Result<ProfilePropertyDefinitionDto?> withdrawn = await harness.Service
             .GetProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
@@ -2626,9 +2626,9 @@ public class UserServiceTests
         outcome.IsSuccess.Should().BeTrue();
         ProfilePropertyDefinition created = harness.AddedDefinitions.Should().ContainSingle().Which;
         created.PortalId.Should().Be(PortalId);
-        created.Deleted.Should().BeFalse();
+        created.IsDeleted.Should().BeFalse();
         created.PropertyName.Should().Be("Nickname");
-        created.Required.Should().BeTrue();
+        created.IsRequired.Should().BeTrue();
         created.Length.Should().Be(40);
         created.ViewOrder.Should().Be(7);
         outcome.Value.PortalId.Should().Be(PortalId);
@@ -2782,8 +2782,8 @@ public class UserServiceTests
         outcome.IsSuccess.Should().BeTrue();
         harness.LookupDefinition!.PropertyName.Should().Be("Street Address");
         harness.LookupDefinition!.Length.Should().Be(120);
-        harness.LookupDefinition!.Required.Should().BeTrue();
-        harness.LookupDefinition!.Visible.Should().BeFalse();
+        harness.LookupDefinition!.IsRequired.Should().BeTrue();
+        harness.LookupDefinition!.IsVisible.Should().BeFalse();
         harness.LookupDefinition!.ViewOrder.Should().Be(3);
         harness.LookupDefinition!.PropertyCategory.Should().Be("Address");
         harness.LookupDefinition!.ValidationExpression.Should().Be(".+");
@@ -2824,8 +2824,8 @@ public class UserServiceTests
     {
         Harness harness = Harness.Ready();
         ProfilePropertyDefinition definition = Definition(StreetPropertyId, "Street");
-        definition.UserProfileValues.Add(Value(1, UserId, StreetPropertyId, "Fleet Street"));
-        definition.UserProfileValues.Add(Value(2, OtherUserId, StreetPropertyId, "Baker Street"));
+        definition.ProfileValues.Add(Value(1, UserId, StreetPropertyId, "Fleet Street"));
+        definition.ProfileValues.Add(Value(2, OtherUserId, StreetPropertyId, "Baker Street"));
         harness.LookupDefinition = definition;
 
         Result outcome = await harness.Service
@@ -2915,7 +2915,7 @@ public class UserServiceTests
             PropertyCategory = "Contact",
             Length = 0,
             ViewOrder = viewOrder,
-            Visible = true,
+            IsVisible = true,
         };
 
     /// <summary>
@@ -3308,7 +3308,7 @@ public class UserServiceTests
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
             harness.Portals
-                .Setup(p => p.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRow);
             harness.Portals
                 .Setup(p => p.CountUsersAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))

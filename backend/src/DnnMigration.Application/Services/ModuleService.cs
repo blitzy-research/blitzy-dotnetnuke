@@ -1345,7 +1345,7 @@ public sealed class ModuleService : IModuleService
     private async Task<IReadOnlyList<Tab>> ReadContentTabsAsync(int portalId, CancellationToken cancellationToken)
     {
         Portal? portal = await _portals
-            .GetAsync(portalId, includeAliases: false, cancellationToken)
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
         IReadOnlyList<Tab> tabs = await _tabs
