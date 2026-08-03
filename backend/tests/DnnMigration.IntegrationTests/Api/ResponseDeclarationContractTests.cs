@@ -60,6 +60,68 @@ public sealed class ResponseDeclarationContractTests
     /// <summary>The media type every other response in this API is served as.</summary>
     private const string JsonMediaType = "application/json";
 
+    /// <summary>
+    /// Trailing segment shared by both addresses of the single profile-definition resource, matched as a
+    /// suffix so the flat and the portal-nested route templates are both found without either being spelled
+    /// out and going stale if a prefix changes.
+    /// </summary>
+    private const string ProfileDefinitionResourceSuffix = "/profile-definitions/{propertyDefinitionId}";
+
+    /// <summary>
+    /// The operations that can refuse a fully-bound, fully-validated request on semantic grounds, and which
+    /// therefore advertise the common supertype for <c>400</c> rather than the validation document.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A LITERAL LIST, deliberately, and it is the whole reason the converse rule can be asserted at all. A
+    /// predicate would exempt whatever it happened to match and prove nothing; a fixed roster means a new
+    /// operation cannot join it silently. Each entry is written exactly as the published document renders the
+    /// operation - the verb as the explorer names it, then the templated path.
+    /// </para>
+    /// <para>
+    /// Each is here because a specific reason code is reachable with every request member individually
+    /// valid: <c>portal.parent_alias_unresolved</c> on the portal creation, <c>role_group.scope_invalid</c>
+    /// on the role listing when a group identifier is combined with the ungrouped scope, and
+    /// <c>permission.filter_invalid</c> on the permission catalogue for a module-definition identifier below
+    /// the lowest one that can name a row. None of them has a member to key an error map to, so none can
+    /// produce the validation document, so none may advertise it.
+    /// </para>
+    /// <para>
+    /// EACH EXEMPTION WAS MEASURED AGAINST A RUNNING INSTANCE rather than read off the service code, and one
+    /// candidate justification did not survive that check. The permission catalogue also refuses a supplied
+    /// but blank <c>permissionCode</c> with the same failure code, and an earlier revision of this block cited
+    /// it - but the simple-type binder converts a whitespace-only query value to null, so that branch answers
+    /// 200 with the whole catalogue and is unreachable over HTTP. The identifier branch is what earns this
+    /// operation its exemption: <c>?moduleDefinitionId=0</c> answers 400 with a plain problem document, while
+    /// <c>?permissionKey=99</c> answers 400 with a validation document naming the parameter. Both shapes, one
+    /// operation, so only the supertype describes it honestly. The role listing was confirmed the same way at
+    /// both of its addresses, and the portal creation refuses an unresolvable parent alias.
+    /// </para>
+    /// <para>
+    /// FOUR ENTRIES NAME THREE ACTIONS. The role listing is reachable at two addresses - the flat
+    /// <c>roles</c> and the portal-nested <c>portals/{portalId}/roles</c> - because its action carries two
+    /// <c>HttpGet</c> templates, and the explorer publishes one operation per template. The exemption is
+    /// keyed by published operation identity rather than by action, which is what lets a single action be
+    /// held to different rules at different addresses if it ever needs to be; the price is that an action
+    /// with several templates must be named once per template. Omitting either address leaves that address
+    /// reported as an offender, which is precisely how this entry was found.
+    /// </para>
+    /// <para>
+    /// Note what is NOT here. Every listing enforces its collection's sortable vocabulary in the application
+    /// layer as well as at the boundary, and those service-side paging refusals would be semantic 400s too -
+    /// but they are unreachable over HTTP, because the per-collection request validator answers first and
+    /// names <c>sortBy</c>. An unreachable refusal must not earn an exemption, so those listings are held to
+    /// the validation document like everything else.
+    /// </para>
+    /// </remarks>
+    private static readonly IReadOnlyList<string> SemanticRefusalOperations =
+    [
+        "Post /api/v1/portals",
+        "Get /api/v1/roles",
+        "Get /api/v1/portals/{portalId}/roles",
+        "Get /api/v1/permissions",
+    ];
+
     private readonly OpenApiDocument _document;
 
     /// <summary>
@@ -130,8 +192,7 @@ public sealed class ResponseDeclarationContractTests
     }
 
     /// <summary>
-    /// An operation that accepts nothing but its path never advertises a validation document, and one that
-    /// does accept content always does.
+    /// An operation that accepts nothing but its path never advertises a validation document.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -143,15 +204,32 @@ public sealed class ResponseDeclarationContractTests
     /// response that could not occur.
     /// </para>
     /// <para>
-    /// The converse half is asserted in the same fact deliberately, because the two halves are one rule
-    /// stated from either side and splitting them would let a correction to one silently break the other.
     /// A route-only operation MAY still refuse a well-formed request on state grounds - a lock that is not
     /// held, a tenant that must retain one portal - and such a refusal is a plain problem document, which is
     /// why the rule constrains the SHAPE rather than forbidding the status.
     /// </para>
+    /// <para>
+    /// MIGRATION: THIS RULE USED TO BE STATED BI-DIRECTIONALLY, and the converse half was false. It asserted
+    /// that an operation carrying content ALWAYS advertises the validation document, on the reasoning that
+    /// the two halves are one rule read from either side. They are not. Carrying content makes a member-named
+    /// refusal POSSIBLE; it does not make it the only refusal reachable. Three actions refuse a well-formed,
+    /// fully-bound request on semantic grounds, and such a refusal travels through the shared result
+    /// translator, which produces a PLAIN problem document - it has a failure code and a sentence, and no
+    /// member to key an error map to. Those three therefore emit both shapes depending on why they refused,
+    /// so the only schema they can honestly advertise is the common supertype, and the withdrawn half of this
+    /// rule forbade exactly that honest declaration.
+    /// </para>
+    /// <para>
+    /// The converse is still asserted, in <see cref="AnOperationCarryingContent_AdvertisesTheValidationDocumentUnlessItsRefusalCanBeSemantic"/>,
+    /// against an explicit exemption set naming those three actions at every address each publishes - four
+    /// entries, because the role listing answers at both a flat and a portal-nested path. Keeping it as a
+    /// separate fact with a named list is what stops the exemption from becoming a silent hole: admitting
+    /// another mixed-refusal operation is a deliberate edit to that list rather than a test that quietly
+    /// keeps passing.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void TheValidationDocument_IsAdvertisedExactlyWhereTheRequestCarriesContent()
+    public void AnOperationThatAcceptsNothingButItsPath_NeverAdvertisesTheValidationDocument()
     {
         List<string> offenders = [];
 
@@ -159,10 +237,10 @@ public sealed class ResponseDeclarationContractTests
         {
             foreach (KeyValuePair<OperationType, OpenApiOperation> operation in path.Value.Operations)
             {
-                bool carriesContent =
-                    operation.Value.RequestBody is not null
-                    || operation.Value.Parameters.Any(
-                        parameter => parameter.In == ParameterLocation.Query);
+                if (CarriesContent(operation.Value))
+                {
+                    continue;
+                }
 
                 if (!operation.Value.Responses.TryGetValue("400", out OpenApiResponse? refusal))
                 {
@@ -171,23 +249,134 @@ public sealed class ResponseDeclarationContractTests
 
                 foreach (KeyValuePair<string, OpenApiMediaType> body in refusal.Content)
                 {
-                    string schema = body.Value.Schema?.Reference?.Id ?? string.Empty;
-                    bool namesTheMembers = schema == ValidationDocument;
-
-                    if (namesTheMembers != carriesContent)
+                    if ((body.Value.Schema?.Reference?.Id ?? string.Empty) == ValidationDocument)
                     {
-                        offenders.Add(
-                            $"{operation.Key} {path.Key} 400 -> {schema} "
-                            + $"(request carries content: {carriesContent})");
+                        offenders.Add($"{operation.Key} {path.Key} 400 -> {ValidationDocument}");
                     }
                 }
             }
         }
 
         offenders.Should().BeEmpty(
-            "the validation document names the request members that were refused, so it belongs exactly "
-            + "where the request has members to refuse - a path constrained to integers has none, because "
-            + "a value of the wrong shape never reaches the action");
+            "the validation document names the request members that were refused, so it cannot belong to an "
+            + "operation with no members to refuse - a path constrained to integers has none, because a "
+            + "value of the wrong shape never reaches the action");
+    }
+
+    /// <summary>
+    /// An operation that accepts content advertises the validation document, unless it can also refuse a
+    /// fully-bound request on semantic grounds - in which case it advertises the common supertype.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the converse of the fact above, and it is stated separately precisely because it needs an
+    /// exemption while the other half does not. Every operation that binds a body or a query parameter can
+    /// produce a member-named refusal, so the validation document is the right declaration for almost all of
+    /// them - the model binder or the declarative validator answers first and names the offending member.
+    /// </para>
+    /// <para>
+    /// MIGRATION: three operations are different, and declaring the validation document for them described a
+    /// response they do not always produce. Each can refuse a request that bound and validated perfectly, on
+    /// grounds only the application layer can judge:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>
+    ///   <c>POST /api/v1/portals</c> - the submitted parent portal alias resolves to no portal
+    ///   (<c>portal.parent_alias_unresolved</c>). The value is well-formed; whether it names a row is a
+    ///   question about stored state.
+    ///   </description></item>
+    ///   <item><description>
+    ///   <c>GET /api/v1/portals/{portalId}/roles</c> - a group identifier combined with the ungrouped scope
+    ///   (<c>role_group.scope_invalid</c>). Both parameters are individually valid and contradict each other.
+    ///   </description></item>
+    ///   <item><description>
+    ///   <c>GET /api/v1/permissions</c> - a blank code filter, or a module-definition identifier that cannot
+    ///   name a row (<c>permission.filter_invalid</c>).
+    ///   </description></item>
+    /// </list>
+    /// <para>
+    /// A semantic refusal travels through the shared result translator, which carries a failure code and one
+    /// authored sentence and has no member name to key an error map to - so the response is a plain problem
+    /// document. Both shapes are reachable on these three, and the common supertype is the only schema that
+    /// describes both: every validation document IS a problem document, so a client parsing the declared
+    /// shape reads either successfully, and one that additionally branches on the member map still finds it
+    /// when it is there. Advertising the narrower shape promised a member map that half of these refusals
+    /// cannot contain.
+    /// </para>
+    /// <para>
+    /// The exemption set is a LITERAL LIST rather than a predicate, and that is the point of the design. A
+    /// predicate - "exempt any operation whose controller can return a failed result" - would exempt almost
+    /// everything and assert nothing. Naming three operations means a fourth cannot join them by accident:
+    /// it fails here until somebody adds it deliberately, and the reason has to be written down beside it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void AnOperationCarryingContent_AdvertisesTheValidationDocumentUnlessItsRefusalCanBeSemantic()
+    {
+        List<string> offenders = [];
+        List<string> staleExemptions = [.. SemanticRefusalOperations];
+
+        foreach (KeyValuePair<string, OpenApiPathItem> path in _document.Paths)
+        {
+            foreach (KeyValuePair<OperationType, OpenApiOperation> operation in path.Value.Operations)
+            {
+                if (!CarriesContent(operation.Value))
+                {
+                    continue;
+                }
+
+                if (!operation.Value.Responses.TryGetValue("400", out OpenApiResponse? refusal))
+                {
+                    continue;
+                }
+
+                string identity = $"{operation.Key} {path.Key}";
+                bool exempt = SemanticRefusalOperations.Contains(identity);
+
+                foreach (KeyValuePair<string, OpenApiMediaType> body in refusal.Content)
+                {
+                    string schema = body.Value.Schema?.Reference?.Id ?? string.Empty;
+                    bool namesTheMembers = schema == ValidationDocument;
+
+                    if (exempt)
+                    {
+                        staleExemptions.Remove(identity);
+
+                        // An exempt operation must advertise the SUPERTYPE, not nothing and not something
+                        // invented. Accepting any schema here would turn the exemption into a hole through
+                        // which an undeclared or bespoke 400 could pass unnoticed.
+                        if (schema != ProblemDocument)
+                        {
+                            offenders.Add(
+                                $"{identity} 400 -> {schema} (exempt, so it must advertise "
+                                + $"{ProblemDocument})");
+                        }
+
+                        continue;
+                    }
+
+                    if (!namesTheMembers)
+                    {
+                        offenders.Add(
+                            $"{identity} 400 -> {schema} (carries content and is not an exempt "
+                            + "semantic-refusal operation)");
+                    }
+                }
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "an operation that binds a body or a query parameter is refused by the binder or by its "
+            + "declarative validator, and both name the offending member - so the validation document is "
+            + "the right declaration unless the operation can also refuse a fully-bound request on grounds "
+            + "no member map can express");
+
+        // The exemption list is held to be exactly as long as it needs to be. An entry that matches no
+        // operation is a stale exemption, and a stale exemption is a hole: it would keep excusing an
+        // operation that had been renamed or removed, and nothing else in this suite would notice.
+        staleExemptions.Should().BeEmpty(
+            "every exempt operation must exist and must reach this fact, or the exemption is excusing "
+            + "nothing and should be deleted");
     }
 
     /// <summary>
@@ -227,6 +416,80 @@ public sealed class ResponseDeclarationContractTests
             "every other response in this API is JSON, and a second media type would be a second parsing "
             + "path for a client to discover rather than a documented exception");
     }
+
+    /// <summary>
+    /// Every deletion whose service can report a persistence conflict advertises <c>409</c>, at every address
+    /// the action answers on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the one shape of declaration defect the schema rules above cannot see. They inspect the
+    /// statuses an operation DOES advertise and check each carries a problem document; a status the operation
+    /// never mentions passes every one of them, because there is nothing to inspect. An undeclared but
+    /// reachable status is worse than a wrongly-typed one for a generated client: the wrongly-typed status
+    /// deserialises into the wrong shape, while the undeclared status has no branch at all and surfaces as an
+    /// unhandled response.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE PROFILE-DEFINITION DELETION DECLARED ONLY 204, 401, 403 AND 404. Its service reports a
+    /// persistence conflict when a concurrent request changes or removes the definition between this
+    /// request's read and its write, and the shared status table answers that code with <c>409</c> - so the
+    /// status was reachable and undocumented. A comment in the service asserted the endpoint already declared
+    /// it, which made the gap read as intentional; it did not, and the comment was corrected alongside the
+    /// declaration.
+    /// </para>
+    /// <para>
+    /// Both addresses are asserted because the action answers on a flat and a portal-nested path, and a
+    /// declaration added to one route template would leave the other silently undocumented.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheProfileDefinitionDeletion_AdvertisesTheConflictItCanReport()
+    {
+        List<string> deletions = [.. _document.Paths
+            .Where(path => path.Key.EndsWith(ProfileDefinitionResourceSuffix, StringComparison.Ordinal))
+            .Where(path => path.Value.Operations.ContainsKey(OperationType.Delete))
+            .Select(path => path.Key)];
+
+        deletions.Should().HaveCount(
+            2,
+            "the deletion answers on both a flat and a portal-nested address, and both must be checked");
+
+        foreach (string path in deletions)
+        {
+            OpenApiOperation deletion = _document.Paths[path].Operations[OperationType.Delete];
+
+            deletion.Responses.Should().ContainKey(
+                "409",
+                "the service reports a persistence conflict on this path, so the status is reachable and "
+                + "must be advertised rather than left for a client to meet unannounced");
+
+            IEnumerable<string> schemas = deletion.Responses["409"].Content
+                .Select(body => body.Value.Schema?.Reference?.Id ?? string.Empty);
+
+            schemas.Should().OnlyContain(
+                schema => schema == ProblemDocument,
+                "a conflict names no request member, so it carries the plain problem document");
+        }
+    }
+
+    /// <summary>
+    /// Reports whether an operation accepts anything a refusal could name, beyond its path.
+    /// </summary>
+    /// <param name="operation">The operation to inspect.</param>
+    /// <returns>
+    /// <see langword="true"/> when the operation binds a request body or a query parameter; otherwise
+    /// <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// Path parameters are deliberately not counted. Every one in this API is constrained to an integer, so a
+    /// value of the wrong shape fails the route constraint and is answered by the router as a missing
+    /// resource - the action is never reached and no member map can be produced. Stated once here so the two
+    /// halves of the rule cannot disagree about what "carries content" means.
+    /// </remarks>
+    private static bool CarriesContent(OpenApiOperation operation) =>
+        operation.RequestBody is not null
+        || operation.Parameters.Any(parameter => parameter.In == ParameterLocation.Query);
 
     /// <summary>Yields every failure response the document advertises.</summary>
     /// <returns>The path, verb, status and response of each advertised failure.</returns>

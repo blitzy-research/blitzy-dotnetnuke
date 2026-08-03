@@ -72,17 +72,20 @@ namespace DnnMigration.Api.Controllers;
 /// row. That is also why no range constraint appears on any identifier parameter below.
 /// </para>
 /// <para>
-/// MIGRATION - discovered legacy defect, recorded rather than reproduced, and unreachable here in any
-/// case. The editor applied its portal-scoped uniqueness guard on one branch only: the add branch looked
-/// the name up first and refused a collision (<c>EditRoles.ascx.vb:L252-L258</c>), while the edit branch
-/// updated with no such check (<c>:L259-L261</c>). Taken literally that means a rename could manufacture
-/// a duplicate. It cannot happen here, and not because the check was tightened: renaming is not a
-/// workflow this application ever offered. The edit screen reveals the name as a read-only label and
-/// disables its only required-field validator (<c>EditRoles.ascx.vb:L131-L134</c>), and the terminal
+/// MIGRATION - discovered legacy defect, closed rather than reproduced, and the closure is documented.
+/// The editor applied its portal-scoped uniqueness guard on one branch only: the add branch looked the
+/// name up first and refused a collision (<c>EditRoles.ascx.vb:L252-L258</c>), while the edit branch
+/// updated with no such check (<c>:L259-L261</c>). That asymmetry was coherent only because the legacy
+/// edit path could not change a name at all - the screen revealed a read-only label and disabled its
+/// only required-field validator (<c>EditRoles.ascx.vb:L131-L134</c>), and the terminal
 /// <c>UpdateRole</c> procedure omits the column from its assignment list
-/// (<c>04.00.04.SqlDataProvider:L454</c>). The update contract accordingly carries no name member, so
-/// the <c>PUT</c> below cannot report a duplicate and does not advertise that it can; the duplicate
-/// refusal belongs to <c>POST</c> alone, exactly as measured.
+/// (<c>04.00.04.SqlDataProvider:L454</c>). The library-level member the service layer replaces did carry
+/// the name (<c>RoleController.vb:L254</c>), and the terminal schema constrains
+/// <c>(PortalID, RoleName)</c> uniquely (<c>03.00.09.SqlDataProvider:L304</c>), so the update contract
+/// carries a name member and the guard applies to BOTH write paths. <c>POST</c> and <c>PUT</c> therefore
+/// both advertise the duplicate refusal as <c>409</c>, the <c>PUT</c> comparison excluding the role being
+/// edited so that resubmitting a role's own name is a no-op. The rename capability is a deliberate
+/// behavioural difference from the legacy screen and is itemised in <c>MIGRATION_NOTES.md</c>.
 /// </para>
 /// <para>
 /// MIGRATION: the two role-group selector sentinels are not tunnelled through this API. The legacy
@@ -310,6 +313,27 @@ public sealed class RolesController : ControllerBase
     /// identifier as its sixth argument (<c>SecurityRoles.ascx.vb:L542</c>), and that fact is now read
     /// from the current-user abstraction inside the service, so it cannot be spoofed by a request body.
     /// </remarks>
+    /// <summary>
+    /// Failure code carried as the problem type when the request reached this action without a tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A distinct code from the middleware's generic refusal, so an operator reading a support log can tell
+    /// "this host resolves to no portal" apart from "this caller lacks the grant" - while the caller reads
+    /// the same fixed wording either way and learns nothing from the difference. The same constant is
+    /// declared by <c>PortalAliasResolutionMiddleware</c> and by the other controllers that guard on tenant
+    /// resolution, because the two paths must be indistinguishable to a client.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the tenant guards in this controller answered with a bare <c>Forbid()</c>. A controller's
+    /// <c>Forbid()</c> does NOT pass through the authorisation middleware's result handler, so it produced a
+    /// 403 with an EMPTY BODY while every action here declares a problem document for 403 - the response
+    /// contradicted its own declaration, and it was distinguishable from the middleware's refusal for the
+    /// identical cause. Routing the refusal through the shared helper closes both gaps at once.
+    /// </para>
+    /// </remarks>
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     private readonly IRoleService _roles;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -356,9 +380,28 @@ public sealed class RolesController : ControllerBase
     /// </para>
     /// <para>
     /// The holder throws rather than yielding a placeholder tenant, so resolution is tested before the
-    /// tenant is read. An unresolved request has already been refused by the class-level policy, which
-    /// denies for want of a portal, so the null answer here is a precondition rather than a state a caller
-    /// can steer into - and the caller sees the same bare <c>403</c> either way.
+    /// tenant is read, and the null answer here is a precondition rather than a state a caller can steer
+    /// into.
+    /// </para>
+    /// <para>
+    /// MIGRATION: WHAT REFUSES FIRST IS THE TENANT-RESOLUTION MIDDLEWARE, NOT THE CLASS-LEVEL POLICY, and an
+    /// earlier revision of this block credited the policy. Measured both ways against a running instance: a
+    /// portal administrator addressing a host name with no alias row is refused by the policy with
+    /// <c>auth.not_permitted</c>, but a superuser passes that policy from any host name whatsoever, because
+    /// the policy is anchored to the portal named in the route and the unscoped route names none. That
+    /// request is refused by the middleware instead, with <c>portal.tenant_unresolved</c>. Either way the
+    /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
+    /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
+    /// answer than a <c>403</c> for a condition that is not the caller's fault.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE REFUSAL IS NO LONGER A BARE <c>403</c>. This block previously said the caller sees the
+    /// same bare status either way, which was the justification for answering with <c>Forbid()</c>, and it
+    /// described a body that contradicted this action's own declaration: <c>Forbid()</c> does not pass
+    /// through the authorisation middleware's result handler, so it produced an EMPTY body while every action
+    /// here declares a problem document for <c>403</c>. The guard now answers through the shared
+    /// problem-details path carrying the same failure code the middleware uses, so the two refusals are
+    /// indistinguishable to a client keying on that code.
     /// </para>
     /// </remarks>
     private int? ResolvePortalId(int? routedPortalId)
@@ -393,7 +436,16 @@ public sealed class RolesController : ControllerBase
     /// portal, which is the successor to the legacy "&lt; All Roles &gt;" selector entry and the default
     /// when the parameter is omitted; and <c>Ungrouped</c>, only the roles belonging to no group at all,
     /// which is the successor to its "&lt; Global Roles &gt;" entry. The parameter is a closed
-    /// enumeration, so an unrecognised spelling is refused by model binding.
+    /// enumeration, so a value outside it is refused by model binding.
+    /// <para>
+    /// That refusal covers an unrecognised spelling AND an undefined numeric literal, and the second half
+    /// is worth stating because it is easy to assume otherwise. MVC's enumeration binder tests DEFINED
+    /// membership for a non-flags enumeration, so <c>?scope=999</c> is answered <c>400</c> with
+    /// <c>errors["scope"]</c> naming the value before this action runs, while <c>?scope=0</c> and
+    /// <c>?scope=1</c> bind normally - measured against this API rather than assumed. The application
+    /// contract additionally tests membership itself and would answer <c>role_group.scope_invalid</c>,
+    /// which is unreachable over HTTP and exists because that layer is callable without MVC.
+    /// </para>
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>One page of the portal's roles, in the wire envelope: an <c>items</c> array of rows and a <c>meta</c> object carrying the total across every page, the page index and the page size. The domain paging type is not serialised.</returns>
@@ -402,10 +454,20 @@ public sealed class RolesController : ControllerBase
     /// answer and is never reported as a failure.
     /// </response>
     /// <response code="400">
-    /// A query value could not be bound, a paging rule was broken - a negative page index, or a page size
-    /// above the ceiling the request contract declares - or the two narrowing arguments contradict each
-    /// other, which is <c>role_group.scope_invalid</c>. Reported as an RFC 7807 document; the paging and
-    /// binding cases name the offending member.
+    /// A query value could not be bound - including a scope outside the enumeration, which the binder
+    /// refuses by name - or a paging rule was broken, such as a negative page index or a page size above the
+    /// ceiling the request contract declares. Those cases are RFC 7807 validation documents naming the
+    /// offending member. A fully-bound, fully-validated request can ALSO be refused here when the two
+    /// narrowing arguments contradict each other (<c>role_group.scope_invalid</c>), and that refusal carries
+    /// the failure code as its problem type with no single member to blame - the contradiction is between
+    /// two members, each individually valid - so its body is a plain problem document.
+    /// <para>
+    /// MIGRATION: the declared schema is therefore the COMMON SUPERTYPE and not the validation document.
+    /// Declaring the narrower shape promised a map of refused members on every refusal, which the
+    /// contradiction case cannot contain. <c>ResponseDeclarationContractTests</c> names this operation in its
+    /// semantic-refusal exemption set and holds it to the supertype, so the declaration cannot quietly drift
+    /// back to either extreme.
+    /// </para>
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -438,7 +500,12 @@ public sealed class RolesController : ControllerBase
     [HttpGet("roles")]
     [HttpGet("portals/{portalId:int}/roles")]
     [ProducesResponseType(typeof(PagedResponse<RoleListItemDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    // BASE ProblemDetails, not ValidationProblemDetails. Both shapes are reachable: the binder and the paging
+    // validator name the offending member, while the contradiction between a group identifier and the
+    // ungrouped scope is refused with a failure code and no single member to blame. The supertype is the only
+    // schema that describes both, and ResponseDeclarationContractTests names this operation in its
+    // semantic-refusal exemption set for exactly this reason.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
@@ -451,7 +518,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         // An omitted scope binds to the enumeration's zero member, which is All - the same answer this
@@ -507,7 +574,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<RoleDetailDto?> outcome = await _roles
@@ -579,7 +646,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<RoleDetailDto> outcome = await _roles
@@ -595,9 +662,8 @@ public sealed class RolesController : ControllerBase
     /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role to update.</param>
     /// <param name="request">
-    /// The new state: description, role group, visibility and automatic-enrolment switches, invitation
-    /// code, icon, and the billing and trial terms. The role's NAME is deliberately absent and a
-    /// submitted one is ignored rather than applied.
+    /// The new state: name, description, role group, visibility and automatic-enrolment switches,
+    /// invitation code, icon, and the billing and trial terms.
     /// </param>
     /// <param name="cancellationToken">Abandons the write when the caller disconnects.</param>
     /// <returns>The updated role.</returns>
@@ -618,16 +684,24 @@ public sealed class RolesController : ControllerBase
     /// No portal bears that identifier, the portal defines no role with that identifier, or the request
     /// names a role group the portal does not define.
     /// </response>
+    /// <response code="409">
+    /// The submitted name already belongs to a DIFFERENT role in the same portal. Resubmitting a role's
+    /// own current name is not a conflict, because the comparison excludes the role being updated.
+    /// </response>
     /// <remarks>
-    /// MIGRATION: there is deliberately no <c>409</c> here, and its absence is measured rather than
-    /// assumed. Renaming a role was never a workflow this application offered - the edit screen reveals
-    /// the name as a read-only label and disables its only required-field validator
+    /// MIGRATION - documented behavioural difference, itemised in <c>MIGRATION_NOTES.md</c>. This path
+    /// can rename a role, where the legacy edit screen could not: it revealed the name as a read-only
+    /// label and disabled its only required-field validator
     /// (<c>EditRoles.ascx.vb:L131-L134</c>), and the terminal stored procedure omits the column from its
-    /// assignment list (<c>04.00.04.SqlDataProvider:L454</c>) - so the update contract carries no name
-    /// member and this path cannot produce a duplicate to refuse. That is also why the legacy editor's
-    /// uniqueness guard on the add branch only (<c>:L252-L258</c>, with no equivalent at <c>:L259-L261</c>)
-    /// is coherent rather than defective in practice: the value it guarded could not change. The defect
-    /// is recorded, not silently "improved", and a name member must not be added here to create one.
+    /// assignment list (<c>04.00.04.SqlDataProvider:L454</c>). The library-level member this replaces did
+    /// carry the name (<c>RoleController.vb:L254</c>), and the terminal schema declares
+    /// <c>UNIQUE (PortalID, RoleName)</c> (<c>03.00.09.SqlDataProvider:L304</c>), so the guard the legacy
+    /// editor applied on its add branch alone (<c>:L252-L258</c>, with no equivalent at
+    /// <c>:L259-L261</c>) is applied on this path too and its collision is the <c>409</c> above. The
+    /// legacy asymmetry was coherent only while the name could not change; making the name writable
+    /// without the guard would have made a rename the one way to manufacture a duplicate. Neither the
+    /// check nor the status is decided here - the service reports the outcome and the shared translator
+    /// maps it.
     /// </remarks>
     [HttpPut("roles/{roleId:int}")]
     [HttpPut("portals/{portalId:int}/roles/{roleId:int}")]
@@ -636,6 +710,7 @@ public sealed class RolesController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<RoleDetailDto>>> UpdateAsync(
         [FromRoute] int? portalId,
         int roleId,
@@ -644,7 +719,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<RoleDetailDto> outcome = await _roles
@@ -692,7 +767,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result outcome = await _roles
@@ -752,6 +827,17 @@ public sealed class RolesController : ControllerBase
     /// electronic mail address, approval, lock-out and the rest - are not here, because the legacy grid
     /// rendered none of them and the account endpoints already publish them.
     /// </para>
+    /// <para>
+    /// MIGRATION: this action binds <c>RoleUserPagedRequest</c> and not the account listing's
+    /// <c>UserPagedRequest</c>, and the difference is a capability rather than a formality. Borrowing the
+    /// account type resolved <c>UserPagedRequestValidator</c>, which applies the account collection's seven
+    /// sortable names, while the service behind this action enforces the role-membership set of ten and
+    /// implements all ten. Ordering by <c>CreatedDate</c>, <c>LastLoginDate</c> or <c>IsApproved</c> was
+    /// therefore refused at the boundary as an unknown field even though the service would have honoured
+    /// it - the endpoint advertised less than it could do. One request type per collection, each closed over
+    /// the one set that collection honours, is what keeps the validator's vocabulary and the service's
+    /// vocabulary the same vocabulary.
+    /// </para>
     /// </remarks>
     [HttpGet("roles/{roleId:int}/users")]
     [HttpGet("portals/{portalId:int}/roles/{roleId:int}/users")]
@@ -763,12 +849,12 @@ public sealed class RolesController : ControllerBase
     public async Task<ActionResult<PagedResponse<RoleMembershipDto>>> ListUsersAsync(
         [FromRoute] int? portalId,
         int roleId,
-        [FromQuery] UserPagedRequest request,
+        [FromQuery] RoleUserPagedRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<PagedResult<RoleMembershipDto>> outcome = await _roles
@@ -831,7 +917,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<IReadOnlyList<RoleListItemDto>> outcome = await _roles
@@ -884,12 +970,23 @@ public sealed class RolesController : ControllerBase
     /// MIGRATION: the two dates are optional and absent means absent. The legacy screen substituted
     /// <c>Null.NullDate</c> - that is, <c>DateTime.MinValue</c> - for an empty date box
     /// (<c>SecurityRoles.ascx.vb:L528-L539</c>), and the empty string sentinel behaved the same way for
-    /// text. Here a date omitted from the body is <c>null</c> and stays <c>null</c>; serialisation is
-    /// configured once to emit nulls rather than drop the member, so an absent date is visible as absent
-    /// on the way back out. What the service does with an absent date is unchanged in effect: an expiry
-    /// is derived from the role's billing or trial terms, using the six-code frequency table cited at the
-    /// head of this file, and the code <c>O</c> still yields the far-future <c>9999-12-31</c>, which
-    /// reaches the wire exactly as stored. No date arithmetic is performed in this file.
+    /// text. Here a date omitted from the body is <c>null</c> and stays <c>null</c>. What the service does
+    /// with an absent date is unchanged in effect: an expiry is derived from the role's billing or trial
+    /// terms, using the six-code frequency table cited at the head of this file, and the code <c>O</c>
+    /// still yields the far-future <c>9999-12-31</c>, which reaches the wire exactly as stored. No date
+    /// arithmetic is performed in this file.
+    /// </para>
+    /// <para>
+    /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT - this paragraph used to say the opposite,
+    /// so the correction is stated plainly. Serialisation is configured once with
+    /// <c>JsonIgnoreCondition.WhenWritingNull</c>, so a <c>null</c> date is NOT written as
+    /// <c>"effectiveDate": null</c>; the MEMBER IS OMITTED FROM THE OBJECT ENTIRELY. That is the intended
+    /// contract - absence is expressed by absence, never by a sentinel, and writing nulls would add bytes
+    /// without adding information - but a client must read it as "member missing means no date", not as
+    /// "member present with a null value". A client that indexes the property blindly will find it
+    /// undefined rather than null, which is the practical difference the withdrawn sentence got wrong.
+    /// The members remain nullable on the response contract, so the published schema marks them optional
+    /// and agrees with what the serialiser does.
     /// </para>
     /// <para>
     /// MIGRATION: the notification flag survives on the contract because it was a genuine caller choice
@@ -923,7 +1020,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result outcome = await _roles
@@ -985,7 +1082,7 @@ public sealed class RolesController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result outcome = await _roles

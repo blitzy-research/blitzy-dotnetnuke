@@ -130,6 +130,7 @@ public class StorageRangeBoundTests
 
         new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest
         {
+            RoleName = "Subscribers",
             ServiceFee = SqlServerRange.MaximumMoney,
             TrialFee = SqlServerRange.MaximumMoney,
         }).IsValid.Should().BeTrue();
@@ -152,43 +153,78 @@ public class StorageRangeBoundTests
     }
 
     /// <summary>
-    /// A role period past the permitted maximum is refused on both paths.
+    /// A role period that is not strictly positive is refused on both paths, with the legacy wording.
     /// </summary>
     /// <remarks>
-    /// The period drives the offset arithmetic that derives a membership expiry. That arithmetic clamps
-    /// rather than overflowing, so this rule is not what keeps it safe - it is what gives a caller a
-    /// field-level answer instead of a silently clamped expiry it never asked for.
+    /// This is the ONLY bound the legacy screen declared on either period - <c>valBillingPeriod2</c> at
+    /// <c>editroles.ascx</c> L114 and <c>valTrialPeriod2</c> at L146, both greater than zero - and it is
+    /// asserted on both verbs because both write the same columns.
     /// </remarks>
-    [Fact]
-    public void RolePeriods_PastThePermittedMaximum_AreRefused()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void RolePeriods_ThatAreNotPositive_AreRefusedOnBothPaths(int period)
     {
-        const int pastTheMaximum = 10_001;
-
         new CreateRoleRequestValidator().Validate(new CreateRoleRequest
         {
             RoleName = "Subscribers",
-            BillingPeriod = pastTheMaximum,
-            TrialPeriod = pastTheMaximum,
+            BillingPeriod = period,
+            TrialPeriod = period,
         }).IsValid.Should().BeFalse();
 
         new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest
         {
-            BillingPeriod = pastTheMaximum,
-            TrialPeriod = pastTheMaximum,
+            RoleName = "Subscribers",
+            BillingPeriod = period,
+            TrialPeriod = period,
         }).IsValid.Should().BeFalse();
     }
 
     /// <summary>
-    /// An ordinary role period is accepted, and so is one at the maximum.
+    /// EVERY positive role period is accepted on both paths, including the largest an <c>int</c> column
+    /// can hold.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A net-new ten-thousand-unit ceiling stood on both role validators and refused a band of values the
+    /// legacy application accepted: the columns are plain <c>int</c>
+    /// (<c>01.00.08.SqlDataProvider</c> L6829 and <c>01.00.05.SqlDataProvider</c> L2754), the legacy
+    /// screen bounded each period only below, and the terminal <c>UpdateRole</c> procedure bounds neither.
+    /// This fact is what keeps the ceiling from returning.
+    /// </para>
+    /// <para>
+    /// Nothing is left unprotected by its removal. The period drives the offset arithmetic that derives a
+    /// membership expiry, and <c>RoleService.DeriveAssignmentDates</c> routes every offset through its
+    /// clamping helpers, so a period large enough to overflow that arithmetic yields the storable bound
+    /// rather than a wrapped or faulted date. That is asserted for <see cref="int.MaxValue"/> itself by
+    /// <c>RoleServiceTests.Assign_ClampsATermThatOutrunsTheStoredCalendar</c>, which is why this fact can
+    /// admit the value without leaving the outcome unexamined.
+    /// </para>
+    /// </remarks>
     [Theory]
     [InlineData(1)]
     [InlineData(12)]
     [InlineData(10_000)]
-    public void RolePeriods_WithinThePermittedMaximum_AreAccepted(int period)
-        => new UpdateRoleRequestValidator()
-            .Validate(new UpdateRoleRequest { BillingPeriod = period, TrialPeriod = period })
+    [InlineData(10_001)]
+    [InlineData(int.MaxValue)]
+    public void RolePeriods_AnyPositiveCount_IsAcceptedOnBothPaths(int period)
+    {
+        new CreateRoleRequestValidator().Validate(new CreateRoleRequest
+        {
+            RoleName = "Subscribers",
+            BillingPeriod = period,
+            TrialPeriod = period,
+        }).IsValid.Should().BeTrue();
+
+        new UpdateRoleRequestValidator()
+            .Validate(new UpdateRoleRequest
+            {
+                RoleName = "Subscribers",
+                BillingPeriod = period,
+                TrialPeriod = period,
+            })
             .IsValid.Should().BeTrue();
+    }
 
     /// <summary>
     /// A membership window date outside the stored calendar is refused, naming the date submitted.

@@ -373,9 +373,10 @@ public static class RoleMappings
     /// the route, and the request contract deliberately carries neither.
     /// </para>
     /// <para>
-    /// The role's NAME is likewise not written from the request, because the update contract does not
-    /// carry one. The tracked entity's existing name is passed straight back through, so an update
-    /// preserves it.
+    /// The role's NAME <em>is</em> written from the request, so an update replaces it like every other
+    /// member. Uniqueness of the new name within the portal is not this projection's concern - it needs
+    /// a read, so it is settled by <c>Application/Services/RoleService.cs</c> before this member is
+    /// called.
     /// </para>
     /// </remarks>
     public static void ApplyUpdate(Role role, UpdateRoleRequest request)
@@ -383,21 +384,23 @@ public static class RoleMappings
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(request);
 
-        // MIGRATION: the stored name is passed through unchanged rather than taken from the request,
-        // because renaming a role was never a legacy workflow. The edit screen revealed a read-only
-        // label and hid the name textbox whenever it was editing an existing role
+        // MIGRATION - DOCUMENTED BEHAVIOURAL DIFFERENCE: the submitted name is applied, where the
+        // legacy edit path could not change one. The edit screen revealed a read-only label and hid the
+        // name textbox whenever it was editing an existing role
         // (Website/admin/Security/EditRoles.ascx.vb L131-L134), the legacy membership data contract
         // declared no parameter for the name on its update member
-        // (Library/Providers/MembershipProviders/DataProvider/DataProvider.vb L97), the provider
-        // never passed one (DNNRoleProvider.vb L325), and the terminal stored procedure omits the
-        // column from its assignment list altogether
-        // (Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider L454). Passing
-        // the entity's own value keeps this projection total - every writable member of the role is
-        // still assigned exactly once - without inventing a rename capability the application never
-        // had.
+        // (Library/Providers/MembershipProviders/DataProvider/DataProvider.vb L97), the provider never
+        // passed one (DNNRoleProvider.vb L325), and the terminal stored procedure omits the column from
+        // its assignment list altogether
+        // (Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider L454). The
+        // library-level member this service layer replaces nevertheless took the whole role including
+        // its name (RoleController.vb L254), and the terminal schema constrains the pair through
+        // UNIQUE (PortalID, RoleName) at 03.00.09.SqlDataProvider L304, so a rename is expressible here
+        // and its collision is a reportable outcome. Resubmitting the stored name is a no-op, so no
+        // legacy submission behaves differently. Itemised in MIGRATION_NOTES.md.
         ApplyCore(
             role,
-            role.RoleName,
+            request.RoleName,
             request.Description,
             request.RoleGroupId,
             request.IsPublic,
@@ -421,7 +424,11 @@ public static class RoleMappings
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="request"/> is null.
     /// </exception>
-    public static RoleGroup ToNewGroup(int portalId, RoleGroupDto request)
+    // MIGRATION: the tenant comes from the route, never from the payload, and the request contract no
+    // longer carries one to be ignored. Its predecessor bound the RESPONSE projection, which advertised a
+    // writable portal and a writable group identifier that this projection read from neither - so a
+    // caller could name another tenant, be answered 201, and never learn the value had been discarded.
+    public static RoleGroup ToNewGroup(int portalId, CreateRoleGroupRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -441,7 +448,11 @@ public static class RoleMappings
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="roleGroup"/> or <paramref name="request"/> is null.
     /// </exception>
-    public static void ApplyGroupUpdate(RoleGroup roleGroup, RoleGroupDto request)
+    // MIGRATION: neither the group's identifier nor its portal is written from the request, and the
+    // request contract carries neither: both arrive in the route, so there is nothing for a body to
+    // contradict. Its predecessor bound the response projection, which published both as writable while
+    // this projection ignored them.
+    public static void ApplyGroupUpdate(RoleGroup roleGroup, UpdateRoleGroupRequest request)
     {
         ArgumentNullException.ThrowIfNull(roleGroup);
         ArgumentNullException.ThrowIfNull(request);

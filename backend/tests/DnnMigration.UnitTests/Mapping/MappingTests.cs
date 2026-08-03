@@ -956,14 +956,15 @@ public class MappingTests
 
         RoleMappings.ApplyUpdate(
             updated,
-            new UpdateRoleRequest { ServiceFee = -5m, TrialFee = -1m });
+            new UpdateRoleRequest { RoleName = "Odd", ServiceFee = -5m, TrialFee = -1m });
 
         updated.ServiceFee.Should().Be(0m);
         updated.TrialFee.Should().Be(0m);
     }
 
     /// <summary>
-    /// Applying a role update overwrites every term and leaves identity, ownership and the name alone.
+    /// Applying a role update overwrites every term, including the name, and leaves identity and
+    /// ownership alone.
     /// </summary>
     [Fact]
     public void RoleApplyUpdate_OverwritesEveryTermAndLeavesIdentityAlone()
@@ -972,6 +973,7 @@ public class MappingTests
 
         UpdateRoleRequest request = new()
         {
+            RoleName = "Platinum Members",
             Description = "The dearest tier",
             RoleGroupId = null,
             IsPublic = false,
@@ -988,10 +990,13 @@ public class MappingTests
 
         RoleMappings.ApplyUpdate(role, request);
 
-        // MIGRATION: the name is PRESERVED, not overwritten. The update contract declares no name
-        // because the legacy edit screen made it read-only and the terminal UpdateRole procedure omits
-        // the column from its assignment list, so the projection passes the stored value through.
-        role.RoleName.Should().Be("Gold Members", "an update cannot rename a role");
+        // MIGRATION: the name IS overwritten. The legacy edit screen displayed it read-only and the
+        // terminal UpdateRole procedure omits the column from its assignment list, but the library-level
+        // member this replaces carried the name and the terminal schema constrains (PortalID, RoleName)
+        // uniquely, so the contract carries a writable name and this projection applies it. The
+        // difference is documented in MIGRATION_NOTES.md; whether the new name collides is the service's
+        // question, not this projection's.
+        role.RoleName.Should().Be("Platinum Members", "an update replaces the name like any other term");
         role.Description.Should().Be("The dearest tier");
         role.RoleGroupId.Should().BeNull("clearing the group is a legitimate edit");
         role.IsPublic.Should().BeFalse();
@@ -1010,15 +1015,20 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A new group is anchored to the tenant the route named rather than to the one the body carried.
+    /// A new group is anchored to the tenant the route named, which the body cannot contradict.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this test previously supplied a group identifier and a foreign tenant on the body and
+    /// asserted that both were ignored. The create contract carries neither member, so the guarantee is now
+    /// structural: the route's tenant is the only tenant available to the mapper and the store issues the key.
+    /// The two assertions are retained because they are what prove the mapper writes the parameter and leaves
+    /// the key unset.
+    /// </remarks>
     [Fact]
     public void RoleGroupToNewGroup_AnchorsTheTenantFromTheRoute()
     {
-        RoleGroupDto request = new()
+        CreateRoleGroupRequest request = new()
         {
-            RoleGroupId = 999,
-            PortalId = 12345,
             RoleGroupName = "Paid Tiers",
             Description = "Tiers that carry a charge",
         };
@@ -1027,8 +1037,7 @@ public class MappingTests
 
         group.PortalId.Should().Be(
             -1,
-            "the tenant comes from the route, so a body claiming a different tenant cannot create a group "
-            + "somewhere else");
+            "the tenant comes from the route, and the contract carries no member that could name another");
         group.RoleGroupName.Should().Be("Paid Tiers");
         group.Description.Should().Be("Tiers that carry a charge");
         group.RoleGroupId.Should().Be(0, "the store issues the key, not the caller");
@@ -1037,6 +1046,11 @@ public class MappingTests
     /// <summary>
     /// Applying a group update overwrites the name and the description only.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the update contract carries only those two members, so "only" is now a property of the
+    /// contract as well as of the mapper. The identifier and tenant assertions below are retained because they
+    /// prove the mapper writes neither from anywhere else.
+    /// </remarks>
     [Fact]
     public void RoleGroupApplyUpdate_OverwritesTheNameAndDescriptionOnly()
     {
@@ -1050,7 +1064,7 @@ public class MappingTests
 
         RoleMappings.ApplyGroupUpdate(
             group,
-            new RoleGroupDto { RoleGroupId = 999, PortalId = 12345, RoleGroupName = "Renamed", Description = null });
+            new UpdateRoleGroupRequest { RoleGroupName = "Renamed", Description = null });
 
         group.RoleGroupName.Should().Be("Renamed");
         group.Description.Should().BeNull();
@@ -1071,10 +1085,13 @@ public class MappingTests
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDetail(null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDto(null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToNewRole(-1, null!); });
-        Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyUpdate(null!, new UpdateRoleRequest()));
+        Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyUpdate(
+            null!,
+            new UpdateRoleRequest { RoleName = "Gold Members" }));
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyUpdate(role, null!));
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ToNewGroup(-1, null!));
-        Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyGroupUpdate(null!, new RoleGroupDto()));
+        Assert.Throws<ArgumentNullException>(
+            () => RoleMappings.ApplyGroupUpdate(null!, new UpdateRoleGroupRequest()));
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyGroupUpdate(group, null!));
     }
 
@@ -2239,13 +2256,18 @@ public class MappingTests
     /// A new profile definition is anchored to the tenant the route named, starts undeleted, and floors a
     /// negative length.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this test previously supplied a definition key, a foreign tenant and a visibility hint on
+    /// the body and asserted that all three were ignored. The create contract carries none of them - the first
+    /// two arrive from the route or the store, and the third is not a column on the table at any point in the
+    /// 88-script chain - so the guarantee is structural. The assertions on the tenant and the key are retained
+    /// because they prove the mapper writes the parameter and leaves the key unset.
+    /// </remarks>
     [Fact]
     public void ProfileDefinitionToNewDefinition_AnchorsTheTenantAndFloorsTheLength()
     {
-        ProfilePropertyDefinitionDto request = new()
+        CreateProfilePropertyDefinitionRequest request = new()
         {
-            PropertyDefinitionId = 999,
-            PortalId = 12345,
             ModuleDefId = 4,
             DataType = 349,
             DefaultValue = "a default",
@@ -2256,15 +2278,13 @@ public class MappingTests
             ValidationExpression = @"^\d+$",
             ViewOrder = 3,
             Visible = true,
-            Visibility = 2,
         };
 
         ProfilePropertyDefinition definition = UserMappings.ToNewDefinition(portalId: -1, request);
 
         definition.PortalId.Should().Be(
             -1,
-            "the tenant comes from the route, so a body claiming another tenant cannot define a property "
-            + "somewhere else");
+            "the tenant comes from the route, and the contract carries no member that could name another");
         definition.ModuleDefinitionId.Should().Be(4);
         definition.IsDeleted.Should().BeFalse();
         definition.DataType.Should().Be(349);
@@ -2280,19 +2300,24 @@ public class MappingTests
     }
 
     /// <summary>
-    /// Applying a definition update leaves ownership, the module association and deletion alone, and
-    /// ignores the visibility the response object happens to carry.
+    /// Applying a definition update leaves ownership, the module association and deletion alone.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this test previously supplied a definition key, a foreign tenant, a FOREIGN MODULE
+    /// ASSOCIATION and a visibility hint on the body and asserted that all four were ignored. The update
+    /// contract carries none of them, and the module association is the pointed case: the terminal procedure
+    /// <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) declares no <c>@ModuleDefId</c> and its
+    /// <c>UPDATE ... SET</c> list does not name the column, so a caller submitting one had it discarded in
+    /// silence. The assertions below are retained unchanged, because they now prove the mapper writes none of
+    /// those columns from anywhere at all.
+    /// </remarks>
     [Fact]
     public void ProfileDefinitionApplyUpdate_LeavesOwnershipAndAssociationAlone()
     {
         ProfilePropertyDefinition definition = FullDefinition();
 
-        UserMappings.ApplyDefinitionUpdate(definition, new ProfilePropertyDefinitionDto
+        UserMappings.ApplyDefinitionUpdate(definition, new UpdateProfilePropertyDefinitionRequest
         {
-            PropertyDefinitionId = 999,
-            PortalId = 12345,
-            ModuleDefId = 8888,
             DataType = 350,
             DefaultValue = null,
             PropertyCategory = "Renamed Category",
@@ -2302,7 +2327,6 @@ public class MappingTests
             ValidationExpression = null,
             ViewOrder = 7,
             Visible = false,
-            Visibility = 0,
         });
 
         definition.DataType.Should().Be(350);
@@ -2320,7 +2344,7 @@ public class MappingTests
         definition.ModuleDefinitionId.Should().Be(
             4,
             "the module a definition belongs to is fixed when it is created, so the update path leaves it "
-            + "untouched even though the response object carries the field");
+            + "untouched and its contract carries no member for it");
         definition.IsDeleted.Should().BeFalse("deletion is its own operation");
     }
 
@@ -2344,7 +2368,7 @@ public class MappingTests
         Assert.Throws<ArgumentNullException>(() => UserMappings.ApplyUpdate(user, null!));
         Assert.Throws<ArgumentNullException>(() => { _ = UserMappings.ToNewDefinition(-1, null!); });
         Assert.Throws<ArgumentNullException>(
-            () => UserMappings.ApplyDefinitionUpdate(null!, new ProfilePropertyDefinitionDto()));
+            () => UserMappings.ApplyDefinitionUpdate(null!, new UpdateProfilePropertyDefinitionRequest()));
         Assert.Throws<ArgumentNullException>(() => UserMappings.ApplyDefinitionUpdate(definition, null!));
     }
 

@@ -215,9 +215,11 @@ public interface IPermissionService
     /// is <see langword="null"/>.
     /// </param>
     /// <param name="permissionKey">
-    /// The one key the answer is narrowed to, or <see langword="null"/> to place no restriction. Closed by
-    /// its own type, so an unrecognised spelling cannot reach this member - unlike
-    /// <paramref name="permissionCode"/>, whose column is free text.
+    /// The one key the answer is narrowed to, or <see langword="null"/> to place no restriction. No value
+    /// outside the enumeration reaches this member over HTTP - the parameter is typed as the enumeration and
+    /// MVC's binder tests defined membership, unlike <paramref name="permissionCode"/>, whose column is free
+    /// text. A CLR enumeration is nonetheless an integer at run time, so an undefined value is constructible
+    /// by a caller that does not arrive over MVC, and this member tests membership itself for that reason.
     /// </param>
     /// <param name="cancellationToken">Token that cancels the read.</param>
     /// <returns>
@@ -225,7 +227,10 @@ public interface IPermissionService
     /// keys in a stable order, and an empty sequence when nothing matches - an empty catalogue is a
     /// legitimate answer, never a failure. Fails with <c>permission.filter_invalid</c> when
     /// <paramref name="permissionCode"/> is supplied but blank, or when
-    /// <paramref name="moduleDefinitionId"/> cannot be a valid key for its table.
+    /// <paramref name="moduleDefinitionId"/> cannot be a valid key for its table; and with
+    /// <c>permission.key_invalid</c> when <paramref name="permissionKey"/> is supplied but is not a
+    /// defined member, which is the same code and the same treatment the two permission-evaluation
+    /// members of this contract already give their non-nullable key parameters.
     /// </returns>
     /// <remarks>
     /// <para>

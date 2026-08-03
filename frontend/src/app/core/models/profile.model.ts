@@ -190,6 +190,22 @@ export interface UserProfileSubmission {
  * submission reports which of the two it means through a separate event rather than
  * by the presence of an identifier, so that an accidental omission cannot turn an
  * edit into a create.
+ *
+ * MIGRATION: the API binds TWO distinct contracts behind the two verbs, because the
+ * terminal stored procedures do not honour the same member set -
+ * `AddPropertyDefinition` declares a module-definition key that
+ * `UpdatePropertyDefinition` does not. This interface is deliberately the
+ * INTERSECTION of the two rather than a mirror of either: the screen offers no
+ * module association, so the member that distinguishes them is one this form could
+ * not fill in. Anything sent from here is therefore valid on both verbs.
+ *
+ * MIGRATION: `visibility` is carried on this shape for the form's own use and is NOT
+ * part of either server write contract. There is no `Visibility` column on
+ * `ProfilePropertyDefinition` at any point in the schema's upgrade history - the
+ * stored per-account counterpart lives on `UserProfile` - so the value a definition
+ * reports is a default hint the API derives from a module setting, not something a
+ * definition write can persist. A service wiring this submission to the API must
+ * omit the member rather than expect it to round-trip.
  */
 export interface ProfilePropertyDefinitionSubmission {
   /** The property's name, which is also its label. */
@@ -219,6 +235,11 @@ export interface ProfilePropertyDefinitionSubmission {
   /** Whether the property is shown at all. */
   readonly visible: boolean;
 
-  /** The visibility applied when an account has recorded none. */
+  /**
+   * The visibility applied when an account has recorded none.
+   *
+   * Held for the form's own use only. The definition write endpoints do not accept
+   * this member and could not store it if they did; see the note on this interface.
+   */
   readonly visibility: ProfileVisibilityCode;
 }

@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
@@ -209,7 +208,11 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage updated = await client.PutAsJsonAsync(
             itemRoute,
-            new UpdateRoleRequest { Description = "Amended through the flat address." },
+            new UpdateRoleRequest
+            {
+                RoleName = role.RoleName,
+                Description = "Amended through the flat address.",
+            },
             ApiTestFixture.Json);
 
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -308,7 +311,7 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage created = await client.PostAsJsonAsync(
             collection,
-            new RoleGroupDto
+            new CreateRoleGroupRequest
             {
                 RoleGroupName = "ITest Flat Group " + Suffix(),
                 Description = "Created through the flat address.",
@@ -858,11 +861,12 @@ public sealed class RoleApiTests
         using HttpClient client = _fixture.CreateHostClient();
         RoleDetailDto created = await CreateRoleAsync(client);
 
-        // MIGRATION: no name is submitted, because the update contract declares none - the legacy edit
-        // screen made the name read-only and the terminal UpdateRole procedure omits the column from its
-        // assignment list. The re-read below asserts the stored name survives untouched.
+        // The role's own name is resubmitted, which is what a caller amending other fields sends on a
+        // replacement contract. The uniqueness guard excludes the role being updated, so an unchanged name
+        // is a no-op rather than a self-collision.
         var request = new UpdateRoleRequest
         {
+            RoleName = created.RoleName,
             Description = "Amended by the integration suite.",
             IsPublic = true,
             AutoAssignment = false,
@@ -935,6 +939,7 @@ public sealed class RoleApiTests
 
         var request = new UpdateRoleRequest
         {
+            RoleName = created.RoleName,
             Description = created.Description,
             IsPublic = created.IsPublic,
             AutoAssignment = created.AutoAssignment,
@@ -1044,62 +1049,131 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             RoleRoute(_fixture.Seed.PortalId, UnknownRoleId),
-            new UpdateRoleRequest { Description = "Absent" + Suffix() },
+            new UpdateRoleRequest { RoleName = "Absent" + Suffix(), Description = "Absent" + Suffix() },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
-    /// The update route cannot rename a role: a body that carries a name has that name ignored, the
-    /// stored name survives, and no name clash can therefore be reported.
+    /// The update route renames a role, and the new name reaches the stored column.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// This is the end-to-end proof of a deliberate contract decision, and it is asserted from a RAW
-    /// JSON body rather than a typed object because the point is precisely that a name on the wire has
-    /// nowhere to land: <c>UpdateRoleRequest</c> declares no such member, so the serialiser discards it.
-    /// A typed request could not express the attempt at all.
+    /// MIGRATION - documented behavioural difference, asserted end to end. The legacy edit screen made the
+    /// name read-only (<c>EditRoles.ascx.vb</c> L131-L134) and the terminal <c>UpdateRole</c> procedure
+    /// omits the column from its assignment list, so the legacy application could not rename a role. The
+    /// library-level member the service replaces carried the name
+    /// (<c>RoleController.vb</c> L254) and the terminal schema constrains <c>(PortalID, RoleName)</c>
+    /// uniquely (<c>03.00.09.SqlDataProvider</c> L304), so the migrated contract carries a writable name.
     /// </para>
     /// <para>
-    /// The name submitted below is another role's name in the same tenant - the case that would once
-    /// have answered 409 Conflict. It now answers 200 OK with the original name intact, which is the
-    /// legacy behaviour: the edit screen made the name read-only, the terminal <c>UpdateRole</c>
-    /// procedure omits the column from its assignment list, and the legacy edit branch performed no
-    /// uniqueness check at all.
+    /// The stored column is read directly rather than trusted from the response, because the round trip
+    /// through the projection would pass whether or not the write reached SQL.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task UpdateRole_CannotRenameAndIgnoresASubmittedName()
+    public async Task UpdateRole_RenamesTheRoleAndPersistsTheNewName()
     {
         using HttpClient client = _fixture.CreateHostClient();
         RoleDetailDto created = await CreateRoleAsync(client);
 
-        using var body = new StringContent(
-            $"{{\"roleName\":\"{IntegrationSeed.SubscribersRoleName}\","
-                + "\"description\":\"A name was submitted and must be ignored.\","
-                + "\"isPublic\":false,\"autoAssignment\":false}",
-            Encoding.UTF8,
-            "application/json");
+        string renamed = "Renamed" + Suffix();
 
-        using HttpResponseMessage response = await client.PutAsync(
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
             RoleRoute(_fixture.Seed.PortalId, created.RoleId),
-            body);
+            new UpdateRoleRequest
+            {
+                RoleName = renamed,
+                Description = "The name was submitted and must be applied.",
+            },
+            ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(
-            HttpStatusCode.OK,
-            "an unrenameable name cannot clash, so no conflict is reachable here");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
 
         RoleDetailDto updated = await ReadDetailAsync(response);
-        updated.RoleName.Should().Be(created.RoleName, "the update route never writes a name");
-        updated.Description.Should().Be("A name was submitted and must be ignored.");
+        updated.RoleName.Should().Be(renamed);
+        updated.Description.Should().Be("The name was submitted and must be applied.");
 
         string storedName = await _fixture.Database.ScalarAsync<string>(
             "SELECT [RoleName] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
             new Dictionary<string, object?> { ["roleId"] = created.RoleId });
 
-        storedName.Should().Be(created.RoleName, "the stored column is untouched by an update");
+        storedName.Should().Be(renamed, "the rename must reach the stored column");
+    }
+
+    /// <summary>
+    /// Renaming a role onto a name another role in the same tenant already holds answers
+    /// <c>409 Conflict</c> and leaves the stored name alone.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy editor guarded portal-scoped name uniqueness on its INSERT branch alone
+    /// (<c>EditRoles.ascx.vb</c> L251-L257, with no equivalent at L259-L261), which was coherent only
+    /// while the name could not change. With a writable name the guard has to cover this verb too, or a
+    /// rename would be the one way to violate <c>IX_RoleName</c> - and the violation would surface as a
+    /// server fault naming no field rather than as something the caller can correct.
+    /// </para>
+    /// <para>
+    /// The stored column is re-read so the refusal is proved to have prevented the write rather than
+    /// merely to have followed it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_RenamingOntoAnExistingName_ReturnsConflict()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        RoleDetailDto created = await CreateRoleAsync(client);
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
+            new UpdateRoleRequest
+            {
+                RoleName = IntegrationSeed.SubscribersRoleName,
+                Description = "A colliding name must be refused.",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        string storedName = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [RoleName] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        storedName.Should().Be(created.RoleName, "a refused rename must not have been written");
+    }
+
+    /// <summary>
+    /// Resubmitting a role's OWN name is not a conflict, because the uniqueness comparison excludes the
+    /// role being updated.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is what makes the guard usable on a replacement contract at all: every caller amending one
+    /// field resubmits the name it read, so comparing on text alone would refuse every ordinary update.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_ResubmittingItsOwnName_IsNotAConflict()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        RoleDetailDto created = await CreateRoleAsync(client);
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
+            new UpdateRoleRequest
+            {
+                RoleName = created.RoleName,
+                Description = "Only the description changed.",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        RoleDetailDto updated = await ReadDetailAsync(response);
+        updated.RoleName.Should().Be(created.RoleName);
+        updated.Description.Should().Be("Only the description changed.");
     }
 
     /// <summary>
@@ -1515,6 +1589,73 @@ public sealed class RoleApiTests
             + "share one vocabulary");
     }
 
+    /// <summary>
+    /// The membership listing accepts the three account fields the ACCOUNT listing cannot order by, which is
+    /// the ordering capability the boundary previously refused.
+    /// </summary>
+    /// <param name="sortBy">The field the caller named.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the end-to-end proof that the membership listing no longer borrows the account
+    /// collection's request contract. It bound <c>UserPagedRequest</c>, so
+    /// <c>UserPagedRequestValidator</c> resolved for it and applied the account collection's seven sortable
+    /// names - and every one of these three requests answered <c>400</c> naming <c>sortBy</c> as an unknown
+    /// field. The service behind the action enforces the ten-name membership set and
+    /// <c>RoleService.OrderRoleMemberships</c> has an arm for each of the three, so three orderings the
+    /// application could perform were unreachable over HTTP.
+    /// </para>
+    /// <para>
+    /// The asymmetry with the account listing is legitimate and is asserted from the other side in
+    /// <c>RequestValidationContractTests</c>: the account listing pages in the STORE and cannot order by
+    /// values the external <c>aspnet_*</c> membership objects fill after the page has been cut, whereas this
+    /// listing composes each assignment with its account and pages IN MEMORY, so the values are present on
+    /// every row beforehand. Both verdicts are correct for their own listing, which is why each collection
+    /// binds its own request type rather than sharing or borrowing one.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("CreatedDate")]
+    [InlineData("LastLoginDate")]
+    [InlineData("IsApproved")]
+    [Trait("Category", "Integration")]
+    public async Task RoleMembers_AreOrderableByTheAccountFieldsTheAccountListingCannotOrder(string sortBy)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage membership = await client.GetAsync(
+            new Uri(
+                RoleUsersRoute(_fixture.Seed.PortalId, _fixture.Seed.AdministratorRoleId)
+                    + "?pageIndex=0&pageSize=50&sortBy=" + sortBy,
+                UriKind.Relative));
+
+        membership.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the membership listing composes the account and pages in memory, so it genuinely orders by "
+            + "this field and must not refuse it at the boundary");
+
+        // The page must actually come back, so a permissive validator paired with a service that then
+        // refused the same name would still fail here rather than passing on the status code alone.
+        PagedEnvelope<RoleMembershipDto>? page = await membership.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleMembershipDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().NotBeNull();
+
+        // The mirror image: the ACCOUNT listing refuses the very same name, and that refusal is correct
+        // because it pages in the store. Asserting both here is what makes the difference deliberate
+        // rather than an accident of two validators drifting apart.
+        using HttpResponseMessage accounts = await client.GetAsync(
+            new Uri(
+                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=50&sortBy={sortBy}",
+                UriKind.Relative));
+
+        accounts.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "the account listing pages in the store, so it cannot order by a value the membership store "
+            + "fills after the page has been taken");
+    }
+
     /// <summary>The role-group resource supports the full round trip, ending in <c>204 No Content</c>.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1549,9 +1690,17 @@ public sealed class RoleApiTests
         all.Should().NotBeNull();
         all!.Select(item => item.RoleGroupId).Should().Contain(created.RoleGroupId);
 
-        created.Description = "Amended by the integration suite.";
+        // MIGRATION: the update verb binds UpdateRoleGroupRequest, which carries the two members
+        // dbo.UpdateRoleGroup writes and neither the group key nor the owning portal. Echoing the read-back
+        // projection would still succeed - unknown JSON members are ignored - but it would exercise a wider
+        // shape than the boundary advertises, which is the very confusion the split removed.
+        UpdateRoleGroupRequest amendment = new()
+        {
+            RoleGroupName = created.RoleGroupName,
+            Description = "Amended by the integration suite.",
+        };
 
-        using HttpResponseMessage updated = await client.PutAsJsonAsync(itemRoute, created, ApiTestFixture.Json);
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(itemRoute, amendment, ApiTestFixture.Json);
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
 
         RoleGroupDto? afterUpdate = await updated.Content
@@ -1577,7 +1726,7 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleGroupsRoute(_fixture.Seed.PortalId),
-            new RoleGroupDto { RoleGroupName = first.RoleGroupName },
+            new CreateRoleGroupRequest { RoleGroupName = first.RoleGroupName },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -1843,10 +1992,11 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage placed = await client.PutAsJsonAsync(
             new Uri($"/api/v1/roles/{Route(grouped.RoleId)}", UriKind.Relative),
-            // The role name is deliberately not on the update contract, so placing a role in a group means
-            // replaying the role's own state with the group identifier added.
+            // The contract is a replacement, so placing a role in a group means replaying the role's own
+            // state - its name included - with the group identifier added.
             new UpdateRoleRequest
             {
+                RoleName = grouped.RoleName,
                 Description = grouped.Description,
                 RoleGroupId = group.RoleGroupId,
                 IsPublic = grouped.IsPublic,
@@ -1961,7 +2111,7 @@ public sealed class RoleApiTests
     {
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleGroupsRoute(_fixture.Seed.PortalId),
-            new RoleGroupDto
+            new CreateRoleGroupRequest
             {
                 RoleGroupName = "ITest Group " + Suffix(),
                 Description = "Created by the integration suite.",

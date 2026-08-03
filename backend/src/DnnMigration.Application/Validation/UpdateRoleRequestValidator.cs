@@ -29,11 +29,12 @@ namespace DnnMigration.Application.Validation;
 /// prevents it reopening.
 /// </para>
 /// <para>
-/// <b>Member coverage is exactly the contract's twelve members.</b> Ten of them carry a rule; the two
-/// flags carry none, for the reason stated inline. Nothing here checks a member the contract does not
-/// declare - in particular there is no name rule and no name length, because the update contract
-/// deliberately has no <c>RoleName</c> member and adding one is forbidden by that contract's own
-/// documentation.
+/// <b>Member coverage is exactly the contract's thirteen members.</b> Eleven of them carry a rule; the
+/// two flags carry none, for the reason stated inline. Nothing here checks a member the contract does
+/// not declare. The name rule is the same presence-and-width pair the creation validator applies, taken
+/// from the same shared definition, because the two verbs write the same <c>NOT NULL</c> column and a
+/// rule one verb applied and the other did not would be a rule a caller could bypass by choosing the
+/// other method.
 /// </para>
 /// <para>
 /// <b>What this type deliberately does not do.</b> It reads no store, so it asserts neither that the
@@ -55,17 +56,20 @@ namespace DnnMigration.Application.Validation;
 // two paths to carry different rules. Restoring the legacy property, that both operations validate
 // identically, is the whole purpose of this file.
 //
-// MIGRATION: no presence rule on any member, and the absence is measured rather than assumed. The
-// screen declared exactly one required-field validator, valRoleName at editroles.ascx L31, and the
-// edit path DISABLED it at EditRoles.ascx.vb L134 because the name was displayed read-only. Every
-// other input on that screen was optional, and the terminal procedure at
-// 04.00.04.SqlDataProvider L454 defaults each of its twelve value parameters to null. Adding a
-// presence rule to any member here would refuse a submission the legacy screen accepted.
+// MIGRATION: exactly ONE presence rule, on the name, and the count is measured rather than assumed.
+// The screen declared exactly one required-field validator, valRoleName at editroles.ascx L31. Its
+// edit path DISABLED that validator at EditRoles.ascx.vb L134 because the name was displayed
+// read-only, and this contract restores it: the name is writable here - a documented behavioural
+// difference recorded on the request contract - so the rule that guarded it on the creation path
+// guards it on this one too. Every other input on that screen was optional, and the terminal
+// procedure at 04.00.04.SqlDataProvider L454 defaults each of its twelve value parameters to null, so
+// adding a presence rule to any OTHER member would refuse a submission the legacy screen accepted.
 //
 // MIGRATION: this is a full replacement, not a partial edit, and that is exactly why an omitted
 // nullable member must NOT be treated as a validation failure. The request contract records the
 // discipline: every member is applied as supplied, so omitting one clears the stored value. A
-// validator that demanded a value would make the clearing operation unreachable.
+// validator that demanded a value would make the clearing operation unreachable. The name is outside
+// that reasoning because its column is NOT NULL: there is no cleared state for it to be moved to.
 //
 // MIGRATION: the two frequency members are checked for membership of the shared domain enumeration
 // and never against a literal list of characters. The reasoning is measured on the creation
@@ -93,23 +97,17 @@ namespace DnnMigration.Application.Validation;
 // guarantees. The three genuine text members DO carry their column widths.
 public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
 {
-    /// <summary>
-    /// Largest billing or trial period a role may declare, in units of its own frequency.
-    /// </summary>
-    /// <remarks>
-    /// Net-new, and generous by four orders of magnitude against any real configuration: ten thousand units
-    /// is ten thousand years at the yearly frequency and twenty-seven years at the daily one. The service's
-    /// own date arithmetic clamps rather than overflowing, so this rule is not what keeps that safe - what it
-    /// adds is a field-level answer naming the period, in place of a silently clamped expiry a caller never
-    /// asked for. The create validator states the same figure and the two must agree.
-    /// </remarks>
-    private const int PeriodMaximum = 10_000;
-
-    /// <summary>
-    /// Reported when a billing or trial period exceeds the largest count a role may declare.
-    /// </summary>
-    private static readonly string PeriodTooLargeMessage = FormattableString.Invariant(
-        $"A billing or trial period must be no more than {PeriodMaximum} units of its own frequency.");
+    // MIGRATION: THERE IS NO UPPER BOUND ON EITHER PERIOD, and its removal was a correction rather
+    // than a relaxation. A net-new ten-thousand-unit ceiling stood here and on the creation validator,
+    // justified as generous; generosity is not the test. The legacy screen declared one rule on each
+    // period - valBillingPeriod2 at editroles.ascx L114 and valTrialPeriod2 at L146, both strictly
+    // greater than zero - the columns are plain int (01.00.08.SqlDataProvider L6829 and
+    // 01.00.05.SqlDataProvider L2754), and the terminal procedure bounds neither. Any positive Int32
+    // the legacy application accepted must therefore still be accepted, and the ceiling refused a band
+    // of them. Nothing is left unprotected by the removal: RoleService.DeriveAssignmentDates routes
+    // every offset through its clamping helpers, so a period large enough to overflow the date
+    // arithmetic yields the storable bound instead of a wrapped or faulted expiry - the guarantee that
+    // rule was said to reinforce is the helpers' own and always was.
 
     /// <summary>
     /// Reported when a submitted amount exceeds what the terminal <c>money</c> column can hold.
@@ -139,6 +137,14 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
     {
         RuleLevelCascadeMode = CascadeMode.Stop;
         ClassLevelCascadeMode = CascadeMode.Continue;
+
+        // valRoleName (editroles.ascx L29-L31): the screen's ONE presence check, and the only
+        // unconditional rule here. The width is the NOT NULL column's own. Identical to the creation
+        // validator's rule by construction, because both read the same shared definition.
+        RuleFor(request => request.RoleName)
+            .NotEmpty()
+            .WithMessage(RoleTermsRules.RoleNameRequiredMessage)
+            .MaximumLength(RoleTermsRules.RoleNameMaximumLength);
 
         // No validator was declared on the description, so only the column width is asserted. The
         // rule is inert for an absent value: a length check passes a null.
@@ -173,8 +179,6 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
         RuleFor(request => request.BillingPeriod)
             .GreaterThan(0)
             .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
-            .LessThanOrEqualTo(PeriodMaximum)
-            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.BillingPeriod.HasValue);
 
         // valTrialFee2 (L128): GreaterThanEqual against 0 - zero admitted - despite the message
@@ -190,8 +194,6 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
         RuleFor(request => request.TrialPeriod)
             .GreaterThan(0)
             .WithMessage(RoleTermsRules.TrialPeriodNotPositiveMessage)
-            .LessThanOrEqualTo(PeriodMaximum)
-            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.TrialPeriod.HasValue);
 
         // Membership of the domain enumeration, which IS the character check because each member

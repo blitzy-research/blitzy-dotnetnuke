@@ -275,6 +275,36 @@ public sealed class RoleService : IRoleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // MIGRATION: an UNDEFINED scope is refused before anything else, because this member's own
+        // contract cannot honour one. RoleGroupScope is a closed pair - All and Ungrouped - but a CLR
+        // enumeration is an integer at run time, so (RoleGroupScope)999 is a constructible value, and the
+        // narrowing further down tests only for equality with Ungrouped: without this guard an undefined
+        // scope fell through every branch and this member answered the FULL role list reporting success.
+        // A caller asking for a scope this API does not implement would be told nothing was wrong and
+        // handed a wider set than it asked for.
+        //
+        // MIGRATION - WHAT THIS GUARD IS AND IS NOT. It is NOT the HTTP boundary's defence, and a claim
+        // that it was would be false. MEASURED at run time against this API: "?scope=999" is refused by
+        // MVC model binding with 400 and errors["scope"] = ["The value '999' is invalid."] before this
+        // action body runs, because EnumTypeModelBinder tests DEFINED membership for a non-flags
+        // enumeration; "?scope=0" and "?scope=1" bind and answer 200, which proves numeric binding works
+        // and that the refusal is specifically the membership check. So no HTTP caller ever reached the
+        // fall-through. This guard exists because the Application layer is a public API in its own right,
+        // reachable from callers that never touch MVC - other services, hosted work and tests - and an
+        // invariant belongs to the layer that owns it. That is precisely why the two permission-evaluation
+        // members of PermissionService already carry the identical Enum.IsDefined test.
+        //
+        // The test is placed above the contradiction check deliberately: pairing a group identifier with
+        // an undefined scope must be reported as the undefined scope it is, not as a contradiction between
+        // two meaningful arguments.
+        if (!Enum.IsDefined(scope))
+        {
+            return Result<PagedResult<RoleListItemDto>>.Failure(
+                RoleGroupScopeInvalidCode,
+                FormattableString.Invariant(
+                    $"Role group scope {(int)scope} is not defined; omit the scope to list every role."));
+        }
+
         // The contradictory pair is refused before any store is touched: asking for one named group and
         // for the roles belonging to no group at all cannot both be satisfied, and no ordering of the two
         // arguments is more correct than the other. Pairing an identifier with the DEFAULT scope is not a
@@ -534,17 +564,13 @@ public sealed class RoleService : IRoleService
                 $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
 
-        // The update path carries the shape rules itself, because the request contract has no dedicated
-        // validator: the legacy edit screen used one set of validator controls for both creating and
-        // editing a role, so the rules are identical on both paths and are enforced here for the edit.
-        //
-        // MIGRATION: the stored name is supplied to the shape check rather than a submitted one,
-        // because the update contract carries no name. This also reproduces the legacy screen's own
-        // behaviour precisely: editing an existing role DISABLED the name's required-field validator
-        // (Website/admin/Security/EditRoles.ascx.vb L134), so the name rule genuinely did not apply on
-        // the edit path. The remaining nine checks are unaffected.
+        // The shape rules are re-asserted here as well as at the boundary. UpdateRoleRequestValidator is
+        // registered and runs first for an HTTP caller, but this member is also reachable from a
+        // background job, a console tool or a test, and a rule that only an HTTP caller meets is not a
+        // rule. The legacy edit screen used one set of validator controls for both creating and editing
+        // a role, so both paths carry the same checks.
         EnsureRoleShapeIsValid(
-            role.RoleName,
+            request.RoleName,
             request.Description,
             request.RsvpCode,
             request.IconFile,
@@ -566,14 +592,31 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        // MIGRATION: no portal-scoped uniqueness read on the update path, and its absence is
-        // deliberate rather than an omission. The legacy screen applied its duplicate-name guard only
-        // when inserting: at Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks
-        // the name up first and refuses on a hit, while the edit branch calls the update member with
-        // no such check. That asymmetry is coherent precisely because the name could not change on an
-        // edit, and the same now holds here - the update contract carries no name and the projection
-        // passes the stored one through - so a name that cannot change cannot begin to collide. The
-        // creation path keeps the rule and remains the sole reporter of a duplicate name.
+        // MIGRATION: the portal-scoped uniqueness read runs on this path too, EXCLUDING the role being
+        // edited. The legacy screen applied its duplicate-name guard only when inserting - at
+        // Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks the name up first and
+        // refuses on a hit, while the edit branch calls the update member with no such check - and that
+        // asymmetry was coherent only because the name could not change on an edit. This contract can
+        // rename, so the guard has to cover both paths or the rename would be the one way to manufacture
+        // a duplicate. The exclusion is what makes an unchanged resubmitted name a no-op rather than a
+        // self-collision, and it is compared on identifier rather than on text because the name is
+        // precisely the value in question.
+        //
+        // The single read answers the question outright: IX_RoleName is unique over
+        // (PortalID, RoleName) (03.00.09.SqlDataProvider L304), so GetByNameAsync - the legacy
+        // GetRoleByName at membership DataProvider.vb L94 - can match at most one row, and a match whose
+        // identifier differs from the edited role IS the duplicate report. Without it a rename onto an
+        // existing name would reach the provider and surface as a server fault naming no field.
+        Role? clashing = await _roles
+            .GetByNameAsync(portalId, request.RoleName, cancellationToken)
+            .ConfigureAwait(false);
+        if (clashing is not null && clashing.RoleId != roleId)
+        {
+            return Result<RoleDetailDto>.Failure(
+                RoleNameDuplicateCode,
+                $"Portal {portalId} already has a role named '{request.RoleName}'.");
+        }
+
         RoleMappings.ApplyUpdate(role, request);
 
         // MIGRATION: the legacy update member wrote the role and nothing else. Turning the
@@ -585,8 +628,9 @@ public sealed class RoleService : IRoleService
         _cache.InvalidatePortal(portalId);
 
         // MIGRATION: reproduces the legacy ROLE_UPDATED audit entry (EventLogController.vb:L60). The name
-        // is recorded even though this path cannot change it, because it is what a reader identifies the
-        // role by; the identifier alone would force a second lookup to interpret the record.
+        // is recorded because it is what a reader identifies the role by - the identifier alone would
+        // force a second lookup to interpret the record - and it is read from the tracked entity after
+        // the projection, so a record of a rename carries the name the update actually stored.
         RecordAudit(
             AuditEventNames.RoleUpdated,
             portalId,
@@ -995,12 +1039,12 @@ public sealed class RoleService : IRoleService
     /// <inheritdoc />
     public async Task<Result<RoleGroupDto>> CreateRoleGroupAsync(
         int portalId,
-        RoleGroupDto request,
+        CreateRoleGroupRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        EnsureRoleGroupShapeIsValid(request);
+        EnsureRoleGroupShapeIsValid(request.RoleGroupName);
 
         if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
         {
@@ -1036,12 +1080,12 @@ public sealed class RoleService : IRoleService
     public async Task<Result<RoleGroupDto>> UpdateRoleGroupAsync(
         int portalId,
         int roleGroupId,
-        RoleGroupDto request,
+        UpdateRoleGroupRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        EnsureRoleGroupShapeIsValid(request);
+        EnsureRoleGroupShapeIsValid(request.RoleGroupName);
 
         if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
         {
@@ -1411,22 +1455,29 @@ public sealed class RoleService : IRoleService
     }
 
     /// <summary>
-    /// Refuses a role group whose submitted shape breaks a stored-length or presence rule.
+    /// Refuses a role-group name that breaks a stored-length or presence rule.
     /// </summary>
-    /// <param name="request">The submitted role group.</param>
+    /// <param name="roleGroupName">The submitted group name.</param>
     /// <exception cref="DomainException">Thrown when the name is absent or too long.</exception>
     /// <remarks>
-    /// The role group contract has no dedicated validator, because it doubles as both the request and
-    /// the response shape, so its two rules are enforced here.
+    /// The same two rules the boundary validators declare, re-asserted here for callers that do not
+    /// arrive over HTTP. <c>CreateRoleGroupRequestValidator</c> and
+    /// <c>UpdateRoleGroupRequestValidator</c> are registered and run first for an HTTP caller, but this
+    /// member is also reachable from a background job, a console tool or a test, and a rule that only an
+    /// HTTP caller meets is not a rule.
     /// </remarks>
-    private static void EnsureRoleGroupShapeIsValid(RoleGroupDto request)
+    // MIGRATION: the parameter is the NAME rather than a whole contract, because the two write verbs now
+    // bind two separate request types. Taking the shared value keeps one implementation of the rule for
+    // both of them, in the same way EnsureRoleShapeIsValid above takes the role's own values rather than
+    // either role contract.
+    private static void EnsureRoleGroupShapeIsValid(string roleGroupName)
     {
-        if (string.IsNullOrWhiteSpace(request.RoleGroupName))
+        if (string.IsNullOrWhiteSpace(roleGroupName))
         {
             throw new DomainException("A role group name is required.");
         }
 
-        if (request.RoleGroupName.Length > RoleGroupNameMaximumLength)
+        if (roleGroupName.Length > RoleGroupNameMaximumLength)
         {
             throw new DomainException($"A role group name may not exceed {RoleGroupNameMaximumLength} characters.");
         }

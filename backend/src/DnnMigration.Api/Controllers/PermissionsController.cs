@@ -182,11 +182,21 @@ public sealed class PermissionsController : ControllerBase
     /// and -1 is a genuine portal.
     /// </param>
     /// <param name="permissionKey">
-    /// Optional. Narrows the answer to a single key of the closed key enumeration. Because the parameter
-    /// type is the enumeration itself rather than a string, an unrecognised spelling is refused by model
-    /// binding before the action runs, and the answer is therefore either that one key or nothing at all.
-    /// Supplied together with <paramref name="permissionCode"/> this is the legacy code-and-key lookup at
-    /// <c>PermissionController.vb:L47</c>, reduced to the one column this action publishes.
+    /// Optional. Narrows the answer to a single key of the closed key enumeration, so the answer is either
+    /// that one key or nothing at all. Supplied together with <paramref name="permissionCode"/> this is the
+    /// legacy code-and-key lookup at <c>PermissionController.vb:L47</c>, reduced to the one column this
+    /// action publishes.
+    /// <para>
+    /// A value outside the enumeration is refused by model binding, because the parameter type is the
+    /// enumeration itself - and that covers an undefined NUMERIC literal as well as an unrecognised
+    /// spelling. MEASURED against this API rather than assumed: <c>?permissionKey=99</c> is answered
+    /// <c>400</c> with <c>errors["permissionKey"]</c> naming the value before this action runs, because
+    /// MVC's enumeration binder tests defined membership for a non-flags enumeration, while
+    /// <c>?permissionKey=0</c> answers <c>["VIEW"]</c> and <c>?permissionKey=3</c> answers
+    /// <c>["WRITE"]</c>. The application contract additionally tests membership and would answer
+    /// <c>permission.key_invalid</c>, which is unreachable over HTTP and exists because that layer is
+    /// callable without MVC.
+    /// </para>
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>
@@ -199,10 +209,20 @@ public sealed class PermissionsController : ControllerBase
     /// supplied filters; it is never reported as a failure.
     /// </response>
     /// <response code="400">
-    /// Either a query value could not be bound to its parameter type - which the shared problem-details
-    /// factory reports as a validation document naming the offending parameter - or the application
-    /// contract refused a filter it cannot use, such as a <paramref name="moduleDefinitionId"/> that
-    /// cannot name a row in its table. Both bodies are RFC 7807 problem documents.
+    /// Either a query value could not be bound to its parameter type - including a permission key outside the
+    /// enumeration, which the binder refuses by name and the shared problem-details factory reports as a
+    /// validation document naming the offending parameter - or the application contract refused a filter it
+    /// cannot use, such as a blank <paramref name="permissionCode"/> or a
+    /// <paramref name="moduleDefinitionId"/> that cannot name a row in its table
+    /// (<c>permission.filter_invalid</c>). Every value in that second group bound successfully, so there is no
+    /// binding failure to key an error map to and the body is a plain problem document.
+    /// <para>
+    /// MIGRATION: the declared schema is therefore the COMMON SUPERTYPE and not the validation document. The
+    /// prose here already said "both bodies are RFC 7807 problem documents", which was accurate, while the
+    /// declaration beside it promised the narrower shape on every refusal - so the two disagreed and the
+    /// declaration was the one that was wrong. <c>ResponseDeclarationContractTests</c> names this operation in
+    /// its semantic-refusal exemption set and holds it to the supertype.
+    /// </para>
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -238,7 +258,12 @@ public sealed class PermissionsController : ControllerBase
     /// </remarks>
     [HttpGet]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<string>>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    // BASE ProblemDetails, not ValidationProblemDetails. Both shapes are reachable: the binder names an
+    // offending parameter, while a filter the contract cannot use - a blank code, or a module-definition
+    // identifier that cannot name a row - is refused with a failure code after every value bound
+    // successfully. The supertype is the only schema that describes both, and
+    // ResponseDeclarationContractTests names this operation in its semantic-refusal exemption set.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<string>>>> ListAsync(
@@ -251,10 +276,20 @@ public sealed class PermissionsController : ControllerBase
         // code here would be a second, quieter copy of the contract's own validation rule, and the two
         // copies would eventually disagree about what a blank filter means.
         //
-        // The key filter is closed by its own type, so an unrecognised spelling is refused by model binding
-        // before this body runs and is reported as a validation document naming the parameter. That is why
-        // no blank-or-invalid guard appears here for it while one exists in the contract for the code: the
-        // code's column is free text and the key's is not.
+        // What "exactly as bound" means for a blank code was MEASURED: the simple-type binder converts a
+        // whitespace-only query value to null, so "?permissionCode=", "?permissionCode=%20%20" and
+        // "?permissionCode=%09" all reach the contract as an OMITTED filter and answer 200 with the whole
+        // catalogue. The contract's blank-code refusal is therefore unreachable from here and exists for
+        // callers that do not arrive over MVC. Its identifier refusal is reachable - "?moduleDefinitionId=0"
+        // answers 400 - which is why this action advertises the common problem supertype for 400 rather than
+        // the validation document: both shapes are genuinely reachable, depending on which filter was wrong.
+        //
+        // The key filter is closed by its own type, so a value outside the enumeration - an unrecognised
+        // spelling OR an undefined numeric literal - is refused by model binding before this body runs and
+        // reported as a validation document naming the parameter. That was measured, not assumed, because
+        // the same claim is false for a JSON body. The contract also tests membership, for callers that do
+        // not arrive over MVC. Neither guard belongs here: this layer forwards what it bound, and a third
+        // copy would eventually disagree with the other two.
         Result<IReadOnlyList<string>> outcome = await _permissions
             .GetPermissionKeysAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
             .ConfigureAwait(false);

@@ -562,7 +562,16 @@ public static class UserMappings
     /// <param name="portalId">Identifier of the portal the definition belongs to.</param>
     /// <param name="request">The submitted definition.</param>
     /// <returns>An unsaved definition.</returns>
-    public static ProfilePropertyDefinition ToNewDefinition(int portalId, ProfilePropertyDefinitionDto request)
+    /// <remarks>
+    /// MIGRATION: this path binds the CREATE request rather than the response projection, and the module
+    /// definition key below is the reason the two verbs cannot share one contract. The terminal insert
+    /// procedure <c>AddPropertyDefinition</c> (<c>04.06.00:L1101</c>) declares <c>@ModuleDefId</c>; its
+    /// update counterpart (<c>04.05.00:L1685</c>) does not declare it and does not write the column, so a
+    /// member bound here would have been silently discarded on the other path.
+    /// </remarks>
+    public static ProfilePropertyDefinition ToNewDefinition(
+        int portalId,
+        CreateProfilePropertyDefinitionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -591,12 +600,24 @@ public static class UserMappings
     /// <param name="definition">The tracked definition to modify.</param>
     /// <param name="request">The submitted values.</param>
     /// <remarks>
+    /// <para>
     /// The owning portal and the deletion flag are never written from a request: the portal arrives from
-    /// the route, and the flag is moved by a deletion rather than by an edit. The visibility the
-    /// response contract happens to carry is also ignored, because per Pattern F5 visibility belongs to
-    /// an account's value and not to the definition.
+    /// the route, and the flag is moved by a deletion rather than by an edit.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this path binds the UPDATE request, which carries NO module definition key, so the
+    /// column cannot be rehomed by an edit. That is not a restriction this mapper invents - the terminal
+    /// procedure <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) declares no such parameter and
+    /// its <c>UPDATE ... SET</c> list does not name the column. Previously both verbs bound the response
+    /// projection, so a caller could submit a module key on an edit and watch it be discarded without
+    /// complaint; the member is now absent from the contract instead of ignored inside it. Visibility is
+    /// likewise absent from both write contracts rather than ignored, because it is not a column on this
+    /// table at all - per Pattern F5 it belongs to an account's value.
+    /// </para>
     /// </remarks>
-    public static void ApplyDefinitionUpdate(ProfilePropertyDefinition definition, ProfilePropertyDefinitionDto request)
+    public static void ApplyDefinitionUpdate(
+        ProfilePropertyDefinition definition,
+        UpdateProfilePropertyDefinitionRequest request)
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(request);
@@ -609,7 +630,15 @@ public static class UserMappings
     /// </summary>
     /// <param name="definition">The definition to write to.</param>
     /// <param name="request">The submitted values.</param>
-    private static void ApplyDefinitionCore(ProfilePropertyDefinition definition, ProfilePropertyDefinitionDto request)
+    /// <remarks>
+    /// MIGRATION: the parameter is typed as the shared member set rather than as either concrete request,
+    /// which is what keeps these nine assignments at ONE site now that the two verbs bind two types. The
+    /// interface deliberately excludes the create-only module definition key, so this method cannot reach
+    /// a member only one verb honours even by accident.
+    /// </remarks>
+    private static void ApplyDefinitionCore(
+        ProfilePropertyDefinition definition,
+        IProfilePropertyDefinitionWriteMembers request)
     {
         definition.DataType = request.DataType;
         definition.DefaultValue = request.DefaultValue;

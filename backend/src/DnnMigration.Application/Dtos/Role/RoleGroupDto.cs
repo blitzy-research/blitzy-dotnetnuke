@@ -1,9 +1,9 @@
 namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
-/// Wire contract for a DotNetNuke role group: the portal-scoped container that
-/// gathers security roles together so an administrator can present and manage
-/// them as a set.
+/// RESPONSE contract for a DotNetNuke role group: the portal-scoped container that
+/// gathers security roles together so an administrator can present and manage them
+/// as a set.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -27,17 +27,31 @@ namespace DnnMigration.Application.Dtos.Role;
 /// constraint over <c>(PortalID, RoleGroupName)</c>.
 /// </para>
 /// <para>
-/// One shape serves reads and writes alike for the
-/// <c>/api/v1/portals/{portalId}/role-groups</c> resource; there is deliberately
-/// no separate creation or update variant, because the legacy editor posted the
-/// very same four fields in both cases (<c>EditGroups.ascx.vb</c> lines 107 to
-/// 111). The type is an inert data carrier: it holds no behaviour, performs no
-/// validation and reaches no database. NO FluentValidation validator exists for
-/// it - the API's validation filter finds none registered for this type - so every
-/// field rule is enforced by <c>Application/Services/RoleService.cs</c>, which
-/// raises <see cref="DnnMigration.Domain.Common.DomainException"/> for a blank or
-/// over-long group name and answers a duplicate with a conflict reason.
-/// Translation to and from the persisted model lives in
+/// <b>This type is a RESPONSE shape only, and it must not be bound as a request
+/// body.</b> It was previously bound by both write actions on the
+/// <c>/api/v1/portals/{portalId}/role-groups</c> resource, on the reasoning that
+/// the legacy editor posted the same fields whether it was inserting or updating
+/// (<c>EditGroups.ascx.vb</c> lines 107 to 111). That reasoning overlooked which of
+/// those fields came from an INPUT: the group's identifier and its owning portal
+/// were assigned from the store and from ambient page state, not from a control, so
+/// binding this shape advertised the two of them as writable while the mapper read
+/// neither. A caller could submit either, be answered <c>201</c> or <c>200</c>, and
+/// never learn the value had been discarded. The two verbs now bind
+/// <see cref="CreateRoleGroupRequest"/> and <see cref="UpdateRoleGroupRequest"/>,
+/// each declaring only the two members its verb honours.
+/// </para>
+/// <para>
+/// The type is an inert data carrier: it holds no behaviour, performs no validation
+/// and reaches no database. No validator is registered for it, and none should be -
+/// a response shape has nothing to validate. Field rules for the write paths belong
+/// to <c>CreateRoleGroupRequestValidator</c> and
+/// <c>UpdateRoleGroupRequestValidator</c>, which share one rule definition in
+/// <c>Application/Validation/RoleGroupTermsRules.cs</c> so the two verbs cannot
+/// diverge, and the questions a field rule cannot answer because they need a read -
+/// whether the portal exists, whether the name is already taken - are expected
+/// failures raised by <c>Application/Services/RoleService.cs</c>, which also
+/// re-asserts the name rules for callers that do not arrive over HTTP. Translation
+/// to and from the persisted model lives in
 /// <c>Application/Mapping/RoleMappings.cs</c>.
 /// </para>
 /// <para>
@@ -71,10 +85,11 @@ public sealed class RoleGroupDto
     // Null.NullInteger at Null.vb line 41, and branched on it to choose between
     // AddRoleGroup and UpdateRoleGroup (EditGroups.ascx.vb lines 42, 68 and 113).
     // That magic value is deliberately not carried forward, because the routed
-    // endpoint already distinguishes creation from update: on a create the
-    // identifier simply is not meaningful and the service ignores whatever
-    // arrives here. The property consequently stays a plain non-nullable int,
-    // faithful to the NOT NULL column, and is never widened to a nullable int.
+    // endpoint already distinguishes creation from update. This member is read-only
+    // in practice as well as in intent: neither write contract declares it, so a
+    // caller can no longer submit one for the service to ignore. The property stays
+    // a plain non-nullable int, faithful to the NOT NULL column, and is never
+    // widened to a nullable int.
     public int RoleGroupId { get; set; }
 
     /// <summary>
@@ -106,12 +121,13 @@ public sealed class RoleGroupDto
     /// <c>String</c> at <c>RoleGroupInfo.vb</c> line 83, bound to a
     /// fifty-character mandatory text box at <c>EditGroups.ascx</c> lines 11 and
     /// 12, the single field validator that screen declared. Both the length
-    /// ceiling and the mandatory-value rule are reproduced in the service layer,
-    /// which raises a domain exception the API answers with a 400, and a
-    /// uniqueness clash surfaces as a conflict from the same layer, mirroring the
-    /// duplicate-group message the legacy editor emitted at
+    /// ceiling and the mandatory-value rule are declared by the two write
+    /// contracts' validators and applied at the boundary before any action body
+    /// runs, and re-asserted by the service for callers that do not arrive over
+    /// HTTP; a uniqueness clash surfaces as a conflict from the service, mirroring
+    /// the duplicate-group message the legacy editor emitted at
     /// <c>EditGroups.ascx.vb</c> line 117. This contract asserts none of those
-    /// rules itself, and no boundary validator asserts them either.
+    /// rules itself, because a response shape has nothing to assert.
     /// </remarks>
     public string RoleGroupName { get; set; } = string.Empty;
 

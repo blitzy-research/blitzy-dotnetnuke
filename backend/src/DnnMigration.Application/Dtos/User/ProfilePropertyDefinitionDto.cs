@@ -20,12 +20,33 @@ namespace DnnMigration.Application.Dtos.User;
 /// finally terminates at, so no reader has to trust the creating script on its own.
 /// </para>
 /// <para>
-/// Served as a lookup collection by the profile-definition endpoints under
-/// <c>/api/v1/portals/{portalId}/profile-definitions</c>, and embedded by the user-profile contract so that a
-/// rendered profile can carry the metadata describing its own fields. This type is inert: it
-/// holds no behaviour, no validation and no persistence concern. The rules that mirror the
-/// legacy screens live in <c>DnnMigration.Application.Validation</c>, and projection to and
-/// from the domain entity lives in <c>DnnMigration.Application.Mapping.UserMappings</c>.
+/// <b>This is a RESPONSE contract and nothing binds it.</b> It is returned by every read on
+/// <c>/api/v1/profile-definitions</c> and its portal-nested equivalent, returned as the body of a
+/// successful create or update, and embedded by the user-profile contract so that a rendered
+/// profile can carry the metadata describing its own fields. It is NOT the payload of any verb:
+/// <c>POST</c> binds <see cref="CreateProfilePropertyDefinitionRequest"/> and <c>PUT</c> binds
+/// <see cref="UpdateProfilePropertyDefinitionRequest"/>, each carrying only the members the
+/// terminal procedure behind that verb actually writes.
+/// </para>
+/// <para>
+/// MIGRATION: both verbs previously bound THIS type, which made the boundary advertise members
+/// neither procedure honours. A caller could submit <c>PropertyDefinitionId</c>, <c>PortalId</c> or
+/// <c>Visibility</c> and receive a success response in which none of the three had been read - the
+/// first two because they arrive from the route and the third because it is not a column on this
+/// table. Splitting the write contracts removed those members from the request surface rather than
+/// leaving them present and ignored, so the schema a caller reads is now the schema the store
+/// honours. The three read-only members below remain on this response for the reason they always
+/// existed: a caller needs the assigned key, the owning portal and the resolved default visibility
+/// in order to address the definition afterwards.
+/// </para>
+/// <para>
+/// This type is inert: it holds no behaviour, no validation and no persistence concern, and NO
+/// FluentValidation validator exists for it, because a response is not something a caller submits.
+/// The rules that mirror the legacy screens are declared over the two request contracts by
+/// <c>CreateProfilePropertyDefinitionRequestValidator</c> and
+/// <c>UpdateProfilePropertyDefinitionRequestValidator</c>, both reading the shared constants on
+/// <c>Validation/ProfileDefinitionTermsRules</c>. Projection from the domain entity, and from each
+/// request onto it, lives in <c>DnnMigration.Application.Mapping.UserMappings</c>.
 /// </para>
 /// <para>
 /// Divergences from the legacy shape, each annotated inline at the point it applies and each
@@ -218,11 +239,15 @@ public sealed class ProfilePropertyDefinitionDto
     /// the reference for the validation layer, which is the only place it may be enforced.
     /// </para>
     /// <para>
-    /// The legacy class also marks the name read-only, and the terminal upsert procedure
-    /// supplies it on insert only, never in its update branch: the name is immutable once a
-    /// definition exists. That is a service-layer invariant. This contract documents it and,
-    /// being a transport type that has to round-trip through a deserialiser, deliberately does
-    /// not attempt to enforce it by restricting the setter.
+    /// The legacy class marks the name read-only, but that attribute is a hint to the reflective
+    /// property editor about whether to render the field as editable - it is NOT a statement that
+    /// the store refuses a change. The terminal procedure <c>UpdatePropertyDefinition</c>
+    /// (<c>04.05.00:L1685</c>) declares <c>@PropertyName</c> and assigns
+    /// <c>PropertyName = @PropertyName</c>, so the stored name genuinely can change, and the
+    /// update write contract carries the member for that reason. Whether a submitted name
+    /// collides with another definition of the same portal and module is settled by the service
+    /// against <c>IX_ProfilePropertyDefinition</c>, with the definition being edited excluded from
+    /// the comparison so that an ordinary edit resubmitting the name it read is not a conflict.
     /// </para>
     /// </remarks>
     public string PropertyName { get; set; } = string.Empty;

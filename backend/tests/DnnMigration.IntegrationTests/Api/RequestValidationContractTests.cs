@@ -82,12 +82,12 @@ public sealed class RequestValidationContractTests
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleGroupsRoute(),
-            new RoleGroupDto { RoleGroupName = string.Empty, Description = "No name." },
+            new CreateRoleGroupRequest { RoleGroupName = string.Empty, Description = "No name." },
             ApiTestFixture.Json);
 
         await ShouldReportAsync(
             response,
-            nameof(RoleGroupDto.RoleGroupName),
+            nameof(CreateRoleGroupRequest.RoleGroupName),
             NameRequiredMessage);
     }
 
@@ -102,17 +102,18 @@ public sealed class RequestValidationContractTests
         using HttpClient client = _fixture.CreateAdministratorClient();
         RoleGroupDto created = await CreateRoleGroupAsync(client);
 
+        // MIGRATION: the body no longer echoes the group key or the owning portal. Both verbs used to bind
+        // RoleGroupDto, so a caller submitted three members of which the store read one; the write contract
+        // now carries only what AddRoleGroup and UpdateRoleGroup actually write.
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             RoleGroupRoute(created.RoleGroupId),
-            new RoleGroupDto
+            new UpdateRoleGroupRequest
             {
-                RoleGroupId = created.RoleGroupId,
-                PortalId = _fixture.Seed.PortalId,
                 RoleGroupName = new string('n', RoleGroupNameWidth + 1),
             },
             ApiTestFixture.Json);
 
-        await ShouldNameAsync(response, nameof(RoleGroupDto.RoleGroupName));
+        await ShouldNameAsync(response, nameof(UpdateRoleGroupRequest.RoleGroupName));
     }
 
     /// <summary>
@@ -256,7 +257,7 @@ public sealed class RequestValidationContractTests
     {
         using HttpClient client = _fixture.CreateAdministratorClient();
 
-        ProfilePropertyDefinitionDto definition = NewDefinition();
+        CreateProfilePropertyDefinitionRequest definition = NewDefinition();
         definition.PropertyName = propertyName;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -264,7 +265,7 @@ public sealed class RequestValidationContractTests
             definition,
             ApiTestFixture.Json);
 
-        await ShouldNameAsync(response, nameof(ProfilePropertyDefinitionDto.PropertyName));
+        await ShouldNameAsync(response, nameof(CreateProfilePropertyDefinitionRequest.PropertyName));
     }
 
     /// <summary>
@@ -287,14 +288,16 @@ public sealed class RequestValidationContractTests
         using HttpClient client = _fixture.CreateAdministratorClient();
         ProfilePropertyDefinitionDto created = await CreateDefinitionAsync(client);
 
-        created.PropertyName = "not a legal name";
+        UpdateProfilePropertyDefinitionRequest amendment = NewDefinitionUpdate();
+        amendment.PropertyCategory = created.PropertyCategory;
+        amendment.PropertyName = "not a legal name";
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ProfileDefinitionRoute(created.PropertyDefinitionId),
-            created,
+            amendment,
             ApiTestFixture.Json);
 
-        await ShouldNameAsync(response, nameof(ProfilePropertyDefinitionDto.PropertyName));
+        await ShouldNameAsync(response, nameof(UpdateProfilePropertyDefinitionRequest.PropertyName));
     }
 
     /// <summary>
@@ -313,7 +316,7 @@ public sealed class RequestValidationContractTests
     {
         using HttpClient client = _fixture.CreateAdministratorClient();
 
-        ProfilePropertyDefinitionDto definition = NewDefinition();
+        CreateProfilePropertyDefinitionRequest definition = NewDefinition();
         definition.ViewOrder = -1;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -653,7 +656,7 @@ public sealed class RequestValidationContractTests
     {
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             RoleGroupsRoute(),
-            new RoleGroupDto
+            new CreateRoleGroupRequest
             {
                 RoleGroupName = "VTest Group " + Suffix(),
                 Description = "Created by the validation-contract suite.",
@@ -695,7 +698,7 @@ public sealed class RequestValidationContractTests
     /// this migration's scope, so no endpoint can offer one, which is why the rule admits zero rather than
     /// demanding a positive key that a caller has no way to obtain.
     /// </remarks>
-    private static ProfilePropertyDefinitionDto NewDefinition() => new()
+    private static CreateProfilePropertyDefinitionRequest NewDefinition() => new()
     {
         DataType = 0,
         PropertyCategory = "Address",
@@ -704,7 +707,27 @@ public sealed class RequestValidationContractTests
         Required = false,
         ViewOrder = 1,
         Visible = true,
-        Visibility = 2,
+        DefaultValue = string.Empty,
+    };
+
+    /// <summary>Builds a well formed profile-definition update whose name carries a random suffix.</summary>
+    /// <returns>An update the validator accepts.</returns>
+    /// <remarks>
+    /// MIGRATION: the update verb binds its own contract because the terminal procedures honour different
+    /// member sets - <c>AddPropertyDefinition</c> declares a module-definition key that
+    /// <c>UpdatePropertyDefinition</c> does not - so the builder above cannot serve both verbs. Sending the
+    /// narrower shape here is what makes these tests exercise the schema the boundary now advertises rather
+    /// than a wider one the deserialiser happens to tolerate.
+    /// </remarks>
+    private static UpdateProfilePropertyDefinitionRequest NewDefinitionUpdate() => new()
+    {
+        DataType = 0,
+        PropertyCategory = "Address",
+        PropertyName = "VTestCity" + Suffix(),
+        Length = 50,
+        Required = false,
+        ViewOrder = 1,
+        Visible = true,
         DefaultValue = string.Empty,
     };
 

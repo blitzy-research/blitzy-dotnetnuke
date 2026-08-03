@@ -3608,7 +3608,7 @@ public class UserServiceTests
         DomainException failure = await Assert.ThrowsAsync<DomainException>(
             () => harness.Service.CreateProfilePropertyDefinitionAsync(
                 PortalId,
-                new ProfilePropertyDefinitionDto { PropertyName = submittedName },
+                new CreateProfilePropertyDefinitionRequest { PropertyName = submittedName },
                 CancellationToken.None));
 
         failure.Message.Should().Be("A profile property name is required.");
@@ -3646,12 +3646,20 @@ public class UserServiceTests
     /// is discarded so the new property becomes visible.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this test previously submitted a CONFLICTING owning portal on the body and asserted that the
+    /// route won. It can no longer do so, because the create contract carries no portal member at all - the
+    /// tenant is a parameter beside the request. That is a stronger guarantee than the one the withdrawn line
+    /// asserted: the route cannot be overridden because there is nothing to override it with, and
+    /// <c>ProfileDefinitionWriteContractValidatorTests.NeitherWriteContract_AdvertisesAMemberItCannotHonour</c>
+    /// is the standing proof that the member has not been re-added. The tenant assertion below is retained
+    /// because it is what proves the parameter is actually the value written.
+    /// </remarks>
     [Fact]
     public async Task CreateProfilePropertyDefinition_CreatesAgainstTheRoutesTenantAndDiscardsTheCatalogue()
     {
         Harness harness = Harness.Ready();
-        ProfilePropertyDefinitionDto request = DefinitionRequest("Nickname");
-        request.PortalId = OtherPortalId;
+        CreateProfilePropertyDefinitionRequest request = DefinitionRequest("Nickname");
         request.Required = true;
         request.Length = 40;
         request.ViewOrder = 7;
@@ -3674,12 +3682,21 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Changing a declaration requires a payload, refuses one that does not exist or belongs to another
-    /// tenant, and requires a name.
+    /// Changing a declaration requires a payload, refuses one that does not exist, belongs to another
+    /// tenant or was withdrawn, and requires a name.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: THE WITHDRAWN CASE IS THE REGRESSION. This member's guard tested only existence and
+    /// tenancy, while the single read beside it also tested withdrawal, so a declaration the contract
+    /// refused to SHOW stayed editable through this one - and the contract exposes no member that reads or
+    /// restores a withdrawn declaration, so the asymmetry had no recycle-bin behind it. The withdrawn case is
+    /// asserted alongside the other two, and against the SAME failure code, because a caller must not be
+    /// able to tell the three apart: distinguishing them would confirm that a declaration exists in a tenant
+    /// the caller cannot read.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateProfilePropertyDefinition_RefusesTheUnknownTheForeignAndTheNameless()
+    public async Task UpdateProfilePropertyDefinition_RefusesTheUnknownTheForeignTheWithdrawnAndTheNameless()
     {
         Harness harness = Harness.Ready();
 
@@ -3696,7 +3713,7 @@ public class UserServiceTests
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                DefinitionRequest("Street"),
+                DefinitionUpdate("Street"),
                 CancellationToken.None);
 
         unknown.IsFailure.Should().BeTrue();
@@ -3711,10 +3728,30 @@ public class UserServiceTests
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                DefinitionRequest("Street"),
+                DefinitionUpdate("Street"),
                 CancellationToken.None);
 
         foreign.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
+
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.LookupDefinition.IsDeleted = true;
+
+        Result<ProfilePropertyDefinitionDto> withdrawn = await harness.Service
+            .UpdateProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                DefinitionUpdate("Street"),
+                CancellationToken.None);
+
+        withdrawn.IsFailure.Should().BeTrue(
+            "a declaration the read path reports as absent must not be editable through this one");
+        withdrawn.Reason!.Code.Should().Be(
+            ProfileDefinitionNotFoundCode,
+            "the withdrawn case must be indistinguishable from the unknown and the foreign");
+
+        harness.UnitOfWork.Verify(
+            u => u.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
 
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
 
@@ -3722,7 +3759,7 @@ public class UserServiceTests
             () => harness.Service.UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                new ProfilePropertyDefinitionDto { PropertyName = "  " },
+                new UpdateProfilePropertyDefinitionRequest { PropertyName = "  " },
                 CancellationToken.None));
 
         nameless.Message.Should().Be("A profile property name is required.");
@@ -3748,7 +3785,7 @@ public class UserServiceTests
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                DefinitionRequest("Street"),
+                DefinitionUpdate("Street"),
                 CancellationToken.None);
 
         permitted.IsSuccess.Should().BeTrue();
@@ -3766,7 +3803,7 @@ public class UserServiceTests
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                DefinitionRequest("City"),
+                DefinitionUpdate("City"),
                 CancellationToken.None);
 
         refused.Reason!.Code.Should().Be(ProfileDefinitionDuplicateNameCode);
@@ -3787,7 +3824,7 @@ public class UserServiceTests
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
                 StreetPropertyId,
-                DefinitionRequest("Street"),
+                DefinitionUpdate("Street"),
                 CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
@@ -3805,7 +3842,7 @@ public class UserServiceTests
     {
         Harness harness = Harness.Ready();
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
-        ProfilePropertyDefinitionDto request = DefinitionRequest("Street Address");
+        UpdateProfilePropertyDefinitionRequest request = DefinitionUpdate("Street Address");
         request.Length = 120;
         request.Required = true;
         request.Visible = false;
@@ -3832,11 +3869,20 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Withdrawing a declaration refuses one that does not exist or belongs to another tenant.
+    /// Removing a declaration refuses one that does not exist, belongs to another tenant, or was already
+    /// withdrawn.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: THE WITHDRAWN CASE IS THE REGRESSION, AND THIS IS THE VERB WHERE IT MATTERED MOST. This
+    /// guard tested only existence and tenancy while the read paths also tested withdrawal, so the one
+    /// operation reachable on a declaration the contract refused to show was the destructive one - and
+    /// removal here is physical, discarding every stored answer with it, so it destroyed data no caller could
+    /// have inspected first. The assertion checks the staged removal did not happen as well as the reported
+    /// code, because a refusal that still removed the row would satisfy the code alone.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task DeleteProfilePropertyDefinition_RefusesTheUnknownAndTheForeign()
+    public async Task DeleteProfilePropertyDefinition_RefusesTheUnknownTheForeignAndTheWithdrawn()
     {
         Harness harness = Harness.Ready();
         harness.LookupDefinition = null;
@@ -3853,6 +3899,25 @@ public class UserServiceTests
             .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
         foreign.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
         harness.DeletedDefinitionIds.Should().BeEmpty();
+
+        ProfilePropertyDefinition withdrawnDefinition = Definition(StreetPropertyId, "Street");
+        withdrawnDefinition.IsDeleted = true;
+        withdrawnDefinition.ProfileValues.Add(Value(1, UserId, StreetPropertyId, "Fleet Street"));
+        harness.LookupDefinition = withdrawnDefinition;
+
+        Result withdrawn = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
+
+        withdrawn.IsFailure.Should().BeTrue(
+            "a declaration the read path reports as absent must not be removable through this one");
+        withdrawn.Reason!.Code.Should().Be(
+            ProfileDefinitionNotFoundCode,
+            "the withdrawn case must be indistinguishable from the unknown and the foreign");
+        harness.DeletedDefinitionIds.Should().BeEmpty(
+            "nothing may be staged for removal, so the answers recorded against it survive");
+        harness.UnitOfWork.Verify(
+            u => u.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -4068,7 +4133,25 @@ public class UserServiceTests
     /// </summary>
     /// <param name="propertyName">The declared name.</param>
     /// <returns>A declaration payload.</returns>
-    private static ProfilePropertyDefinitionDto DefinitionRequest(string propertyName) => new()
+    private static CreateProfilePropertyDefinitionRequest DefinitionRequest(string propertyName) => new()
+    {
+        PropertyName = propertyName,
+        PropertyCategory = "Contact",
+        Visible = true,
+    };
+
+    /// <summary>
+    /// Builds the update-verb counterpart of <see cref="DefinitionRequest(string)"/>, member for member.
+    /// </summary>
+    /// <param name="propertyName">The property name to submit.</param>
+    /// <returns>An update request.</returns>
+    /// <remarks>
+    /// MIGRATION: the two verbs bind two request types because the terminal procedures honour different
+    /// member sets - the insert declares a module-definition key that the update does not - so the two
+    /// builders exist rather than one. They are otherwise identical, which is what keeps a test that asserts
+    /// the same behaviour on both paths comparing like with like.
+    /// </remarks>
+    private static UpdateProfilePropertyDefinitionRequest DefinitionUpdate(string propertyName) => new()
     {
         PropertyName = propertyName,
         PropertyCategory = "Contact",

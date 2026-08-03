@@ -12,6 +12,15 @@
 // an independent pin on the contract, so widening a set is a change a reviewer has to make in two
 // places and see.
 //
+// MIGRATION: a FIFTH collection was added after the review found the inverse defect. The role-membership
+// listing did not have a request type of its own - it BORROWED UserPagedRequest - so
+// UserPagedRequestValidator resolved for it and applied the account collection's seven names while
+// RoleService.ListRoleUsersAsync enforces ten. Sharing one type across collections made a listing accept a
+// name it discarded; borrowing another collection's type made this one REFUSE a name it honoured. Both are
+// the same underlying mistake, and the pair of facts below - the account listing refuses CreatedDate,
+// LastLoginDate and IsApproved while the role-membership listing admits all three - is where the difference
+// between the two vocabularies is pinned, together with the reason it is legitimate.
+//
 // MIGRATION: each vocabulary is also required to be exactly the set of fields the corresponding
 // listing HONOURS end to end, which is the half of the finding a boundary test cannot prove on its own.
 // The ordering arms live in PortalRepository.ApplyOrder, UserRepository.ApplyOrder,
@@ -66,6 +75,24 @@ public class PagedRequestValidatorTests
     private static readonly string[] ModuleFields =
         ["ModuleId", "ModuleTitle", "IsDeleted", "StartDate", "EndDate"];
 
+    /// <summary>
+    /// Sortable vocabulary of the role-membership listing, honoured by
+    /// <c>RoleService.OrderRoleMemberships</c>.
+    /// </summary>
+    /// <remarks>
+    /// Ten names, three more than the account listing's. The extra three are legitimate rather than
+    /// accidental: this listing composes each assignment row with its account and pages IN MEMORY, so the
+    /// values the external membership store supplies are present on every row before any page is cut,
+    /// whereas the account listing pages in the STORE and cannot reach them until afterwards. The two
+    /// assignment dates the projection carries are deliberately NOT here, because the legacy grid offered no
+    /// ordering by them.
+    /// </remarks>
+    private static readonly string[] RoleUserFields =
+    [
+        "UserId", "Username", "FirstName", "LastName", "DisplayName", "Email",
+        "CreatedDate", "LastLoginDate", "IsApproved", "IsSuperUser",
+    ];
+
     // ------------------------------------------------------------------------
     // EACH COLLECTION ADMITS ITS OWN VOCABULARY
     // ------------------------------------------------------------------------
@@ -97,6 +124,13 @@ public class PagedRequestValidatorTests
     [MemberData(nameof(ModuleFieldCases))]
     public void ModuleListing_AdmitsEveryFieldItHonours(string sortBy)
         => ShouldAcceptSort(new ModulePagedRequestValidator(), new ModulePagedRequest(), sortBy);
+
+    /// <summary>Every name in the role-membership vocabulary is admitted by the role-membership listing.</summary>
+    /// <param name="sortBy">The field the caller named.</param>
+    [Theory]
+    [MemberData(nameof(RoleUserFieldCases))]
+    public void RoleMembershipListing_AdmitsEveryFieldItHonours(string sortBy)
+        => ShouldAcceptSort(new RoleUserPagedRequestValidator(), new RoleUserPagedRequest(), sortBy);
 
     // ------------------------------------------------------------------------
     // AND REFUSES EVERY OTHER COLLECTION'S
@@ -168,6 +202,34 @@ public class PagedRequestValidatorTests
     public void ModuleListing_RefusesEveryForeignField(string sortBy)
         => ShouldRefuseSort(new ModulePagedRequestValidator(), new ModulePagedRequest(), sortBy, ModuleFields);
 
+    /// <summary>
+    /// The role-membership listing refuses names that belong only to the portal, role or module
+    /// vocabularies, so widening its set to reach the three account fields did not widen it to everything.
+    /// </summary>
+    /// <param name="sortBy">The foreign field the caller named.</param>
+    /// <remarks>
+    /// <c>RoleName</c> is the pointed case and is asserted deliberately. The role is fixed by the route for
+    /// every record on the page, so ordering by its name could not change any order, and admitting it would
+    /// be advertising an ordering that does nothing - which is the shape of the defect this whole suite
+    /// exists to prevent.
+    /// </remarks>
+    [Theory]
+    [InlineData("PortalName")]
+    [InlineData("HostFee")]
+    [InlineData("RoleId")]
+    [InlineData("RoleName")]
+    [InlineData("ServiceFee")]
+    [InlineData("IsPublic")]
+    [InlineData("ModuleTitle")]
+    [InlineData("EffectiveDate")]
+    [InlineData("ExpiryDate")]
+    public void RoleMembershipListing_RefusesEveryForeignField(string sortBy)
+        => ShouldRefuseSort(
+            new RoleUserPagedRequestValidator(),
+            new RoleUserPagedRequest(),
+            sortBy,
+            RoleUserFields);
+
     // ------------------------------------------------------------------------
     // THE VOCABULARIES ARE EXACT, NOT MERELY SUFFICIENT
     // ------------------------------------------------------------------------
@@ -192,6 +254,8 @@ public class PagedRequestValidatorTests
             .Should().Be(ExpectedMessage(UserFields));
         MessageFor(new ModulePagedRequestValidator(), new ModulePagedRequest())
             .Should().Be(ExpectedMessage(ModuleFields));
+        MessageFor(new RoleUserPagedRequestValidator(), new RoleUserPagedRequest())
+            .Should().Be(ExpectedMessage(RoleUserFields));
     }
 
     /// <summary>
@@ -213,6 +277,36 @@ public class PagedRequestValidatorTests
     [InlineData("IsApproved")]
     public void UserListing_RefusesTheFieldsItCannotOrderInTheDatabase(string sortBy)
         => ShouldRefuseSort(new UserPagedRequestValidator(), new UserPagedRequest(), sortBy, UserFields);
+
+    /// <summary>
+    /// The role-membership listing ADMITS the same three fields the account listing refuses, because this
+    /// listing genuinely can order by them.
+    /// </summary>
+    /// <param name="sortBy">The field the caller named.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the fact the review's finding turns on, and it is the exact counterpart of
+    /// <c>UserListing_RefusesTheFieldsItCannotOrderInTheDatabase</c> above. The role-membership listing
+    /// bound the ACCOUNT collection's request type, so the account validator resolved for it and refused
+    /// these three names at the boundary - even though <c>RoleService.OrderRoleMemberships</c> has an arm
+    /// for each and honours it over a value present on every row. Three orderings the service implemented
+    /// were unreachable, and the endpoint advertised less than it could do.
+    /// </para>
+    /// <para>
+    /// The two facts must be read together: the same three names are refused by one listing and admitted by
+    /// the other, and neither verdict is a mistake. The account listing pages in the store and so cannot
+    /// reach values the external membership objects fill afterwards; this listing materialises the
+    /// assignment rows composed with their accounts and pages in memory, so the values are already there.
+    /// Making the two verdicts agree would break one listing or the other, which is precisely why each
+    /// collection needs its own request type rather than a shared or a borrowed one.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("CreatedDate")]
+    [InlineData("LastLoginDate")]
+    [InlineData("IsApproved")]
+    public void RoleMembershipListing_AdmitsTheThreeFieldsTheAccountListingCannotOrder(string sortBy)
+        => ShouldAcceptSort(new RoleUserPagedRequestValidator(), new RoleUserPagedRequest(), sortBy);
 
     /// <summary>
     /// The two module fields that cannot be ordered are refused, even though both are projected.
@@ -245,6 +339,11 @@ public class PagedRequestValidatorTests
         ShouldRefuseSort(new RolePagedRequestValidator(), new RolePagedRequest(), sortBy, RoleFields);
         ShouldRefuseSort(new UserPagedRequestValidator(), new UserPagedRequest(), sortBy, UserFields);
         ShouldRefuseSort(new ModulePagedRequestValidator(), new ModulePagedRequest(), sortBy, ModuleFields);
+        ShouldRefuseSort(
+            new RoleUserPagedRequestValidator(),
+            new RoleUserPagedRequest(),
+            sortBy,
+            RoleUserFields);
     }
 
     // ------------------------------------------------------------------------
@@ -327,6 +426,7 @@ public class PagedRequestValidatorTests
         AssertPagingBounds(new RolePagedRequestValidator(), () => new RolePagedRequest());
         AssertPagingBounds(new UserPagedRequestValidator(), () => new UserPagedRequest());
         AssertPagingBounds(new ModulePagedRequestValidator(), () => new ModulePagedRequest());
+        AssertPagingBounds(new RoleUserPagedRequestValidator(), () => new RoleUserPagedRequest());
     }
 
     /// <summary>
@@ -347,6 +447,8 @@ public class PagedRequestValidatorTests
         new UserPagedRequestValidator().Validate(new UserPagedRequest { SortBy = sortBy })
             .IsValid.Should().BeTrue();
         new ModulePagedRequestValidator().Validate(new ModulePagedRequest { SortBy = sortBy })
+            .IsValid.Should().BeTrue();
+        new RoleUserPagedRequestValidator().Validate(new RoleUserPagedRequest { SortBy = sortBy })
             .IsValid.Should().BeTrue();
     }
 
@@ -369,6 +471,10 @@ public class PagedRequestValidatorTests
     /// <summary>Supplies every module sort field to a theory.</summary>
     /// <returns>One row per field.</returns>
     public static TheoryData<string> ModuleFieldCases() => ToData(ModuleFields);
+
+    /// <summary>Supplies every role-membership sort field to a theory.</summary>
+    /// <returns>One row per field.</returns>
+    public static TheoryData<string> RoleUserFieldCases() => ToData(RoleUserFields);
 
     // ------------------------------------------------------------------------
     // HELPERS

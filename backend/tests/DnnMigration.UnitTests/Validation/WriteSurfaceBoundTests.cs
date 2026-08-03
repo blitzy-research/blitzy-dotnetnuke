@@ -125,7 +125,7 @@ public class WriteSurfaceBoundTests
             .IsValid.Should().BeFalse("the role create path refuses an escaping reference");
 
         new UpdateRoleRequestValidator()
-            .Validate(new UpdateRoleRequest { IconFile = escaping })
+            .Validate(new UpdateRoleRequest { RoleName = "Subscribers", IconFile = escaping })
             .IsValid.Should().BeFalse("so must the role update path");
 
         new UpdateTabRequestValidator()
@@ -216,6 +216,7 @@ public class WriteSurfaceBoundTests
     {
         ValidationResult result = new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest
         {
+            RoleName = "Subscribers",
             BillingFrequency = (BillingFrequency)99,
         });
 
@@ -224,16 +225,29 @@ public class WriteSurfaceBoundTests
     }
 
     /// <summary>
-    /// An empty role update is valid, because every member on it is optional.
+    /// A role update carrying nothing but the name is valid, because every OTHER member is optional - and
+    /// one carrying nothing at all is refused, naming the name.
     /// </summary>
     /// <remarks>
-    /// Asserted so that the width and range rules cannot drift into presence rules. The contract carries no
-    /// name member at all, and the remaining members each have a stored default, so a submission that
-    /// changes nothing is a legitimate no-op rather than a malformed request.
+    /// Asserted as one fact from both sides so that the width and range rules cannot drift into presence
+    /// rules, and so the single presence rule cannot quietly disappear. The name is required because
+    /// <c>Roles.RoleName</c> is <c>NOT NULL</c> and the contract is a replacement; every remaining member
+    /// has a stored default or is nullable, so a submission that changes nothing else is a legitimate
+    /// no-op rather than a malformed request.
     /// </remarks>
     [Fact]
-    public void RoleUpdate_CarryingNothing_IsValid()
-        => new UpdateRoleRequestValidator().Validate(new UpdateRoleRequest()).IsValid.Should().BeTrue();
+    public void RoleUpdate_CarryingNothingButItsName_IsValid()
+    {
+        new UpdateRoleRequestValidator()
+            .Validate(new UpdateRoleRequest { RoleName = "Subscribers" })
+            .IsValid.Should().BeTrue();
+
+        new UpdateRoleRequestValidator()
+            .Validate(new UpdateRoleRequest())
+            .Errors.Should().Contain(
+                failure => failure.PropertyName == nameof(UpdateRoleRequest.RoleName),
+                "the one presence rule the legacy screen declared applies to both write verbs");
+    }
 
     /// <summary>
     /// An explicitly absent settings map is refused rather than faulting, on both scopes.
@@ -390,7 +404,9 @@ public class WriteSurfaceBoundTests
     /// <returns>The request.</returns>
     private static UpdateRoleRequest RoleUpdateWith(string member, string value)
     {
-        var request = new UpdateRoleRequest();
+        // The name is populated because the update contract requires one, so a width fact isolates the
+        // width it names instead of also tripping the presence rule.
+        var request = new UpdateRoleRequest { RoleName = "Subscribers" };
 
         switch (member)
         {

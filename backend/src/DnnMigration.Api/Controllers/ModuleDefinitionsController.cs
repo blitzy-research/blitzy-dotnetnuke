@@ -264,8 +264,16 @@ public sealed class ModuleDefinitionsController : ControllerBase
         // authorisation middleware's result handler, so it answered with an empty body while this action
         // declares a problem document for 403 - which made this path distinguishable from the middleware's
         // refusal for the identical cause, the opposite of what the surrounding comment claimed. Both now
-        // carry the same type, the same fixed wording and a trace identifier, so a client cannot tell them
-        // apart and neither discloses why.
+        // carry the same status, the same problem type and a trace identifier, so a client keying on the
+        // failure code cannot tell them apart.
+        //
+        // The human-readable detail is NOT byte-identical, and an earlier revision of this comment claimed
+        // it was. The middleware states that the request could not be associated with a portal; the shared
+        // helper states that the caller is not permitted to perform the operation. Both are fixed,
+        // caller-independent sentences that name no host, no alias and no tenant, so neither discloses which
+        // layer refused or why - which is the property that actually matters here. The wording is left
+        // divergent rather than unified because the helper's sentence is shared with every other 403 in this
+        // API, and bending it to this one cause would make it wrong everywhere else.
         if (!_portalContext.IsResolved)
         {
             return this.ForbiddenProblem(TenantUnresolvedCode);
@@ -332,7 +340,7 @@ public sealed class ModuleDefinitionsController : ControllerBase
         // placeholder tenant, and under the class-level policy an unresolved host has already been refused.
         if (!_portalContext.IsResolved)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<ModuleDefinitionDto?> outcome = await _modules
@@ -389,7 +397,7 @@ public sealed class ModuleDefinitionsController : ControllerBase
     {
         if (!_portalContext.IsResolved)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await _modules

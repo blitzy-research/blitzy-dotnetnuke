@@ -167,11 +167,57 @@ public sealed class PermissionService : IPermissionService
         PermissionKey? permissionKey = null,
         CancellationToken cancellationToken = default)
     {
+        // MIGRATION: a SUPPLIED-BUT-BLANK code is refused rather than treated as "no filter", because the
+        // two mean different things to a caller: omitting the parameter asks for the whole catalogue, while
+        // sending an empty one asks for the codes that are blank, and there are none. Answering the first
+        // question when asked the second would report success for a request that matched nothing.
+        //
+        // MIGRATION - THIS BRANCH IS UNREACHABLE OVER MVC QUERY BINDING, AND THAT WAS MEASURED, NOT ASSUMED.
+        // "?permissionCode=", "?permissionCode=%20%20" and "?permissionCode=%09" all answer 200 with the full
+        // catalogue, because the simple-type binder converts a whitespace-only query value to null before the
+        // action body runs, so the service sees an omitted filter rather than a blank one. The guard is kept
+        // for the same reason as the key guard below: the Application layer is a public API in its own right,
+        // and a direct caller can pass " " where a query string cannot. The identifier guard further down IS
+        // reachable over HTTP - "?moduleDefinitionId=0" answers 400 with this same failure code - so this
+        // member genuinely emits both a member-named validation document and a plain problem document
+        // depending on which filter was wrong, which is why its endpoint advertises the common supertype.
         if (permissionCode is not null && string.IsNullOrWhiteSpace(permissionCode))
         {
             return Result<IReadOnlyList<string>>.Failure(
                 FilterInvalidCode,
                 "The permission code filter must not be blank; omit it to place no restriction.");
+        }
+
+        // MIGRATION: an UNDEFINED key filter is refused here, because this member's own contract cannot
+        // honour one. PermissionKey is a closed set of four members, but a CLR enumeration is an integer
+        // at run time, so (PermissionKey)99 is a constructible value. Every branch of the read below then
+        // treats the filter as a value to narrow by, and the unscoped branch answers with the FILTER
+        // ITSELF - so without this guard the member returned ["99"], fabricating a key that names no
+        // member, no row and no grant. The scoped branches used it as a comparison operand and answered
+        // with an empty set, which reads as "declared nowhere" rather than as "does not exist".
+        //
+        // MIGRATION - WHAT THIS GUARD IS AND IS NOT. It is NOT the HTTP boundary's defence. MEASURED at
+        // run time against this API: "?permissionKey=99" is refused by MVC model binding with 400 and
+        // errors["permissionKey"] = ["The value '99' is invalid."] before the action body runs, because
+        // EnumTypeModelBinder tests DEFINED membership for a non-flags enumeration; "?permissionKey=0"
+        // answers ["VIEW"] and "?permissionKey=3" answers ["WRITE"], which proves numeric binding works
+        // and that the refusal is specifically the membership check. The guard exists because the
+        // Application layer is a public API in its own right, reachable from callers that never touch MVC.
+        // The two permission EVALUATION members in this class already guard their non-nullable key
+        // parameters for the same reason, and those ARE reached from the authorization path; this member's
+        // filter is nullable, which is why the test is on the value and not on the presence.
+        //
+        // MIGRATION: the equivalent question for a JSON BODY has the opposite answer, which is why a
+        // validator rather than the binder carries it there. System.Text.Json performs no defined-member
+        // check, so this solution's body-bound enumerations are guarded by converters and FluentValidation
+        // rules - measured: posting billingFrequency as the number 99 is refused by the converter, not by
+        // MVC. Query-bound enumerations are checked by the binder; body-bound ones are not.
+        if (permissionKey is PermissionKey wantedKeyFilter && !Enum.IsDefined(wantedKeyFilter))
+        {
+            return Result<IReadOnlyList<string>>.Failure(
+                KeyInvalidCode,
+                FormattableString.Invariant(
+                    $"Permission key {(int)wantedKeyFilter} is not defined; omit the filter to place no restriction."));
         }
 
         if (moduleDefinitionId is int definitionId && definitionId < LowestModuleDefinitionId)

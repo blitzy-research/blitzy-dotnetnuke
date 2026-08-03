@@ -268,24 +268,17 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
     // for the two paths to drift apart again. The provenance annotation for each value travels with
     // it, so RoleTermsRules is where the measured legacy line references now live.
 
-    /// <summary>
-    /// Largest billing or trial period a role may declare, in units of its own frequency.
-    /// </summary>
-    /// <remarks>
-    /// A net-new bound: the legacy screen declared only that a period be positive, so an unbounded count
-    /// reached the offset arithmetic that derives a membership expiry. That arithmetic is now clamping
-    /// rather than overflowing, so this rule is not what keeps it safe - what it adds is a field-level
-    /// answer naming the period, in place of a silently clamped expiry a caller never asked for. The
-    /// value is generous by four orders of magnitude against any real configuration: ten thousand units
-    /// is ten thousand years at the yearly frequency and twenty-seven years at the daily one.
-    /// </remarks>
-    private const int PeriodMaximum = 10_000;
-
-    /// <summary>
-    /// Reported when a billing or trial period exceeds the largest count a role may declare.
-    /// </summary>
-    private static readonly string PeriodTooLargeMessage = FormattableString.Invariant(
-        $"A billing or trial period must be no more than {PeriodMaximum} units of its own frequency.");
+    // MIGRATION: THERE IS NO UPPER BOUND ON EITHER PERIOD, and its removal was a correction rather
+    // than a relaxation. A net-new ten-thousand-unit ceiling stood here and on the update validator,
+    // justified as generous; generosity is not the test. The legacy screen declared one rule on each
+    // period - valBillingPeriod2 at editroles.ascx L114 and valTrialPeriod2 at L146, both strictly
+    // greater than zero - the columns are plain int (01.00.08.SqlDataProvider L6829 and
+    // 01.00.05.SqlDataProvider L2754), and the terminal procedure bounds neither. Any positive Int32
+    // the legacy application accepted must therefore still be accepted, and the ceiling refused a band
+    // of them. Nothing is left unprotected by the removal: RoleService.DeriveAssignmentDates routes
+    // every offset through its clamping helpers, so a period large enough to overflow the date
+    // arithmetic yields the storable bound instead of a wrapped or faulted expiry - the guarantee that
+    // rule was said to reinforce is the helpers' own and always was.
 
     /// <summary>
     /// Reported when a fee is a well-formed decimal that the terminal <c>money</c> column cannot hold.
@@ -357,8 +350,6 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
         RuleFor(request => request.BillingPeriod)
             .GreaterThan(0)
             .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
-            .LessThanOrEqualTo(PeriodMaximum)
-            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.BillingPeriod.HasValue);
 
         // valTrialFee2 (L128): GreaterThanEqual against 0 - zero admitted - despite the message
@@ -374,8 +365,6 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
         RuleFor(request => request.TrialPeriod)
             .GreaterThan(0)
             .WithMessage(RoleTermsRules.TrialPeriodNotPositiveMessage)
-            .LessThanOrEqualTo(PeriodMaximum)
-            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.TrialPeriod.HasValue);
 
         // Membership of the domain enumeration, which IS the character check because each member

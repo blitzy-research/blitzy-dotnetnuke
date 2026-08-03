@@ -8,34 +8,49 @@ namespace DnnMigration.Application.Dtos.Role;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The member set is the twelve values the legacy update path actually persisted, and the authority
-/// for that count is the terminal stored procedure rather than any single screen or class. The
-/// destructive eighty-eight-script chain recreates <c>UpdateRole</c> seven times, and only its final
-/// form is meaningful: at <c>Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider</c>
-/// line 454 it declares thirteen parameters - the role identifier plus exactly these twelve - and its
-/// <c>UPDATE dbo.Roles SET ...</c> list names twelve columns, one per member below. Each member's
-/// documentation also names the input control on <c>Website/admin/Security/editroles.ascx</c> that
-/// posted it - note the lower-case markup file name; the code-behind beside it is capitalised - and
-/// the save block at <c>Website/admin/Security/EditRoles.ascx.vb</c> lines L231 to L247 assigns the
-/// same set.
+/// The member set is the role's name plus the twelve values the legacy update path persisted. The
+/// authority for those twelve is the terminal stored procedure rather than any single screen or class:
+/// the destructive eighty-eight-script chain recreates <c>UpdateRole</c> seven times, and only its
+/// final form is meaningful - at
+/// <c>Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider</c> line 454 it declares
+/// thirteen parameters, the role identifier plus exactly those twelve, and its
+/// <c>UPDATE dbo.Roles SET ...</c> list names twelve columns. Each member's documentation also names
+/// the input control on <c>Website/admin/Security/editroles.ascx</c> that posted it - note the
+/// lower-case markup file name; the code-behind beside it is capitalised - and the save block at
+/// <c>Website/admin/Security/EditRoles.ascx.vb</c> lines L231 to L248 assigns the same set.
 /// </para>
 /// <para>
-/// <b>There is deliberately no <c>RoleName</c> member, and one must not be added.</b> Its absence is
-/// the one structural difference from the sibling creation contract, and it is over-determined by five
-/// independent findings. The edit screen makes the name read-only: at <c>EditRoles.ascx.vb</c> lines L131 to
-/// L134 it reveals a display label, hides the name textbox and disables the screen's single
-/// required-field validator, then fills the label from the stored value at L140. The legacy
-/// membership data contract has no parameter for it, at
-/// <c>Library/Providers/MembershipProviders/DataProvider/DataProvider.vb</c> line 97. The provider
-/// that implements that contract never passes it, at
-/// <c>Library/Providers/MembershipProviders/DNNMembershipProvider/DNNRoleProvider.vb</c> line 325.
-/// The terminal procedure cited above omits the column from its assignment list, having carried it
+/// <b><c>RoleName</c> is carried, and this is a documented behavioural difference from the legacy
+/// screen rather than an accident.</b> Five measurements establish what the legacy edit path did, and
+/// they are recorded here so the difference is legible instead of implied. The edit screen made the
+/// name read-only: at <c>EditRoles.ascx.vb</c> lines L131 to L134 it reveals a display label, hides
+/// the name textbox and disables the screen's single required-field validator, then fills the label
+/// from the stored value at L140 - yet its save block still assigned the hidden box at L237, and a
+/// hidden Web Forms control posts nothing, so the value assigned on every edit was the empty string.
+/// That store was dead because the layers beneath had nowhere to put it: the legacy membership data
+/// contract declares no parameter for the name
+/// (<c>Library/Providers/MembershipProviders/DataProvider/DataProvider.vb</c> line 97), the provider
+/// implementing it never passes one
+/// (<c>Library/Providers/MembershipProviders/DNNMembershipProvider/DNNRoleProvider.vb</c> line 325),
+/// and the terminal procedure cited above omits the column from its assignment list, having carried it
 /// as recently as <c>02.00.00.SqlDataProvider</c> line 4317 before the later recreation dropped it.
-/// And the screen applies its portal-scoped uniqueness guard only when inserting: at
-/// <c>EditRoles.ascx.vb</c> lines L251 to L257 the add branch looks the name up first, while the
-/// edit branch updates with no such check - which is coherent only because the name cannot change.
-/// Renaming a role is therefore not a workflow this application ever offered, and a workflow the
-/// legacy screens do not offer must not be invented here.
+/// The screen's own portal-scoped uniqueness guard was consequently applied on the insert branch only:
+/// at <c>EditRoles.ascx.vb</c> lines L251 to L257 the add branch looks the name up first, while the
+/// edit branch updates with no such check.
+/// </para>
+/// <para>
+/// Two facts settle why the member belongs here nonetheless. The library-level contract this
+/// application service replaces takes the whole role INCLUDING its name on update -
+/// <c>Library/Components/Security/Roles/RoleController.vb</c> line 254 is
+/// <c>Public Sub UpdateRole(ByVal objRoleInfo As RoleInfo)</c> - so a name has always travelled at the
+/// boundary the service layer occupies. And the terminal schema itself constrains the pair: the
+/// uniqueness constraint over <c>(PortalID, RoleName)</c> added at
+/// <c>03.00.09.SqlDataProvider</c> line 304 is a data-model fact this migration is required to honour,
+/// so the collision it describes has to be a reportable outcome rather than a provider violation
+/// surfacing as a server fault. A replacement contract that could not express the resource's own name
+/// would also be dishonest about being a replacement. Sending the stored name back unchanged is a
+/// no-op, so no submission the legacy screen could produce behaves differently; the difference is only
+/// that a rename is now expressible, and it is itemised in <c>MIGRATION_NOTES.md</c>.
 /// </para>
 /// <para>
 /// <b>Neither identifier travels in the body.</b> The portal and the role both arrive in the route,
@@ -51,22 +66,26 @@ namespace DnnMigration.Application.Dtos.Role;
 /// a nullable member clears the stored value rather than preserving it, and omitting a non-nullable
 /// flag clears it to false. A caller amending one field must read the role first and resubmit the
 /// rest - the same discipline the legacy screen followed by loading the role into its form before
-/// posting it back. The stored <c>RoleName</c> is the sole exception, because this contract cannot
-/// express it at all and the service therefore preserves it.
+/// posting it back. The name is no exception: it is required, so a request that omits it is refused
+/// rather than silently leaving the stored name in place.
 /// </para>
 /// <para>
 /// The type is inert: no behaviour, no derived member, no lazily evaluated getter, no guard and no
-/// constructor. There is no <c>UpdateRoleRequestValidator</c> - <c>CreateRoleRequestValidator</c> is
-/// the only role validator in <c>Application/Validation</c>, and the API's validation filter finds
-/// none registered for this type - so every field rule and the cross-field gating the legacy screen
-/// performed (revealing the billing block only for a non-zero fee, and the trial block only for a
-/// trial frequency other than none) are enforced by
-/// <c>Application/Services/RoleService.cs</c>, which raises <see cref="DnnMigration.Domain.Common.DomainException"/> for a blank
-/// or over-long name, an over-long description, subscription code or icon path, a negative fee, a
-/// non-positive period and an unrecognised frequency code. The API translates each to a 400. Never to
-/// this type. Translation onto the persisted
-/// model lives in <c>Application/Mapping/RoleMappings.cs</c>, which also owns every decision about
-/// whether an empty string and a null are interchangeable on a given column.
+/// constructor. Field rules are declared once, at the boundary, by
+/// <c>Application/Validation/UpdateRoleRequestValidator.cs</c>, which is public and is discovered by
+/// the assembly scan in <c>Application/DependencyInjection.cs</c>, so the API's validation filter
+/// resolves it and reports a breach as an RFC 7807 validation document naming the member. It shares
+/// every rule with the creation validator through <c>Application/Validation/RoleTermsRules.cs</c>, so
+/// the two verbs cannot drift apart. <c>Application/Services/RoleService.cs</c> re-asserts the same
+/// shape for callers that do not arrive over HTTP, raising
+/// <see cref="DnnMigration.Domain.Common.DomainException"/>, and owns the two questions no field rule
+/// can answer because they need a read: whether the role exists, and whether the submitted name
+/// already belongs to a different role in the same portal. The cross-field gating the legacy screen
+/// performed - revealing the billing block only for a non-zero fee, and the trial block only for a
+/// trial frequency other than none - was a rendering decision about which inputs were reachable, so no
+/// member here is conditional on another. Translation onto the persisted model lives in
+/// <c>Application/Mapping/RoleMappings.cs</c>, which also owns every decision about whether an empty
+/// string and a null are interchangeable on a given column.
 /// </para>
 /// <para>
 /// Wire form of the two frequency members. Both travel as the legacy single character rather than as
@@ -74,21 +93,19 @@ namespace DnnMigration.Application.Dtos.Role;
 /// serialisation attribute appears on any member here.
 /// </para>
 /// </remarks>
-// MIGRATION: RoleName is omitted from this contract on the authority of EditRoles.ascx.vb
-// L131-L134 and of the terminal 04.00.04.SqlDataProvider L454 procedure, which together establish
-// that the legacy edit path could not change it. A consequence must be stated plainly, because it is
-// a genuine behavioural difference from the literal legacy code. The legacy save block still
-// assigned the name unconditionally at EditRoles.ascx.vb L237, reading a textbox that the same
-// screen had just hidden - and a hidden Web Forms control renders nothing and therefore posts
-// nothing, so the value assigned on every edit was the empty string. That is a real latent defect,
-// and it is annotated here rather than fixed, as the migration discipline requires. It never
-// corrupted data only because the layers beneath it had nowhere to put the value: the membership
-// contract declared no parameter for it and the terminal procedure assigned no such column, so the
-// empty string was a dead store discarded before it reached SQL. Omitting the member means this
-// contract cannot reproduce that store at all, which is the outcome the screen's own read-only label
-// expresses. The obligation this places on the service is therefore explicit: an update must
-// PRESERVE the stored name and must never write one, and no portal-scoped uniqueness rule belongs on
-// the update path, because a name that cannot change cannot begin to collide.
+// MIGRATION - DOCUMENTED BEHAVIOURAL DIFFERENCE: this contract can express a rename, where the
+// legacy edit screen could not. The measurements are recorded on the class summary above and are not
+// repeated; what matters here is the obligation the member places on the layers beneath it, because
+// the legacy asymmetry it removes is a real one. The legacy screen guarded portal-scoped name
+// uniqueness on its INSERT branch alone (EditRoles.ascx.vb L251-L257, with no equivalent at
+// L259-L261), which was coherent only for as long as the name could not change. Making the name
+// writable therefore obliges the service to apply the same guard on this path, excluding the role
+// being edited from the comparison, and to report a collision as the same duplicate-name outcome the
+// creation path reports. That is not a tightening invented here: the terminal schema declares
+// UNIQUE (PortalID, RoleName) at 03.00.09.SqlDataProvider L304, so without the guard a rename onto
+// an existing name would reach the provider and surface as a server fault naming no field, which is
+// strictly worse for a caller than a conflict it can correct. The obligation is discharged in
+// Application/Services/RoleService.cs and the outcome is published as 409 by the API.
 //
 // MIGRATION: the role's own identifier is absent and must not be added, not even as a nullable
 // member. The legacy screen carried one because a single postback served both creating and editing,
@@ -135,6 +152,27 @@ namespace DnnMigration.Application.Dtos.Role;
 // declares its own members outright, and the duplication is intentional.
 public sealed class UpdateRoleRequest
 {
+    /// <summary>
+    /// Replacement name of the role. Required, and unique within the owning portal.
+    /// </summary>
+    /// <remarks>
+    /// Screen control <c>asp:TextBox txtRoleName</c>, itself capped at fifty characters by its
+    /// <c>MaxLength</c> (<c>editroles.ascx</c> L27), carrying the screen's one required-field
+    /// validator <c>valRoleName</c> (L29) - which the edit path disabled, for the reason recorded on
+    /// this class. Terminal column <c>Roles.RoleName nvarchar(50) NOT NULL</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L117, carried unchanged through the table recreate at
+    /// <c>01.00.05.SqlDataProvider</c> L2750), covered together with the portal column by the
+    /// uniqueness constraint <c>IX_RoleName</c> (<c>03.00.09.SqlDataProvider</c> L304).
+    /// </remarks>
+    // MIGRATION: non-nullable, and initialised to the empty string rather than to a null-forgiving
+    // default, because the column is NOT NULL and a request that omits the name is a MISSING required
+    // field rather than a null one. Neither rule on this member is enforced here: the fifty-character
+    // ceiling is a schema fact the validator reproduces declaratively, and uniqueness cannot be
+    // decided at the boundary at all because it needs a read, so the service reports it - applying the
+    // same lookup the legacy insert branch applied at EditRoles.ascx.vb L252, excluding the role being
+    // edited, and reporting the duplicate the same way the creation path does.
+    public string RoleName { get; set; } = string.Empty;
+
     /// <summary>
     /// Replacement description of the role, or <see langword="null"/> to clear it.
     /// </summary>

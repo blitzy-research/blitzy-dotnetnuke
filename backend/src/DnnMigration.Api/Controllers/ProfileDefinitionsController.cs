@@ -194,6 +194,27 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// implementation are <see langword="internal"/> to that assembly, so naming one here would not
     /// compile.
     /// </remarks>
+    /// <summary>
+    /// Failure code carried as the problem type when the request reached this action without a tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A distinct code from the middleware's generic refusal, so an operator reading a support log can tell
+    /// "this host resolves to no portal" apart from "this caller lacks the grant" - while the caller reads
+    /// the same fixed wording either way and learns nothing from the difference. The same constant is
+    /// declared by <c>PortalAliasResolutionMiddleware</c> and by the other controllers that guard on tenant
+    /// resolution, because the two paths must be indistinguishable to a client.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the tenant guards in this controller answered with a bare <c>Forbid()</c>. A controller's
+    /// <c>Forbid()</c> does NOT pass through the authorisation middleware's result handler, so it produced a
+    /// 403 with an EMPTY BODY while every action here declares a problem document for 403 - the response
+    /// contradicted its own declaration, and it was distinguishable from the middleware's refusal for the
+    /// identical cause. Routing the refusal through the shared helper closes both gaps at once.
+    /// </para>
+    /// </remarks>
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     private readonly IUserService _users;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -239,9 +260,28 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// </para>
     /// <para>
     /// The holder throws rather than yielding a placeholder tenant, so resolution is tested before the
-    /// tenant is read. An unresolved request has already been refused by the class-level policy, which
-    /// denies for want of a portal, so the null answer here is a precondition rather than a state a caller
-    /// can steer into - and the caller sees the same bare <c>403</c> either way.
+    /// tenant is read, and the null answer here is a precondition rather than a state a caller can steer
+    /// into.
+    /// </para>
+    /// <para>
+    /// MIGRATION: WHAT REFUSES FIRST IS THE TENANT-RESOLUTION MIDDLEWARE, NOT THE CLASS-LEVEL POLICY, and an
+    /// earlier revision of this block credited the policy. Measured both ways against a running instance: a
+    /// portal administrator addressing a host name with no alias row is refused by the policy with
+    /// <c>auth.not_permitted</c>, but a superuser passes that policy from any host name whatsoever, because
+    /// the policy is anchored to the portal named in the route and the unscoped route names none. That
+    /// request is refused by the middleware instead, with <c>portal.tenant_unresolved</c>. Either way the
+    /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
+    /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
+    /// answer than a <c>403</c> for a condition that is not the caller's fault.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE REFUSAL IS NO LONGER A BARE <c>403</c>. This block previously said the caller sees the
+    /// same bare status either way, which was the justification for answering with <c>Forbid()</c>, and it
+    /// described a body that contradicted this action's own declaration: <c>Forbid()</c> does not pass
+    /// through the authorisation middleware's result handler, so it produced an EMPTY body while every action
+    /// here declares a problem document for <c>403</c>. The guard now answers through the shared
+    /// problem-details path carrying the same failure code the middleware uses, so the two refusals are
+    /// indistinguishable to a client keying on that code.
     /// </para>
     /// </remarks>
     private int? ResolvePortalId(int? routedPortalId)
@@ -298,7 +338,7 @@ public sealed class ProfileDefinitionsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await _users
@@ -349,7 +389,7 @@ public sealed class ProfileDefinitionsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<ProfilePropertyDefinitionDto?> outcome = await _users
@@ -364,10 +404,10 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// Identifier of the portal that will declare the definition, bound from the route on the nested
     /// address and absent on the flat one, where the tenant the request resolved to is used instead.
     /// </param>
-    /// <param name="definition">
-    /// The definition to declare. Its own identifier member is ignored on this path, because the
-    /// identifier is assigned by the store - which is precisely why the method rather than a sentinel
-    /// distinguishes this from an update.
+    /// <param name="request">
+    /// The definition to declare. It carries NO identifier member - the store assigns one, which is
+    /// precisely why the method rather than a sentinel distinguishes this from an update - and no
+    /// owning-portal member, because the tenant is resolved from the route or from the request.
     /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The created definition, addressed by the location header.</returns>
@@ -388,6 +428,7 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// The portal already declares a property of that name. Names must be unique within a portal.
     /// </response>
     /// <remarks>
+    /// <para>
     /// MIGRATION: this action is the whole of the legacy add path. The screen chose to add by testing
     /// its identifier against -1 at
     /// <c>Website/admin/Users/EditProfileDefinition.ascx.vb</c> L449 and reported a name collision by
@@ -395,6 +436,16 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// and the contract's <c>profile-definition.duplicate-name</c> code expresses the collision,
     /// which the shared translator answers with <c>409</c>. Neither the intent nor the failure travels
     /// inside an integer any more.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this action binds a REQUEST contract rather than the response projection it returns.
+    /// The terminal insert procedure <c>AddPropertyDefinition</c> (<c>04.06.00:L1101</c>) declares
+    /// eleven parameters, ten of which are body members, and the module definition key among them is
+    /// the member the update verb does not have - which is why one shared shape could not describe both
+    /// verbs honestly. Binding the response projection previously advertised an identifier, an owning
+    /// portal and a visibility hint that this action does not read; those members are now absent from
+    /// the request schema instead of present and ignored.
+    /// </para>
     /// </remarks>
     [HttpPost]
     [ProducesResponseType(typeof(ApiResponse<ProfilePropertyDefinitionDto>), StatusCodes.Status201Created)]
@@ -404,16 +455,16 @@ public sealed class ProfileDefinitionsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<ProfilePropertyDefinitionDto>>> CreateAsync(
         [FromRoute] int? portalId,
-        [FromBody] ProfilePropertyDefinitionDto definition,
+        [FromBody] CreateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<ProfilePropertyDefinitionDto> outcome = await _users
-            .CreateProfilePropertyDefinitionAsync(scopedPortalId, definition, cancellationToken)
+            .CreateProfilePropertyDefinitionAsync(scopedPortalId, request, cancellationToken)
             .ConfigureAwait(false);
 
         // The location header is built from this request's own path plus the assigned identifier,
@@ -429,7 +480,11 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// and absent on the flat one, where the tenant the request resolved to is used instead.
     /// </param>
     /// <param name="propertyDefinitionId">Identifier of the definition to update.</param>
-    /// <param name="definition">The new state of the definition.</param>
+    /// <param name="request">
+    /// The new state of the definition. It carries no identifier member - the definition is named by the
+    /// route - and no module definition key, because the terminal update procedure does not write that
+    /// column.
+    /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The definition as persisted.</returns>
     /// <response code="200">The definition as persisted.</response>
@@ -459,6 +514,14 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// introduced for them: the definition is small and a whole-representation PUT cannot leave two
     /// writers disagreeing about which members a request meant to change.
     /// </para>
+    /// <para>
+    /// MIGRATION: this action binds a REQUEST contract distinct from the create verb's, because the
+    /// terminal procedures differ. <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) declares ten
+    /// parameters, nine of which are body members, and it declares NO module definition key - so a
+    /// caller that previously submitted one on this path had it silently discarded. It does, however,
+    /// assign <c>PropertyName</c>, so renaming a definition is a supported edit and a rename onto a name
+    /// another definition of the same portal already holds is reported as <c>409</c>.
+    /// </para>
     /// </remarks>
     [HttpPut("{propertyDefinitionId:int}")]
     [ProducesResponseType(typeof(ApiResponse<ProfilePropertyDefinitionDto>), StatusCodes.Status200OK)]
@@ -470,22 +533,23 @@ public sealed class ProfileDefinitionsController : ControllerBase
     public async Task<ActionResult<ApiResponse<ProfilePropertyDefinitionDto>>> UpdateAsync(
         [FromRoute] int? portalId,
         int propertyDefinitionId,
-        [FromBody] ProfilePropertyDefinitionDto definition,
+        [FromBody] UpdateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
-        // The identifier travels as a route value and the state travels in the body. Reconciling the
-        // two - preferring one, or refusing a mismatch - is the contract's decision, not this
-        // layer's, so the pair is forwarded as received and no member of the body is rewritten here.
+        // The identifier travels as a route value and the state travels in the body, and the body
+        // carries no identifier member for the two to disagree about - which is one of the reasons the
+        // write contract is separate from the projection this action returns. The pair is forwarded as
+        // received and no member of the body is rewritten here.
         Result<ProfilePropertyDefinitionDto> outcome = await _users
             .UpdateProfilePropertyDefinitionAsync(
                 scopedPortalId,
                 propertyDefinitionId,
-                definition,
+                request,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -506,12 +570,27 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// The caller is authenticated but is not an administrator of the portal this request resolves to.
     /// </response>
     /// <response code="404">The portal declares no definition with that identifier.</response>
+    /// <response code="409">
+    /// A concurrent request changed or removed the definition between this request's read and its commit,
+    /// so the deletion affected no rows (<c>persistence.conflict</c>). The caller lost a race rather than
+    /// submitting anything wrong, and the outcome it asked for may already have happened, so the correct
+    /// answer is to reload and decide - not to retry blindly.
+    /// </response>
     /// <remarks>
     /// <para>
     /// Removal discards the values accounts hold against the definition in the same unit of work, so
     /// no value is left referencing a definition that no longer exists. That cascade is the contract's
     /// responsibility and is deliberately not staged from here as a sequence of calls, which could
     /// leave the two halves apart if the second failed.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the conflict above was UNDECLARED. The application contract documents
+    /// <c>persistence.conflict</c> for this operation and the service returns it from a guarded commit, and
+    /// the shared translator answers it as <c>409</c> - but this action advertised only 204, 401, 403 and
+    /// 404, so a real, reachable response was absent from the published contract and a generated client had
+    /// no case for it. A comment in the service asserted that "the endpoint's declared conflict response
+    /// becomes reachable rather than notional", which was true of the reachability and false about the
+    /// declaration; both are corrected.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy application offered this from two places - the grid's row command at
@@ -526,6 +605,10 @@ public sealed class ProfileDefinitionsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    // The guarded commit in the application contract returns persistence.conflict when a concurrent request
+    // changed or removed the definition first, and the shared translator answers that code as 409. Declaring
+    // it is not optional: an undeclared reachable status is a case a generated client has no branch for.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult> DeleteAsync(
         [FromRoute] int? portalId,
         int propertyDefinitionId,
@@ -533,7 +616,7 @@ public sealed class ProfileDefinitionsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result outcome = await _users

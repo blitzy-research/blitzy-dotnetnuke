@@ -1328,11 +1328,12 @@ public sealed class UserApiTests
         all.Should().NotBeNull();
         all!.Select(item => item.PropertyDefinitionId).Should().Contain(created.PropertyDefinitionId);
 
-        created.PropertyCategory = "Contact";
-        created.ViewOrder = 7;
-        created.Visible = false;
+        UpdateProfilePropertyDefinitionRequest amendment = AmendmentFrom(created);
+        amendment.PropertyCategory = "Contact";
+        amendment.ViewOrder = 7;
+        amendment.Visible = false;
 
-        using HttpResponseMessage updated = await client.PutAsJsonAsync(itemRoute, created, ApiTestFixture.Json);
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(itemRoute, amendment, ApiTestFixture.Json);
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ProfilePropertyDefinitionDto? afterUpdate = await updated.Content
@@ -1397,7 +1398,7 @@ public sealed class UserApiTests
     {
         using HttpClient client = _fixture.CreateHostClient();
 
-        ProfilePropertyDefinitionDto definition = NewProfileDefinition(required: false);
+        CreateProfilePropertyDefinitionRequest definition = NewProfileDefinition(required: false);
         definition.PropertyName = "Home City";
 
         Uri route = useFlatAddress
@@ -1416,7 +1417,7 @@ public sealed class UserApiTests
         // The offending field must be named: a response that says only "bad request" gives the caller
         // nothing to correct.
         string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain(nameof(ProfilePropertyDefinitionDto.PropertyName));
+        body.Should().Contain(nameof(CreateProfilePropertyDefinitionRequest.PropertyName));
 
         // The refusal must be a refusal: nothing may reach the store.
         int stored = await _fixture.Database.ScalarAsync<int>(
@@ -1491,11 +1492,12 @@ public sealed class UserApiTests
         all.Data!.Select(item => item.PropertyDefinitionId)
             .Should().Contain(definition.PropertyDefinitionId);
 
-        definition.PropertyCategory = "Contact";
+        UpdateProfilePropertyDefinitionRequest amendment = AmendmentFrom(definition);
+        amendment.PropertyCategory = "Contact";
 
         using HttpResponseMessage updated = await client.PutAsJsonAsync(
             itemRoute,
-            definition,
+            amendment,
             ApiTestFixture.Json);
 
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1560,7 +1562,7 @@ public sealed class UserApiTests
 
         ProfilePropertyDefinitionDto first = await CreateProfileDefinitionAsync(client, required: false);
 
-        ProfilePropertyDefinitionDto duplicate = NewProfileDefinition(required: false);
+        CreateProfilePropertyDefinitionRequest duplicate = NewProfileDefinition(required: false);
         duplicate.PropertyName = first.PropertyName;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -1886,7 +1888,7 @@ public sealed class UserApiTests
     /// <summary>Builds a profile property definition whose name carries a random suffix.</summary>
     /// <param name="required">Whether the property must be supplied.</param>
     /// <returns>A definition ready to be posted.</returns>
-    private static ProfilePropertyDefinitionDto NewProfileDefinition(bool required) => new()
+    private static CreateProfilePropertyDefinitionRequest NewProfileDefinition(bool required) => new()
     {
         DataType = 0,
         PropertyCategory = "Address",
@@ -1895,8 +1897,33 @@ public sealed class UserApiTests
         Required = required,
         ViewOrder = 1,
         Visible = true,
-        Visibility = 2,
         DefaultValue = string.Empty,
+    };
+
+    /// <summary>
+    /// Builds the amendment a caller sends to the update verb, seeded from a definition it has just read.
+    /// </summary>
+    /// <param name="read">The definition the caller read back.</param>
+    /// <returns>An amendment carrying the same values, ready to be modified and put.</returns>
+    /// <remarks>
+    /// MIGRATION: the update verb binds <c>UpdateProfilePropertyDefinitionRequest</c>, which carries the nine
+    /// members <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) writes and no others. Echoing the
+    /// read-back projection would still succeed, because no unmapped-member handling is configured and the
+    /// deserialiser ignores what it does not recognise - but it would exercise a wider shape than the boundary
+    /// advertises, which is exactly the confusion the split removed. Seeding the amendment from the read is
+    /// what keeps a whole-representation PUT from blanking the members a test did not mean to change.
+    /// </remarks>
+    private static UpdateProfilePropertyDefinitionRequest AmendmentFrom(ProfilePropertyDefinitionDto read) => new()
+    {
+        DataType = read.DataType,
+        PropertyCategory = read.PropertyCategory,
+        PropertyName = read.PropertyName,
+        Length = read.Length,
+        Required = read.Required,
+        ValidationExpression = read.ValidationExpression,
+        ViewOrder = read.ViewOrder,
+        Visible = read.Visible,
+        DefaultValue = read.DefaultValue,
     };
 
     /// <summary>Reads an account representation out of a response, failing the test when it is absent.</summary>

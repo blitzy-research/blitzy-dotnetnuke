@@ -1149,9 +1149,9 @@ public interface IUserService
     /// Declares a new profile property definition for a tenant.
     /// </summary>
     /// <param name="portalId">Identifier of the tenant that will declare the definition.</param>
-    /// <param name="definition">
-    /// The definition to declare. Its identifier member is ignored on this path, because the
-    /// identifier is assigned by the store.
+    /// <param name="request">
+    /// The definition to declare. It carries no identifier member at all - the store assigns one -
+    /// and no owning-portal member, because the tenant arrives as the parameter beside it.
     /// </param>
     /// <param name="cancellationToken">Token observed while the definition is declared.</param>
     /// <returns>
@@ -1174,10 +1174,18 @@ public interface IUserService
     /// that into its duplicate-name message at L453 through L455. Encoding an error in the
     /// returned identifier is exactly the idiom a result with a code replaces.
     /// </para>
+    /// <para>
+    /// MIGRATION: this member takes the CREATE request rather than the response projection. The
+    /// terminal insert procedure <c>AddPropertyDefinition</c> (<c>04.06.00:L1101</c>) declares
+    /// eleven parameters - the tenant, which arrives separately, and the ten members the request
+    /// carries - and the module definition key among them is the member the update path does not
+    /// have. Binding the response projection here made this member advertise an identifier and an
+    /// owning portal it never read.
+    /// </para>
     /// </remarks>
     Task<Result<ProfilePropertyDefinitionDto>> CreateProfilePropertyDefinitionAsync(
         int portalId,
-        ProfilePropertyDefinitionDto definition,
+        CreateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -1186,7 +1194,11 @@ public interface IUserService
     /// </summary>
     /// <param name="portalId">Identifier of the tenant that declares the definition.</param>
     /// <param name="propertyDefinitionId">Identifier of the definition to update.</param>
-    /// <param name="definition">The new state of the definition.</param>
+    /// <param name="request">
+    /// The new state of the definition. It carries no identifier member - the definition is named by
+    /// the parameter beside it - and no module definition key, because the terminal update procedure
+    /// does not write that column.
+    /// </param>
     /// <param name="cancellationToken">Token observed while the definition is updated.</param>
     /// <returns>
     /// A successful result carrying the definition as persisted, which is what lets the API layer
@@ -1202,11 +1214,29 @@ public interface IUserService
     /// <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> L295, so the display order is simply
     /// a member of the definition being updated here.
     /// </para>
+    /// <para>
+    /// MIGRATION: this member takes the UPDATE request rather than the response projection. The
+    /// terminal procedure <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) declares ten
+    /// parameters - the definition key, which arrives separately, and the nine members the request
+    /// carries - and it notably DOES assign <c>PropertyName</c>, so a rename is a supported edit
+    /// rather than a discarded one. The module definition key is absent because the procedure does
+    /// not write it, and a caller that previously submitted one on this path had it silently
+    /// ignored.
+    /// </para>
+    /// <para>
+    /// MIGRATION: A WITHDRAWN DECLARATION READS AS ABSENT HERE, reported with the not-found code, exactly as
+    /// it does from the single read and the tenant listing. Withdrawal is logical because stored answers
+    /// reference the declaration, and this contract exposes no member that reads, restores or acknowledges a
+    /// withdrawn one - so a declaration this contract will not show is a declaration it will not edit. The
+    /// duplicate-name check is deliberately NOT subject to that rule, because the terminal unique index
+    /// spans the tenant, the module definition and the name without including the withdrawal flag, so a
+    /// withdrawn row still occupies its name.
+    /// </para>
     /// </remarks>
     Task<Result<ProfilePropertyDefinitionDto>> UpdateProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
-        ProfilePropertyDefinitionDto definition,
+        UpdateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -1229,6 +1259,13 @@ public interface IUserService
     /// <c>Website/admin/Users/EditProfileDefinition.ascx.vb</c> L302. Removal discards the
     /// per-account values recorded against the definition in the same unit of work, so no value
     /// is left referencing a definition that no longer exists.
+    /// <para>
+    /// MIGRATION: A WITHDRAWN DECLARATION READS AS ABSENT HERE TOO, reported with the not-found code, so
+    /// every member of this contract agrees on which declarations exist. This is the operation where the
+    /// former disagreement mattered most: removal is physical and discards the stored answers with it, so a
+    /// declaration the contract refused to show was nonetheless removable through it, along with data no
+    /// caller could have inspected first.
+    /// </para>
     /// </remarks>
     Task<Result> DeleteProfilePropertyDefinitionAsync(
         int portalId,

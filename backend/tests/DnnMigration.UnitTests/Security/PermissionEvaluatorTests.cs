@@ -486,13 +486,140 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
+    /// A key filter that is not a defined member is refused, rather than being echoed back to the caller as
+    /// a declared permission key.
+    /// </summary>
+    /// <param name="undefinedKey">A numeric value outside the four defined members.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the review that prompted this test described the gap as an HTTP-reachable
+    /// input-validation exposure that echoed <c>["99"]</c> to a caller. Measured against the running API,
+    /// it is NOT reachable that way: <c>?permissionKey=99</c> is refused by MVC model binding with
+    /// <c>400</c> and <c>errors["permissionKey"] = ["The value '99' is invalid."]</c> before the action
+    /// body runs, because the enumeration binder tests defined membership for a non-flags enumeration -
+    /// while <c>?permissionKey=0</c> answers <c>["VIEW"]</c> and <c>?permissionKey=3</c> answers
+    /// <c>["WRITE"]</c>, proving numeric binding works and that the refusal is the membership check.
+    /// </para>
+    /// <para>
+    /// The gap in THIS member was real all the same. A CLR enumeration is an integer at run time, so
+    /// <c>(PermissionKey)99</c> is constructible, and the Application layer is callable without MVC. The
+    /// contract's own documentation had claimed no test was needed because "a value that reached the
+    /// service is by construction a member", and that reasoning was wrong for a non-HTTP caller. Without
+    /// the guard the unscoped branch answered a lone key filter by returning the FILTER ITSELF, so the
+    /// member reported <c>["99"]</c> - fabricating a key that names no member, no row and no grant - which
+    /// is why the projection assertion below matters more than the status. The two evaluation members of
+    /// this service already carried the identical guard, and those ARE reached from the authorization path;
+    /// this filter is nullable, so the test is on the value rather than on the presence.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(4)]
+    [InlineData(99)]
+    [InlineData(-1)]
+    [InlineData(int.MaxValue)]
+    public async Task Catalogue_RefusesAKeyFilterThatIsNotADefinedMember(int undefinedKey)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            null,
+            null,
+            (PermissionKey)undefinedKey,
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue("an undefined key must not be answered with a catalogue");
+        result.Reason!.Code.Should().Be(KeyInvalidCode);
+        result.Reason!.Message.Should().Contain(
+            undefinedKey.ToString(CultureInfo.InvariantCulture),
+            "the refusal names the value the caller sent");
+
+        // Refused before any store is touched, and - decisively - the undefined value is never projected
+        // into an answer. This is the assertion that pins the fabrication down: the unscoped branch used to
+        // return the filter itself, so a caller received the undefined number back as a declared key.
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleDefinitionIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Permissions.Verify(
+            permissions => permissions.GetByCodeAndKeyAsync(
+                It.IsAny<string>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An undefined key filter is refused on the SCOPED branches too, not only on the unscoped one.
+    /// </summary>
+    /// <remarks>
+    /// The unscoped branch fabricated an answer, which is the loudest symptom, but the scoped branches used
+    /// the undefined value as a comparison operand and answered with an empty set - a quieter wrong answer
+    /// that reads as "that key is declared nowhere" rather than as "that key does not exist". The guard is
+    /// placed at the entry to the member so that all three branches are covered by one test, and both scoped
+    /// forms are exercised here to prove it.
+    /// </remarks>
+    [Fact]
+    public async Task Catalogue_RefusesAnUndefinedKeyFilterOnEveryScopedBranch()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<string>> withinDefinition = await harness.Service.GetPermissionKeysAsync(
+            null,
+            EntryModuleDefinitionId,
+            (PermissionKey)99,
+            CancellationToken.None);
+
+        withinDefinition.IsFailure.Should().BeTrue();
+        withinDefinition.Reason!.Code.Should().Be(KeyInvalidCode);
+
+        Result<IReadOnlyList<string>> withinCode = await harness.Service.GetPermissionKeysAsync(
+            "SYSTEM_MODULE_DEFINITION",
+            null,
+            (PermissionKey)99,
+            CancellationToken.None);
+
+        withinCode.IsFailure.Should().BeTrue();
+        withinCode.Reason!.Code.Should().Be(KeyInvalidCode);
+    }
+
+    /// <summary>
+    /// Every defined member is accepted as a filter, so the membership guard bounds the enumeration without
+    /// narrowing it.
+    /// </summary>
+    /// <param name="definedKey">A defined member of the enumeration.</param>
+    /// <remarks>
+    /// The counterweight to the refusals above. A guard that refused a legitimate member would make the key
+    /// filter unusable, so all four members are asserted explicitly.
+    /// </remarks>
+    [Theory]
+    [InlineData(PermissionKey.VIEW)]
+    [InlineData(PermissionKey.EDIT)]
+    [InlineData(PermissionKey.READ)]
+    [InlineData(PermissionKey.WRITE)]
+    public async Task Catalogue_AcceptsEveryDefinedKeyFilter(PermissionKey definedKey)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            null,
+            null,
+            definedKey,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal(definedKey.ToString());
+    }
+
+    /// <summary>
     /// A key filter supplied with no other filter is answered from the closed enumeration without touching
     /// the store at all.
     /// </summary>
     /// <remarks>
-    /// The key parameter is the enumeration itself, so a value that reached the service is by construction a
-    /// member of the catalogue's key vocabulary. There is consequently nothing to look up, and querying
-    /// would only risk reporting a key as absent because no row happened to declare it.
+    /// A DEFINED key needs no lookup: it is a member of the catalogue's key vocabulary by construction, so
+    /// querying would only risk reporting a key as absent because no row happened to declare it. That
+    /// reasoning holds only because the member now tests membership on entry - it was previously offered as
+    /// the reason no test was needed, and an undefined value was echoed straight back.
     /// </remarks>
     [Fact]
     public async Task Catalogue_AnswersALoneKeyFilterFromTheClosedKeySet()

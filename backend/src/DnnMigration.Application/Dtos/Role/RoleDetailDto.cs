@@ -29,11 +29,13 @@ namespace DnnMigration.Application.Dtos.Role;
 /// <para>
 /// The type is inert. It holds no behaviour, no navigation property, no tracked state, no lazily
 /// evaluated getter and no asynchronous member; every property is a plain automatic property over a
-/// value the caller either supplies or reads. Field rules are not this type's job: on the create
-/// path they belong to <c>CreateRoleRequestValidator</c>, the only role validator in
-/// <c>Application/Validation/</c>, and on every other role write path to the checks in
-/// <c>Application/Services/RoleService.cs</c>. Between them they reproduce the one required-field
-/// validator and eight compare validators the legacy screen declared.
+/// value the caller either supplies or reads. Field rules are not this type's job: they belong to
+/// <c>CreateRoleRequestValidator</c> and <c>UpdateRoleRequestValidator</c> in
+/// <c>Application/Validation/</c>, which share one rule definition in <c>RoleTermsRules.cs</c> so the
+/// two write verbs apply identical rules, and to the checks in
+/// <c>Application/Services/RoleService.cs</c> for the questions a field rule cannot answer. Between
+/// them they reproduce the one required-field validator and eight compare validators the legacy screen
+/// declared.
 /// Translation to and from the persisted model belongs to the hand-written mapper at
 /// <c>Application/Mapping/RoleMappings.cs</c>. Paging, correlation and error reporting belong to
 /// <c>Application/Dtos/Common/</c> and to the response headers.

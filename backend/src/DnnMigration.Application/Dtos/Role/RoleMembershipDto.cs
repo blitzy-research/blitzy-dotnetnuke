@@ -124,8 +124,20 @@ public sealed class RoleMembershipDto
     /// start bound and is effective immediately.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The legacy grid's third column. Absence is genuine absence, not a sentinel date: see the remarks
     /// on the type for why the legacy <c>Date.MinValue</c> marker does not travel.
+    /// </para>
+    /// <para>
+    /// MIGRATION: absence is expressed by the MEMBER BEING OMITTED from the serialised object, not by a
+    /// written <c>null</c>. Serialisation is configured once with
+    /// <c>JsonIgnoreCondition.WhenWritingNull</c>, so a membership with no start bound is published
+    /// WITHOUT an <c>effectiveDate</c> key at all - measured against a live response, which returns
+    /// <c>userId</c>, <c>username</c>, <c>displayName</c>, <c>roleId</c>, <c>roleName</c> and
+    /// <c>userRoleId</c> and nothing else for an open-ended membership. The member stays nullable so the
+    /// published schema marks it optional and agrees with that behaviour, and a client must test for the
+    /// key's PRESENCE rather than for a null value.
+    /// </para>
     /// </remarks>
     public DateTime? EffectiveDate { get; set; }
 
@@ -133,9 +145,18 @@ public sealed class RoleMembershipDto
     /// Gets or sets the moment the membership ceases, or <see langword="null"/> when it does not expire.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The legacy grid's fourth column, and the field the legacy screen validated against the effective
     /// date - <c>securityroles.ascx:L47</c> requires it to be strictly greater. Absence means the
     /// membership is open-ended, which is the ordinary case for an unpaid role.
+    /// </para>
+    /// <para>
+    /// MIGRATION: as with the effective date, absence is the member's OMISSION rather than a written
+    /// <c>null</c>. Note the consequence for the ordinary case: an unpaid role's memberships publish
+    /// neither date, so a client cannot distinguish "no expiry" from "field not returned by this
+    /// endpoint" by inspecting one row - it distinguishes them from the schema, which marks both members
+    /// optional and present on this contract.
+    /// </para>
     /// </remarks>
     public DateTime? ExpiryDate { get; set; }
 }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
@@ -313,6 +314,129 @@ public class RoleServiceTests
         omitted.Value.Items.Select(row => row.RoleId).Should().BeEquivalentTo(
             explicitAll.Value.Items.Select(row => row.RoleId),
             "omitting the scope must mean exactly what naming All means");
+    }
+
+    /// <summary>
+    /// A scope that is not a defined member of the enumeration is refused, rather than falling through the
+    /// narrowing and answering with the unfiltered list.
+    /// </summary>
+    /// <param name="undefinedScope">A numeric value outside the two defined members.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the review that prompted this test described the gap as an HTTP-reachable input-validation
+    /// exposure. It is NOT, and that was established by measurement rather than by reading: against the
+    /// running API <c>?scope=999</c> is refused by MVC model binding with <c>400</c> and
+    /// <c>errors["scope"] = ["The value '999' is invalid."]</c> before the action body runs, because the
+    /// enumeration binder tests defined membership for a non-flags enumeration - while <c>?scope=0</c> and
+    /// <c>?scope=1</c> bind and answer <c>200</c>, proving numeric binding works and that the refusal is
+    /// specifically the membership check. No HTTP caller ever reached the fall-through.
+    /// </para>
+    /// <para>
+    /// The gap in THIS member was real all the same, which is why the test exists. A CLR enumeration is an
+    /// integer at run time, so <c>(RoleGroupScope)999</c> is constructible, and the Application layer is a
+    /// public API reachable by callers that never touch MVC. Without the guard the narrowing - which tests
+    /// only for equality with <c>Ungrouped</c> - matched no branch, and the member answered with EVERY role
+    /// in the portal reporting success. The two roles in the fixture are deliberately one grouped and one
+    /// ungrouped, so a regression returning both is visible as a SET rather than only as a status code,
+    /// which is the assertion that would catch a guard removed and replaced by a comment claiming the
+    /// boundary handles it.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(999)]
+    [InlineData(-1)]
+    [InlineData(int.MaxValue)]
+    [InlineData(int.MinValue)]
+    public async Task ListRoles_RefusesAScopeThatIsNotADefinedMember(int undefinedScope)
+    {
+        Harness harness = Harness.Ready();
+        harness.RolePage = PagedResult<Role>.Unpaged(
+        [
+            new Role { RoleId = 0, PortalId = PortalId, RoleName = "Ungrouped", RoleGroupId = null },
+            new Role { RoleId = 1, PortalId = PortalId, RoleName = "Grouped", RoleGroupId = RoleGroupId },
+        ]);
+
+        Result<PagedResult<RoleListItemDto>> outcome = await harness.Service.ListRolesAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            null,
+            (RoleGroupScope)undefinedScope,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue("an undefined scope must not be answered with a page");
+        outcome.Reason!.Code.Should().Be("role_group.scope_invalid");
+        outcome.Reason!.Message.Should().Contain(
+            undefinedScope.ToString(CultureInfo.InvariantCulture),
+            "the refusal names the value the caller sent, so the caller can see what was rejected");
+
+        // Refused before anything is read: an undefined scope costs no query at all.
+        harness.Portals.Verify(
+            p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Roles.Verify(
+            r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An undefined scope paired with a group identifier is reported as the undefined scope, not as a
+    /// contradiction between two meaningful arguments.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Both refusals carry the same code, so the code alone cannot distinguish them; the MESSAGE is what a
+    /// caller reads to learn which mistake it made. Ordering the membership test above the contradiction
+    /// test is what makes the message the accurate one, and this fact is what would fail if the two guards
+    /// were ever swapped.
+    /// </remarks>
+    [Fact]
+    public async Task ListRoles_ReportsAnUndefinedScopeRatherThanAContradiction()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<RoleListItemDto>> outcome = await harness.Service.ListRolesAsync(
+            PortalId,
+            new PagedRequest(),
+            RoleGroupId,
+            (RoleGroupScope)999,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("role_group.scope_invalid");
+        outcome.Reason!.Message.Should().Contain("999");
+        outcome.Reason!.Message.Should().NotContain(
+            "cannot be combined",
+            "an undefined scope is not a contradiction between two meaningful arguments");
+    }
+
+    /// <summary>
+    /// Both defined members are accepted, so the membership guard bounds the enumeration without narrowing
+    /// it.
+    /// </summary>
+    /// <param name="definedScope">A defined member of the enumeration.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The counterweight to the refusals above. A guard that refused a legitimate member would break both
+    /// the default listing and the restored "global roles" selection, so the two members are asserted
+    /// explicitly rather than left to the surrounding tests.
+    /// </remarks>
+    [Theory]
+    [InlineData(RoleGroupScope.All)]
+    [InlineData(RoleGroupScope.Ungrouped)]
+    public async Task ListRoles_AcceptsEveryDefinedScope(RoleGroupScope definedScope)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<RoleListItemDto>> outcome = await harness.Service.ListRolesAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            null,
+            definedScope,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
     }
 
     /// <summary>
@@ -1217,14 +1341,15 @@ public class RoleServiceTests
     /// <param name="violation">The single field to spoil.</param>
     /// <param name="expectedMessage">The message the service is measured to report.</param>
     /// <returns>A task representing the assertion.</returns>
-    // MIGRATION: there are deliberately no name cases here, unlike the creation theory. The update
-    // contract carries no name, so the service checks the STORED name - which is already valid - and
-    // no submitted value can spoil it. This mirrors the legacy screen exactly: editing an existing
-    // role disabled the name's required-field validator
-    // (Website/admin/Security/EditRoles.ascx.vb L134), so the required and length rules genuinely did
-    // not apply on the edit path. The name-preservation behaviour that replaces them is asserted by
-    // its own tests below.
+    // MIGRATION: the two name cases are present here as well as on the creation theory, because the
+    // update contract carries a writable name. The legacy edit screen disabled the name's
+    // required-field validator (Website/admin/Security/EditRoles.ascx.vb L134) because it displayed the
+    // name read-only; making the name writable - a documented behavioural difference - restores the rule
+    // on this path, and the service asserts it for callers that arrive without passing the boundary
+    // validator at all.
     [Theory]
+    [InlineData("absent-name", "Role Name Is Required.")]
+    [InlineData("long-name", "A role name may not exceed 50 characters.")]
     [InlineData("long-description", "A role description may not exceed 1000 characters.")]
     [InlineData("long-rsvp", "A subscription code may not exceed 50 characters.")]
     [InlineData("long-icon", "An icon reference may not exceed 100 characters.")]
@@ -1244,6 +1369,12 @@ public class RoleServiceTests
         UpdateRoleRequest request = ValidUpdateRequest();
         switch (violation)
         {
+            case "absent-name":
+                request.RoleName = "   ";
+                break;
+            case "long-name":
+                request.RoleName = new string('n', 51);
+                break;
             case "long-description":
                 request.Description = new string('d', 1001);
                 break;
@@ -1311,11 +1442,12 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The update route never reads name uniqueness, because a name it cannot change cannot clash.
+    /// The update route reads name uniqueness, because the name it can now change is covered by a unique
+    /// constraint over the portal and the name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateRole_NeverReadsNameUniqueness()
+    public async Task UpdateRole_ReadsNameUniqueness()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
@@ -1323,29 +1455,74 @@ public class RoleServiceTests
         await harness.Service.UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
 
         // MIGRATION: the legacy screen applied its duplicate-name guard only when INSERTING - at
-        // Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks the name up and
-        // refuses on a hit, while the edit branch updates with no such check. The absence of this read
-        // is therefore the faithful behaviour, not a missing rule.
+        // Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks the name up and refuses
+        // on a hit, while the edit branch updated with no such check. That was coherent only because the
+        // name could not change on an edit. This contract can rename, so the guard covers both verbs;
+        // without it a rename would be the one way to violate IX_RoleName
+        // (03.00.09.SqlDataProvider L304) and the violation would surface as a server fault.
         harness.Roles.Verify(
             r => r.GetByNameAsync(
-                It.IsAny<int>(),
-                It.IsAny<string>(),
+                PortalId,
+                RoleName,
                 It.IsAny<CancellationToken>()),
-            Times.Never);
+            Times.Once);
     }
 
     /// <summary>
-    /// An update succeeds and leaves the stored name untouched even when another role already holds
-    /// that name, because the update route neither accepts nor writes a name.
+    /// An update that names a role ANOTHER role in the portal already holds is refused as a duplicate,
+    /// with the same code the creation route reports.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateRole_PreservesTheStoredNameEvenWhenAnotherRoleHoldsIt()
+    public async Task UpdateRole_RefusesANameAnotherRoleAlreadyHolds()
     {
         Harness harness = Harness.Ready();
         Role tracked = StoredRole();
         harness.LookupRole = tracked;
+
+        // The harness answers a taken name with a row bearing a DIFFERENT identifier, which is precisely
+        // the case the exclusion must not absorb.
         harness.NameTaken = true;
+
+        UpdateRoleRequest request = ValidUpdateRequest();
+        request.RoleName = "Contributors";
+
+        Result<RoleDetailDto> outcome = await harness.Service
+            .UpdateRoleAsync(PortalId, RoleId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be(RoleNameDuplicateCode);
+
+        // Nothing was written: the refusal precedes the projection and the commit.
+        tracked.RoleName.Should().Be(RoleName);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// An update that resubmits the role's OWN name succeeds, because the uniqueness comparison excludes
+    /// the role being edited.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the fact that makes the guard usable at all. The contract is a full replacement, so every
+    /// caller amending one field resubmits the name it read; comparing on text alone would refuse every
+    /// such request, and comparing on identifier is what distinguishes a rename onto someone else's name
+    /// from a request that changes no name at all.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_AcceptsTheRolesOwnNameResubmitted()
+    {
+        Harness harness = Harness.Ready();
+        Role tracked = StoredRole();
+        harness.LookupRole = tracked;
+
+        // The stored row itself is what the name lookup finds, which is what an unchanged name means.
+        harness.Roles
+            .Setup(r => r.GetByNameAsync(
+                It.IsAny<int>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(tracked);
 
         Result<RoleDetailDto> outcome = await harness.Service
             .UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
@@ -1369,6 +1546,7 @@ public class RoleServiceTests
         harness.LookupRole = tracked;
 
         UpdateRoleRequest request = ValidUpdateRequest();
+        request.RoleName = "Renamed subscribers";
         request.Description = "Changed.";
         request.IsPublic = false;
         request.AutoAssignment = true;
@@ -1383,9 +1561,10 @@ public class RoleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
 
-        // MIGRATION: the name is PRESERVED rather than replaced, because the update contract carries
-        // none and the projection passes the tracked entity's own value back through.
-        tracked.RoleName.Should().Be(RoleName);
+        // MIGRATION: the name IS replaced, because the update contract carries one and the projection
+        // applies it - a documented behavioural difference from the legacy edit screen, which displayed
+        // the name read-only.
+        tracked.RoleName.Should().Be("Renamed subscribers");
         tracked.Description.Should().Be("Changed.");
         tracked.IsPublic.Should().BeFalse();
         tracked.AutoAssignment.Should().BeTrue();
@@ -1395,7 +1574,7 @@ public class RoleServiceTests
         tracked.RsvpCode.Should().Be("NEW");
         tracked.IconFile.Should().Be("new.gif");
         tracked.PortalId.Should().Be(PortalId);
-        outcome.Value.RoleName.Should().Be(RoleName);
+        outcome.Value.RoleName.Should().Be("Renamed subscribers");
     }
 
     /// <summary>
@@ -3035,7 +3214,7 @@ public class RoleServiceTests
         DomainException refusal = await Assert.ThrowsAsync<DomainException>(
             () => harness.Service.CreateRoleGroupAsync(
                 PortalId,
-                new RoleGroupDto { RoleGroupName = name },
+                new CreateRoleGroupRequest { RoleGroupName = name },
                 CancellationToken.None));
 
         refusal.Message.Should().Be(expectedMessage);
@@ -3053,7 +3232,7 @@ public class RoleServiceTests
         DomainException refusal = await Assert.ThrowsAsync<DomainException>(
             () => harness.Service.CreateRoleGroupAsync(
                 PortalId,
-                new RoleGroupDto { RoleGroupName = new string('g', 51) },
+                new CreateRoleGroupRequest { RoleGroupName = new string('g', 51) },
                 CancellationToken.None));
 
         refusal.Message.Should().Be("A role group name may not exceed 50 characters.");
@@ -3072,7 +3251,7 @@ public class RoleServiceTests
         await Assert.ThrowsAsync<DomainException>(
             () => harness.Service.CreateRoleGroupAsync(
                 PortalId,
-                new RoleGroupDto { RoleGroupName = string.Empty },
+                new CreateRoleGroupRequest { RoleGroupName = string.Empty },
                 CancellationToken.None));
 
         harness.Portals.Verify(
@@ -3122,15 +3301,22 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The stored group takes its tenant from the route rather than from the request body.
+    /// The stored group takes its tenant from the route, which the request body cannot contradict.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this test previously set a CONFLICTING owning portal on the body and asserted that the route
+    /// won. The create contract carries no portal member, so the guarantee is now structural rather than
+    /// behavioural - there is nothing to contradict the route with. The assertion that the stored tenant is
+    /// the route's is retained, because it is what proves the parameter is the value written; its reason
+    /// string is left in place for the same purpose. Continued absence of the member is asserted by
+    /// <c>RoleWriteContractValidatorTests.RoleGroup_WriteContractsCarryNoIdentifierMemberAtAll</c>.
+    /// </remarks>
     [Fact]
     public async Task CreateRoleGroup_StoresTheSubmittedGroup()
     {
         Harness harness = Harness.Ready();
-        RoleGroupDto request = ValidGroupRequest();
-        request.PortalId = OtherPortalId;
+        CreateRoleGroupRequest request = ValidGroupRequest();
         request.Description = "Groups paid roles.";
 
         Result<RoleGroupDto> outcome = await harness.Service
@@ -3185,7 +3371,7 @@ public class RoleServiceTests
             () => harness.Service.UpdateRoleGroupAsync(
                 PortalId,
                 RoleGroupId,
-                new RoleGroupDto { RoleGroupName = "  " },
+                new UpdateRoleGroupRequest { RoleGroupName = "  " },
                 CancellationToken.None));
 
         refusal.Message.Should().Be("A role group name is required.");
@@ -3205,7 +3391,7 @@ public class RoleServiceTests
         harness.PortalExists = false;
 
         Result<RoleGroupDto> outcome = await harness.Service
-            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupRequest(), CancellationToken.None);
+            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupUpdate(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
@@ -3227,7 +3413,7 @@ public class RoleServiceTests
         };
 
         Result<RoleGroupDto> outcome = await harness.Service
-            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupRequest(), CancellationToken.None);
+            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupUpdate(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RoleGroupNotFoundCode);
@@ -3248,7 +3434,7 @@ public class RoleServiceTests
         await harness.Service.UpdateRoleGroupAsync(
             PortalId,
             RoleGroupId,
-            ValidGroupRequest(),
+            ValidGroupUpdate(),
             CancellationToken.None);
 
         harness.Roles.Verify(
@@ -3269,7 +3455,7 @@ public class RoleServiceTests
         harness.GroupNameTaken = true;
 
         Result<RoleGroupDto> outcome = await harness.Service
-            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupRequest(), CancellationToken.None);
+            .UpdateRoleGroupAsync(PortalId, RoleGroupId, ValidGroupUpdate(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RoleGroupNameDuplicateCode);
@@ -3289,7 +3475,7 @@ public class RoleServiceTests
         RoleGroup tracked = StoredGroup();
         harness.LookupGroup = tracked;
 
-        RoleGroupDto request = ValidGroupRequest();
+        UpdateRoleGroupRequest request = ValidGroupUpdate();
         request.RoleGroupName = "Renamed Group";
         request.Description = "Changed.";
 
@@ -3305,22 +3491,32 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A tenant identifier in the request body cannot move a group between tenants.
+    /// An update cannot move a group between tenants, because the write contract carries no tenant member and
+    /// the mapper writes none.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this test previously submitted a foreign tenant on the body and asserted that the stored
+    /// tenant was unchanged. The member no longer exists on the contract, so the assertion is now about the
+    /// MAPPER: a whole-representation update writes the name and the description and leaves the owning portal
+    /// exactly as it was read. That is the property worth guarding, and it would still be falsifiable if a
+    /// future edit to <c>RoleMappings.ApplyGroupUpdate</c> began assigning the tenant from anywhere.
+    /// </remarks>
     [Fact]
     public async Task UpdateRoleGroup_DoesNotMoveTheGroupBetweenTenants()
     {
         Harness harness = Harness.Ready();
         RoleGroup tracked = StoredGroup();
+        tracked.PortalId = PortalId;
         harness.LookupGroup = tracked;
 
-        RoleGroupDto request = ValidGroupRequest();
-        request.PortalId = OtherPortalId;
+        UpdateRoleGroupRequest request = ValidGroupUpdate();
+        request.RoleGroupName = "Renamed Group";
 
         await harness.Service.UpdateRoleGroupAsync(PortalId, RoleGroupId, request, CancellationToken.None);
 
         tracked.PortalId.Should().Be(PortalId);
+        tracked.RoleGroupName.Should().Be("Renamed Group", "the members the contract does carry are written");
     }
 
     /// <summary>
@@ -3600,18 +3796,35 @@ public class RoleServiceTests
     /// <returns>A well-formed update request.</returns>
     private static UpdateRoleRequest ValidUpdateRequest() => new()
     {
-        // MIGRATION: no name is set, because the update contract deliberately declares none - the
-        // stored name is preserved instead. Contrast the creation factory, which must supply one.
+        // The name is required on the update contract as well as on the creation one, so this factory
+        // supplies the stored role's own name - which is what a caller amending one other field sends,
+        // and which the uniqueness guard must treat as a no-op rather than as a self-collision.
+        RoleName = RoleName,
         ServiceFee = 9.99m,
         BillingPeriod = 1,
         BillingFrequency = Frequency.Month,
     };
 
     /// <summary>
-    /// Builds a group request that passes every shape check the service performs.
+    /// Builds a group creation that passes every shape check the service performs.
     /// </summary>
-    /// <returns>A well-formed group request.</returns>
-    private static RoleGroupDto ValidGroupRequest() => new()
+    /// <returns>A well-formed create request.</returns>
+    /// <remarks>
+    /// MIGRATION: the two write verbs bind two request types rather than the <c>RoleGroupDto</c> response
+    /// projection they return. Both procedures write only the name and the description, so neither contract
+    /// carries a group identifier or an owning portal - the first is assigned by the store or taken from the
+    /// route, and the second is the resolved tenant.
+    /// </remarks>
+    private static CreateRoleGroupRequest ValidGroupRequest() => new()
+    {
+        RoleGroupName = RoleGroupName,
+    };
+
+    /// <summary>
+    /// Builds the update-verb counterpart of <see cref="ValidGroupRequest"/>, member for member.
+    /// </summary>
+    /// <returns>A well-formed update request.</returns>
+    private static UpdateRoleGroupRequest ValidGroupUpdate() => new()
     {
         RoleGroupName = RoleGroupName,
     };

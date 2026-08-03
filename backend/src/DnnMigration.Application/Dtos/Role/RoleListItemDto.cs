@@ -25,8 +25,10 @@ namespace DnnMigration.Application.Dtos.Role;
 /// The type is inert: no validation, no persistence and no serialisation attributes, and the
 /// legacy element-name serialisation attributes are dropped. It is a RESPONSE shape, so no rule
 /// applies to it in either direction; the write contracts it mirrors are governed by
-/// <c>CreateRoleRequestValidator</c> - the only role validator that exists - and, for every other
-/// role write, by the checks in <c>Application/Services/RoleService.cs</c>. Translation to and from
+/// <c>CreateRoleRequestValidator</c> and <c>UpdateRoleRequestValidator</c>, which share one rule
+/// definition in <c>Application/Validation/RoleTermsRules.cs</c> so the two verbs cannot diverge, and
+/// by the checks in <c>Application/Services/RoleService.cs</c> for the questions a field rule cannot
+/// answer because they need a read. Translation to and from
 /// the persisted model belongs to the hand-written role mapper under <c>Application/Mapping/</c>.
 /// </para>
 /// <para>

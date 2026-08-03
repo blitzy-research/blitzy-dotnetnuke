@@ -216,6 +216,27 @@ public sealed class RoleGroupsController : ControllerBase
     /// as a cache or a clock, is kept out by that discipline rather than by the compiler, so injecting one
     /// would be a review finding rather than a build failure.
     /// </remarks>
+    /// <summary>
+    /// Failure code carried as the problem type when the request reached this action without a tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A distinct code from the middleware's generic refusal, so an operator reading a support log can tell
+    /// "this host resolves to no portal" apart from "this caller lacks the grant" - while the caller reads
+    /// the same fixed wording either way and learns nothing from the difference. The same constant is
+    /// declared by <c>PortalAliasResolutionMiddleware</c> and by the other controllers that guard on tenant
+    /// resolution, because the two paths must be indistinguishable to a client.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the tenant guards in this controller answered with a bare <c>Forbid()</c>. A controller's
+    /// <c>Forbid()</c> does NOT pass through the authorisation middleware's result handler, so it produced a
+    /// 403 with an EMPTY BODY while every action here declares a problem document for 403 - the response
+    /// contradicted its own declaration, and it was distinguishable from the middleware's refusal for the
+    /// identical cause. Routing the refusal through the shared helper closes both gaps at once.
+    /// </para>
+    /// </remarks>
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     private readonly IRoleService _roles;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -239,9 +260,16 @@ public sealed class RoleGroupsController : ControllerBase
     /// validator for each action argument's type and runs it before any action body, so no validator is
     /// injected here and no action inspects model state. That placement is deliberate: a per-action opt-in
     /// has a silent failure mode, because an endpoint whose author forgot the call looks exactly like one
-    /// with no rules declared against it. For this resource the filter finds nothing to run - no validator
-    /// is registered for the role-group contract - so the rules that would otherwise be declarative are
-    /// enforced by the service, as the create response documents.
+    /// with no rules declared against it.
+    /// <para>
+    /// MIGRATION: this remark previously stated that the filter found nothing to run for this resource,
+    /// because no validator was registered for the role-group contract. That is no longer true, and the
+    /// reason it changed matters. Both write verbs used to bind the <c>RoleGroupDto</c> response
+    /// projection; they now bind <c>CreateRoleGroupRequest</c> and <c>UpdateRoleGroupRequest</c>, and the
+    /// assembly scan registers a validator for each, so the filter resolves one on every write and a
+    /// field failure is a declarative <c>400</c> rather than a service refusal. The service still
+    /// re-asserts the name rules, because it is reachable by callers that do not arrive over HTTP.
+    /// </para>
     /// </remarks>
     public RoleGroupsController(IRoleService roles, IPortalContextHolder portalContext)
     {
@@ -270,9 +298,28 @@ public sealed class RoleGroupsController : ControllerBase
     /// </para>
     /// <para>
     /// The holder is read rather than a placeholder returned, and it throws instead of yielding one, so
-    /// resolution is tested first. An unresolved request has already been refused by the class-level
-    /// policy - which denies for want of a portal - so the null answer here is a precondition rather than
-    /// a state a caller can steer into, and the caller sees the same bare <c>403</c> either way.
+    /// resolution is tested first, and the null answer here is a precondition rather than a state a caller
+    /// can steer into.
+    /// </para>
+    /// <para>
+    /// MIGRATION: WHAT REFUSES FIRST IS THE TENANT-RESOLUTION MIDDLEWARE, NOT THE CLASS-LEVEL POLICY, and an
+    /// earlier revision of this block credited the policy. Measured both ways against a running instance: a
+    /// portal administrator addressing a host name with no alias row is refused by the policy with
+    /// <c>auth.not_permitted</c>, but a superuser passes that policy from any host name whatsoever, because
+    /// the policy is anchored to the portal named in the route and the unscoped route names none. That
+    /// request is refused by the middleware instead, with <c>portal.tenant_unresolved</c>. Either way the
+    /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
+    /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
+    /// answer than a <c>403</c> for a condition that is not the caller's fault.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE REFUSAL IS NO LONGER A BARE <c>403</c>. This block previously said the caller sees the
+    /// same bare status either way, which was the justification for answering with <c>Forbid()</c>, and it
+    /// described a body that contradicted this action's own declaration: <c>Forbid()</c> does not pass
+    /// through the authorisation middleware's result handler, so it produced an EMPTY body while every action
+    /// here declares a problem document for <c>403</c>. The guard now answers through the shared
+    /// problem-details path carrying the same failure code the middleware uses, so the two refusals are
+    /// indistinguishable to a client keying on that code.
     /// </para>
     /// </remarks>
     private int? ResolvePortalId(int? routedPortalId)
@@ -334,7 +381,7 @@ public sealed class RoleGroupsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<IReadOnlyList<RoleGroupDto>> outcome = await _roles
@@ -395,7 +442,7 @@ public sealed class RoleGroupsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<RoleGroupDto?> outcome = await _roles
@@ -411,13 +458,11 @@ public sealed class RoleGroupsController : ControllerBase
     /// and absent on the flat one, where the tenant the request resolved to is used instead.
     /// </param>
     /// <param name="request">
-    /// The role group to create. Its own identifier member is ignored on this path, because the store
-    /// assigns one - which is precisely why the method rather than a sentinel distinguishes this from an
-    /// update - and its portal member is subordinate to the routed <paramref name="portalId"/>. The one
-    /// projection type serves as both request and response here, mirroring the two legacy members it
-    /// replaces (<c>RoleController.vb:L626</c> and <c>:L838</c>), which both accepted the single
-    /// <c>RoleGroupInfo</c> type: a role group is four fields with no asymmetry between what is sent and
-    /// what comes back.
+    /// The role group to create: its name and an optional description. Those are the only two values the
+    /// legacy editor's inputs supplied (<c>EditGroups.ascx:L11</c> and <c>:L17</c>) and the only two this
+    /// path honours, so they are the only two the contract declares. The group's identifier is assigned by
+    /// the store - which is precisely why the method rather than a sentinel distinguishes this from an
+    /// update - and the owning portal arrives in the route, so neither is expressible in the body.
     /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The created role group, addressed by the location header.</returns>
@@ -428,12 +473,12 @@ public sealed class RoleGroupsController : ControllerBase
     /// <response code="400">
     /// The body was absent or malformed, or a rule refused it - a group name is required and may not
     /// exceed 50 characters, matching the required-field validator and the <c>maxlength="50"</c> on the
-    /// legacy editor's name box (<c>EditGroups.ascx:L11-L12</c>). Those two rules are enforced by the
-    /// application service rather than by a request validator, because no validator is registered for the
-    /// role-group contract: the service raises a domain exception and the shared translator answers 400
-    /// with a problem-details document carrying its message. A model-binding failure takes the other
-    /// route, through the automatic model-state check, and yields a validation problem document naming
-    /// the offending member. Both are RFC 7807; only the second carries a per-member error list.
+    /// legacy editor's name box (<c>EditGroups.ascx:L11-L12</c>), and a description may not exceed 1000
+    /// (<c>:L17</c>). Those rules are declared by <c>CreateRoleGroupRequestValidator</c>, which the
+    /// globally registered validation filter resolves and applies before this action body runs, so the
+    /// answer is an RFC 7807 validation document naming each offending member. A model-binding failure
+    /// takes the same shape through the automatic model-state check. The application service re-asserts
+    /// the name rules for callers that do not arrive over HTTP.
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -480,12 +525,12 @@ public sealed class RoleGroupsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ApiResponse<RoleGroupDto>>> CreateAsync(
         [FromRoute] int? portalId,
-        [FromBody] RoleGroupDto request,
+        [FromBody] CreateRoleGroupRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result<RoleGroupDto> outcome = await _roles
@@ -506,7 +551,12 @@ public sealed class RoleGroupsController : ControllerBase
     /// <param name="roleGroupId">
     /// Identifier of the role group to update. This is the authoritative subject of the request.
     /// </param>
-    /// <param name="request">The replacement state for the role group.</param>
+    /// <param name="request">
+    /// The replacement state for the role group: its name and an optional description. Omitting the
+    /// description clears it, because this is a replacement rather than a partial edit. Neither the
+    /// group's identifier nor its portal is expressible in the body - both arrive in the route - so there
+    /// is nothing here for the two to disagree about.
+    /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The role group as persisted.</returns>
     /// <response code="200">The role group as persisted.</response>
@@ -550,17 +600,17 @@ public sealed class RoleGroupsController : ControllerBase
     public async Task<ActionResult<ApiResponse<RoleGroupDto>>> UpdateAsync(
         [FromRoute] int? portalId,
         int roleGroupId,
-        [FromBody] RoleGroupDto request,
+        [FromBody] UpdateRoleGroupRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
-        // The subject travels as a route value and the state travels in the body. Reconciling the two -
-        // preferring one, or refusing a disagreement - is the contract's decision, not this layer's, so
-        // the pair is forwarded as received and no member of the body is rewritten here.
+        // The subject travels as a route value and the state travels in the body, and the two cannot
+        // disagree: the request contract declares no identifier of its own, so there is no reconciliation
+        // for any layer to perform. Nothing here rewrites a member of the body.
         Result<RoleGroupDto> outcome = await _roles
             .UpdateRoleGroupAsync(scopedPortalId, roleGroupId, request, cancellationToken)
             .ConfigureAwait(false);
@@ -634,7 +684,7 @@ public sealed class RoleGroupsController : ControllerBase
     {
         if (ResolvePortalId(portalId) is not { } scopedPortalId)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         Result outcome = await _roles

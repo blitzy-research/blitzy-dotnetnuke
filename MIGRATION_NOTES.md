@@ -751,6 +751,93 @@ portal. The membership check reproduces the first.
 `backend/src/DnnMigration.Domain/Abstractions/Services/IClock.cs`,
 `backend/src/DnnMigration.Infrastructure/Services/SystemClock.cs`.
 
+### A role can be renamed, and a colliding rename is refused rather than faulted
+
+**Legacy behaviour.** The legacy edit screen could not rename a role, and five
+measurements agree on it. `Website/admin/Security/EditRoles.ascx.vb:L131-L134`
+reveals a read-only label, hides the name text box and disables the screen's only
+required-field validator whenever an existing role is being edited; its save block
+nevertheless assigns that hidden box at `:L237`, and a hidden Web Forms control
+posts nothing, so the value assigned on every edit was the empty string. That store
+was dead, because the layers beneath had nowhere to put it: the membership data
+contract declares no name parameter on its update member
+(`Library/Providers/MembershipProviders/DataProvider/DataProvider.vb:L97`), the
+provider implementing it never passes one (`DNNRoleProvider.vb:L325`), and the
+terminal `UpdateRole` procedure omits the column from its assignment list
+(`04.00.04.SqlDataProvider:L454-L488`), having carried it as recently as
+`02.00.00.SqlDataProvider:L4317`. Consistently with all of that, the screen applied
+its portal-scoped uniqueness guard on the **insert** branch alone
+(`:L251-L257`, with no equivalent at `:L259-L261`).
+
+**Target behaviour.** `PUT /api/v1/portals/{portalId}/roles/{roleId}` carries a
+required `roleName` and applies it, so a role can be renamed. The same
+portal-scoped uniqueness read the legacy insert branch performed is applied on this
+path, **excluding the role being edited**, and a collision is reported as
+`role.name_duplicate`, which the shared status table answers as `409 Conflict` -
+the identical outcome the creation path already produced. Resubmitting a role's own
+current name is therefore a no-op rather than a self-collision.
+
+**Why the difference is deliberate.** Two facts decide it. The library-level member
+this application service replaces takes the whole role **including its name** on
+update - `Library/Components/Security/Roles/RoleController.vb:L254` is
+`Public Sub UpdateRole(ByVal objRoleInfo As RoleInfo)` - so a name has always
+travelled at the boundary the service layer occupies. And the terminal schema
+constrains the pair: `03.00.09.SqlDataProvider:L304` adds
+`UNIQUE NONCLUSTERED ([PortalID], [RoleName])`, which is a data-model fact this
+migration is required to honour. Without the guard on the update path a rename onto
+an existing name would violate that constraint at the provider and reach the caller
+as a server fault naming no field, which is strictly worse than a conflict it can
+correct. A replacement contract that could not express the resource's own name would
+also be dishonest about being a replacement.
+
+**Operational consequence.** A caller amending one field must resubmit the name it
+read, exactly as it must resubmit every other member of a replacement contract; an
+omitted name is a field-level `400`, not a silent preservation. The legacy asymmetry
+in which only insertion guarded uniqueness is closed rather than reproduced, and no
+submission the legacy screen could produce behaves differently, because that screen
+could only ever have sent the stored name or an empty one.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Dtos/Role/UpdateRoleRequest.cs`,
+`backend/src/DnnMigration.Application/Validation/UpdateRoleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Mapping/RoleMappings.cs`,
+`backend/src/DnnMigration.Application/Services/RoleService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IRoleService.cs`,
+`backend/src/DnnMigration.Api/Controllers/RolesController.cs`.
+
+### The invented ceiling on a role's billing and trial period is removed
+
+**Legacy behaviour.** Each period carried exactly one rule, and only one:
+`valBillingPeriod2` at `editroles.ascx:L114` and `valTrialPeriod2` at `:L146` both
+compare **greater than zero**. The columns are plain `int`
+(`01.00.08.SqlDataProvider:L6829` and `01.00.05.SqlDataProvider:L2754`), the terminal
+`UpdateRole` procedure bounds neither, and no configuration key bounded them either.
+Every positive `Int32` was accepted.
+
+**Target behaviour.** Every positive `Int32` is accepted again. A net-new
+ten-thousand-unit ceiling had been introduced on both role write validators and is
+withdrawn; the strictly-positive rule the legacy screen declared is what remains, with
+its measured wording preserved.
+
+**Why the difference is deliberate.** The ceiling was justified as generous, and
+generosity is not the test - domain-logic preservation is. It refused a band of values
+the legacy application accepted, which is a functional reduction rather than a
+hardening. Nothing is left unprotected by its removal: `DeriveAssignmentDates` in
+`RoleService` routes every offset through clamping helpers, so a period large enough to
+overflow the date arithmetic yields the storable bound instead of a wrapped or faulted
+expiry. That guarantee is the helpers' own and always was, which is precisely why the
+field rule was not what kept it.
+
+**Operational consequence.** A period the stored calendar cannot accommodate produces a
+**clamped** expiry rather than a field-level refusal. That is the legacy outcome for the
+same input, and it is asserted directly by
+`RoleServiceTests.Assign_ClampsATermThatOutrunsTheStoredCalendar` for `int.MaxValue`.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Validation/CreateRoleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Validation/UpdateRoleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Services/RoleService.cs`.
+
 ### Token configuration is validated at startup, and what a deployment must supply
 
 **Legacy behaviour.** There was no startup validation of security configuration
@@ -2763,6 +2850,190 @@ plain `Parse` and the columns permit negatives; the genuine rule over those memb
 is an authorisation rule at `SiteSettings.ascx.vb:L759-L770`, which rejects a save
 in which a non-super-user altered the fee, space, quota, log or expiry values, and
 that belongs to the service and the API edge rather than to a validator.
+
+### Role-group writes bind their own contracts, and the response projection is no longer a request
+
+**Legacy behaviour.** `Website/admin/Security/EditGroups.ascx.vb` held the group in a
+single object across both operations and chose between them by testing the identifier
+against `-1` at L42, L68 and L113, saving through the branch at L107-L111. One shape
+therefore served as request and response because the screen never left the server.
+
+**Target behaviour.** `POST /api/v1/portals/{portalId}/role-groups` binds
+`CreateRoleGroupRequest` and `PUT .../role-groups/{roleGroupId}` binds
+`UpdateRoleGroupRequest`. Each declares exactly two members - `RoleGroupName` and
+`Description` - and `RoleGroupDto` is now returned and never bound. Two validators
+replace the single one that governed the projection, both reading the shared widths
+and wording on `Application/Validation/RoleGroupTermsRules`.
+
+**Why.** Both verbs previously bound `RoleGroupDto`, which also carries
+`RoleGroupId` and `PortalId`. Neither is writable on either path: the store issues
+the key on a create and the route names it on an update, and the owning portal is the
+resolved tenant. A caller could therefore submit a group key or a foreign tenant,
+receive `201` or `200`, and find that neither had been read - the request schema
+promised two fields the service was structurally incapable of honouring. That is the
+same authorisation-adjacent hazard recorded above for the portal identifier, and it is
+resolved the same way: a contract with no such member has nothing to disagree with the
+route about, on any path, including paths nobody has written yet.
+
+**What the store actually writes.** Measured, not inferred. The terminal procedures
+`AddRoleGroup` and `UpdateRoleGroup` write the name and the description; the group key
+is an `IDENTITY` column and the portal key is set on insert from the procedure's own
+tenant argument. The two request contracts are exactly that member set.
+
+**Consequence for callers.** None that breaks an existing one. No unmapped-member
+handling is configured, so a caller still sending the wider projection has its surplus
+members ignored exactly as before rather than refused - the change removes a false
+promise from the published schema without narrowing what the endpoint tolerates.
+
+### Profile-definition writes bind two different contracts, because the two procedures write different columns
+
+**Legacy behaviour.** `Website/admin/Users/EditProfileDefinition.ascx.vb` edited one
+object through a reflective property editor and chose between adding and updating by
+testing the identifier against the null-integer sentinel at L449, calling the add path
+at L451 and the update path at L459.
+
+**Target behaviour.** `POST /api/v1/portals/{portalId}/profile-definitions` binds
+`CreateProfilePropertyDefinitionRequest`, carrying ten members;
+`PUT .../profile-definitions/{propertyDefinitionId}` binds
+`UpdateProfilePropertyDefinitionRequest`, carrying nine.
+`ProfilePropertyDefinitionDto` is returned by every read and by both successful
+writes, and is bound by nothing. Two validators replace the single one that governed
+the projection, both reading the shared widths, pattern and wording on
+`Application/Validation/ProfileDefinitionTermsRules` so that no rule can hold on one
+verb and not the other.
+
+**Why the two contracts differ from each other.** This is not symmetry for its own
+sake - the procedures genuinely disagree. `AddPropertyDefinition`
+(`04.06.00.SqlDataProvider:L1101`) declares eleven parameters, one of which is
+`@ModuleDefId`. `UpdatePropertyDefinition` (`04.05.00.SqlDataProvider:L1685`) declares
+ten, and `@ModuleDefId` is not among them; its `UPDATE ... SET` list does not name the
+column either. A module association can therefore be established when a property is
+declared and never afterwards, so a single shared shape would have had to advertise the
+member on a verb that discards it. It did, and a caller reassigning a definition to
+another module through `PUT` was answered `200` having changed nothing.
+
+**Three members withdrawn from the write surface.** `PropertyDefinitionId` and
+`PortalId` arrive from the route or are issued by the store, for the reasons already
+recorded for the portal and role-group identifiers. `Visibility` is a third and
+different case: it is not a column on `ProfilePropertyDefinition` at any point in the
+88-script chain - the stored per-account counterpart lives on `UserProfile` - so the
+value a definition reports is a default hint the API derives from the "User Accounts"
+module setting `Profile_DefaultVisibility`. It is retained on the response, because a
+client needs the resolved hint, and removed from both requests, because no write could
+persist it. An earlier attempt to bound that member to its three documented modes was
+withdrawn as an invented rule; removing it from the request surface is what that
+correction should have been.
+
+**One divergence corrected while splitting.** The response contract previously
+documented the property name as immutable once a definition exists, on the strength of
+the legacy class marking it read-only. That documentation was wrong.
+`IsReadOnly(True)` on `ProfilePropertyDefinition.vb:L228` is a rendering hint to the
+reflective editor, and the terminal update procedure assigns
+`PropertyName = @PropertyName`. The name is therefore writable on the update verb, the
+member is required there because the column is `NOT NULL`, and a rename onto a name
+another definition of the same portal and module already holds is reported as `409`
+with the definition being edited excluded from the comparison - otherwise every
+ordinary edit, which resubmits the name it read, would collide with itself.
+
+**Consequence for callers.** As with the role groups, nothing that breaks an existing
+caller: surplus members on a submitted body are still ignored rather than refused. What
+changes is that the published schema now describes what each verb writes.
+
+### The application layer refuses an undefined enumeration value itself, and where that value can actually come from
+
+**Legacy behaviour.** Not applicable in the strict sense - the legacy screens used bare integers with
+sentinel bands rather than enumerations, and the value came from a server-side drop-down the caller could
+not author. `Roles.ascx.vb:L129` assigns `-2` for "all roles" and the role-group selector supplies `-1` for
+"global roles"; a value outside those bands could not be sent.
+
+**Target behaviour.** Two application members now test membership and refuse an undefined value:
+
+- `IRoleService.ListRolesAsync` answers `role_group.scope_invalid` for a `RoleGroupScope` outside its two
+  members.
+- `IPermissionService.GetPermissionKeysAsync` answers `permission.key_invalid` for a `PermissionKey` filter
+  outside its four.
+
+Both codes map to `400` through the shared translator, neither token appearing in any of its special sets.
+
+**What was verified, and what the verification changed.** The review that prompted this work described the
+gap as an HTTP-reachable input-validation exposure - `?scope=999` answered `200` with the full role list,
+and `?permissionKey=99` answered `200` with `["99"]`. That was checked against the running API rather than
+accepted, and **it is not reachable over HTTP**:
+
+- `?scope=999` and `?permissionKey=99` are refused by MVC model binding with `400` and
+  `errors["scope"] = ["The value '999' is invalid."]` - the action body never runs. MVC's enumeration binder
+  tests DEFINED membership for a non-flags enumeration.
+- `?scope=0`, `?scope=1`, `?permissionKey=0` and `?permissionKey=3` all bind and answer `200`, which proves
+  numeric binding works and that the refusal is specifically the membership check rather than a failure to
+  parse a number.
+
+The finding's *service-layer* observation was nonetheless correct: neither member tested membership, and a
+CLR enumeration is an integer at run time, so `(RoleGroupScope)999` is a constructible value. The guards are
+therefore implemented, and the reason recorded for them is the accurate one - the Application layer is a
+public API reachable by callers that never touch MVC - rather than the HTTP exposure the finding described.
+
+**Why the guards are not redundant.** Without them the two members answer wrongly for any non-HTTP caller,
+and the two failure modes differ in severity. The role listing's narrowing tests only for equality with
+`Ungrouped`, so an undefined scope matched no branch and the member returned **every role in the portal**
+reporting success - a wider set than was asked for. The permission-key catalogue answers a lone key filter
+from the closed enumeration by returning the filter itself, so it returned `["99"]`: it **fabricated** a key
+that names no member, no row and no grant. On the scoped branches the same value became a comparison operand
+and produced an empty set, which reads as "declared nowhere" rather than "does not exist". An invariant
+belongs to the layer that owns it, which is why `PermissionService` already carried the identical
+`Enum.IsDefined` test on the two non-nullable key parameters of its evaluation members - and those *are*
+reached from the authorization path.
+
+**Query-bound and body-bound enumerations are not the same problem, and this is the load-bearing
+distinction.** The binder check above applies to query and route values. `System.Text.Json` performs no such
+check for a request body, which was also measured: posting `billingFrequency` as the number `99` is refused
+by this solution's own converter and validator, not by MVC. So body-bound enumerations must carry explicit
+rules and query-bound ones are already covered - the codebase's existing split between converter rules and
+validator rules follows exactly that line, and a future reader must not "simplify" either side on the
+assumption that the other's protection applies.
+
+**Documentation corrected in both directions.** Four public documentation sites claimed that "an
+unrecognised spelling is refused by model binding", which was true but incomplete and was being used as the
+reason no service-side test existed. They now state that the binder refuses an undefined *number* too, that
+this was measured, that the same claim is false for a JSON body, and that the service-side test exists for
+non-MVC callers. An interim revision of these notes asserted the opposite - that the binder does not check
+membership - and that assertion was wrong; it is recorded here so that nobody reinstates it.
+
+### The role-membership listing is orderable by three account fields the boundary used to refuse
+
+**Legacy behaviour.** `SecurityRoles.ascx.vb:L246` bound `GetUserRolesByRoleName` to a grid that rendered
+the account and sorted on what it rendered, with no page-size or field bound of any kind.
+
+**Target behaviour.** `GET /api/v1/portals/{portalId}/roles/{roleId}/users` binds its own
+`RoleUserPagedRequest`, whose validator applies the ten-name role-membership sortable set. `CreatedDate`,
+`LastLoginDate` and `IsApproved` are accepted where they were previously refused.
+
+**Why.** The action bound `UserPagedRequest`, the ACCOUNT collection's contract, so
+`UserPagedRequestValidator` resolved for it and applied that collection's seven names - while
+`RoleService.ListRoleUsersAsync` enforces the role-membership set of ten and
+`RoleService.OrderRoleMemberships` has an ordering arm for each of the ten. Three orderings the
+application was fully able to perform were unreachable over HTTP, refused at the boundary as unknown
+fields. The endpoint advertised less than it implemented.
+
+**This is the inverse of the defect that introduced the per-collection contracts, not a relaxation of
+them.** Sharing one request type across collections made a listing *accept* a field name it would silently
+discard - too permissive. Borrowing another collection's type made this listing *refuse* a field name it
+would have honoured - too restrictive. Both are the same underlying mistake: the validator's vocabulary and
+the service's vocabulary must be the same vocabulary, and one request type per collection, each closed over
+the one set that collection honours, is what guarantees it. `UserPagedRequest` and its validator are
+untouched.
+
+**The two vocabularies legitimately differ, and both verdicts are correct.** The account listing pages in
+the STORE, so it cannot order by the three columns the external `aspnet_*` membership objects supply - they
+are filled after the page has been skipped and taken, and ordering by one of them would order a single
+arbitrary page rather than the collection. The role-membership listing materialises the role's assignment
+rows composed with their accounts and pages IN MEMORY, so those same three values are present on every row
+before any page is cut. The unit and integration suites assert the same three names as refused by one
+listing and accepted by the other, in the same tests, so the asymmetry is deliberate and cannot drift.
+
+**What is still not orderable.** The two assignment dates the membership projection carries. The legacy
+grid offered no ordering by them, so admitting them would be a new feature rather than preserved
+behaviour, and the role identifier is fixed by the route for every record on the page, so ordering by it
+could not change any order.
 
 ### Collections are page-size bounded and sort by an allowlisted field, where the legacy grids bounded neither
 
@@ -8423,3 +8694,153 @@ vulnerability existed. This is the same idiom the flat alias listing already use
 **Annotated in code at.** `backend/src/DnnMigration.Application/Abstractions/IPortalService.cs`,
 `backend/src/DnnMigration.Application/Services/PortalService.cs`,
 `backend/src/DnnMigration.Api/Controllers/PortalAliasesController.cs`.
+
+## The response contract now describes what the code emits: four declaration defects closed
+
+**What this records.** Four findings that were all the same defect wearing different clothes — a public
+description that a client could act on, contradicted by the behaviour it described. None of the four
+changed a business rule; all four changed what the API *says about itself*, which for a generated client
+is the only thing it has. Each was settled by measurement against a running instance rather than by
+reading the service code, and in two cases the measurement contradicted the explanation that had been
+written down.
+
+### A refusal raised inside an action is a problem document, not an empty body
+
+**The defect.** Twenty-one unresolved-tenant guards across the role, role-group, module-definition and
+profile-definition controllers answered with the framework's bare `Forbid()`. A controller's `Forbid()`
+does **not** pass through the authorisation middleware's problem-details result handler, so it wrote a
+`403` with **no body at all**, while every one of those actions declares a problem document for `403`.
+A client branching on the declared schema would have parsed nothing.
+
+**What justified it, and why that justification was wrong.** Each controller carried a comment saying
+the class-level policy had already refused an unresolved request, so the guard was unreachable and "the
+caller sees the same bare `403` either way". The first half is true in spirit and the second half was
+false in two ways: the body was not the same as the middleware's, and the *policy* is not what refuses.
+Measured both ways — a portal administrator addressing a host name with no alias row is refused by the
+policy with `auth.not_permitted`, but a **superuser passes that policy from any host name whatsoever**,
+because the policy is anchored to the portal named in the route and an unscoped route names none. That
+request is refused by the tenant-resolution **middleware**, with `portal.tenant_unresolved`.
+
+**What it does now.** All twenty-one guards answer through the shared problem-details helper carrying
+`portal.tenant_unresolved` — the same failure code the middleware uses — so a client keying on that code
+cannot tell the two refusals apart. The guards remain, and remain expected to be unreachable: the
+alternative to an unreachable refusal here is the tenant holder throwing, and a `500` is a worse answer
+than a `403` for a condition that is not the caller's fault. The human-readable detail is deliberately
+**not** unified with the middleware's wording, because the helper's sentence is shared with every other
+`403` in this API and bending it to this one cause would make it wrong everywhere else; both sentences
+are fixed and caller-independent, naming no host, no alias and no tenant, so neither discloses which
+layer refused.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/RolesController.cs`,
+`RoleGroupsController.cs`, `ModuleDefinitionsController.cs`, `ProfileDefinitionsController.cs`.
+
+### Three operations advertise the common problem supertype, because both shapes are genuinely reachable
+
+**The defect.** The portal creation, the role listing and the permission catalogue each declared
+`ValidationProblemDetails` for `400`, but each can refuse a request whose every member is individually
+valid. Such a refusal travels through the shared result translator, which emits a **plain**
+`ProblemDetails` — it has a failure code and a sentence and no member to key an error map to. The
+declared schema was therefore wrong for a reachable branch of each operation.
+
+**What it does now.** All three declare the base `ProblemDetails`, which is the only schema that honestly
+describes an operation emitting both shapes. Each was measured emitting both: the portal creation answers
+a plain document for `portal.parent_alias_unresolved` when a child portal is asked for from a request
+that resolves to no parent, and a member-named document for an incomplete body; the role listing answers
+a plain document for `role_group.scope_invalid` when a group identifier is combined with the ungrouped
+scope, and a member-named document for an unorderable `sortBy`; the permission catalogue answers a plain
+document for `permission.filter_invalid` on `?moduleDefinitionId=0`, and a member-named document on
+`?permissionKey=99`.
+
+**A justification that did not survive measurement.** The permission catalogue also refuses a supplied
+but blank `permissionCode` with the same failure code, and that branch was cited as part of the
+justification. It is **unreachable over HTTP**: the simple-type binder converts a whitespace-only query
+value to null, so `?permissionCode=`, `?permissionCode=%20%20` and `?permissionCode=%09` all answer `200`
+with the whole catalogue. The guard is kept for direct Application-layer callers, which can pass what a
+query string cannot, and the identifier branch is what actually earns the exemption. Recorded because the
+same reasoning — "an unreachable refusal must not earn a declaration" — is what keeps every other listing
+held to the validation document: their service-side paging refusals are unreachable, since the
+per-collection request validator answers first and names `sortBy`.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/PortalsController.cs`,
+`RolesController.cs`, `PermissionsController.cs`,
+`backend/src/DnnMigration.Application/Services/PermissionService.cs`.
+
+### A deletion that can report a conflict now says so
+
+**The defect.** The profile-definition deletion declared `204`, `401`, `403` and `404`. Its service
+reports a persistence conflict when a concurrent request changes or removes the definition between this
+request's read and its write, and the shared status table answers that code with `409` — so the status
+was reachable and undocumented. A comment in the service asserted that the endpoint already declared it,
+which made the omission read as intentional.
+
+**Why this shape of defect is the worst of the four.** Every other finding here is a status the client
+meets with the wrong parser. An undeclared status is one the generated client has no branch for at all,
+and it surfaces as an unhandled response. The rules that check declared statuses cannot catch it either,
+because a status the operation never mentions gives them nothing to inspect — which is why it is now
+pinned by its own test rather than by the general schema rule.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/ProfileDefinitionsController.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### An absent assignment date is omitted from the object, not sent as null
+
+**The defect.** The role-membership listing documented that a null effective or expiry date is *emitted*
+as a null member. Serialisation is configured with `DefaultIgnoreCondition = WhenWritingNull`, so a null
+member is **dropped from the object entirely**. Measured: a membership row with neither date returns
+exactly `userId`, `username`, `displayName`, `roleId`, `roleName` and `userRoleId`.
+
+**What it does now.** Only the documentation changed. Both members are already `DateTime?`, and the
+published schema already marks them `nullable` and lists no `required` array, so a generated client
+already treats them as optionally absent — the description was the only thing out of step. The
+serialisation setting is deliberately **not** overridden for these two members: forcing explicit nulls
+here would make this one object disagree with every other response in the API about how absence is
+expressed, and absence is exactly what the legacy open-ended assignment means.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/RolesController.cs`,
+`backend/src/DnnMigration.Application/Dtos/Role/RoleMembershipDto.cs`.
+
+## Every verb on a profile declaration now agrees on which declarations exist
+
+**Legacy behaviour.** `ProfilePropertyDefinition` carries a `Deleted bit NOT NULL` column, added at
+`03.02.03:L1066`, and withdrawal is **logical rather than physical** because stored answers reference the
+declaration. The legacy read paths filter on that column.
+
+**The defect.** The two READ paths honoured withdrawal — the single read tested it directly and the tenant
+listing filtered on it in the store — while the two MUTATION paths tested only existence and tenancy. A
+withdrawn declaration was therefore `404` on `GET`, absent from the listing, and yet freely editable and
+deletable through `PUT` and `DELETE`. Three verbs on one address disagreed about whether the resource
+existed.
+
+**Why absence, and not a recycle bin.** Both remedies were available and only one is honest here. A recycle
+bin is a *contract*: it lets a caller see what it holds, and restore from it. This contract has no such
+member — no read, no restore, no `includeDeleted`, nothing on the service interface and nothing on the
+controller, which publishes exactly five operations and none of them acknowledges a withdrawn declaration.
+The asymmetry therefore had no contract behind it to preserve, and the honest answer for a resource this API
+will not show is that it does not exist. Adding a recycle-bin surface instead would have been new
+functionality, which the Minimal Change Clause does not license.
+
+**Why this mattered most on the deletion.** Removal on this path is physical — the repository stages a
+`Remove` and the recorded answers cascade with it — so the single reachable operation on a declaration the
+API refused to show was the destructive one, and it destroyed per-account data that no caller could have
+inspected first.
+
+**Reachable against the schema this migration binds to.** This application does not itself produce withdrawn
+rows, because its own deletion is physical. An existing DotNetNuke database does, which is the entire premise
+of mapping to an unaltered schema: rows carrying `Deleted` are legacy data these members meet on day one.
+
+**One read deliberately still sees withdrawn declarations.** The duplicate-name check is not subject to the
+absence rule and must not be "made consistent" with it. The terminal index
+`IX_ProfilePropertyDefinition ON (PortalID, ModuleDefID, PropertyName)` is declared UNIQUE at
+`03.02.03:L1082` and again at `04.00.04:L1127`, and it does **not** include `Deleted` — so a withdrawn row
+still occupies its name in the store. A duplicate check that skipped withdrawn rows would accept a rename the
+database then rejects, converting a clear duplicate-name result into a constraint violation surfacing as a
+server fault. Absence is the right answer for *addressing* a withdrawn declaration; presence is the right
+answer for asking whether its *name is free*. The two rules are different questions, and both are now stated
+where they are enforced.
+
+**Indistinguishability.** The withdrawn case reports the same failure code as the unknown and the foreign
+cases, so a caller cannot tell them apart. Distinguishing them would confirm that a declaration exists in a
+tenant the caller may not read.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IUserService.cs`.

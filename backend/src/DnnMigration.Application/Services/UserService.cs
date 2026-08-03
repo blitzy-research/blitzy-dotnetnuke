@@ -1939,12 +1939,12 @@ public sealed class UserService : IUserService
     /// </remarks>
     public async Task<Result<ProfilePropertyDefinitionDto>> CreateProfilePropertyDefinitionAsync(
         int portalId,
-        ProfilePropertyDefinitionDto definition,
+        CreateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(request);
 
-        if (string.IsNullOrWhiteSpace(definition.PropertyName))
+        if (string.IsNullOrWhiteSpace(request.PropertyName))
         {
             throw new DomainException("A profile property name is required.");
         }
@@ -1953,16 +1953,16 @@ public sealed class UserService : IUserService
         // matching core DataProvider.vb:L254 GetPropertyDefinitionByName, which returned the row. On
         // a create there is nothing to exclude, so any match at all is a collision.
         if (await _profiles
-            .GetDefinitionByNameAsync(portalId, definition.PropertyName, cancellationToken)
+            .GetDefinitionByNameAsync(portalId, request.PropertyName, cancellationToken)
             .ConfigureAwait(false) is not null)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionDuplicateNameCode,
                 FormattableString.Invariant(
-                    $"Portal {portalId} already declares a profile property named \"{definition.PropertyName}\"."));
+                    $"Portal {portalId} already declares a profile property named \"{request.PropertyName}\"."));
         }
 
-        ProfilePropertyDefinition created = UserMappings.ToNewDefinition(portalId, definition);
+        ProfilePropertyDefinition created = UserMappings.ToNewDefinition(portalId, request);
         await _profiles.AddDefinitionAsync(created, cancellationToken).ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         _cache.InvalidateProfileDefinitions(portalId);
@@ -1982,16 +1982,31 @@ public sealed class UserService : IUserService
     public async Task<Result<ProfilePropertyDefinitionDto>> UpdateProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
-        ProfilePropertyDefinitionDto definition,
+        UpdateProfilePropertyDefinitionRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(request);
 
         ProfilePropertyDefinition? stored = await _profiles
             .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (stored is null || stored.PortalId != portalId)
+        // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, and it previously was not.
+        // Withdrawal is logical rather than physical, because stored answers reference the declaration, so
+        // the row survives with Deleted set. Every READ in this service already treats such a row as gone -
+        // the single read tests IsDeleted, and the portal listing filters on it in the store - but this guard
+        // tested only existence and tenancy, so a declaration the API refuses to SHOW remained editable
+        // through it. That is not a recycle bin: a recycle bin lets a caller see and restore what it holds,
+        // and this contract exposes no member that reads, restores or even acknowledges a withdrawn
+        // declaration. The asymmetry therefore had no contract behind it, and the honest answer for a
+        // resource this API will not show is that it does not exist.
+        //
+        // Reachable against the schema this migration binds to. The removal path here is physical (the
+        // repository stages a Remove and lets the answers cascade), so this application does not itself
+        // create withdrawn rows - but the existing DotNetNuke database does, which is the whole premise of
+        // mapping to an unaltered schema. Rows carrying Deleted are exactly the legacy data this member will
+        // meet first.
+        if (stored is null || stored.PortalId != portalId || stored.IsDeleted)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionNotFoundCode,
@@ -1999,7 +2014,7 @@ public sealed class UserService : IUserService
                     $"Profile property definition {propertyDefinitionId} does not exist in portal {portalId}."));
         }
 
-        if (string.IsNullOrWhiteSpace(definition.PropertyName))
+        if (string.IsNullOrWhiteSpace(request.PropertyName))
         {
             throw new DomainException("A profile property name is required.");
         }
@@ -2008,8 +2023,19 @@ public sealed class UserService : IUserService
         // edited must not collide with itself. A boolean answer could not express "found, but it is
         // the row I am editing", which is exactly why the legacy exclusion argument is not pushed down
         // into the repository: the caller knows which row it is editing and compares identifiers here.
+        // The comparison is reachable because the terminal update procedure genuinely writes the name
+        // (04.05.00:L1685 assigns PropertyName = @PropertyName), so a rename is a supported edit.
+        //
+        // MIGRATION: THIS READ DELIBERATELY STILL SEES WITHDRAWN DECLARATIONS, and it must not be "made
+        // consistent" with the absence rule applied to the guard above. The terminal index is
+        // IX_ProfilePropertyDefinition ON (PortalID, ModuleDefID, PropertyName), declared UNIQUE at
+        // 03.02.03:L1082 and again at 04.00.04:L1127, and it does NOT include Deleted - so a withdrawn row
+        // still occupies its name in the store. A duplicate check that skipped withdrawn rows would accept a
+        // rename the database then rejects, turning a clear duplicate-name result into a constraint
+        // violation surfacing as a server fault. Absence is the right answer for addressing a withdrawn
+        // declaration; presence is the right answer for asking whether its name is free.
         ProfilePropertyDefinition? sameName = await _profiles
-            .GetDefinitionByNameAsync(portalId, definition.PropertyName, cancellationToken)
+            .GetDefinitionByNameAsync(portalId, request.PropertyName, cancellationToken)
             .ConfigureAwait(false);
 
         if (sameName is not null && sameName.PropertyDefinitionId != propertyDefinitionId)
@@ -2017,10 +2043,10 @@ public sealed class UserService : IUserService
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionDuplicateNameCode,
                 FormattableString.Invariant(
-                    $"Portal {portalId} already declares a profile property named \"{definition.PropertyName}\"."));
+                    $"Portal {portalId} already declares a profile property named \"{request.PropertyName}\"."));
         }
 
-        UserMappings.ApplyDefinitionUpdate(stored, definition);
+        UserMappings.ApplyDefinitionUpdate(stored, request);
         await _profiles.UpdateDefinitionAsync(stored, cancellationToken).ConfigureAwait(false);
 
         try
@@ -2059,7 +2085,14 @@ public sealed class UserService : IUserService
             .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (definition is null || definition.PortalId != portalId)
+        // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, matching the single read, the
+        // portal listing and the update beside it. This guard tested only existence and tenancy, so a
+        // declaration the API refuses to show could still be deleted through it - and because removal here
+        // is physical and cascades the stored answers, that made the one reachable operation on a withdrawn
+        // declaration the most destructive one available. Reporting absence instead is both consistent with
+        // every read and the safer of the two answers: the caller asked to remove something this API says
+        // does not exist, and it now says so before any answer is destroyed.
+        if (definition is null || definition.PortalId != portalId || definition.IsDeleted)
         {
             return Result.Failure(
                 ProfileDefinitionNotFoundCode,
@@ -2083,8 +2116,13 @@ public sealed class UserService : IUserService
         // as a concurrency conflict. Left unguarded that escaped as an unhandled exception and the
         // caller was told the server had failed, when in truth the caller had simply lost a race and
         // the outcome it asked for has already happened. The conflict code is the one this contract
-        // documents, so the shared status table answers it as 409 and the endpoint's declared conflict
-        // response becomes reachable rather than notional.
+        // documents, so the shared status table answers it as 409.
+        //
+        // MIGRATION: this comment used to end "and the endpoint's declared conflict response becomes
+        // reachable rather than notional", which was half wrong in the direction that matters - the
+        // reachability was real but the DELETE endpoint declared no 409 at all, so the reachable response
+        // was the undeclared one. The declaration has been added to the endpoint; the claim is stated here
+        // without asserting anything about a declaration this layer cannot see.
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

@@ -313,10 +313,20 @@ public sealed class PortalsController : ControllerBase
     /// </response>
     /// <response code="400">
     /// The body was absent or malformed, or a declared rule refused it - the alias character whitelist,
-    /// the home-folder shape, the password rules or a required field. The body is an RFC 7807 validation
-    /// document naming each offending field. Creation that fails after validation for a reason the
-    /// caller cannot correct by editing one field also arrives here, carrying the failure code as its
-    /// problem type.
+    /// the home-folder shape, the password rules or a required field - in which case the body is an RFC 7807
+    /// validation document naming each offending field. A fully-bound, fully-validated request can ALSO be
+    /// refused here on semantic grounds, when the submitted parent alias resolves to no portal
+    /// (<c>portal.parent_alias_unresolved</c>); that refusal carries the failure code as its problem type
+    /// and has no offending field to name, so the body is a plain problem document.
+    /// <para>
+    /// MIGRATION: the declared schema is therefore the COMMON SUPERTYPE and not the validation document. It
+    /// was previously declared as the validation document, which promised a map of refused members on every
+    /// refusal - and the semantic refusal above cannot contain one, because the shared result translator
+    /// carries a failure code and one sentence rather than a member name. Every validation document is a
+    /// problem document, so a client parsing the declared shape reads either successfully and one that
+    /// branches on the member map still finds it when it is present; the narrower declaration described a
+    /// response half of these refusals do not produce.
+    /// </para>
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -387,7 +397,12 @@ public sealed class PortalsController : ControllerBase
         "Creates the first portal on an installation where no alias yet exists; the portal alias being "
         + "claimed is named in the request body. Restricted to host accounts.")]
     [ProducesResponseType(typeof(ApiResponse<PortalDetailDto>), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    // BASE ProblemDetails, not ValidationProblemDetails. Both shapes are reachable on this action: the
+    // request validator names offending fields, and the service refuses a fully-valid request whose parent
+    // alias resolves to no portal - a refusal with a failure code and no member to key an error map to. The
+    // supertype is the only schema that honestly describes both, and ResponseDeclarationContractTests names
+    // this operation in its semantic-refusal exemption set for exactly this reason.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]

@@ -19,13 +19,14 @@ namespace DnnMigration.Application.Validation;
 /// </para>
 /// <para>
 /// <b>This type shares rules, not contracts.</b> The two request contracts deliberately declare no
-/// base type and no inheritance between them, because the update contract must not be able to
-/// express <c>RoleName</c> at all - the reasoning is recorded on
-/// <c>Application/Dtos/Role/UpdateRoleRequest.cs</c> and must not be undone. Sharing a static rule
-/// definition preserves that separation completely: neither contract gains a member, and each
-/// validator still chooses for itself which of the rules below apply to the members it actually
-/// carries. The name rule, for instance, is consumed only by the creation validator, because the
-/// update contract has no name to check.
+/// base type and no inheritance between them, for the reason recorded on each: a shared base would
+/// present members neither contract owns, which is the readability cost the legacy
+/// <c>UserRoleInfo : RoleInfo</c> pair demonstrates. Sharing a static rule definition preserves that
+/// separation completely: neither contract gains a member, and each validator still chooses for itself
+/// which of the rules below apply to the members it actually carries. The name rule is consumed by both
+/// role validators, because both write the same <c>NOT NULL</c> column; the role-group validators
+/// consume its message alone, because their column belongs to a different table and carries its own
+/// width.
 /// </para>
 /// <para>
 /// <b>Nothing here reads state, configuration or a clock.</b> Every member is a compile-time
@@ -50,9 +51,13 @@ internal static class RoleTermsRules
     /// (<c>editroles.ascx</c> L31), with its leading markup tag removed.
     /// </summary>
     /// <remarks>
-    /// Consumed by the creation validator alone. The update contract carries no name member,
-    /// because the legacy edit screen made the name read-only and disabled this very validator at
-    /// <c>EditRoles.ascx.vb</c> L131-L134.
+    /// Consumed by both role write validators, so a missing name reads the same sentence whichever verb
+    /// was used. The legacy edit screen disabled this very validator at <c>EditRoles.ascx.vb</c>
+    /// L131-L134 because it displayed the name read-only; the migrated update contract carries a writable
+    /// name - a documented behavioural difference recorded on that contract - so the rule applies to it
+    /// as well. The sibling role-group screen declared the identical wording at
+    /// <c>EditGroups.ascx</c> L12, which is why its validator reads the constant from here rather than
+    /// restating it.
     /// </remarks>
     internal const string RoleNameRequiredMessage = "You Must Enter a Valid Name";
 

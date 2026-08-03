@@ -98,6 +98,71 @@ public sealed class TenantResolutionTests
     }
 
     /// <summary>
+    /// EVERY unscoped collection whose tenant can only come from the host name refuses an unconfigured host
+    /// with the same problem document, not just the one route the fact above happens to name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The fact above pins one route. This one pins the whole family, because the four controllers that own
+    /// these routes each carry their own copy of the unresolved-tenant guard, and a copy is exactly the kind
+    /// of thing that drifts. All four are asserted to answer with the SAME status, the SAME problem type and
+    /// a non-empty detail, so a client cannot tell from the response which collection it addressed or which
+    /// layer refused.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THESE GUARDS USED TO ANSWER WITH AN EMPTY BODY. Each controller answered its unresolved
+    /// tenant with the framework's bare <c>Forbid()</c>, which does not pass through the authorisation
+    /// middleware's result handler, so it wrote a <c>403</c> with no body at all while every one of those
+    /// actions declares a problem document for <c>403</c>. Twenty-one such guards were routed through the
+    /// shared problem-details helper with one stable failure code. The controller guards themselves are
+    /// defence in depth and are expected to be unreachable - the middleware asserted here refuses first, and
+    /// it refuses with the identical failure code, which is why this fact can pin the contract those guards
+    /// promise without needing to reach them.
+    /// </para>
+    /// <para>
+    /// A superuser client is used deliberately. A portal administrator is turned away earlier, by the
+    /// portal-administrator policy, with <c>auth.not_permitted</c> - a different failure code for a different
+    /// reason - so it would never exercise tenant resolution at all.
+    /// </para>
+    /// </remarks>
+    /// <param name="route">The unscoped collection under test.</param>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("/api/v1/module-definitions")]
+    [InlineData("/api/v1/roles")]
+    [InlineData("/api/v1/role-groups")]
+    [InlineData("/api/v1/profile-definitions")]
+    public async Task EveryUnscopedCollection_FromAnUnconfiguredHost_RefusesWithTheSameProblemDocument(
+        string route)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        client.DefaultRequestHeaders.Host = UnconfiguredHost;
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(route, UriKind.Relative));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "an unscoped collection cannot name a tenant from a host that resolves to none");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull(
+            "the refusal must carry a problem document rather than the empty body a bare Forbid() produced");
+        problem!.Status.Should().Be(StatusCodes.Status403Forbidden);
+        problem.Type.Should().Be(
+            TenantUnresolvedProblemType,
+            "all four collections must report the one failure code, so none is distinguishable");
+        problem.Detail.Should().NotBeNullOrWhiteSpace(
+            "a problem document with no detail is the empty body wearing a content type");
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().NotContain(
+            UnconfiguredHost,
+            "the host name is attacker-supplied text and echoing it back is a reflection vector");
+    }
+
+    /// <summary>
     /// The same endpoint from the configured host is served, which is what makes the refusal above meaningful:
     /// a fact that only asserted a refusal could not distinguish "refused because no tenant" from "broken".
     /// </summary>

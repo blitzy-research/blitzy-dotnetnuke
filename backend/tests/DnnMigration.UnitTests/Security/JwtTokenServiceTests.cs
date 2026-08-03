@@ -416,7 +416,7 @@ public class JwtTokenServiceTests
         // binds appears below, and the list is therefore the inventory a reviewer checks a new endpoint
         // against.
         //
-        // Twenty-two entries. Four are the paging requests: the generic PagedRequestValidator has one
+        // Twenty-five entries. FIVE are the paging requests: the generic PagedRequestValidator has one
         // sealed derivation per listed collection, each closed over a derived request type so that the
         // sort-field allowlist can be the one that collection actually honours rather than the union of
         // all of them. The base PagedRequest keeps its own registration, because the non-generic
@@ -431,6 +431,15 @@ public class JwtTokenServiceTests
         // repeated expectation demands a repeated registration, and the assembly scan correctly produces
         // exactly one. Each name therefore appears exactly once, and the reason it was added is recorded
         // beside it rather than by repeating the entry.
+        //
+        // MIGRATION: the count moved from twenty-two to twenty-four when the role-group and
+        // profile-definition write surfaces stopped binding their RESPONSE projections. Each of those two
+        // resources previously registered one validator over one shape that both verbs bound, which is
+        // precisely why the boundary advertised members neither procedure writes; each now registers a
+        // create validator and an update validator over contracts carrying only what the procedure behind
+        // that verb honours. The two withdrawn names are RoleGroupDto and ProfilePropertyDefinitionDto, and
+        // their absence from this inventory is itself load-bearing: a response projection has nothing to
+        // validate, so a validator resolving for one would mean a verb had started binding it again.
         services
             .Select(descriptor => descriptor.ServiceType)
             .Where(serviceType => serviceType.IsGenericType
@@ -452,9 +461,24 @@ public class JwtTokenServiceTests
                     typeof(CreatePortalAliasRequest),
                     typeof(UpdatePortalAliasRequest),
                     typeof(UpdateRoleRequest),
-                    typeof(RoleGroupDto),
+
+                    // The two role-group write contracts. dbo.AddRoleGroup and dbo.UpdateRoleGroup write
+                    // the name and the description and nothing else, so neither contract carries the group
+                    // key or the owning portal - the first is issued by the store or taken from the route,
+                    // the second is the resolved tenant. Both validators read RoleGroupTermsRules, so the
+                    // two verbs cannot drift apart on a shared member.
+                    typeof(CreateRoleGroupRequest),
+                    typeof(UpdateRoleGroupRequest),
+
                     typeof(RoleAssignmentRequest),
-                    typeof(ProfilePropertyDefinitionDto),
+
+                    // The two profile-definition write contracts. The procedures behind the verbs honour
+                    // DIFFERENT member sets - AddPropertyDefinition (04.06.00:L1101) declares a
+                    // module-definition key that UpdatePropertyDefinition (04.05.00:L1685) does not - so a
+                    // single shape could not describe both without advertising a member one verb discards.
+                    // Both validators read ProfileDefinitionTermsRules for the same anti-drift reason.
+                    typeof(CreateProfilePropertyDefinitionRequest),
+                    typeof(UpdateProfilePropertyDefinitionRequest),
 
                     // The page-update validator. Added when the page-edit endpoint was found to be judging
                     // nothing at all - an overlong value travelled to SQL Server and surfaced as a 500 naming
@@ -467,6 +491,17 @@ public class JwtTokenServiceTests
                     typeof(RolePagedRequest),
                     typeof(UserPagedRequest),
                     typeof(ModulePagedRequest),
+
+                    // The role-membership paging request. Added because that listing BORROWED
+                    // UserPagedRequest, so UserPagedRequestValidator resolved for it and applied the
+                    // account collection's seven sortable names while RoleService.ListRoleUsersAsync
+                    // enforces the role-membership set of ten - CreatedDate, LastLoginDate and IsApproved
+                    // being the difference. Its ordering has an arm for each of the three, so the boundary
+                    // was refusing an ordering the service could perform. This entry is the inverse of the
+                    // defect that motivated the per-collection split: sharing one type made a listing
+                    // accept a name it discarded, and borrowing another's made this one refuse a name it
+                    // honoured. Both are cured by one type per collection.
+                    typeof(RoleUserPagedRequest),
 
                     // Added when the write surface was audited for missing bounds. This request was bound
                     // by an endpoint while carrying NO validator at all, so every field on it reached the

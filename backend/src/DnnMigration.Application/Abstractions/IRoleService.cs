@@ -298,9 +298,25 @@ namespace DnnMigration.Application.Abstractions;
 /// contradict oneself. The two members here are exactly the two branches that no identifier can express.
 /// </para>
 /// <para>
-/// The magic integers themselves do not survive. A caller names the branch it wants, and the enumeration
-/// is closed, so a value outside it is refused by model binding at the boundary rather than silently
-/// falling into a band - which is what a bare integer allowed.
+/// The magic integers themselves do not survive. A caller names the branch it wants rather than landing in
+/// a band, which is what a bare integer allowed.
+/// </para>
+/// <para>
+/// A value outside the enumeration is refused by model binding at the HTTP boundary, and this was MEASURED
+/// rather than assumed: MVC's enumeration binder tests DEFINED membership for a non-flags enumeration, so
+/// <c>?scope=999</c> is answered <c>400</c> naming the parameter before the action body runs, while
+/// <c>?scope=0</c> and <c>?scope=1</c> bind normally. The verification was worth doing because the
+/// corresponding claim is FALSE for a JSON body, where <c>System.Text.Json</c> performs no such check -
+/// which is why this solution's body-bound enumerations carry converter and validator rules instead.
+/// </para>
+/// <para>
+/// MIGRATION: <c>ListRolesAsync</c> nonetheless tests membership itself, and the reason is not
+/// belt-and-braces. A CLR enumeration is an integer at run time, so <c>(RoleGroupScope)999</c> is a
+/// constructible value and this interface is a public API reachable by callers that never touch MVC. The
+/// narrowing tests only for equality with <see cref="RoleGroupScope.Ungrouped"/>, so an undefined scope
+/// would otherwise fall through every branch and the member would answer the UNFILTERED list reporting
+/// success. An invariant belongs to the layer that owns it, which is the same reason the two
+/// permission-evaluation members of <c>IPermissionService</c> carry the identical test.
 /// </para>
 /// </remarks>
 public enum RoleGroupScope
@@ -361,8 +377,10 @@ public interface IRoleService
     /// none or when the requested page lies past the end of the set; a failed
     /// outcome carrying <c>portal.not_found</c> when no such portal exists,
     /// <c>role_group.not_found</c> when <paramref name="roleGroupId"/> is supplied
-    /// but names no group in that portal, or <c>role_group.scope_invalid</c> when
-    /// the two narrowing arguments contradict each other.
+    /// but names no group in that portal, or <c>role_group.scope_invalid</c> in either
+    /// of two cases - when <paramref name="scope"/> is not a defined member of
+    /// <see cref="RoleGroupScope"/>, or when the two narrowing arguments contradict
+    /// each other.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -389,6 +407,16 @@ public interface IRoleService
     /// <see cref="RoleGroupScope.All"/> is NOT a conflict: the scope is what a caller
     /// that never heard of it sends, so treating it as a contradiction would refuse
     /// every existing group-filtered request.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an UNDEFINED scope is refused with the same code, and by this member rather than by the
+    /// boundary - which already refuses it independently, as <see cref="RoleGroupScope"/> records. The test
+    /// is here because <c>(RoleGroupScope)999</c> is a constructible value and this member is callable
+    /// without MVC: the narrowing tests only for equality with <see cref="RoleGroupScope.Ungrouped"/>, so an
+    /// undefined scope would otherwise fall through every branch and this member would answer the UNFILTERED
+    /// list reporting success. The membership test is placed above the contradiction test so that an
+    /// undefined scope paired with a group identifier is reported as the undefined scope it is, rather than
+    /// as a contradiction between two meaningful arguments.
     /// </para>
     /// <para>
     /// The projected item carries the columns the legacy grid bound, measured in
@@ -517,28 +545,35 @@ public interface IRoleService
     /// A successful outcome carrying the updated role, so the caller can answer an
     /// update request with 200 and the new state; or a failed outcome carrying
     /// <c>portal.not_found</c>, <c>role.not_found</c> when the portal has no such
-    /// role, or <c>role_group.not_found</c> when a role group is named but does not
-    /// exist in that portal.
+    /// role, <c>role_group.not_found</c> when a role group is named but does not
+    /// exist in that portal, or <c>role.name_duplicate</c> when the submitted name
+    /// already belongs to a DIFFERENT role in the same portal.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// Replaces RoleController.vb:L254, which accepted a whole legacy entity and
-    /// returned nothing at all, so a caller could not tell an applied update from a
-    /// silently discarded one. Changing the billing or trial terms here does not
-    /// retrospectively re-compute the expiry of assignments already in force; the
-    /// terms are re-read on the next assignment or renewal, which is the legacy
-    /// behaviour and is preserved deliberately.
+    /// Replaces RoleController.vb:L254, which accepted a whole legacy entity -
+    /// including its name - and returned nothing at all, so a caller could not tell
+    /// an applied update from a silently discarded one. Changing the billing or trial
+    /// terms here does not retrospectively re-compute the expiry of assignments
+    /// already in force; the terms are re-read on the next assignment or renewal,
+    /// which is the legacy behaviour and is preserved deliberately.
     /// </para>
     /// <para>
-    /// The role's NAME is not updatable, and consequently no duplicate-name reason
-    /// code is reachable from this member - unlike the creating member, which
-    /// reports one. Renaming was never a legacy workflow: the edit screen revealed a
-    /// read-only label and hid the name textbox for an existing role, and disabled
-    /// the name's required-field validator with it
-    /// (<c>Website/admin/Security/EditRoles.ascx.vb:L131-L134</c>); the legacy
-    /// membership data contract declared no name parameter on its update member; and
+    /// The role's NAME is updatable, which is a documented behavioural difference
+    /// from the legacy EDIT SCREEN and is itemised in <c>MIGRATION_NOTES.md</c>. That
+    /// screen revealed a read-only label, hid the name textbox for an existing role
+    /// and disabled the name's required-field validator with it
+    /// (<c>Website/admin/Security/EditRoles.ascx.vb:L131-L134</c>), the legacy
+    /// membership data contract declared no name parameter on its update member, and
     /// the terminal <c>UpdateRole</c> procedure omits the column from its assignment
-    /// list. An update therefore PRESERVES the stored name.
+    /// list. The library-level member replaced here nevertheless carried the name,
+    /// and the terminal schema constrains <c>(PortalID, RoleName)</c> uniquely
+    /// (<c>03.00.09.SqlDataProvider:L304</c>), so the duplicate-name outcome above is
+    /// reachable from this member as well as from the creating one: without it a
+    /// rename onto an existing name would violate that constraint at the provider and
+    /// be reported as a server fault rather than as something the caller can correct.
+    /// The comparison excludes <paramref name="roleId"/>, so resubmitting a role's own
+    /// current name is a no-op rather than a self-collision.
     /// </para>
     /// </remarks>
     Task<Result<RoleDetailDto>> UpdateRoleAsync(
@@ -850,12 +885,9 @@ public interface IRoleService
     /// tenant scoping.
     /// </param>
     /// <param name="request">
-    /// The role group to create. Its own identifier is ignored - the store assigns
-    /// one - and its portal identifier is subordinate to
-    /// <paramref name="portalId"/>. The same projection type serves as both the
-    /// request and the response here, mirroring the legacy members at L626 and L838,
-    /// which both accepted the one type, and reflecting that a role group is four
-    /// fields with no asymmetry between what is sent and what is returned.
+    /// The role group to create. It carries no identifier of its own - the store
+    /// assigns one - and no owning portal, because the tenant is
+    /// <paramref name="portalId"/>.
     /// </param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
@@ -871,10 +903,20 @@ public interface IRoleService
     /// message. A duplicate name is an expected outcome, so it is reported as a
     /// reason code rather than thrown (AAP 0.4.3), and the caller is no longer
     /// obliged to interpret an exception to discover it.
+    /// <para>
+    /// MIGRATION: this member previously took the <c>RoleGroupDto</c> response
+    /// projection, on the reasoning that the legacy members at L626 and L838 both
+    /// accepted one type and that a role group has no asymmetry between what is sent
+    /// and what is returned. The asymmetry is real: two of the projection's four
+    /// members - the group key and the owning portal - are assigned by the store and
+    /// by the tenant scope, so accepting them here advertised two writable fields
+    /// that this member could not honour. The write contracts declare the two members
+    /// each verb actually writes, and <c>RoleGroupDto</c> is now returned only.
+    /// </para>
     /// </remarks>
     Task<Result<RoleGroupDto>> CreateRoleGroupAsync(
         int portalId,
-        RoleGroupDto request,
+        CreateRoleGroupRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -885,9 +927,9 @@ public interface IRoleService
     /// scoping.
     /// </param>
     /// <param name="roleGroupId">
-    /// Identifier of the role group to update. Authoritative; an identifier carried
-    /// by <paramref name="request"/> must agree with it, and a disagreement is a
-    /// request-shape validation failure at the boundary rather than a reason code.
+    /// Identifier of the role group to update. Authoritative, and the sole source of
+    /// the group's identity: the request contract carries no identifier of its own,
+    /// so there is nothing for it to disagree with.
     /// </param>
     /// <param name="request">The replacement state for the role group.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
@@ -907,7 +949,7 @@ public interface IRoleService
     Task<Result<RoleGroupDto>> UpdateRoleGroupAsync(
         int portalId,
         int roleGroupId,
-        RoleGroupDto request,
+        UpdateRoleGroupRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
