@@ -36,10 +36,15 @@ namespace DnnMigration.Application.Services;
 /// value and is carried through unchanged. Neither is silently converted into the other.
 /// </para>
 /// <para>
-/// MIGRATION: the notification switch the legacy assignment members carried is not reproduced, because
-/// no mail subsystem is in scope. It is not merely ignored either - accepting a switch that can never
-/// be honoured invites a caller to believe a notification was sent - so <see cref="RoleAssignmentRequest"/>
-/// declares no such member and the operation reports only what it actually did.
+/// MIGRATION: the notification the legacy assignment members sent is not reproduced, because no mail
+/// subsystem is in scope. The <em>switch</em> is preserved on the contract even so:
+/// <see cref="RoleAssignmentRequest.NotifyUser"/> reproduces the legacy "Send Notification?" checkbox,
+/// which was a real caller input and was pre-selected by default, so deleting it would remove a
+/// user-facing choice rather than an implementation detail. This service does not act on it. That
+/// restraint is the point rather than an oversight - a switch that cannot be honoured must not be
+/// allowed to imply a notification was sent - so the operation reports only what it actually did, and
+/// success is never evidence of a notification. Keeping the member also makes supplying a notifier
+/// later a purely additive change instead of a breaking one.
 /// </para>
 /// </remarks>
 public sealed class RoleService : IRoleService

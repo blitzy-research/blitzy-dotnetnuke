@@ -332,6 +332,71 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The scope is applied through the role, because <c>UserRoles</c> carries no portal column: a
+    /// host-level role, whose portal identifier is null, never equals a portal identifier and is
+    /// therefore excluded by construction.
+    /// <para>
+    /// Assignment dates are deliberately not evaluated, reproducing the terminal legacy procedure at
+    /// <c>04.03.06.SqlDataProvider</c> lines 15 to 41, which filtered on the role's name and portal
+    /// alone. The ordering follows its <c>ORDER BY U.FirstName + ' ' + U.LastName</c>; ordering by the
+    /// two names in sequence is equivalent to ordering by that concatenation, because the separating
+    /// space sorts before every character a name can begin with, and the identifier is appended as a
+    /// tie-break so the sequence is stable.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<User>> ListByRoleNameAsync(
+        int portalId,
+        string roleName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(roleName);
+
+        string wanted = roleName.Trim().ToLowerInvariant();
+
+        List<User> rows = await _context.Users
+            .Include(u => u.UserPortals)
+            .Where(u => _context.UserRoles.Any(a =>
+                a.UserId == u.UserId
+                && a.Role!.PortalId == portalId
+                && a.Role!.RoleName.ToLower() == wanted))
+            .OrderBy(u => u.FirstName)
+            .ThenBy(u => u.LastName)
+            .ThenBy(u => u.UserId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await PopulateAsync(rows, cancellationToken).ConfigureAwait(false);
+
+        return rows;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// No portal join is applied, reproducing the terminal legacy procedure at
+    /// <c>03.00.08.SqlDataProvider</c> lines 797 to 805, which selected on the super-user flag alone.
+    /// That is the whole point of the member: a host account need hold no membership row, so it is
+    /// not reliably reachable from <see cref="ListAsync"/>, whose root filter requires one. The
+    /// synthetic portal identifier of minus one that the legacy procedure projected is not
+    /// reproduced, and a deterministic order is applied because the legacy procedure declared none.
+    /// </remarks>
+    public async Task<IReadOnlyList<User>> ListSuperUsersAsync(CancellationToken cancellationToken = default)
+    {
+        List<User> rows = await _context.Users
+            .Include(u => u.UserPortals)
+            .Where(u => u.IsSuperUser)
+            .OrderBy(u => u.DisplayName)
+            .ThenBy(u => u.Username)
+            .ThenBy(u => u.UserId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await PopulateAsync(rows, cancellationToken).ConfigureAwait(false);
+
+        return rows;
+    }
+
+    /// <inheritdoc />
     public void Add(User user)
     {
         ArgumentNullException.ThrowIfNull(user);

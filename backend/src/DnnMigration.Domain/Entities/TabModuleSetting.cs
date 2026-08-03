@@ -8,8 +8,12 @@ namespace DnnMigration.Domain.Entities;
 /// <remarks>
 /// MIGRATION: bound to <c>dbo.TabModuleSettings</c>, created by 03.00.01 together with
 /// <c>TabModules</c> when a module stopped belonging to one page. Its value column is
-/// <c>nvarchar(2000)</c> - eight times the width of <see cref="ModuleSetting.SettingValue"/> - so a
-/// setting must not be moved between the two tables without checking length.
+/// <c>nvarchar(2000)</c>, the same width as <see cref="ModuleSetting.SettingValue"/>, so moving a
+/// setting between the two tables cannot truncate it. An earlier revision of this remark called this
+/// column eight times the wider of the two, on the strength of the module table's superseded baseline
+/// width of 256; the module table is rebuilt at <c>01.00.08.SqlDataProvider</c> lines 6248-6286 with
+/// <c>SettingValue nvarchar(2000) NOT NULL</c> (line 6256), so the two are equal. What distinguishes
+/// the stores is scope - a placement rather than the module - and not capacity.
 /// </remarks>
 public sealed class TabModuleSetting : Entity<(int TabModuleId, string SettingName)>
 {

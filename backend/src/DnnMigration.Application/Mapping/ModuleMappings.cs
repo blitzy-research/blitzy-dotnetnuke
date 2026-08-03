@@ -75,11 +75,13 @@ public static class ModuleMappings
     /// </para>
     /// <para>
     /// MIGRATION: the placement's appearance columns - pane, alignment, colour, border and the print and
-    /// syndication flags - are deliberately NOT projected here. They exist to drive server-side markup
-    /// generation, which this migration excludes, and they are carried instead by
-    /// <see cref="ModuleSettingsDto"/>, the contract that owns the placement scope. Nothing is lost and
-    /// nothing is duplicated. The container column is likewise preserved in the store but never surfaced,
-    /// a module container being a skin object.
+    /// syndication flags - are deliberately NOT projected here, and no other RESPONSE contract carries
+    /// them either. They exist to drive server-side markup generation, which this migration excludes, so
+    /// nothing reads them back; they remain settable through <see cref="UpdateModuleRequest"/>, making
+    /// them write-only in the target, and the stored columns are untouched. The container column is
+    /// likewise preserved in the store but never surfaced, a module container being a skin object.
+    /// <see cref="ModuleSettingsDto"/> is NOT their home: it carries the two identifiers and the two
+    /// key-value settings maps only.
     /// </para>
     /// </remarks>
     public static ModuleDetailDto ToDetail(Module module, TabModule placement, string? friendlyName)
@@ -138,15 +140,35 @@ public static class ModuleMappings
     /// <summary>
     /// Projects a module, its placement and both settings collections onto the configuration contract.
     /// </summary>
-    /// <param name="module">The module to project.</param>
-    /// <param name="placement">The placement whose appearance and settings are reported.</param>
+    /// <param name="module">The module supplying the module-scoped identifier.</param>
+    /// <param name="placement">The placement supplying the placement-scoped identifier.</param>
     /// <param name="moduleSettings">The module-scoped settings.</param>
     /// <param name="placementSettings">The placement-scoped settings.</param>
     /// <returns>The configuration contract.</returns>
     /// <remarks>
+    /// <para>
     /// Both settings collections are genuine key-value tables, unlike portal configuration, so they are
-    /// projected as read-only maps compared without regard to case - which is how the legacy screens
-    /// read them, having stored them in a case-insensitive hash table.
+    /// projected as read-only maps rather than reduced to named members.
+    /// </para>
+    /// <para>
+    /// Names are matched without regard to case. That is faithful to the STORE rather than to the legacy
+    /// in-memory collection: the setting-name columns are declared under a case-insensitive collation and
+    /// participate in each table's primary key, so two names differing only in case cannot coexist as
+    /// rows and a case-sensitive projection would draw a distinction the database cannot express. The
+    /// legacy in-memory collection was, by contrast, case-sensitive - a divergence recorded on
+    /// <see cref="ModuleSettingsDto"/> rather than absorbed here.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this projection carries the two identifiers and the two maps, and nothing else. An
+    /// earlier revision also copied eighteen module and placement columns onto the settings contract,
+    /// which duplicated <see cref="ModuleDetailDto"/> and reintroduced the very ambiguity about which
+    /// scope a value belonged to that separating the two maps exists to remove. The placement's appearance
+    /// columns - pane, alignment, colour, border and the print and syndication flags - are consequently
+    /// WRITE-ONLY in the target: <see cref="UpdateModuleRequest"/> still accepts every one of them, so an
+    /// operator can still set them and <c>ApplyUpdate</c> still stores them, but no response contract
+    /// reads them back, because they exist solely to drive server-side markup generation and that is
+    /// excluded from this migration. The asymmetry is deliberate and the stored columns are untouched.
+    /// </para>
     /// </remarks>
     public static ModuleSettingsDto ToSettings(
         Module module,
@@ -163,22 +185,6 @@ public static class ModuleMappings
         {
             ModuleId = module.ModuleId,
             TabModuleId = placement.TabModuleId,
-            ModuleTitle = module.ModuleTitle,
-            AllTabs = module.AllTabs,
-            InheritViewPermissions = module.InheritViewPermissions,
-            StartDate = module.StartDate,
-            EndDate = module.EndDate,
-            Header = module.Header,
-            Footer = module.Footer,
-            CacheTime = placement.CacheTime,
-            IconFile = placement.IconFile,
-            Alignment = placement.Alignment,
-            Color = placement.Color,
-            Border = placement.Border,
-            Visibility = placement.Visibility,
-            DisplayTitle = placement.DisplayTitle,
-            DisplayPrint = placement.DisplayPrint,
-            DisplaySyndicate = placement.DisplaySyndicate,
             ModuleSettings = ToMap(moduleSettings.Select(setting => (setting.SettingName, setting.SettingValue))),
             TabModuleSettings = ToMap(placementSettings.Select(setting => (setting.SettingName, setting.SettingValue))),
         };

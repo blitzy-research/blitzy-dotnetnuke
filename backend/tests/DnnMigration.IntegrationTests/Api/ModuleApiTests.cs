@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
@@ -62,18 +63,35 @@ public sealed class ModuleApiTests
 
     /// <summary>The definition catalogue answers <c>200 OK</c> and offers the seeded definition.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The address carries no portal segment and no portal query value. The catalogue endpoint takes its
+    /// tenant from the request host, which the fixture registers as an alias of the seeded portal, so the
+    /// definitions asserted below are that portal's. This is the same tenant the administrator policy is
+    /// evaluated against, which is why the endpoint accepts no caller-supplied portal identifier: one would
+    /// let a request be authorised against one portal and answered about another.
+    /// </remarks>
     [Fact]
     public async Task ListModuleDefinitions_ReturnsOkIncludingSeededDefinition()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/module-definitions", UriKind.Relative));
+            new Uri("/api/v1/module-definitions", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        IReadOnlyList<ModuleDefinitionDto>? definitions = await response.Content
-            .ReadFromJsonAsync<IReadOnlyList<ModuleDefinitionDto>>(ApiTestFixture.Json);
+        string body = await response.Content.ReadAsStringAsync();
+
+        // Rule T7 at the wire. The definition's default cache period is a non-nullable integer precisely so
+        // that a stored -1 - which the legacy settings screen read as "caching does not apply, hide the
+        // field" - reaches the caller as -1 rather than as null or as nothing at all. The seed stores 0,
+        // which is the harder case to keep honest: a serialiser configured to omit default values would
+        // drop the member entirely and a reader could not tell 0 from absent. Asserting the member is
+        // present proves the configuration writes it whatever its value, and therefore that -1 survives too.
+        body.Should().Contain("\"defaultCacheTime\"");
+
+        IReadOnlyList<ModuleDefinitionDto>? definitions =
+            JsonSerializer.Deserialize<IReadOnlyList<ModuleDefinitionDto>>(body, ApiTestFixture.Json);
 
         definitions.Should().NotBeNull();
 
@@ -99,9 +117,68 @@ public sealed class ModuleApiTests
         using HttpClient client = _fixture.CreateAnonymousClient();
 
         using HttpResponseMessage response = await client.GetAsync(
-            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/module-definitions", UriKind.Relative));
+            new Uri("/api/v1/module-definitions", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// The definition catalogue is administrator-only. A member of the tenant holding a perfectly valid token
+    /// is refused, which proves the gate is portal administrator membership read from stored role assignments
+    /// rather than mere authentication.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The catalogue is installation-time reference data that only an administrator has any reason to browse,
+    /// and the legacy screens it feeds were themselves administrator-gated. It is deliberately not guarded by
+    /// a module permission policy: those resolve their scope from a module identifier in the route, and this
+    /// route carries a definition identifier at most, so such a policy could only ever refuse.
+    /// </remarks>
+    [Fact]
+    public async Task ListModuleDefinitions_AsMemberWithoutAdministratorRole_ReturnsForbidden()
+    {
+        using HttpClient client = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/module-definitions", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The definition catalogue exposes no mutator. Every write verb on both the collection address and a
+    /// per-definition address is unroutable, because definitions are written only by module installation and
+    /// that subsystem lies beyond this migration's scope.
+    /// </summary>
+    /// <param name="method">The write verb to attempt.</param>
+    /// <param name="path">The catalogue address to attempt it against.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <c>405 Method Not Allowed</c> is accepted alongside <c>404 Not Found</c> because which of the two the
+    /// router produces depends on whether any action is registered for the address at all, and the assertion
+    /// worth making is that no write reaches a handler - not which refusal the router happens to choose.
+    /// </remarks>
+    [Theory]
+    [InlineData("POST", "/api/v1/module-definitions")]
+    [InlineData("PUT", "/api/v1/module-definitions")]
+    [InlineData("PATCH", "/api/v1/module-definitions")]
+    [InlineData("DELETE", "/api/v1/module-definitions")]
+    [InlineData("POST", "/api/v1/module-definitions/1")]
+    [InlineData("PUT", "/api/v1/module-definitions/1")]
+    [InlineData("DELETE", "/api/v1/module-definitions/1")]
+    public async Task ModuleDefinitions_DeclareNoMutator(string method, string path)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpRequestMessage request = new(new HttpMethod(method), new Uri(path, UriKind.Relative));
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed);
     }
 
     /// <summary>A create answers <c>201 Created</c> with a location that resolves, and one placement lands.</summary>
@@ -491,32 +568,36 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The placement's appearance fields survive the whole round trip, and an omitted one clears.
+    /// The placement's appearance fields are accepted on the write path and exposed by no response
+    /// contract, and omitting one is accepted just as setting it is.
     /// </summary>
     /// <remarks>
-    /// This exercises the path a unit test cannot: the values go out over HTTP, through the entity
-    /// configuration, into the real <c>nvarchar(10)</c>, <c>nvarchar(20)</c> and <c>nvarchar(1)</c> columns
-    /// on <c>dbo.TabModules</c>, and back. All five fields are editable on the legacy screen
-    /// (<c>Website/admin/Modules/ModuleSettings.ascx.vb:L345-L347,L381-L382</c>) and were absent from every
-    /// module contract until this was corrected, so the round trip is asserted end to end rather than
-    /// trusted.
     /// <para>
-    /// The second leg proves the whole-row replacement semantics: omitting an appearance field clears it,
-    /// because the legacy screen posted an empty text box as an empty value. Without this an operator could
-    /// set a colour but never remove one.
+    /// These fields are editable on the legacy screen
+    /// (<c>Website/admin/Modules/ModuleSettings.ascx.vb:L345-L347,L381-L382</c>), so the write capability
+    /// must stay reachable end to end: the values go out over HTTP, through the entity configuration and
+    /// into the real <c>nvarchar(10)</c>, <c>nvarchar(20)</c> and <c>nvarchar(1)</c> columns on
+    /// <c>dbo.TabModules</c>. Both legs below assert that the write is accepted.
     /// </para>
     /// <para>
-    /// The write goes to the module route because these fields are submitted on the update request, but the
-    /// READ goes to the settings route, because the settings projection is the contract that owns the
-    /// placement scope. The detail projection deliberately does not restate the appearance columns - they
-    /// exist to drive server-side markup, which this migration excludes - so this test crosses the two
-    /// contracts on purpose and would be asserting nothing if it read the appearance back from the detail
-    /// contract.
+    /// They are deliberately WRITE-ONLY in the target, which is why this test does not read them back. They
+    /// exist solely to drive server-side markup generation, and that is excluded from this migration, so no
+    /// response contract carries them: not the detail projection, and not the settings projection, which
+    /// carries the two identifiers and the two key-value settings maps only. Their absence from the settings
+    /// response is asserted positively below, so a later change that quietly reintroduces them fails here.
+    /// The corresponding unit test pins the same asymmetry against all three contracts at once.
+    /// </para>
+    /// <para>
+    /// The second leg still exercises the whole-row replacement semantics: omitting an appearance field
+    /// clears the column rather than preserving it, because the legacy screen posted an empty text box as an
+    /// empty value. Since no response contract reads the column back, what is asserted here is that the
+    /// clearing write is accepted rather than rejected - the cleared VALUE is verified by the unit-level
+    /// <c>ApplyUpdate</c> tests, which observe the entity directly.
     /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModule_RoundTripsTheAppearanceFieldsAndClearsAnOmittedOne()
+    public async Task UpdateModule_AcceptsTheAppearanceFieldsAndExposesThemOnNoResponseContract()
     {
         using HttpClient client = _fixture.CreateHostClient();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
@@ -537,7 +618,9 @@ public sealed class ModuleApiTests
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the legacy screen edited these columns, so the write path must keep accepting them");
 
         using HttpResponseMessage reread = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -545,28 +628,30 @@ public sealed class ModuleApiTests
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ModuleSettingsDto persisted = await ReadSettingsAsync(reread);
-        persisted.Alignment.Should().Be("right");
-        persisted.Color.Should().Be("#003366", "the column holds 20 characters, so a hex triplet fits");
-        persisted.Border.Should().Be("1", "the column holds exactly one character");
-        persisted.DisplayPrint.Should().BeFalse(
-            "the column defaults to set, so a stored false proves the submitted value reached it rather "
-            + "than the default being read back");
-        persisted.DisplaySyndicate.Should().BeFalse();
+        persisted.ModuleId.Should().Be(created.ModuleId);
+        persisted.TabModuleId.Should().Be(
+            created.TabModuleId,
+            "the settings contract identifies the placement whose scoped settings it carries");
+
+        foreach (string appearance in new[]
+        {
+            "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
+        })
+        {
+            typeof(ModuleSettingsDto).GetProperty(appearance).Should().BeNull(
+                $"the placement's {appearance} drives server-side markup, which this migration excludes, "
+                + "so the settings contract carries the two identifiers and the two settings maps only");
+        }
 
         using HttpResponseMessage cleared = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
             new UpdateModuleRequest { ModuleTitle = created.ModuleTitle, PaneName = "ContentPane" },
             ApiTestFixture.Json);
 
-        cleared.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        using HttpResponseMessage afterClear = await client.GetAsync(
-            ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
-
-        ModuleSettingsDto emptied = await ReadSettingsAsync(afterClear);
-        emptied.Alignment.Should().BeNull();
-        emptied.Color.Should().BeNull();
-        emptied.Border.Should().BeNull();
+        cleared.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "omitting an appearance field clears the column, which is a legitimate edit rather than an "
+            + "invalid request");
     }
 
     /// <summary>

@@ -277,10 +277,16 @@ CREATE TABLE [dbo].[Roles] (
 GO
 
 
+-- SettingValue is nvarchar(2000), the TERMINAL width, not the baseline 256. 01.00.00 line 353 created
+-- the column nvarchar(256) NOT NULL, but 01.00.08 lines 6248-6286 destroy and rebuild the table through
+-- a Tmp_ModuleSettings copy that widens it to nvarchar(2000) NOT NULL at line 6256, and no later script
+-- narrows it. The terminal AddModuleSetting and UpdateModuleSetting procedures declare
+-- @SettingValue nvarchar(2000) (01.00.08 line 6295, 02.00.00 lines 4147 and 4171), so this fixture must
+-- match 2000 or it would reject values a real installation stores.
 CREATE TABLE [dbo].[ModuleSettings] (
     [ModuleID] int NOT NULL,
     [SettingName] nvarchar(50) NOT NULL,
-    [SettingValue] nvarchar(256) NOT NULL,
+    [SettingValue] nvarchar(2000) NOT NULL,
     CONSTRAINT [PK_ModuleSettings] PRIMARY KEY ([ModuleID], [SettingName]),
     CONSTRAINT [FK_ModuleSettings_Modules] FOREIGN KEY ([ModuleID]) REFERENCES [dbo].[Modules] ([ModuleID]) ON DELETE CASCADE
 );

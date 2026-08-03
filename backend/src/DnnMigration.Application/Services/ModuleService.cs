@@ -124,10 +124,22 @@ public sealed class ModuleService : IModuleService
     private const int SettingNameMaximumLength = 50;
 
     /// <summary>
-    /// Maximum length of <c>dbo.ModuleSettings.SettingValue</c>, declared <c>nvarchar(256)</c> by the
-    /// 01.00.00 create script and never widened by the later chain.
+    /// Maximum length of <c>dbo.ModuleSettings.SettingValue</c>, declared <c>nvarchar(2000)</c> by the
+    /// terminal schema.
     /// </summary>
-    private const int ModuleSettingValueMaximumLength = 256;
+    /// <remarks>
+    /// MIGRATION: <b>the width is 2000, and an earlier revision of this constant said 256.</b> The
+    /// 01.00.00 create script did declare <c>nvarchar(256)</c> at line 353, but the later chain does
+    /// widen it: <c>01.00.08.SqlDataProvider</c> lines 6248-6286 destroy and rebuild the whole table
+    /// through a <c>Tmp_ModuleSettings</c> copy declaring <c>SettingValue nvarchar(2000) NOT NULL</c>
+    /// at line 6256, and no subsequent script narrows it. The terminal writers agree - both
+    /// <c>UpdateModuleSetting</c> (<c>01.00.08</c> line 6295) and, in templated form,
+    /// <c>AddModuleSetting</c> and <c>UpdateModuleSetting</c> (<c>02.00.00</c> lines 4147 and 4171)
+    /// declare <c>@SettingValue nvarchar(2000)</c>. Validating at 256 refused values the legacy
+    /// application accepted and stored, which Minimal Change Clause item 3 forbids, so the two stores
+    /// turn out to permit the same width rather than differing ones.
+    /// </remarks>
+    private const int ModuleSettingValueMaximumLength = 2000;
 
     /// <summary>
     /// Maximum length of <c>dbo.TabModuleSettings.SettingValue</c>, declared <c>nvarchar(2000)</c> by
@@ -397,7 +409,7 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.ListAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         ModuleDefinition? definition = definitions
             .FirstOrDefault(candidate => candidate.ModuleDefinitionId == request.ModuleDefId);
@@ -1253,7 +1265,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.ListAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         var names = new Dictionary<int, string>(definitions.Count);
         foreach (ModuleDefinition definition in definitions)
@@ -1290,7 +1302,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.ListAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         var packages = new Dictionary<int, DesktopModule?>();
         var catalogue = new List<ModuleDefinitionDto>(definitions.Count);
@@ -1302,7 +1314,7 @@ public sealed class ModuleService : IModuleService
             if (!packages.TryGetValue(definition.DesktopModuleId, out DesktopModule? package))
             {
                 package = await _definitions
-                    .GetDesktopModuleAsync(definition.DesktopModuleId, cancellationToken)
+                    .GetDesktopModuleByIdAsync(definition.DesktopModuleId, cancellationToken)
                     .ConfigureAwait(false);
 
                 packages[definition.DesktopModuleId] = package;
@@ -1323,7 +1335,7 @@ public sealed class ModuleService : IModuleService
     private async Task<DesktopModule?> ReadPackageAsync(Module module, CancellationToken cancellationToken)
     {
         ModuleDefinition? definition = await _definitions
-            .GetAsync(module.ModuleDefinitionId, cancellationToken)
+            .GetModuleDefinitionByIdAsync(module.ModuleDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (definition is null)
@@ -1332,7 +1344,7 @@ public sealed class ModuleService : IModuleService
         }
 
         return await _definitions
-            .GetDesktopModuleAsync(definition.DesktopModuleId, cancellationToken)
+            .GetDesktopModuleByIdAsync(definition.DesktopModuleId, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -1498,7 +1510,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.ListAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         ModuleDefinition? siteSettings = definitions.FirstOrDefault(candidate =>
             string.Equals(candidate.FriendlyName, SiteSettingsDefinitionName, StringComparison.OrdinalIgnoreCase));

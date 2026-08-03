@@ -332,7 +332,7 @@ public class ModuleServiceTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Items.Should().BeEmpty();
         harness.Definitions.Verify(
-            d => d.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -676,7 +676,7 @@ public class ModuleServiceTests
         outcome.Reason!.Code.Should().Be(RequestInvalidCode);
         outcome.Reason!.Message.Should().Be("The start date must not be later than the end date.");
         harness.Definitions.Verify(
-            d => d.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -1623,7 +1623,14 @@ public class ModuleServiceTests
     [InlineData("placement", "blank-name", "A placement setting name must not be blank.")]
     [InlineData("module", "long-name", "The module setting name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds 50 characters.")]
     [InlineData("placement", "long-name", "The placement setting name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds 50 characters.")]
-    [InlineData("module", "long-value", "The value of the module setting \"editor\" exceeds 256 characters.")]
+    // MIGRATION: both scopes are bounded at 2000, not one at 256 and the other at 2000. The module
+    // table's baseline column was nvarchar(256) (01.00.00 line 353), but 01.00.08 lines 6248-6286
+    // rebuild the table with SettingValue nvarchar(2000) NOT NULL (line 6256) and nothing narrows it
+    // again; the terminal AddModuleSetting and UpdateModuleSetting procedures declare
+    // @SettingValue nvarchar(2000) (01.00.08 line 6295, 02.00.00 lines 4147 and 4171). An earlier
+    // revision of this row expected 256 and therefore pinned a bound that refused values the legacy
+    // application accepted, which Minimal Change Clause item 3 forbids.
+    [InlineData("module", "long-value", "The value of the module setting \"editor\" exceeds 2000 characters.")]
     [InlineData("placement", "long-value", "The value of the placement setting \"editor\" exceeds 2000 characters.")]
     public async Task UpdateModuleSettings_RefusesAMalformedSetting(
         string scope,
@@ -1647,7 +1654,7 @@ public class ModuleServiceTests
                 target[new string('a', 51)] = "value";
                 break;
             default:
-                target["editor"] = new string('v', scope == "module" ? 257 : 2001);
+                target["editor"] = new string('v', 2001);
                 break;
         }
 
@@ -1948,7 +1955,7 @@ public class ModuleServiceTests
         await harness.Service.ListModuleDefinitionsAsync(PortalId, CancellationToken.None);
 
         harness.Definitions.Verify(
-            d => d.GetDesktopModuleAsync(DesktopModuleId, It.IsAny<CancellationToken>()),
+            d => d.GetDesktopModuleByIdAsync(DesktopModuleId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -2748,13 +2755,13 @@ public class ModuleServiceTests
                 .Callback<TabModuleSetting>(harness.RemovedPlacementSettings.Add);
 
             harness.Definitions
-                .Setup(d => d.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+                .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.DefinitionCatalogue);
             harness.Definitions
-                .Setup(d => d.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(d => d.GetModuleDefinitionByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupDefinition);
             harness.Definitions
-                .Setup(d => d.GetDesktopModuleAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(d => d.GetDesktopModuleByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int desktopModuleId, CancellationToken _) =>
                     harness.Packages.TryGetValue(desktopModuleId, out DesktopModule? found) ? found : null);
 

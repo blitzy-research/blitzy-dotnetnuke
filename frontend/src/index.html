@@ -1,56 +1,233 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
+    <meta charset="utf-8">
+
+    <!--
+      The encoding declaration is the first element in the head, and nothing - not even a
+      comment - precedes it. The parser is required to find it inside the first 1024 bytes
+      of the document, and a comment placed above it spends part of that budget for no
+      benefit. Everything that explains this document is therefore written below it.
+    -->
+
     <title>DotNetNuke Administration</title>
 
     <!--
-      The document base, required by the Angular router: every route the router
-      builds is resolved against it. It is deliberately the site root, because
-      docker/nginx.conf serves the bundle from the server root and falls back to
-      this document for every unmatched path (`try_files $uri $uri/ /index.html`),
-      which is what allows a deep link such as /portals/0/settings to be reached
-      directly rather than only by navigating from the root.
-    -->
-    <base href="/" />
+      MIGRATION: this document replaces Website/Default.aspx in full. That page was less a
+      document than a set of injection points, and each one has a named successor here:
 
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+        * a server-computed doctype literal             -> the fixed doctype above
+        * a root element whose namespace and language
+          were both interpolated per request            -> the fixed root element above
+        * six empty head meta elements bound to
+          server controls                               -> dropped: no static content to carry
+        * StylePlaceholder plus the CSS placeholder,
+          filled by ManageStyleSheets                   -> builder-injected bundle tags
+        * SkinPlaceHolder, filled by LoadSkin           -> the application shell, mounted below
+        * a server-side dnn:Form that posted as
+          multipart form data                           -> dropped with the postback lifecycle
+        * a hidden SkinError label                      -> dropped with the postback lifecycle
+        * two hidden inputs carrying scroll position
+          and a packed client-variable string           -> dropped with the postback lifecycle
+
+      The last three are not omissions. They exist only to serve the postback and view-state
+      lifecycle, and the target has no equivalent of either: transient screen state lives in
+      the feature signal stores, and every exchange with the server is a JSON request over
+      the versioned API. Reproducing an empty form here would carry the shape of a mechanism
+      whose substance is gone.
+
+      This file is short because the legacy page was short. Its thirty lines of markup did
+      almost nothing; the work was all in the seven-hundred-line code-behind beside it.
+    -->
 
     <!--
-      Referrer policy is declared in the document rather than left to the default
-      so that a navigation away from an administration screen cannot leak a path
-      that carries a tenant, account or page identifier to a third-party origin.
-      The remaining security headers - content security policy, frame options,
-      content-type options - are deliberately NOT declared here: they belong on
-      the HTTP response, which the reverse proxy owns, and a meta element cannot
-      express several of them at all (frame-ancestors and X-Frame-Options are
-      ignored when delivered by meta).
-    -->
-    <meta name="referrer" content="strict-origin-when-cross-origin" />
+      MIGRATION: the title above is STATIC, because the legacy document declared no title
+      element at all. It was composed on the server for every request - the portal name,
+      then a separator, then the active page's name, unless that page carried a title of its
+      own - and pushed onto the page header late in the lifecycle. Nothing in this document
+      can reproduce that, because no portal and no page are resolved at the moment it is
+      served: it is the same bytes for every route, which is exactly what the reverse proxy's
+      fallback depends on. Per-screen titles are a routed concern and belong to the router's
+      title strategy; this value is the document-level fallback, and it does real work - it
+      is the accessible name of the browser tab and the first thing a screen reader
+      announces, both of which happen before the application has started.
 
-    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+      MIGRATION: for the same reason the document language is declared STATICALLY as English
+      on the root element, where the legacy page interpolated a per-portal language code.
+      Localisation administration and multi-language content are out of scope for this
+      migration and no translation runtime is installed, so a computed value would have
+      nothing to compute from. The legacy resource files are read for their English wording
+      only. A writing-direction attribute is deliberately absent as well: declaring one
+      would imply a bidirectional capability that nothing here provides.
+    -->
+
+    <!--
+      The document base, and it is required rather than conventional. The router builds every
+      URL it produces relative to this value, and the reverse proxy serves the bundle from
+      the server root and falls back to this document for every path it cannot match on
+      disk. Those two facts together are what allow a deep link such as /portals/0/settings
+      to be opened directly instead of only reached by navigating out from the root - and
+      they are why this element has to survive into the built document, not merely exist in
+      the source.
+    -->
+    <base href="/">
+
+    <!--
+      Without this the layout is decided by a mobile browser's fallback viewport - roughly
+      980 logical pixels, scaled down to fit - which silently defeats every breakpoint the
+      shared mixins declare, because the media queries then never see the real device width.
+
+      The content list is deliberately just the width and the initial scale. Pinch-zoom is
+      not suppressed and no ceiling is placed on the scale factor: either would fail WCAG
+      1.4.4, and neither buys anything a fluid layout needs.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!--
+      Referrer policy is stated in the document rather than left to the browser default, so
+      that navigating away from an administration screen cannot leak a path carrying a
+      tenant, account or page identifier to a third-party origin. The value deliberately
+      MATCHES the response header the reverse proxy already emits, so the two layers cannot
+      drift apart; it is declared here as well because the development server and the test
+      harness both serve this document with no proxy in front of it.
+
+      It is also the ONLY such policy declared here, and the boundary is deliberate. A
+      content security policy, frame options and content-type options all belong on the HTTP
+      response, which the proxy owns and already sets. Two of them are ignored outright when
+      delivered by a meta element, and a policy declared in two layers is a policy that can
+      disagree with itself.
+    -->
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+
+    <!--
+      MIGRATION: the icon is STATIC, and the legacy per-portal mechanism is deliberately not
+      ported. The legacy document declared no icon link either - ManageFavicon in
+      Website/Default.aspx.vb (declared at L410-L427, invoked at L595-L596) probed each
+      portal's own home directory for an icon file, cached the resolved path per portal, and
+      appended a link element to the page header only when it found one. There is no portal
+      to resolve when this document is served, so one icon ships as a build asset instead.
+      It is the byte-for-byte legacy icon, so the browser tab still looks like the platform
+      being administered.
+
+      The reference is BARE on purpose, and this is the one value in the file that a
+      plausible-looking mistake would break silently. angular.json declares the asset input
+      as the workspace-root public folder with no output key, so the application builder
+      copies its contents FLATTENED to the output root - the file is served from the origin
+      root, beside this document. Any path-qualified reference would resolve to a path that
+      does not exist, and the proxy serves icon requests with a one-year immutable cache, so
+      a wrong reference would be cached wrong for a year.
+    -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+
+    <!--
+      MIGRATION: the five static document and crawler conventions the legacy head declared
+      are carried forward verbatim. They were the only meta elements on that page with
+      literal content of their own, so they are the only ones that CAN be carried; the six
+      that preceded them were empty shells bound to server controls, with nothing in them to
+      port.
+
+      One deliberate drop: the legacy page-transition meta, an interstitial visual effect
+      that only ever worked in Internet Explorer and that no engine still in service
+      implements, is NOT carried. It would be inert markup describing a behaviour that
+      cannot occur.
+
+      A note for whoever revisits the crawler directive: it is reproduced exactly as the
+      legacy portal declared it, and it is inert in practice, because a crawler fetching
+      this document receives an empty mount point - the screens are rendered in the browser
+      and every API route behind them requires a bearer token. Excluding an administration
+      console from indexing is nonetheless a reasonable thing to want. It is a deployment
+      policy rather than a migration, so it belongs in one place, as a robots response
+      header on the proxy alongside the other response-level policies, where it would cover
+      every served path instead of this one document. It is not a silent edit here.
+    -->
+    <meta name="RESOURCE-TYPE" content="DOCUMENT">
+    <meta name="DISTRIBUTION" content="GLOBAL">
+    <meta name="ROBOTS" content="INDEX, FOLLOW">
+    <meta name="REVISIT-AFTER" content="1 DAYS">
+    <meta name="RATING" content="GENERAL">
+
+    <!--
+      MIGRATION: nothing in this head links the compiled global styles or the application
+      modules, and the absence is the point. The legacy StylePlaceholder and CSS pair was
+      filled at runtime by ManageStyleSheets, which assembled an ordered, cached cascade on
+      every request and ran twice per page, straddling the skin injection. The Angular
+      application builder replaces the whole of that: it injects the hashed global style
+      link and the hashed module tags into this document at build time, from the styles and
+      browser entries in angular.json. Writing either by hand would load the bundle twice,
+      and hand-writing a hashed filename would break on the next build.
+
+      For the same reason there is no preload or preconnect hint - the builder emits its own
+      module preload hints - no analytics tag, no external font or icon reference, and no
+      service worker registration, which the build target does not configure.
+    -->
   </head>
 
   <!--
-    No class, no inline style and no theme attribute on the body element. The
-    body box is owned entirely by src/styles/_reset.scss, and the application
-    shell's grid is owned by the .shell rule in src/styles/_layout.scss, which
-    the shell component carries on its own host element. Declaring anything here
-    would put a second, competing definition of the page frame outside the
-    stylesheet layer that owns it.
+    No class, no inline style and no theme attribute on the body element. The body box is
+    owned entirely by src/styles/_reset.scss, and the console's frame is owned by the .shell
+    rule in src/styles/_layout.scss, which the shell component carries on its own host
+    element. Declaring anything here would put a second, competing definition of the page
+    frame outside the layer that owns it.
   -->
   <body>
     <!--
-      The single application root. AppComponent's selector.
+      MIGRATION: the single application root, and the direct successor to SkinPlaceHolder.
+      The legacy page resolved a skin package per request, loaded it as a control and added
+      it to that placeholder; the target's chrome is one static application shell component
+      mounted through this element. Note that this generation of the platform used skins
+      rather than master pages - there is no master page anywhere in the legacy tree - so
+      the shell replaces a runtime composition, not a compile-time layout.
 
-      The element is deliberately EMPTY: no spinner, no skeleton and no
-      "JavaScript is required" fallback is placed inside it. Angular replaces the
-      element's content on bootstrap, so anything written here would be visible
-      only for the interval before the bundle executes, and the production build
-      is a single hashed bundle served from the same origin with a one-year
-      immutable cache - an interval too short to be worth a second, unstyled
-      rendering path that no specification could then cover.
+      The element name is not a free choice: angular.json sets the workspace selector prefix
+      for this project, the root component declares the matching selector, and src/main.ts
+      bootstraps that component into this element. The closing tag is explicit because a
+      custom element is not void - the self-closing spelling is invalid HTML and browsers
+      parse it as an unclosed start tag, swallowing everything that follows.
+
+      It is deliberately EMPTY: no spinner, no skeleton and no fallback text. Angular
+      replaces its content on bootstrap, so anything written here would be visible only for
+      the interval before the bundle executes, and the production bundle is a hashed file
+      served from this same origin under a one-year immutable cache. The no-JavaScript case
+      is handled properly below, where it cannot flash. No role, aria attribute or tabindex
+      is placed on it either: it is a mount point rather than a widget, and the landmarks
+      belong to the shell it mounts.
     -->
     <app-root></app-root>
+
+    <!--
+      The no-JavaScript fallback, and a real one. The legacy equivalent was an empty element
+      that communicated nothing - which cost that page little, because the server rendered a
+      complete document regardless. Here it is the entire degraded experience: with scripting
+      turned off this document is all the browser has, and the mount point above stays empty.
+
+      The wording states the consequence and gives the reader something to do. The markup
+      reuses the global surface classes only - the width cap, the panel and its padded slot -
+      so the message is legible without one line of new or inline style, and it stays legible
+      even if the global style bundle itself fails to load, because the fallback then degrades
+      to the browser's own heading and paragraph rendering.
+
+      When scripting IS enabled the browser parses everything inside this element as text and
+      never builds the nodes, so the heading below cannot compete with the shell's own for the
+      document's single top-level heading.
+    -->
+    <noscript>
+      <div class="layout-container">
+        <div class="panel">
+          <div class="panel__body">
+            <h1>JavaScript must be enabled</h1>
+            <p>
+              This administration console renders every screen in the browser - portals and
+              their aliases, pages, modules, users, roles and permissions. With JavaScript
+              turned off the page stays empty and no administration task can be completed.
+            </p>
+            <p>
+              Enable JavaScript for this address and reload the page. If a browser extension
+              or a managed browser policy is blocking it, ask whoever administers this
+              installation to allow scripting for this site.
+            </p>
+          </div>
+        </div>
+      </div>
+    </noscript>
   </body>
 </html>

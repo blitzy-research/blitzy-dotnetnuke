@@ -163,9 +163,9 @@ public sealed class PortalDesktopModule : Entity<int>
     //
     // MIGRATION: required is not the same as loaded, and no caller may confuse the two. A reference is
     // populated only on a read that asked for it, so load state is the repository's decision and is
-    // never inferred from a reference: ModuleDefinitionRepository.ListPortalGrantsAsync includes the
-    // package deliberately, so that naming what has been granted costs no further round trip. Read the
-    // foreign-key property above whenever the identity alone will do.
+    // never inferred from a reference: ModuleDefinitionRepository.GetPortalDesktopModulesAsync includes
+    // the package deliberately, so that naming what has been granted costs no further round trip. Read
+    // the foreign-key property above whenever the identity alone will do.
 
     /// <summary>
     /// Gets or sets the portal granted the entitlement - the principal identified by

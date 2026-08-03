@@ -1,4 +1,3 @@
-using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Http;
@@ -184,7 +183,7 @@ internal sealed class PortalAliasResolutionMiddleware
 
         bool unknownHost = string.Equals(
             reasonCode,
-            IPortalAliasRepository.NotFoundReasonCode,
+            IPortalContextHolder.NotFoundReasonCode,
             StringComparison.Ordinal);
 
         // Structured, so the host name is a queryable property rather than text spliced into a message.

@@ -13,10 +13,12 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 /// <c>UserProfile</c> in the singular, so the mapping is stated rather than inferred.
 /// </para>
 /// <para>
-/// The table stores each value twice over: <c>PropertyValue</c> is <c>nvarchar(3750)</c> and
+/// The table gives each value two possible homes: <c>PropertyValue</c> is <c>nvarchar(3750)</c> and
 /// <c>PropertyText</c> is <c>ntext</c>, with the long column used when a value exceeds the short
-/// one. The entity exposes a computed member that prefers the long column, and that member is
-/// excluded from the mapping because it derives from the two that are mapped.
+/// one. Both are mapped raw and the entity derives nothing from them, so there is no computed
+/// member to exclude here; the effective value - the bounded column when it is not null, the
+/// overflow column otherwise, exactly as the legacy <c>GetUserProfile</c> procedure returns it - is
+/// projected by the Application mapper instead.
 /// </para>
 /// <para>
 /// Both foreign keys cascade on delete, so deleting an account or a definition removes the values
@@ -78,8 +80,6 @@ internal sealed class UserProfileValueConfiguration : IEntityTypeConfiguration<U
             .HasColumnName("LastUpdatedDate")
             .HasColumnType("datetime")
             .IsRequired();
-
-        builder.Ignore(v => v.EffectiveValue);
 
         builder.HasOne(v => v.User)
             .WithMany(u => u.UserProfileValues)

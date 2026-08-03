@@ -50,15 +50,48 @@ namespace DnnMigration.Domain.Abstractions.Services;
 public interface IPortalContextHolder
 {
     /// <summary>
+    /// The failure code reported when no configured alias matches the supplied host name exactly.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Declared here rather than on the alias repository because it names an outcome of
+    /// <see cref="EnsureResolvedAsync"/> rather than of a persistence read. The repository answers "which
+    /// aliases carry this host name" and returns however many there are; deciding that nought matches is a
+    /// refusal - as opposed to an empty result a caller might legitimately tolerate - is this contract's
+    /// judgement, so the vocabulary for it belongs to this contract too.
+    /// </para>
+    /// <para>
+    /// Distinct from <see cref="AmbiguousReasonCode"/> so that a caller can tell "this host is not
+    /// configured" from "this host is configured more than once". Both are refusals; only their diagnostics
+    /// differ, and neither is disclosed to the caller verbatim - the host name is attacker-supplied text
+    /// and belongs in structured internal diagnostics rather than in a response body.
+    /// </para>
+    /// </remarks>
+    public const string NotFoundReasonCode = "PORTAL_ALIAS_NOT_FOUND";
+
+    /// <summary>
+    /// The failure code reported when more than one configured alias matches the supplied host name
+    /// exactly.
+    /// </summary>
+    /// <remarks>
+    /// Reported rather than resolved. The legacy statement collapsed this case with <c>min(PortalID)</c>
+    /// and so served one tenant's content under another tenant's host name; refusing is the only outcome
+    /// that cannot silently cross a tenant boundary. An installation that provokes this result has a data
+    /// defect an operator must correct - the schema's unique constraint on the host-name column should make
+    /// it unreachable - and the ambiguity is recorded in the diagnostics so they can.
+    /// </remarks>
+    public const string AmbiguousReasonCode = "PORTAL_ALIAS_AMBIGUOUS";
+
+    /// <summary>
     /// The failure code reported when an alias resolved to a portal whose stored configuration is
     /// missing a fact that the tenant snapshot requires.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Distinct from the alias repository's not-found and ambiguous codes because the cause and the
-    /// remedy are different: the host name is configured correctly and matched exactly, but the portal it
-    /// names is itself incompletely set up - no administrator role designated, or a designated role that
-    /// no longer exists, for instance.
+    /// Distinct from <see cref="NotFoundReasonCode"/> and <see cref="AmbiguousReasonCode"/> because the
+    /// cause and the remedy are different: the host name is configured correctly and matched exactly, but
+    /// the portal it names is itself incompletely set up - no administrator role designated, or a
+    /// designated role that no longer exists, for instance.
     /// </para>
     /// <para>
     /// This is a refusal rather than a snapshot with holes in it, and the reason is the tenant contract's

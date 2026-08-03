@@ -188,7 +188,17 @@ public static class UserMappings
             properties.Add(new UserProfileValueDto
             {
                 PropertyDefinitionId = definition.PropertyDefinitionId,
-                PropertyValue = hasValue ? stored!.EffectiveValue ?? string.Empty : string.Empty,
+
+                // MIGRATION: the coalesce is performed here rather than on the entity, which exposes
+                // the two storage columns raw and no derived member. The order reproduces the legacy
+                // read procedure GetUserProfile, which returns a single column aliased PropertyValue
+                // computed as "case when (PropertyValue Is Null) then PropertyText else PropertyValue
+                // end" (04.00.04.SqlDataProvider line 1592, identical at 03.02.03 line 1533): the
+                // bounded column wins whenever it is not SQL NULL, and the ntext overflow column is
+                // the fallback. Null-coalescing is the exact equivalent because it tests for null
+                // alone - an empty string is a stored value, not an absence, so PropertyValue = ""
+                // yields "" and must never fall through to PropertyText.
+                PropertyValue = hasValue ? stored!.PropertyValue ?? stored!.PropertyText ?? string.Empty : string.Empty,
                 Visibility = hasValue ? stored!.Visibility : defaultVisibility,
                 LastUpdatedDate = hasValue ? stored!.LastUpdatedDate : null,
                 Definition = ToDto(definition, defaultVisibility),

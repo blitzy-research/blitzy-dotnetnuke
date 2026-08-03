@@ -561,6 +561,87 @@ can serve it.
 `backend/src/DnnMigration.Domain/Abstractions/Repositories/IPortalAliasRepository.cs`,
 `backend/src/DnnMigration.Api/Middleware/PortalAliasResolutionMiddleware.cs`.
 
+### The `-1` "all portals" alias wildcard becomes an explicit member
+
+**Legacy behaviour.** One provider member served two semantically different
+questions, because the wildcard was baked into the SQL predicate itself.
+`GetPortalAliasByPortalID` at
+`Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider:L3861`
+reads `where (PortalID = @PortalID or @PortalID = -1)`, so passing `-1` returned
+**every alias in the installation** rather than the aliases of the portal keyed
+`-1`. The caller that wanted the whole inventory obtained it exactly that way:
+`Library/Components/Portal/PortalAliasController.vb:L86-L88` is
+`GetPortalAliases()` returning `GetPortalAliasByPortalID(-1)`.
+
+**Why that is dangerous here specifically.** `-1` carries **three unrelated
+meanings** in this codebase, and the legacy helper could not tell them apart.
+It is the absence sentinel `Null.NullInteger`
+(`Library/Components/Shared/Null.vb:L41-L45`), and `Null.IsNull(-1)` returns
+`True` at `:L208-L211`. It is a **genuine portal key**, because `Portals.PortalID`
+is declared `IDENTITY(-1, 1)` at `01.00.00.SqlDataProvider:L77`. And it is this
+wildcard. A contract that accepted `-1`, or a nullable stand-in for it, would
+leave every call site ambiguous as to which of the three was meant.
+
+**Target behaviour.** The two questions are **two members**.
+`GetByPortalIdAsync(int portalId, …)` returns the aliases of exactly the portal
+bearing that identifier - including when the identifier legitimately is `-1` or
+`0` - and `GetAllAsync(…)` returns every alias across every portal and takes no
+identifier at all. **`GetByPortalIdAsync(-1)` means the portal whose key is `-1`;
+it does not mean "all portals".** No magic value, and no nullable discriminator
+standing in for one, appears in the contract.
+
+**Why the difference is deliberate.** A shared member distinguished only by a
+special argument value hides the caller's intent at the call site: a reader must
+know that one particular integer is special before the code can be understood,
+and a mistyped identifier silently widens a tenant-scoped query into an
+installation-wide one. Splitting the member makes the intent syntactic, so the
+compiler and the reader both see which question was asked. The Application layer
+still offers an optional scope on its own listing endpoint, but it resolves that
+option into one of the two explicit reads rather than forwarding a sentinel.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IPortalAliasRepository.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/PortalAliasRepository.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`.
+
+### The install-time alias rewrite is not carried forward
+
+**Legacy behaviour.** The provider declared two update members whose names are
+**swapped relative to the procedures they execute**, which makes the shape easy to
+misread. `UpdatePortalAlias` at
+`Library/Components/Providers/Data/DataProvider.vb:L359` takes a single string and
+executes the procedure named `UpdatePortalAliasOnInstall`
+(`Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L1312-L1314`),
+whose body at `02.02.02.SqlDataProvider:L4069` is
+`update PortalAlias set HTTPAlias = @PortalAlias where HTTPAlias = '_default'` -
+a blind rewrite of the placeholder row shipped with a fresh database.
+`UpdatePortalAliasInfo` at `:L360` is the **real** per-row update: it executes the
+procedure actually named `UpdatePortalAlias`
+(`SqlDataProvider.vb:L1315-L1317`), whose body at
+`02.02.02.SqlDataProvider:L4096` updates one identified row.
+
+**Target behaviour.** The install-time member is **omitted**, and the per-row
+member is surfaced as `UpdateAsync`. Its only caller in the entire repository is
+the fresh-install branch at `Library/Components/Portal/PortalSettings.vb:L1128`,
+guarded by a test that the alias table holds nothing but the `_default`
+placeholder, and installation is out of scope for this migration.
+
+**Why the difference is deliberate.** The omitted member matches rows **by
+content rather than by key** and rewrites every row whose host name is the
+placeholder. Outside the first-run condition it is unsafe by construction, and
+retaining it would put a key-less bulk rewrite of the tenant-routing table on a
+contract whose every other member addresses exactly one row.
+
+**Operational consequence.** Provisioning the first alias of a new installation
+is an installer or operator task, not something the API performs. An installation
+whose alias table still holds the shipped `_default` placeholder must have it set
+by whatever provisions the database, after which every later change goes through
+`UpdateAsync`.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IPortalAliasRepository.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/PortalAliasRepository.cs`.
+
 ### Tenant context must be complete, and a resolution failure ends the request
 
 **Legacy behaviour.** The per-request `PortalSettings` object was assembled from
@@ -1196,6 +1277,54 @@ prescribe, so that the code and this document cannot drift apart.
 **Annotated in code at.**
 `backend/src/DnnMigration.Domain/Entities/ModuleDefinition.cs`,
 `backend/src/DnnMigration.Domain/Entities/DesktopModule.cs`.
+
+### `TabModule.DisplaySyndicate`: the legacy object default and the store default disagree, and both are kept
+
+**Legacy behaviour.** The two answers to "what does a new placement syndicate?"
+were never the same, and the legacy system ran with both. In code,
+`Library/Components/Modules/ModuleInfo.vb` sets `_DisplaySyndicate = False` in its
+constructor (`L124`) and, independently, in its `Initialize(PortalId)` routine
+(`L746`). In the database, the column was added as `DisplaySyndicate bit NOT NULL
+CONSTRAINT DF_{objectQualifier}TabModules_DisplaySyndicate DEFAULT (1)` by
+`03.00.08.SqlDataProvider:L158`; `03.01.01.SqlDataProvider` then dropped that
+constraint by catalogue lookup (`L1206-L1213`), re-declared the column `NOT NULL`
+(`L1217`) and re-added `DEFAULT (1)` (`L1223`), so the store default of `1` — that
+is, *true* — survives into the terminal schema, asserted twice. An object the
+legacy application constructed therefore did **not** syndicate, while a row any
+other writer inserted without naming the column **did**.
+
+**Target behaviour.** Each side keeps its own answer. The entity initialises
+`DisplaySyndicate` to `false`, reproducing the constructor. The entity
+configuration declares the column `bit NOT NULL` and deliberately does **not**
+configure a default value, leaving the existing `DF_TabModules_DisplaySyndicate`
+constraint in the database untouched. Every write that goes through this model
+sends an explicit value, so the store default is reached only by a writer outside
+the model — a stored procedure, an upgrade script, a hand-written statement — which
+is exactly the population that saw `1` before.
+
+**Why the difference is deliberate.** It is not one difference but the *absence* of
+one: collapsing the mismatch would create a behavioural change on whichever side
+lost. Initialising the entity to `true` would make placements created through the
+API syndicate where every legacy-created placement did not. Configuring the column
+default to `0` would alter the schema, which the database directive forbids, and
+would change what an out-of-model insert does. The `false` value is also not the
+`Null.NullBoolean` sentinel leaking through: `DisplayTitle` and `DisplayPrint` sit
+either side of it in both legacy routines and are `True` in both, so all three
+assignments are business defaults rather than null markers. `DisplayTitle` and
+`DisplayPrint` need no note of their own, because for them the constructor and the
+store agree on *true*.
+
+**Operational consequence.** A placement created through `POST /api/v1/.../modules`
+without an explicit syndication choice does not offer the syndication affordance,
+matching the legacy administration screens. Existing rows are read back exactly as
+stored and are unaffected. Anyone reconciling the two defaults in future must
+change both sides in the same commit and record the decision here; changing one
+alone silently moves behaviour for one population of rows.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Entities/TabModule.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Configurations/TabModuleConfiguration.cs`.
+
 
 ### `Portal.HostFee` is modelled as an exact decimal: a deliberate precision correction
 
@@ -4426,3 +4555,416 @@ deserialised object, since a typed round-trip cannot observe this class of defec
 `PortalApiTests.NumericEnumerations_TravelAsTheirStoredIntegers` requires `userRegistration` and
 `bannerAdvertising` to be numeric and forbids the member spellings a general converter would
 produce.
+
+### `backend/src/DnnMigration.Application/Dtos/Role/CreateRoleRequest.cs` — the role-creation request contract
+
+**Legacy source:** `Website/admin/Security/editroles.ascx` (note the lower-case file name; its
+code-behind `EditRoles.ascx.vb` is capitalised) declares fourteen input controls; the save path at
+`EditRoles.ascx.vb` lines 232-248 assigns thirteen of their values onto a new `RoleInfo` and hands
+it to `RoleController.AddRole` (`Library/Components/Security/Roles/RoleController.vb` line 100).
+Legacy CLR types come from `Library/Components/Security/Roles/RoleInfo.vb` (backing fields at lines
+43-57), the sentinel contract from `Library/Components/Shared/Null.vb`, and the terminal column
+types from the upgrade chain under
+`Website/Providers/DataProviders/SqlDataProvider/`.
+
+**Target:** `public sealed class CreateRoleRequest` with exactly thirteen properties, posted to
+`POST /api/v1/portals/{portalId}/roles`.
+
+**Thirteen properties, derived from the screen rather than the entity.** `RoleName`,
+`Description`, `ServiceFee`, `BillingPeriod`, `BillingFrequency`, `TrialFee`, `TrialPeriod`,
+`TrialFrequency`, `IsPublic`, `AutoAssignment`, `RoleGroupId`, `RsvpCode` and `IconFile`. Four
+things a reader may expect are deliberately absent:
+
+- **`RoleID`** — an identity column the store assigns, and one the legacy creating member *returns*
+  (`RoleController.vb` line 100 declares `As Integer` and yields the new value at line 107). The
+  legacy screen carried it only because one postback served both creating and editing, overloading
+  `-1` as an add-versus-edit switch (`EditRoles.ascx.vb` lines 131 and 251). Creating and editing
+  are now distinct routed endpoints, so accepting a caller-supplied identifier would be an
+  identity-injection vector with no legacy precedent.
+- **`PortalID`** — ambient. `EditRoles.ascx.vb` line 234 takes it from page state and no control
+  posts it; the target resolves it from the route and the scoped portal context. Accepting it in the
+  body would give the tenant a second, contradictable source of truth.
+- **`RSVPLink`** — display-only, and it has no column in any of the eighty-eight upgrade scripts.
+  `editroles.ascx` lines 158 and 161 declare a read-only companion box that
+  `EditRoles.ascx.vb` lines 165-167 *compute* from the request's domain name, the default page and
+  the code; the save path at line 247 persists only `RSVPCode`. Composing it needs `System.Web`-style
+  ambient request state the Application layer must not see, so the client composes the URL from
+  `RsvpCode` and its own origin.
+- **Assignment members** — `RoleStatus`, `ExpiryDate`, `EffectiveDate`, `IsTrialUsed`, `Subscribed`,
+  `UserRoleID` and `UserID` describe a *user's membership of* a role, are columns of
+  `dbo.UserRoles`, and belong to `RoleAssignmentRequest`.
+
+**`ServiceFee` and `TrialFee`: legacy `Single` becomes `decimal?`, on the terminal `money` type.**
+`RoleInfo.vb` declares both `As Single` (lines 164 and 233) and the save path parses both with
+`Single.Parse` (`EditRoles.ascx.vb` lines 217 and 227). The baseline column was
+`[ServiceFee] [decimal](5, 2) NULL` (`01.00.00.SqlDataProvider` line 119), which would cap a fee at
+999.99. Both are superseded: `01.00.04.SqlDataProvider` line 1326 recreates the table with
+`ServiceFee money NULL`, converting existing values at line 1341; `01.00.05.SqlDataProvider` line
+2752 repeats it; and `03.01.01.SqlDataProvider` line 1173 settles it terminally with
+`ALTER COLUMN [ServiceFee] [money] NULL`, defaulted to zero at line 1177. `TrialFee` was `money`
+from birth (`01.00.08.SqlDataProvider` line 6830). SQL `money` is fixed-point, so `decimal` is its
+faithful counterpart and a `float` or `double` would reintroduce binary rounding into a currency
+amount. The user interface agrees independently: both fees are compared as `Type="Currency"` and
+rendered to two decimals (`EditRoles.ascx.vb` line 147).
+
+**`BillingPeriod` and `TrialPeriod`: `int?`, on four-way evidence.** The legacy properties are
+`As Integer` (`RoleInfo.vb` lines 218 and 203) and the save path uses `Integer.Parse`
+(`EditRoles.ascx.vb` lines 218 and 228); the columns are `int NULL`
+(`01.00.08.SqlDataProvider` line 6829 and `01.00.05.SqlDataProvider` line 2754, backfilled to one at
+lines 6900 and 6915); the screen validates both as `Type="Integer"`; and decisively the terminal
+projection itself emits SQL `NULL` —
+`'BillingPeriod' = case when convert(int,Roles.ServiceFee) <> 0 then Roles.BillingPeriod else null
+end` (`01.00.08.SqlDataProvider` lines 7024 and 7054, templated identically at
+`02.00.00.SqlDataProvider` line 2220). Only the legacy provider signature spelled these values as
+text, and it is the outlier. So `null` is the *literal* legacy value for a free role, not a
+modernisation, and it is not interchangeable with zero: the legacy expiry derivation short-circuits
+to no expiry when the period equals the integer null sentinel of `-1` (`RoleController.vb` line 537
+against `Null.vb` lines 41-43).
+
+**Both frequency columns share one six-member enumeration, and the codes are never renamed.** The
+legacy properties were `String` (`RoleInfo.vb` lines 149 and 188) over `char(1) NULL`
+(`01.00.05.SqlDataProvider` lines 2753 and 2755, never retyped afterwards). Both map to the single
+`DnnMigration.Domain.Enums.BillingFrequency`; no second enumeration and no local copy exists. The
+legacy queries prove the sharing by joining one lookup twice from a single role row
+(`01.00.04.SqlDataProvider` lines 1524-1525, and still twice against the generic `Lists` table after
+`03.00.01.SqlDataProvider` line 1300 drops that lookup).
+
+*Reported honestly: there are six codes, not four.* Earlier planning named only `D`, `W`, `M` and
+`Y`. The measured switch has six — `RoleController.vb` lines 540-546 handles `N`, `O`, `D`, `W`, `M`
+and `Y` — and two further sources agree: `01.00.08.SqlDataProvider` lines 6842-6889 rewrites the
+lookup table's six numeric codes `'0'`-`'5'` onto exactly those six letters, and `RoleInfo.vb`
+lines 136-146 documents all six. `Domain/Enums/BillingFrequency.cs` was read before this contract
+was authored and declares all six (`None='N'`, `OneTime='O'`, `Day='D'`, `Week='W'`, `Month='M'`,
+`Year='Y'`), so there is no gap to record and no divergent local enumeration was invented.
+
+*Also note:* the terminal schema carries **no** foreign key and **no** check constraint on either
+frequency column — `03.00.01.SqlDataProvider` line 1297 drops `FK_Roles_CodeFrequency` and line 1300
+drops the lookup table — so confining the two members to the six codes is the application's
+responsibility, discharged by `CreateRoleRequestValidator`.
+
+**`TrialFrequency` carries no initialiser, and the legacy default is documented rather than
+applied.** The legacy screen pre-selected `"N"` in *both* frequency drop-downs
+(`EditRoles.ascx.vb` lines 121 and 125) and its save path substituted `"N"`, a zero fee and a period
+of one whenever the corresponding block was left empty (lines 212-214 and 222-224), so a legacy
+create always wrote the character and never a SQL `NULL`. The contract leaves the member `null`
+instead, for three reasons: it keeps the member symmetrical with `BillingFrequency`; an initialiser
+would be a policy decision inside an inert carrier and would make an *omitted* member behave
+differently from an explicitly null one; and it costs nothing observable, because `null` and
+`BillingFrequency.None` are already treated identically downstream — the Application service lets
+the trial terms govern an expiry only when the member holds a code that is not `None`, and in SQL the
+projections' `TrialFrequency <> 'N'` test is UNKNOWN for a `NULL` and falls to the same `else`
+branch. `None` remains a *real stored value* meaning "no trial" and must never be conflated with
+absence: `RoleController.vb` line 521 tests against it to choose between the trial and billing
+terms, and `01.00.08.SqlDataProvider` lines 7026-7028 gate the whole trial triple behind the same
+test.
+
+**`RoleGroupId` is `int?` where `null` means "Global Roles".** This is the subtlest decision in the
+folder, and it reconciles two facts that only look contradictory. The interface treated `-1` as a
+real selectable choice: the group-binding helper adds it as the drop-down's first entry, labelled
+from the localised `GlobalRoles` resource, and `EditRoles.ascx.vb` line 236 parses it straight onto
+the legacy property. Yet `-1` can never reach the column, because `RoleGroups.RoleGroupID` is itself
+`IDENTITY(0,1) NOT NULL` (`03.02.03.SqlDataProvider` line 18, repeated at
+`04.00.04.SqlDataProvider` line 51) and `Roles.RoleGroupID int NULL` carries a foreign key to it
+(lines 34 and 37, repeated at lines 67 and 70) that would reject the value. The two facts are one
+fact seen from two layers: the legacy reader turned SQL `NULL` into `-1` via `Null.SetNull`, and the
+provider turned `-1` back into `NULL`. So `-1`, "Global Roles" and SQL `NULL` are a single value.
+Three consequences, each a real defect if ignored:
+
+- **Zero is a legitimate group.** `RoleGroups.RoleGroupID` is seeded `IDENTITY(0,1)`, so the first
+  group a portal creates bears identifier `0`. Never test for absence with `<= 0` or `== 0`; use
+  `HasValue`.
+- **`-2` must never appear on this contract.** `Roles.ascx.vb` line 112 adds
+  `New ListItem(Localization.GetString("AllRoles"), "-2")` to the *listing* screen's group filter.
+  It is transient query state meaning "do not filter", it is never stored, and it belongs to the
+  listing query contract.
+- **Do not conflate this with the permission pseudo-principals.** In `ModulePermissions` and
+  `TabPermissions` a `RoleID` of `-1` means All Users, `-2` Superuser and `-3` Unauthenticated
+  Users; there those negatives are real principals and must **never** be mapped to `null`. That rule
+  is separate, about a different column. Both rules hold; merging them is a bug.
+
+Normalising a submitted `-1` into `null`, should a legacy client send one, belongs to `RoleService`,
+which also reports a group absent from the owning portal as `role_group.not_found`.
+
+**Strings: the legacy "absent" value was `""`, not `null`.** `Description`
+(`nvarchar(1000) NULL`), `RsvpCode` (`nvarchar(50) NULL`) and `IconFile` (`nvarchar(100) NULL`, both
+added by `03.02.03.SqlDataProvider` line 45 and `04.00.04.SqlDataProvider` line 80) are `string?`.
+`Null.vb` lines 71-73 returns `""` from its string sentinel, and `EditRoles.ascx.vb` line 166 tests
+the invitation code with `<> ""`, so a legacy row could not distinguish "no value" from "empty
+value". This contract can, and no serialisation attribute forces either reading:
+`Application/Mapping/RoleMappings.cs` owns the `""`-versus-`null` decision and currently passes
+either through unchanged. `RoleName` is `nvarchar(50) NOT NULL` (`01.00.00.SqlDataProvider` line
+117), so it is a non-nullable `string` initialised to `string.Empty`.
+
+**`IsPublic` and `AutoAssignment` are `bool`, not `bool?`.** Both columns are `bit NOT NULL` with a
+zero default (`01.00.08.SqlDataProvider` lines 6831-6832, retyped and re-defaulted under the
+qualifier-templated form at `03.01.01.SqlDataProvider` lines 1174-1175 and 1179-1181), the legacy
+properties are `As Boolean` (`RoleInfo.vb` lines 248 and 263), and a checkbox always posts a definite
+state. The CLR default of `false` agrees with the store default, which is what makes the
+non-nullable member safe. `AutoAssignment` is the one member with a side effect: setting it makes the
+service enrol the portal's existing members in the same operation, reproducing the auto-assign helper
+the legacy invoked immediately after a successful insert (`RoleController.vb` line 106).
+
+**Other divergences.** Every legacy XML serialisation attribute is dropped — `RoleInfo.vb` decorated
+its class and twelve of its fifteen properties for the portal-template export, a mechanism this
+migration does not carry — so member names alone express the wire contract. The contract declares no
+base type and inherits from nothing, even though `UpdateRoleRequest` overlaps it almost entirely:
+the legacy tree shows the cost of the alternative, where `UserRoleInfo` inherits `RoleInfo` and an
+eight-column assignment presents twenty-three effective properties. And the legacy conditional-fee
+gating (`EditRoles.ascx.vb` line 216 for the billing block, line 226 for the trial block) is
+reproduced by the validator and the service, never by the contract, which stays inert.
+
+**Two legacy validator defects, annotated and NOT fixed.** `editroles.ascx` declares nine
+validators — one `RequiredFieldValidator` and eight `CompareValidator`s — and two of the eight
+carry a message that contradicts their operator. `valBillingPeriod2` (markup lines 112-114) has
+`Operator="GreaterThan" ValueToCompare="0"` but reads "Billing Period Must Be Greater Than or Equal
+to Zero"; `valTrialFee2` (lines 126-128) has `Operator="GreaterThanEqual"` but reads "Trial Fee Must
+Be Greater Than Zero". Per the minimal-change discipline a discovered defect is annotated, not
+repaired: the enforced rule is the *operator*, and `CreateRoleRequestValidator` reproduces the
+operators — fees at `>= 0`, periods at `> 0`. Nothing about the mismatch is implemented in the
+contract itself.
+
+## Role membership assignment contract
+
+### `RoleAssignmentRequest` carries the four measured inputs, and not the legacy read shape
+
+**What the legacy screen actually posted.** `Website/admin/Security/SecurityRoles.ascx.vb` lines 528
+to 542 parse the two date textboxes - substituting `Null.NullDate` whenever a box is blank - and then
+call `RoleController.AddUserRole(User, Role, PortalSettings, datEffectiveDate, datExpiryDate, UserId,
+chkNotify.Checked)`. That seven-argument member is declared at
+`Library/Components/Security/Roles/RoleController.vb` line 647. Three of its arguments are not caller
+input: the role arrives in the route, the ambient `PortalSettings` composite is replaced by the scoped
+tenant context, and `userId` is the *assigning administrator* recorded for audit at line 656 - its own
+parameter documentation at line 641 says so - which the migration reads from the authenticated
+principal. Four genuine inputs remain, and the contract declares exactly those four: `UserId`,
+`EffectiveDate`, `ExpiryDate` and `NotifyUser`.
+
+**`UserRoleInfo` is deliberately not projected.** It is the obvious-looking source and the wrong one.
+`Library/Components/Users/UserRoleInfo.vb` lines 42 and 43 declare `Public Class UserRoleInfo` /
+`Inherits RoleInfo`, so its surface is its own eight properties plus the fifteen it inherits -
+twenty-three in all. Projecting them would restate every role-definition column `CreateRoleRequest`
+and `UpdateRoleRequest` already own and would let a caller edit a role while merely adding a member to
+it. It would also carry members that are not input in any sense: `FullName` and `Email` are grid
+display denormalisations, `UserRoleID` is an identity column, and `IsTrialUsed` and `Subscribed` are
+facts the service records. `UserRoleInfo` is what the screen *read*; a request is a command.
+
+**The free-text username path is now a client-side lookup.** The legacy screen offered two routes to
+one user - a textbox plus a validate button resolving a name through `UserController.GetUserByName`
+(lines 104 to 107, and again at 477 to 484), and a query-string identifier (lines 417 and 418) - which
+converged on a resolved `UserInfo` before anything was saved. The contract accepts only the resolved
+integer. Name resolution is a repository read and stays in the service; the client resolves a name
+through the user lookup endpoint and posts the identifier it gets back. No dual-purpose
+"identifier or username" string is offered, because a single field carrying two meanings is the
+untyped contract this migration exists to remove.
+
+**`NotifyUser` is preserved as an instruction, not as a promise.** `chkNotify.Checked` is a measured
+caller input: it is the seventh argument at line 542, is passed again on both removal calls at lines
+569 and 574, is a declared parameter `notifyUser` at line 647 documented at line 642, and is consumed
+at lines 659 and 660. The legacy markup even pre-selects it - `securityroles.ascx` line 49 declares
+the checkbox `Checked="True"` - so notifying was the legacy default rather than an edge case. Outbound
+mail is nevertheless out of scope, so the application layer has no notifier to delegate to and **does
+not act on this flag**, and a successful response must never be read as evidence that a notification
+was sent. The two states are deliberately kept apart rather than collapsed: declaring the member keeps
+the legacy affordance expressible and makes supplying a notifier later a purely additive change, while
+dropping it would delete a user-facing choice from the contract and make restoring it a breaking one.
+No column backs the member. It is `bool` rather than `bool?` because a checkbox always posts a
+definite value, and it carries no initialiser - the pre-checked default is a presentation concern that
+now belongs to the Angular screen exactly as it belonged to the legacy markup, and the fail-safe wire
+default is not to notify anyone the caller did not ask to notify.
+
+**Both no-expiry encodings survive the boundary distinctly.** The six-code expiry switch at
+`RoleController.vb` lines 540 to 547 produces two different "no expiry" states. Code `N` assigns
+`Null.NullDate` at line 541, which is absence and is carried as `null`. Code `O` assigns
+`New System.DateTime(9999, 12, 31)` at line 542, which is an ordinary, in-range, externally observable
+`datetime` and round-trips **verbatim**; it is never normalised to `null`, to `DateTime.MaxValue`, or
+to any notion of "unbounded". The legacy code agrees: `Null.IsNull` compares only the date component
+against the sentinel (`Null.vb` lines 222 to 224), so `9999-12-31` reads as present while the sentinel
+reads as absent. This is AAP Rule T7 applied at the one place it bites hardest.
+
+**A refinement to the recorded billing codes.** The plan names four codes, `D`, `W`, `M` and `Y`. The
+measured switch carries **six**: `N` and `O` precede them, and they are the two that matter for the
+expiry contract. Recorded here rather than quietly reconciled. No frequency member appears on the
+assignment contract - the codes belong to the role definition - so the file imports nothing from
+`DnnMigration.Domain.Enums`.
+
+**`EffectiveDate` is a `03.02.03`-era column.** It has zero occurrences in the `01.00.00` baseline,
+whose `UserRoles` table declares five columns and not this one. It is added by a templated
+`ALTER TABLE {databaseOwner}{objectQualifier}UserRoles ADD EffectiveDate datetime NULL` at
+`03.02.03.SqlDataProvider` line 380 and re-added under a `fn_GetVersion(3,2,3)` guard at
+`04.00.04.SqlDataProvider` line 418, with stored-procedure parameters defaulting to `null` at lines 463
+and 569 of the former and 501 and 607 of the latter. A baseline-only search would have concluded the
+column does not exist and dropped a real member from the contract - only the terminal schema counts.
+A stored `null` is also load-bearing: the membership window is
+`(EffectiveDate <= getdate() or EffectiveDate is null)` at `03.02.03` line 405 and `04.00.04` line 443,
+so absence means "already in force" rather than "unknown".
+
+**`DateTime?`, deliberately not `DateTimeOffset?`.** The columns are SQL `datetime`, which stores no
+offset, and the legacy screen parsed them with a culture-dependent, zone-free `Date.Parse`. An offset
+type would invent information the schema cannot store and the existing rows do not carry, and would
+silently re-interpret every legacy row it round-tripped. The values are wall-clock and unzoned, and
+are serialised without an offset.
+
+**What the contract omits, and why.** `RoleId` and `PortalId` arrive in the route, which is what keeps
+them authoritative - a tenant a caller can restate is a tenant a caller can contradict. `UserRoleId` is
+server-assigned (`UserRoles.UserRoleID` is `IDENTITY (1, 1)` at `01.00.00` line 239) and nothing needs
+it on the wire: the grid's static `datakeyfield="UserRoleID"` (`securityroles.ascx` line 56) is
+overwritten at runtime with either `UserId` or `RoleId` (code-behind lines 244 and 251), so even the
+legacy delete path identified an assignment by the user-and-role pair. `IsTrialUsed` is excluded as
+server-managed state and as a genuine abuse vector - it guards the trial-versus-billing decision at
+line 521, and a client able to set it could re-claim a consumed trial period. `Subscribed`, `FullName`,
+`Email` and `UserName` are derived or display-only. The acting administrator comes from claims, never
+from the body.
+
+**No rule, and no date arithmetic, lives in the contract.** It is inert. The effective-before-expiry
+ordering, the temporal normalisation at lines 530 to 535, the cancellation branch at lines 493 to 501
+and the upsert decision at lines 550 to 554 all belong to `RoleService`. The single
+`Imports Microsoft.VisualBasic` at line 25 is removed and its `DateAdd` calls are rewritten inside the
+service.
+
+**Two gaps recorded for their owners rather than filled here.** First, the legacy `grdUserRoles` grid
+rendered a members list - `UserName`, `RoleName`, `EffectiveDate`, `ExpiryDate` - and **no response DTO
+for that shape exists** in the role contract folder, which the plan fixes at six files. It is served
+either by a user-side list filtered by role or by a member collection on the role detail contract, and
+that is a decision for those owners; nothing was added here to compensate. Second, the
+effective-before-expiry ordering rule **is** declaratively specified in the legacy markup -
+`securityroles.ascx` line 47 declares a `valDates` compare-validator with `operator="GreaterThan"`
+comparing the expiry box against the effective box - and has no validator counterpart, so it currently
+rests entirely on the service.
+
+**An asymmetry downstream agents must not unify.** In `ModulePermissions` and `TabPermissions` a
+`RoleID` of `-1` means All Users, `-2` Superuser, `-3` Unauthenticated Users and `-4` an in-memory
+marker: those are real principals and must never map to `null`. A legacy `UserID` of `-1`, by contrast,
+genuinely is absence. The legacy permission signature passed `-1` with two different meanings by
+position. Nothing about this is implemented in the assignment contract, which treats `UserId` as a
+plain required integer and performs no absence test at all - `-1` and `0` are real identifiers in this
+schema, since `Portals.PortalID` is `IDENTITY(-1,1)` and `Roles.RoleID` is `IDENTITY(0,1)`.
+
+## Module registration catalogue — the repository contract
+
+These notes concern
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IModuleDefinitionRepository.cs`, the
+Domain contract that realises the module-definition block of the legacy data surface
+(`Library/Components/Providers/Data/DataProvider.vb:L156-L183`). Each divergence below is also
+annotated inline in that file.
+
+### The obsolete friendly-name package lookup is not carried across
+
+**Legacy behaviour.** `DataProvider.vb:L158` declares `GetDesktopModuleByFriendlyName`, and
+`Library/Components/Modules/DesktopModuleController.vb` exposes it through two wrappers, at `L80`
+and `L85`.
+
+**Target behaviour.** The provider member is omitted, and only
+`GetDesktopModuleByModuleName` (`DataProvider.vb:L159`) is surfaced, as
+`GetDesktopModuleByModuleNameAsync`.
+
+**Why.** The legacy source retires the lookup itself. Both wrappers carry
+`<Obsolete("As the FriendlyName is not guaranteed to be the same as when the module is created,
+this method has been replaced by GetDesktopModuleByModuleName(moduleName)")>`, so the obsolescence
+message nominates its own replacement. The two wrappers are also not distinct: `L81` and `L86` call
+the same provider member, making `GetDesktopModuleByName` an exact duplicate of
+`GetDesktopModuleByFriendlyName` under a second name. Preserving a key the source declares
+unreliable would carry a known defect forward. The friendly name is genuinely unsafe as a package
+key because `03.01.00.SqlDataProvider:L34` dropped the unique constraint that once backed it; the
+equivalent constraint on `dbo.ModuleDefinitions` survives, which is why
+`GetModuleDefinitionByNameAsync` keeps its name-based lookup.
+
+### Cache invalidation is not a parameter and not a member
+
+**Legacy behaviour.** Three controllers pair each write with a cache clear and expose a second
+overload to suppress it: `DesktopModuleController.vb:L74` (`Friend`, so already internal),
+`ModuleDefinitionController.vb:L57` and `ModuleControlController.vb:L139`. The clears themselves sit
+at `DesktopModuleController.vb:L42`, `L47` and `L76`, `ModuleDefinitionController.vb:L38` and `L59`,
+and `ModuleControlController.vb:L116` and `L141`.
+
+**Target behaviour.** No member of the contract accepts a cache hint, and none clears a cache.
+
+**Why.** Cache management is a separate concern with its own abstraction, and a `clearCache`
+argument makes a caller responsible for the correctness of a subsystem it cannot see.
+
+### Long positional argument lists collapse onto entities
+
+**Legacy behaviour.** `AddDesktopModule` takes twelve positional arguments
+(`DataProvider.vb:L162`), `UpdateDesktopModule` thirteen (`L163`), `AddModuleControl` nine (`L181`)
+and `UpdateModuleControl` ten (`L182`).
+
+**Target behaviour.** Each becomes a single entity parameter plus a cancellation token, and no
+member of the contract exceeds three parameters plus that token.
+
+**Why.** A positional list of that length is ordered by convention alone, and adding a column
+changes every call site. Passing the entity moves that concern to the entity, where the schema
+already describes it.
+
+### No write returns the generated key
+
+**Legacy behaviour.** Every `Add` member returns `Integer`, because each stored procedure ends with
+`SCOPE_IDENTITY()`.
+
+**Target behaviour.** Every `Add...Async` stages the insertion and returns a non-generic `Task`. The
+identity is readable from the entity once `IUnitOfWork.SaveChangesAsync` has committed.
+
+**Why.** Under an object-relational mapper the key is assigned during the commit, so a member that
+returned one would have to commit on the caller's behalf. That would dissolve the unit-of-work
+boundary and split the multi-table portal creation at
+`Library/Components/Portal/PortalController.vb:L980` into one transaction per row. The legacy code
+had already stopped relying on the value in places: `DesktopModuleController.vb:L36` wraps a
+provider function that yields an identity in a `Sub` that discards it.
+
+### The sentinel-to-`NULL` conversion in the legacy data layer is not reproduced
+
+**Legacy behaviour.** `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb` passes
+several of these arguments through the sentinel converter at
+`Library/Components/Shared/Null.vb:L155`, so a sentinel argument reached the store as SQL `NULL`:
+`GetPortalDesktopModules` and `DeletePortalDesktopModules` (`L799` and `L805`, both arguments),
+`GetModuleControls` (`L832`), `GetModuleControlsByKey` (`L834`, both arguments) and
+`GetModuleControlByKeyAndSrc` (`L837`, all three). The terminal procedures then give that `NULL`
+two different meanings. `GetPortalDesktopModules`
+(`02.02.02.SqlDataProvider:L3161-L3162`) reads `((PortalId = @PortalId) or @PortalId is null)`,
+which is a match-all wildcard. `GetModuleControlsByKey` (`02.02.00.SqlDataProvider:L544-L545`)
+reads `((ControlKey is null and @ControlKey is null) or (ControlKey = @ControlKey))`, which instead
+matches the rows whose own column is null — the mechanism by which
+`04.05.00.SqlDataProvider:L1491` identifies a definition's default control.
+
+**Target behaviour.** Identifiers and lookup keys are plain, required values on the contract.
+Absence is expressed by a null entity or an empty list, never by a numeric or empty-string
+sentinel, and no member applies a range or sign constraint to an identifier. A caller needing the
+wildcard or the null-row reading asks for it through a member of its own rather than by encoding it
+in an argument value.
+
+**Why.** Two incompatible meanings behind one argument value is precisely the ambiguity the
+sentinel system created. `Null.vb:L41-L45` sets the integer sentinel to `-1` and
+`Null.vb:L208-L211` reports `-1` as absent, yet `dbo.Portals.PortalID` is declared
+`IDENTITY(-1, 1)`, so the helper could not tell a real tenant from a missing one. The string
+sentinel was the empty string rather than null, so an empty key was legally representable and must
+not be folded into "no key supplied".
+
+### Two legacy readings are documented rather than expressed as parameters
+
+`GetModuleControlsByKey` also carries a fixed exclusion in the store —
+`02.02.00.SqlDataProvider:L546` excludes one reserved negative control ordinal — and
+`GetDesktopModulesByPortal` (`04.05.00.SqlDataProvider:L1041-L1064`) excludes every package flagged
+as belonging to the administration experience before applying its premium test. Both are properties
+of the legacy query rather than of the contract, so they are recorded on the members that carry
+them and are honoured by the implementation, not surfaced as arguments a caller could vary.
+
+### The reflection hydrator and the hand-written reader both disappear
+
+**Legacy behaviour.** `DesktopModuleController.vb` hydrates rows through `CBO.FillObject` (`L51`,
+`L55`, `L81`, `L86`) and `CBO.FillCollection` (`L59`, `L63`, `L67`), returning `ArrayList`.
+`ModuleControlController.vb` carries a second, hand-written path — a collection filler and two
+overloads whose ten sentinel-translating assignments run from `L89` to `L98`.
+
+**Target behaviour.** Neither produces a target file. Every multi-row read returns
+`IReadOnlyList<T>` and every single-row read a nullable entity.
+
+**Why.** `Library/Components/Shared/CBO.vb` is 729 lines of reflection-driven materialisation that
+the object-relational mapper performs natively, and the hand-written path duplicated it less
+safely — `ModuleControlController.vb:L94` read `IconFile` while passing `ControlKey` as the value
+selecting the substituted sentinel, which was correct only because both happen to be strings.
+
+### The catalogue and the placements are separate contracts
+
+`IModuleDefinitionRepository` owns the catalogue block (`DataProvider.vb:L156-L183`):
+`DesktopModule`, `PortalDesktopModule`, `ModuleDefinition` and `ModuleControl`.
+`IModuleRepository` owns the module block (`L125-L154`): `Module`, `TabModule` and the two settings
+tables. The division follows the legacy provider's own grouping, so no member of either contract
+reaches into the other aggregate and the settings tables are not split into repositories of their
+own.

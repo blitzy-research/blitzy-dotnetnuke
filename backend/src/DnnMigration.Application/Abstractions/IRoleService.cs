@@ -68,10 +68,15 @@ using DnnMigration.Domain.Common;
 //            appears here: requests and responses are data transfer objects and plain
 //            identifiers, so no entity crosses the boundary in either direction.
 //
-// MIGRATION: the notifyUser flag on the four shared members (L647, L677, L695, L714) is
-//            dropped. It sent an e-mail through a mail subsystem this migration excludes,
-//            so no equivalent exists to delegate to. A deliberate functional reduction,
-//            recorded rather than silently absorbed.
+// MIGRATION: the notifyUser flag on the four shared members (L647, L677, L695, L714) sent
+//            an e-mail through a mail subsystem this migration excludes, so no equivalent
+//            exists to delegate to and no member here takes one. The flag itself survives
+//            on the assignment contract as RoleAssignmentRequest.NotifyUser, because it was
+//            a genuine caller input - the legacy markup pre-selected it - and dropping it
+//            would delete a user-facing choice rather than an implementation detail. No
+//            member below acts on it, and no successful outcome implies a notification was
+//            sent. A deliberate functional reduction, recorded rather than silently
+//            absorbed.
 //
 // MIGRATION: the SynchronizationMode flag (L849) and the SynchronizeRoles flag (L854) are
 //            dropped. Both toggled the legacy membership and role provider

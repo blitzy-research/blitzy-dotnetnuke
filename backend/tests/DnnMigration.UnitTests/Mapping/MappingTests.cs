@@ -1079,24 +1079,26 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The placement's appearance fields are carried by the settings projection, which owns the placement
-    /// scope, and are deliberately absent from the detail projection; neither invents a container.
+    /// The placement's appearance fields are write-only in the target: settable through the update
+    /// request, but absent from every response contract. Neither read contract invents a container.
     /// </summary>
     /// <remarks>
-    /// These five columns are editable on the legacy screen — <c>modulesettings.ascx</c> renders cboAlign,
-    /// txtColor, txtBorder, chkDisplayPrint and chkDisplaySyndicate, and
-    /// <c>ModuleSettings.ascx.vb:L345-L347,L381-L382</c> writes every one of them — so a read contract that
-    /// omitted them everywhere would hand a client no way to show the operator what is currently stored.
-    /// That is the defect this test exists to prevent recurring, and it is why the assertions below are
-    /// positive on <see cref="ModuleSettingsDto"/>: the capability must remain reachable.
     /// <para>
-    /// It is reachable there and ONLY there. The legacy screen presented these fields under its "Page
-    /// Settings" caption — "settings specific to this particular occurrence of the Module for this Page" —
-    /// so the settings contract, served by <c>GET</c> and <c>PUT /api/v1/modules/{id}/settings</c>, is the
-    /// contract that owns them. <see cref="ModuleDetailDto"/> deliberately does not restate them: they
-    /// exist to drive server-side markup generation, and both server-side rendering and the postback
-    /// presentation model are excluded from this migration. Their absence there is asserted rather than
-    /// merely assumed, so a later change that quietly reintroduces them fails here.
+    /// These columns are editable on the legacy screen — <c>modulesettings.ascx</c> renders cboAlign,
+    /// txtColor, txtBorder, chkDisplayPrint and chkDisplaySyndicate, and
+    /// <c>ModuleSettings.ascx.vb:L345-L347,L381-L382</c> writes every one of them — so the WRITE capability
+    /// must remain reachable, and that is asserted positively on <see cref="UpdateModuleRequest"/> below.
+    /// </para>
+    /// <para>
+    /// No response contract reads them back, and that is deliberate rather than an oversight. They exist
+    /// solely to drive server-side markup generation, and both server-side rendering and the postback
+    /// presentation model are excluded from this migration, so there is no target consumer for the read.
+    /// <see cref="ModuleSettingsDto"/> is emphatically not their home: it carries the module and placement
+    /// identifiers and the two key-value settings maps only, because restating placement columns there
+    /// would duplicate <see cref="ModuleDetailDto"/> and reintroduce the ambiguity about which scope a
+    /// value belongs to that separating the two maps exists to remove. Their absence from all three read
+    /// contracts is asserted rather than assumed, so a later change that quietly reintroduces them fails
+    /// here.
     /// </para>
     /// <para>
     /// The container is asserted absent from every contract. A module container is a skin object and
@@ -1105,7 +1107,7 @@ public class MappingTests
     /// </para>
     /// </remarks>
     [Fact]
-    public void ModuleReadProjections_CarryTheAppearanceFieldsOnSettingsOnlyAndOfferNoContainer()
+    public void ModuleReadProjections_TreatTheAppearanceFieldsAsWriteOnlyAndOfferNoContainer()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
@@ -1113,22 +1115,28 @@ public class MappingTests
         ModuleDetailDto detail = ModuleMappings.ToDetail(module, placement, "Announcements");
         ModuleSettingsDto settings = ModuleMappings.ToSettings(module, placement, [], []);
 
-        settings.Alignment.Should().Be("left");
-        settings.Color.Should().Be("#EEEEEE");
-        settings.Border.Should().Be("1");
-        settings.DisplayPrint.Should().BeFalse(
-            "a stored false must read back as false, not as the column default");
-        settings.DisplaySyndicate.Should().BeFalse();
-
-        foreach (string omitted in new[]
+        foreach (string appearance in new[]
         {
             "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
         })
         {
-            typeof(ModuleDetailDto).GetProperty(omitted).Should().BeNull(
-                $"the placement's {omitted} drives server-side markup, which this migration excludes, so "
-                + "the detail contract defers it to the settings contract instead of restating it");
+            typeof(UpdateModuleRequest).GetProperty(appearance).Should().NotBeNull(
+                $"the legacy screen edited the placement's {appearance}, so the write capability must "
+                + "remain reachable even though no response contract reads it back");
+
+            typeof(ModuleDetailDto).GetProperty(appearance).Should().BeNull(
+                $"the placement's {appearance} drives server-side markup, which this migration excludes, "
+                + "so no response contract carries it");
+
+            typeof(ModuleSettingsDto).GetProperty(appearance).Should().BeNull(
+                $"the settings contract carries the two identifiers and the two key-value maps only, so "
+                + $"{appearance} must not reappear on it");
         }
+
+        settings.ModuleId.Should().Be(module.ModuleId);
+        settings.TabModuleId.Should().Be(
+            placement.TabModuleId,
+            "the settings contract identifies the placement whose scoped settings it carries");
 
         detail.TabModuleId.Should().Be(
             placement.TabModuleId,
@@ -1225,17 +1233,11 @@ public class MappingTests
 
         ModuleSettingsDto dto = ModuleMappings.ToSettings(module, placement, moduleSettings, placementSettings);
 
-        dto.ModuleId.Should().Be(0);
+        dto.ModuleId.Should().Be(
+            0,
+            "the module identity column is seeded at zero, so zero is a real module and must survive the "
+            + "projection rather than being read as an absent identifier");
         dto.TabModuleId.Should().Be(31);
-        dto.ModuleTitle.Should().Be("Measured Module");
-        dto.AllTabs.Should().BeTrue();
-        dto.InheritViewPermissions.Should().BeFalse();
-        dto.Header.Should().Be("Measured header");
-        dto.Footer.Should().Be("Measured footer");
-        dto.CacheTime.Should().Be(120);
-        dto.IconFile.Should().Be("module.gif");
-        dto.Visibility.Should().Be(ModuleVisibility.Minimized);
-        dto.DisplayTitle.Should().BeFalse();
 
         dto.ModuleSettings.Should().HaveCount(2);
         dto.ModuleSettings["Skin"].Should().Be("Global Blue");
@@ -1856,23 +1858,40 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A stored value prefers the long text column over the short one.
+    /// A stored value takes the bounded column when it holds anything and falls back to the long text
+    /// column only when the bounded one is null.
     /// </summary>
     /// <remarks>
-    /// The legacy store keeps a short value and a long text for the same property, and the long one wins
-    /// when both are present. That is how a property whose answer outgrew the short column keeps working.
+    /// This is the legacy read order, not a preference invented here. <c>GetUserProfile</c> returns a
+    /// single column aliased <c>PropertyValue</c> computed as
+    /// "case when (PropertyValue Is Null) then PropertyText else PropertyValue end"
+    /// (<c>04.00.04.SqlDataProvider</c> line 1592, identical at <c>03.02.03</c> line 1533), so the
+    /// bounded <c>nvarchar(3750)</c> column wins and the <c>ntext</c> column is the fallback. The write
+    /// procedure fills exactly one of the two, so a row holding both is one some other writer left
+    /// behind - and for it the legacy answer is the bounded column.
     /// </remarks>
     [Fact]
-    public void UserToProfile_PrefersTheLongTextOverTheShortValue()
+    public void UserToProfile_PrefersTheBoundedValueAndFallsBackToTheLongText()
     {
         UserProfileValue both = NewProfileValue(propertyValue: "short", propertyText: "long");
         UserProfileValue shortOnly = NewProfileValue(propertyValue: "short", propertyText: null);
         UserProfileValue longOnly = NewProfileValue(propertyValue: null, propertyText: "long");
         UserProfileValue neither = NewProfileValue(propertyValue: null, propertyText: null);
 
-        Answer(both).PropertyValue.Should().Be("long");
+        Answer(both).PropertyValue.Should().Be(
+            "short",
+            "the legacy read procedure returns PropertyValue whenever it is not SQL NULL and only "
+            + "falls back to PropertyText when it is");
         Answer(shortOnly).PropertyValue.Should().Be("short");
         Answer(longOnly).PropertyValue.Should().Be("long");
+
+        UserProfileValue clearedWithStaleOverflow =
+            NewProfileValue(propertyValue: string.Empty, propertyText: "long");
+
+        Answer(clearedWithStaleOverflow).PropertyValue.Should().BeEmpty(
+            "an empty string is the legacy Null.NullString sentinel and therefore a stored value, not "
+            + "an absence: the read procedure tests PropertyValue Is Null, so a deliberately cleared "
+            + "answer stays cleared and must never fall through to the overflow column");
 
         UserProfileValueDto blank = Answer(neither);
 

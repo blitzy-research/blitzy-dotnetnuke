@@ -20,10 +20,22 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 /// most once on any given page, while still appearing on many pages.
 /// </para>
 /// <para>
-/// Three display flags carry a store default of <c>1</c>. As in the tab mapping, those defaults are
-/// deliberately not configured, because the CLR default of <see langword="false"/> differs from them
-/// and configuring them would let a request to hide a title, a print affordance or a syndication
-/// affordance be silently reversed. The entity's own initialisers carry the same defaults.
+/// Three display flags carry a store default of <c>1</c>, added by <c>03.00.08</c> and re-asserted by
+/// <c>03.01.01</c>. As in the tab mapping, those defaults are deliberately not configured here,
+/// because the CLR default of <see langword="false"/> differs from them and configuring them would
+/// let a request to hide a title, a print affordance or a syndication affordance be silently
+/// reversed. Every write therefore sends an explicit value and the store default only ever applies to
+/// a writer outside this model.
+/// </para>
+/// <para>
+/// The entity's own initialisers match those store defaults for <c>DisplayTitle</c> and
+/// <c>DisplayPrint</c> but deliberately <b>not</b> for <c>DisplaySyndicate</c>, which initialises to
+/// <see langword="false"/>. That is not an oversight to be corrected in either direction: the legacy
+/// constructor and initialiser in <c>Library/Components/Modules/ModuleInfo.vb</c> both set it to
+/// <c>False</c> while the column default is <c>1</c>, so object construction and the store genuinely
+/// disagreed in the legacy system. Both behaviours are preserved on the side that owns them - the
+/// entity keeps the constructor's answer, this mapping leaves the column default untouched - and the
+/// divergence is recorded in the repository-root <c>MIGRATION_NOTES.md</c>.
 /// </para>
 /// <para>
 /// <c>Border</c> is <c>nvarchar(1)</c> — a single character used as a flag by the legacy renderer.

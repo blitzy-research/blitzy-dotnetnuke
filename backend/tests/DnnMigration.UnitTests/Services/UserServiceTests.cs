@@ -2390,7 +2390,11 @@ public class UserServiceTests
         UserProfileValue written = harness.AddedValues.Should().ContainSingle().Which;
         written.PropertyValue.Should().BeNull();
         written.PropertyText.Should().Be(oversize);
-        written.EffectiveValue.Should().Be(oversize);
+
+        // The entity derives nothing, so the effective value is the coalesce the legacy read
+        // procedure performs - the bounded column when it is not null, the overflow column
+        // otherwise. Asserted here in that order to prove the row round-trips the whole value.
+        (written.PropertyValue ?? written.PropertyText).Should().Be(oversize);
     }
 
     /// <summary>
@@ -2417,7 +2421,7 @@ public class UserServiceTests
 
     /// <summary>
     /// A stored value that overflowed and is resubmitted short enough is moved back into the ordinary
-    /// column, so the overflow column does not keep a stale answer that the effective value would prefer.
+    /// column, and the overflow column is cleared, so the row never keeps two competing answers.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2437,7 +2441,7 @@ public class UserServiceTests
 
         stored.PropertyValue.Should().Be("Fleet Street");
         stored.PropertyText.Should().BeNull();
-        stored.EffectiveValue.Should().Be("Fleet Street");
+        (stored.PropertyValue ?? stored.PropertyText).Should().Be("Fleet Street");
     }
 
     /// <summary>
@@ -3490,7 +3494,7 @@ public class UserServiceTests
                 });
 
             harness.ModuleDefinitions
-                .Setup(d => d.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+                .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ModuleDefinitionCatalogue.ToList());
 
             harness.Modules

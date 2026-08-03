@@ -113,9 +113,11 @@ namespace DnnMigration.Application.Dtos.Module;
 //       txtBorder (single character, validated by valBorder with the message "Invalid Border (must be a
 //       number between 0 and 9)"), chkDisplayPrint and chkDisplaySyndicate. They exist to drive
 //       server-side markup generation, and both server-side rendering and the postback presentation model
-//       are excluded from this migration. Nothing is lost: every one of them is carried by
-//       ModuleSettingsDto, which is the contract that owns the placement scope. PaneModuleIndex and
-//       PaneModuleCount were computed render-time values and are omitted with them.
+//       are excluded from this migration, so no RESPONSE contract reads them back and the stored columns
+//       are preserved untouched. They remain settable through UpdateModuleRequest, which makes them
+//       write-only in the target - a deliberate asymmetry. ModuleSettingsDto is NOT their home either: it
+//       carries the module and placement identifiers and the two key-value settings maps only.
+//       PaneModuleIndex and PaneModuleCount were computed render-time values and are omitted with them.
 //     * ContainerSrc and ContainerPath are omitted because a module container is a skin object and
 //       skinning is excluded. The stored column is preserved untouched rather than surfaced for editing.
 //     * BusinessControllerClass is omitted deliberately and on security grounds. The legacy code handed

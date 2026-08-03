@@ -129,9 +129,10 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// <remarks>
     /// The definition is loaded with each answer, because an answer is meaningless without the
     /// property it answers: the caller needs the name, the data type and the validation expression in
-    /// order to present or validate it, and <see cref="UserProfileValue.EffectiveValue"/> is only
-    /// interpretable alongside them. Ordering follows the same display order as
-    /// <see cref="ListDefinitionsAsync"/>.
+    /// order to present or validate it, and the stored value itself - whichever of
+    /// <see cref="UserProfileValue.PropertyValue"/> and
+    /// <see cref="UserProfileValue.PropertyText"/> holds it - is only interpretable alongside them.
+    /// Ordering follows the same display order as <see cref="ListDefinitionsAsync"/>.
     /// </remarks>
     public async Task<IReadOnlyList<UserProfileValue>> ListValuesAsync(int userId, CancellationToken cancellationToken = default)
     {

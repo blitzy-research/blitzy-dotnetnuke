@@ -171,10 +171,12 @@ namespace DnnMigration.Application.Abstractions;
 /// </para>
 /// <para>
 /// <strong>Two settings stores, kept separate.</strong> <c>dbo.ModuleSettings</c> is keyed
-/// <c>(ModuleID, SettingName)</c> with a 256-character value and is shared by every placement;
-/// <c>dbo.TabModuleSettings</c> is keyed <c>(TabModuleID, SettingName)</c> with a 2000-character value and
-/// belongs to one placement. Merging them would collapse an every-page module's per-page configuration,
-/// so the settings members exchange them as two dictionaries.
+/// <c>(ModuleID, SettingName)</c> and is shared by every placement; <c>dbo.TabModuleSettings</c> is keyed
+/// <c>(TabModuleID, SettingName)</c> and belongs to one placement. Both carry a 2000-character value: the
+/// module store's terminal width comes from the table rebuild at <c>01.00.08.SqlDataProvider</c> line
+/// 6256, not from the 256 of the superseded baseline column. What separates the two stores is scope, not
+/// width. Merging them would collapse an every-page module's per-page configuration, so the settings
+/// members exchange them as two dictionaries.
 /// </para>
 /// <para>
 /// <strong>Result semantics.</strong> Every member returns a <see cref="Result"/> or a

@@ -95,10 +95,11 @@ public class ModuleTests
     }
 
     /// <summary>
-    /// A module setting is identified by its owning module together with its name.
+    /// A module setting carries its composite key as two ordinary columns and declares no surrogate
+    /// identity of its own.
     /// </summary>
     [Fact]
-    public void ModuleSettingIdentity_IsTheCompositeKey()
+    public void ModuleSetting_CarriesTheCompositeKeyAsPlainColumns()
     {
         ModuleSetting setting = new()
         {
@@ -107,49 +108,97 @@ public class ModuleTests
             SettingValue = "600",
         };
 
-        setting.Identity.Should().Be((ModuleIdentitySeed, "CacheDuration"));
+        setting.ModuleId.Should().Be(ModuleIdentitySeed, "zero is a real ModuleID under IDENTITY(0, 1)");
+        setting.SettingName.Should().Be("CacheDuration");
+        setting.SettingValue.Should().Be("600");
+
+        // MIGRATION: dbo.ModuleSettings has no surrogate key and never had one. It was created with no
+        // primary key at all (01.00.00.SqlDataProvider lines 350-354, backed only by the non-unique
+        // index at line 571) and acquired one solely at 02.00.01.SqlDataProvider lines 47-52, as
+        // PRIMARY KEY CLUSTERED (ModuleID, SettingName). So this entity deliberately derives from
+        // nothing and exposes no Identity, no Id and no ModuleSettingId: inventing one would assert a
+        // column the table does not have, and it would compete with the explicit composite key that
+        // the Infrastructure mapping declares. Contrast TabModuleSetting below, which does carry an
+        // identity member - the two settings entities are shaped differently on purpose.
+        typeof(ModuleSetting).BaseType.Should().Be(typeof(object));
+        typeof(ModuleSetting).GetProperty("Identity").Should().BeNull();
+        typeof(ModuleSetting).GetProperty("Id").Should().BeNull();
+        typeof(ModuleSetting).GetProperty("ModuleSettingId").Should().BeNull();
+        typeof(ModuleSetting).GetProperties().Select(property => property.Name).Should()
+            .BeEquivalentTo("ModuleId", "SettingName", "SettingValue", "Module");
     }
 
     /// <summary>
     /// Two settings differing only in name, or only in owner, are distinct rows.
     /// </summary>
     [Fact]
-    public void ModuleSettingIdentity_SeparatesTheNameFromTheOwner()
+    public void ModuleSetting_SeparatesTheNameFromTheOwner()
     {
         ModuleSetting first = NewSetting(0, "Alpha");
         ModuleSetting sameOwnerOtherName = NewSetting(0, "Beta");
         ModuleSetting otherOwnerSameName = NewSetting(1, "Alpha");
         ModuleSetting duplicate = NewSetting(0, "Alpha");
 
-        // MIGRATION: identity-based comparison applies only once the persistence layer has declared
-        // the identity real. That declaration is what this test stands in for: every candidate
-        // "not saved yet" marker in this schema is a genuine key - the portal table seeds at -1 and
-        // the role, page and module tables at 0 - so an undeclared instance is compared by object
-        // reference instead, and two separately constructed instances are two different entities.
-        first.MarkIdentityPersisted();
-        sameOwnerOtherName.MarkIdentityPersisted();
-        otherOwnerSameName.MarkIdentityPersisted();
-        duplicate.MarkIdentityPersisted();
+        // MIGRATION: the row's identity is the pair (ModuleID, SettingName) that the clustered primary
+        // key at 02.00.01.SqlDataProvider lines 47-52 declares, and it is asserted here directly
+        // against the two columns the key is built from rather than through an identity member the
+        // entity does not have. Zero appears on both sides deliberately: Modules.ModuleID is
+        // IDENTITY(0, 1) (01.00.00.SqlDataProvider line 221), so a setting owned by module zero must
+        // still be addressable and zero may never be read as "no module".
+        CompositeKeyOf(first).Should().NotBe(CompositeKeyOf(sameOwnerOtherName));
+        CompositeKeyOf(first).Should().NotBe(CompositeKeyOf(otherOwnerSameName));
+        CompositeKeyOf(first).Should().Be(CompositeKeyOf(duplicate));
 
-        first.Should().NotBe(sameOwnerOtherName);
-        first.Should().NotBe(otherOwnerSameName);
-        first.Should().Be(duplicate);
-        first.GetHashCode().Should().Be(duplicate.GetHashCode());
+        // Two instances carrying the same key are still two distinct objects. With no identity-based
+        // equality on this type, reconciling them is the change tracker's work, not the entity's.
+        first.Should().NotBeSameAs(duplicate);
     }
 
     /// <summary>
-    /// Setting names are compared exactly, because the column that stores them is case-preserving.
+    /// Setting names are stored exactly as written, because the column that holds them preserves case.
     /// </summary>
     [Fact]
-    public void ModuleSettingIdentity_ComparesTheNameExactly()
+    public void ModuleSetting_PreservesTheSettingNameCaseExactly()
     {
         ModuleSetting lower = NewSetting(0, "cacheduration");
         ModuleSetting mixed = NewSetting(0, "CacheDuration");
 
-        lower.Should().NotBe(
-            mixed,
-            "the identity tuple compares the stored name ordinally; case folding belongs to the query "
-            + "layer, not to entity identity");
+        CompositeKeyOf(lower).Should().NotBe(
+            CompositeKeyOf(mixed),
+            "the key columns compare the stored name ordinally; case folding belongs to the query "
+            + "layer, not to the row");
+        lower.SettingName.Should().Be("cacheduration");
+        mixed.SettingName.Should().Be("CacheDuration");
+    }
+
+    /// <summary>
+    /// A blank setting value survives as the empty string in both settings stores and is never turned
+    /// into a null.
+    /// </summary>
+    [Fact]
+    public void SettingValues_KeepTheEmptyStringRatherThanBecomingNull()
+    {
+        ModuleSetting moduleScope = new()
+        {
+            ModuleId = 0,
+            SettingName = "Editor",
+            SettingValue = string.Empty,
+        };
+
+        TabModuleSetting placementScope = new()
+        {
+            TabModuleId = 1,
+            SettingName = "Editor",
+            SettingValue = string.Empty,
+        };
+
+        // MIGRATION: Library/Components/Shared/Null.vb lines 71-75 define NullString as "" rather than
+        // as Nothing, so in the legacy store a setting recorded with no value and a setting recorded
+        // with a blank value were indistinguishable once read. Both value columns are NOT NULL, so the
+        // empty string remains the only way to record "stored, but blank", and nothing in this model
+        // may collapse it to null. That is the Rule T7 boundary discipline applied to these two rows.
+        moduleScope.SettingValue.Should().NotBeNull().And.BeEmpty();
+        placementScope.SettingValue.Should().NotBeNull().And.BeEmpty();
     }
 
     /// <summary>
@@ -182,14 +231,19 @@ public class ModuleTests
     {
         TabModule placement = new() { TabModuleId = 1, TabId = 0, ModuleId = 0 };
 
-        placement.PaneName.Should().BeEmpty();
+        placement.PaneName.Should().BeNull(
+            "the legacy constructor leaves the pane unset, and seeding string.Empty would plant the "
+            + "Null.NullString sentinel in the domain");
         placement.ModuleOrder.Should().Be(0);
         placement.CacheTime.Should().Be(0);
         placement.Visibility.Should().Be(ModuleVisibility.Maximized, "zero is the maximised state");
         placement.DisplayTitle.Should().BeTrue();
         placement.DisplayPrint.Should().BeTrue();
-        placement.DisplaySyndicate.Should().BeTrue();
-        placement.TabModuleSettings.Should().NotBeNull().And.BeEmpty();
+        placement.DisplaySyndicate.Should().BeFalse(
+            "ModuleInfo.vb sets DisplaySyndicate to False in both its constructor and its Initialize "
+            + "routine, and that object default is deliberately kept even though the TabModules "
+            + "column defaults to 1 - the divergence is recorded in MIGRATION_NOTES.md");
+        placement.Settings.Should().NotBeNull().And.BeEmpty();
     }
 
     /// <summary>
@@ -299,4 +353,12 @@ public class ModuleTests
         SettingName = settingName,
         SettingValue = "irrelevant",
     };
+
+    /// <summary>
+    /// Projects the two columns that make up a module setting's composite primary key.
+    /// </summary>
+    /// <param name="setting">The setting to read.</param>
+    /// <returns>The <c>(ModuleID, SettingName)</c> pair the clustered key is built from.</returns>
+    private static (int ModuleId, string SettingName) CompositeKeyOf(ModuleSetting setting) =>
+        (setting.ModuleId, setting.SettingName);
 }

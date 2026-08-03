@@ -108,21 +108,46 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// <returns>The outcome of the attempt.</returns>
     private async Task<Result> ResolveAsync(string httpAlias, CancellationToken cancellationToken)
     {
-        Result<PortalAlias> lookup = await _aliases
-            .ResolveByHttpAliasAsync(httpAlias, cancellationToken)
-            .ConfigureAwait(false);
-
-        // Both refusals - no match and more than one match - propagate unchanged. Neither is retried and
-        // neither is softened into a default tenant.
-        if (lookup.IsFailure)
+        // A blank host name cannot match a configured alias, and asking the database to prove it would be
+        // a round trip spent on a value already known to be unusable. Refused as not-found rather than as
+        // an argument fault: the value arrives from the network on every call, so an unusable one is an
+        // ordinary refusal and not a programming error.
+        if (string.IsNullOrWhiteSpace(httpAlias))
         {
-            return Result.Failure(lookup.Reason!);
+            return Result.Failure(
+                IPortalContextHolder.NotFoundReasonCode,
+                "The request did not carry a host name that identifies a portal.");
         }
 
-        PortalAlias alias = lookup.Value;
+        // The repository matches the whole stored value and returns EVERY match rather than choosing one,
+        // which is what makes the ambiguous case visible here. Deciding what nought, one, or more than one
+        // match means is this type's judgement rather than the repository's, because it is a policy
+        // question about serving a call and not a question about stored rows.
+        IReadOnlyList<PortalAlias> candidates = await _aliases
+            .GetAllByHttpAliasAsync(httpAlias, cancellationToken)
+            .ConfigureAwait(false);
 
-        // The repository contract guarantees the portal is loaded on success. Verified rather than
-        // assumed, because the alternative to a check here is a null-reference fault below.
+        if (candidates.Count == 0)
+        {
+            return Result.Failure(
+                IPortalContextHolder.NotFoundReasonCode,
+                "The host name in the request does not identify a configured portal.");
+        }
+
+        // Two or more. Refused, not resolved: an installation in this state has a data defect an operator
+        // must correct, and serving either candidate would cross a tenant boundary. The legacy resolution
+        // procedure collapsed this case with min(PortalID) instead, which is the defect being removed.
+        if (candidates.Count > 1)
+        {
+            return Result.Failure(
+                IPortalContextHolder.AmbiguousReasonCode,
+                "The host name in the request identifies more than one configured portal.");
+        }
+
+        PortalAlias alias = candidates[0];
+
+        // The repository loads the owning portal with the alias. Verified rather than assumed, because the
+        // alternative to a check here is a null-reference fault below.
         if (alias.Portal is not { } portal)
         {
             return Incomplete("the alias is not attached to a portal");

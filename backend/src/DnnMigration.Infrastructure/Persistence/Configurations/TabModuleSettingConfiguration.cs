@@ -49,7 +49,7 @@ internal sealed class TabModuleSettingConfiguration : IEntityTypeConfiguration<T
             .IsRequired();
 
         builder.HasOne(s => s.TabModule)
-            .WithMany(p => p.TabModuleSettings)
+            .WithMany(p => p.Settings)
             .HasForeignKey(s => s.TabModuleId)
             .HasConstraintName("FK_TabModuleSettings_TabModules")
             .OnDelete(DeleteBehavior.Cascade);

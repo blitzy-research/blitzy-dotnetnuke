@@ -16,9 +16,13 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 /// key is declared rather than a surrogate being invented.
 /// </para>
 /// <para>
-/// The setting value is <c>nvarchar(256)</c> here, which is markedly shorter than the
-/// <c>nvarchar(2000)</c> its per-placement counterpart allows. The module service enforces the two
-/// different lengths separately for exactly this reason.
+/// The setting value is <c>nvarchar(2000)</c>, the same width its per-placement counterpart allows.
+/// The two tables are structurally identical in this respect. An earlier revision of this file bound
+/// the column at 256, which is the width the baseline script declared and not the width the schema
+/// ends up with: <c>01.00.08.SqlDataProvider</c> lines 6248-6286 rebuild the whole table through a
+/// <c>Tmp_ModuleSettings</c> copy that widens the column to <c>nvarchar(2000) NOT NULL</c> at line
+/// 6256, and nothing later narrows it. Binding 256 refused values the legacy application accepts, so
+/// the correction is recorded here rather than silently absorbed.
 /// </para>
 /// </remarks>
 internal sealed class ModuleSettingConfiguration : IEntityTypeConfiguration<ModuleSetting>
@@ -53,9 +57,16 @@ internal sealed class ModuleSettingConfiguration : IEntityTypeConfiguration<Modu
             .HasMaxLength(50)
             .IsRequired();
 
+        // MIGRATION: the width is the terminal 2000, not the baseline 256. 01.00.00:L353 created the
+        // column nvarchar(256) NOT NULL, but 01.00.08:L6248-6286 destroys and rebuilds the table with
+        // SettingValue nvarchar(2000) NOT NULL (line 6256) and no later script narrows it. The terminal
+        // writers corroborate: @SettingValue nvarchar(2000) on UpdateModuleSetting at 01.00.08:L6295
+        // and on AddModuleSetting/UpdateModuleSetting at 02.00.00:L4147 and :L4171. The column is
+        // NOT NULL, and the legacy Null.NullString sentinel is the empty string, so "no value" is
+        // stored as '' rather than as SQL NULL - hence non-nullable with no sentinel translation here.
         builder.Property(s => s.SettingValue)
             .HasColumnName("SettingValue")
-            .HasMaxLength(256)
+            .HasMaxLength(2000)
             .IsRequired();
 
         builder.HasOne(s => s.Module)

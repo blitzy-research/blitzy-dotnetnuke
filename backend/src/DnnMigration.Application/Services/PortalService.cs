@@ -231,8 +231,12 @@ public sealed class PortalService : IPortalService
 
         // Aliases are not loaded by the listing read, so the whole installation's aliases are fetched
         // once and grouped, rather than read per row.
+        // MIGRATION: the installation-wide read is its own member. The legacy code asked this question by
+        // passing -1 to the portal-scoped read, where the procedure's own predicate turned it into a
+        // wildcard; -1 is also a real portal identifier in this schema, so the two questions are now
+        // separate members and the intent of this call site is visible without knowing that.
         IReadOnlyList<PortalAlias> allAliases = await _aliases
-            .ListAsync(null, cancellationToken)
+            .GetAllAsync(cancellationToken)
             .ConfigureAwait(false);
 
         // MIGRATION: dbo.PortalAlias.HTTPAlias permits null - the column is declared without a NOT NULL
@@ -365,7 +369,11 @@ public sealed class PortalService : IPortalService
             Portal = portal,
             HttpAlias = alias,
         };
-        _aliases.Add(portalAlias);
+
+        // Staged only. The alias commits in the same transaction as the portal, the roles, the pages and
+        // the modules, which is why this member yields no key and why the alias is bound by navigation
+        // rather than by an identifier the portal does not have yet.
+        await _aliases.AddAsync(portalAlias, cancellationToken).ConfigureAwait(false);
 
         Role administratorsRole = BuildStockRole(
             portal,
@@ -549,7 +557,9 @@ public sealed class PortalService : IPortalService
         // widening abstractions that are deliberately narrow.
         foreach (PortalAlias alias in portal.PortalAliases.ToList())
         {
-            _aliases.Remove(alias);
+            // Identified by key, as the legacy procedure was. These rows are already loaded, so the
+            // repository resolves them from the change tracker rather than re-reading them.
+            await _aliases.DeleteAsync(alias.PortalAliasId, cancellationToken).ConfigureAwait(false);
         }
 
         await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
@@ -593,9 +603,12 @@ public sealed class PortalService : IPortalService
             }
         }
 
-        IReadOnlyList<PortalAlias> aliases = await _aliases
-            .ListAsync(portalId, cancellationToken)
-            .ConfigureAwait(false);
+        // The optional scope is resolved here rather than pushed into the repository as a nullable
+        // filter: asking for one portal's aliases and asking for every alias in the installation are
+        // different questions, and each has its own member.
+        IReadOnlyList<PortalAlias> aliases = portalId is int wantedPortalId
+            ? await _aliases.GetByPortalIdAsync(wantedPortalId, cancellationToken).ConfigureAwait(false)
+            : await _aliases.GetAllAsync(cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<PortalAliasDto> rows = aliases
             .Select(PortalMappings.ToDto)
@@ -609,7 +622,7 @@ public sealed class PortalService : IPortalService
         int portalAliasId,
         CancellationToken cancellationToken = default)
     {
-        PortalAlias? alias = await _aliases.GetAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
+        PortalAlias? alias = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
 
         return alias is null
             ? Result<PortalAliasDto?>.Success(null)
@@ -653,7 +666,9 @@ public sealed class PortalService : IPortalService
             HttpAlias = httpAlias,
         };
 
-        _aliases.Add(created);
+        // Staged, then committed by the unit of work. Only after the commit does created.PortalAliasId
+        // hold the generated key, which is what the mapping below reads.
+        await _aliases.AddAsync(created, cancellationToken).ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // Alias resolution is installation-wide rather than portal-scoped, so binding a host name
@@ -677,7 +692,7 @@ public sealed class PortalService : IPortalService
         // rather than by convention: there is no portal key on the wire to re-bind it to.
         string httpAlias = NormaliseAlias(request.HttpAlias);
 
-        PortalAlias? stored = await _aliases.GetAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
+        PortalAlias? stored = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
         if (stored is null)
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
@@ -698,6 +713,11 @@ public sealed class PortalService : IPortalService
         // that it does not re-validate, and therefore does not re-bind, the tenant.
         stored.HttpAlias = httpAlias;
 
+        // MIGRATION: the explicit counterpart of legacy UpdatePortalAliasInfo, which was the real per-row
+        // update. Stated rather than left to the change tracker so that the intention to write this row is
+        // visible at the call site, and so the same code is correct for an alias that was not read here.
+        await _aliases.UpdateAsync(stored, cancellationToken).ConfigureAwait(false);
+
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         _cache.InvalidateHost();
@@ -711,7 +731,7 @@ public sealed class PortalService : IPortalService
         int portalAliasId,
         CancellationToken cancellationToken = default)
     {
-        PortalAlias? stored = await _aliases.GetAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
+        PortalAlias? stored = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
         if (stored is null)
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
@@ -719,7 +739,7 @@ public sealed class PortalService : IPortalService
 
         int owningPortalId = stored.PortalId;
 
-        _aliases.Remove(stored);
+        await _aliases.DeleteAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         _cache.InvalidateHost();
@@ -911,7 +931,7 @@ public sealed class PortalService : IPortalService
         }
 
         _users.Remove(administrator);
-        _aliases.Remove(alias);
+        await _aliases.DeleteAsync(alias.PortalAliasId, cancellationToken).ConfigureAwait(false);
         await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

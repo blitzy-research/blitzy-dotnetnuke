@@ -1687,7 +1687,7 @@ public class PortalServiceTests
 
         failure.Message.Should().Be("A portal alias must carry a host name.");
         harness.Aliases.Verify(
-            a => a.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            a => a.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -1929,6 +1929,7 @@ public class PortalServiceTests
             AddedPortals = [];
             RemovedPortals = [];
             AddedAliases = [];
+            UpdatedAliases = [];
             RemovedAliases = [];
             AddedRoles = [];
             RemovedRoles = [];
@@ -2053,6 +2054,8 @@ public class PortalServiceTests
 
         public List<PortalAlias> AddedAliases { get; }
 
+        public List<PortalAlias> UpdatedAliases { get; }
+
         public List<PortalAlias> RemovedAliases { get; }
 
         public List<Role> AddedRoles { get; }
@@ -2155,13 +2158,18 @@ public class PortalServiceTests
                 })
                 .Returns(Task.CompletedTask);
 
+            // The installation-wide read and the portal-scoped read are separate members, so they are
+            // stubbed separately. The alias repository no longer accepts a nullable portal identifier in
+            // which null - or the legacy -1 - meant "every portal".
             harness.Aliases
-                .Setup(a => a.ListAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((int? portalId, CancellationToken _) => portalId is int scoped
-                    ? harness.AllAliases.Where(alias => alias.PortalId == scoped).ToList()
-                    : harness.AllAliases.ToList());
+                .Setup(a => a.GetAllAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.AllAliases.ToList());
             harness.Aliases
-                .Setup(a => a.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(a => a.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) =>
+                    harness.AllAliases.Where(alias => alias.PortalId == portalId).ToList());
+            harness.Aliases
+                .Setup(a => a.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupAlias);
             harness.Aliases
                 .Setup(a => a.AliasExistsAsync(
@@ -2170,11 +2178,49 @@ public class PortalServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.AliasTaken);
             harness.Aliases
-                .Setup(a => a.Add(It.IsAny<PortalAlias>()))
-                .Callback<PortalAlias>(harness.AddedAliases.Add);
+                .Setup(a => a.AddAsync(It.IsAny<PortalAlias>(), It.IsAny<CancellationToken>()))
+                .Callback<PortalAlias, CancellationToken>((alias, _) => harness.AddedAliases.Add(alias))
+                .Returns(Task.CompletedTask);
             harness.Aliases
-                .Setup(a => a.Remove(It.IsAny<PortalAlias>()))
-                .Callback<PortalAlias>(harness.RemovedAliases.Add);
+                .Setup(a => a.UpdateAsync(It.IsAny<PortalAlias>(), It.IsAny<CancellationToken>()))
+                .Callback<PortalAlias, CancellationToken>((alias, _) => harness.UpdatedAliases.Add(alias))
+                .Returns(Task.CompletedTask);
+            harness.Aliases
+                .Setup(a => a.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((portalAliasId, _) =>
+                {
+                    // Deletion identifies its target by key, as the legacy procedure did, so the harness
+                    // resolves the identifier back to the entity it already knows about. That keeps
+                    // RemovedAliases a list of entities and lets the suite go on asserting *which* alias
+                    // was removed by reference rather than merely that some identifier was passed.
+                    //
+                    // A staged-but-uncommitted alias carries no key yet, so the created row is matched
+                    // here by the identifier it actually has rather than by a generated one.
+                    PortalAlias? removed = harness.AddedAliases
+                        .Find(candidate => candidate.PortalAliasId == portalAliasId);
+
+                    // The row the service read through GetByIdAsync is preferred over an equally-keyed
+                    // instance in the installation-wide list, because it is the instance the service
+                    // actually operated on and the suite asserts identity rather than equality.
+                    if (removed is null
+                        && harness.LookupAlias is PortalAlias looked
+                        && looked.PortalAliasId == portalAliasId)
+                    {
+                        removed = looked;
+                    }
+
+                    removed ??= harness.PortalRow?.PortalAliases
+                        .FirstOrDefault(candidate => candidate.PortalAliasId == portalAliasId);
+
+                    removed ??= harness.AllAliases
+                        .Find(candidate => candidate.PortalAliasId == portalAliasId);
+
+                    if (removed is not null)
+                    {
+                        harness.RemovedAliases.Add(removed);
+                    }
+                })
+                .Returns(Task.CompletedTask);
 
             harness.Tabs
                 .Setup(t => t.GetHostRootTabIdAsync(It.IsAny<CancellationToken>()))

@@ -329,8 +329,8 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("SettingValue")
                         .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
                         .HasColumnName("SettingValue");
 
                     b.HasKey("ModuleId", "SettingName")
@@ -1508,7 +1508,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("DnnMigration.Domain.Entities.TabModuleSetting", b =>
                 {
                     b.HasOne("DnnMigration.Domain.Entities.TabModule", "TabModule")
-                        .WithMany("TabModuleSettings")
+                        .WithMany("Settings")
                         .HasForeignKey("TabModuleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
@@ -1695,7 +1695,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("DnnMigration.Domain.Entities.TabModule", b =>
                 {
-                    b.Navigation("TabModuleSettings");
+                    b.Navigation("Settings");
                 });
 
             modelBuilder.Entity("DnnMigration.Domain.Entities.User", b =>

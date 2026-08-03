@@ -514,9 +514,8 @@ public sealed class UserService : IUserService
 
                 if (telephonePropertyId is int telephoneId)
                 {
-                    telephone = values
-                        .FirstOrDefault(value => value.PropertyDefinitionId == telephoneId)
-                        ?.EffectiveValue;
+                    telephone = StoredValue(
+                        values.FirstOrDefault(value => value.PropertyDefinitionId == telephoneId));
                 }
             }
 
@@ -1768,9 +1767,8 @@ public sealed class UserService : IUserService
         var parts = new List<string>(addressPropertyIds.Count);
         foreach (int propertyDefinitionId in addressPropertyIds)
         {
-            string? part = values
-                .FirstOrDefault(value => value.PropertyDefinitionId == propertyDefinitionId)
-                ?.EffectiveValue;
+            string? part = StoredValue(
+                values.FirstOrDefault(value => value.PropertyDefinitionId == propertyDefinitionId));
 
             if (!string.IsNullOrWhiteSpace(part))
             {
@@ -1780,6 +1778,29 @@ public sealed class UserService : IUserService
 
         return parts.Count == 0 ? null : string.Join(", ", parts);
     }
+
+    /// <summary>
+    /// Reads the value a profile row holds, from whichever of its two storage columns holds it.
+    /// </summary>
+    /// <param name="row">The stored row, or <see langword="null"/> when the account has no answer.</param>
+    /// <returns>
+    /// The stored value, or <see langword="null"/> when <paramref name="row"/> is
+    /// <see langword="null"/> or holds nothing in either column.
+    /// </returns>
+    /// <remarks>
+    /// MIGRATION: <c>UserProfileValue</c> exposes <c>PropertyValue</c> and <c>PropertyText</c> raw
+    /// and derives nothing, so the coalesce lives here. The order reproduces the legacy read
+    /// procedure <c>GetUserProfile</c>, which returns one column aliased <c>PropertyValue</c>
+    /// computed as "case when (PropertyValue Is Null) then PropertyText else PropertyValue end"
+    /// (<c>04.00.04.SqlDataProvider</c> line 1592): the bounded <c>nvarchar(3750)</c> column wins
+    /// whenever it is not SQL <c>NULL</c>, and the <c>ntext</c> overflow column is the fallback.
+    /// The two are mutually exclusive per row because <see cref="WriteProfileValue"/> and the legacy
+    /// write procedure both null one while filling the other, so the order only becomes observable
+    /// for a row some other writer left holding both - and there the legacy answer is the bounded
+    /// column. Null-coalescing is exact here precisely because it tests for null alone: an empty
+    /// string is a stored value, not an absence, and must not fall through.
+    /// </remarks>
+    private static string? StoredValue(UserProfileValue? row) => row?.PropertyValue ?? row?.PropertyText;
 
     /// <summary>
     /// Locates the module instance a tenant's membership settings are stored against.
@@ -1795,7 +1816,7 @@ public sealed class UserService : IUserService
     private async Task<Module?> FindMembershipSettingsSourceAsync(int portalId, CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
-            await _definitions.ListAsync(portalId, cancellationToken).ConfigureAwait(false);
+            await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         ModuleDefinition? accounts = definitions.FirstOrDefault(candidate => string.Equals(
             candidate.FriendlyName,
