@@ -46,6 +46,11 @@
 //                                               error on an unknown name.
 //    respond-above($name)  { ... }            Applies at and above the step.
 //    respond-below($name)  { ... }            Applies strictly below the step.
+//  Interaction
+//    hover                 { ... }            Applies on `:hover`, but ONLY where
+//                                             the pointer can genuinely hover, so a
+//                                             touch tap cannot leave the state
+//                                             stuck on the last-tapped element.
 //  Accessibility
 //    focus-ring                               Visible `:focus-visible` outline
 //                                             on the current selector.
@@ -174,11 +179,29 @@
 // reaches the simpler layout sooner. Private, via the leading underscore, so no
 // other stylesheet can reach in and restate a step: add one here and the whole
 // workspace picks it up at once.
+//
+// Each step is named before the map is composed from those names, so the scale has
+// the same shape as every other value in the workspace — a name, a documented
+// provenance, and exactly one definition site — rather than four bare widths
+// sitting inside a literal map. A media query cannot evaluate a CSS custom
+// property, which is why these are Sass variables and not tokens in _tokens.scss,
+// and it is also why this file is the one authorized place they may be declared.
+//
+// The four widths themselves are a NET ADDITION, not a measurement. The legacy
+// portal declares no media query anywhere — both Website/Portals/_default/default.css
+// and portal.css contain zero — so there is no responsive behaviour to preserve and
+// no legacy figure to match. They are conventional device-class boundaries: a large
+// handset, a small tablet, a laptop, and a wide desktop.
+$_breakpoint-sm: 30rem;
+$_breakpoint-md: 48rem;
+$_breakpoint-lg: 64rem;
+$_breakpoint-xl: 80rem;
+
 $_breakpoints: (
-  'sm': 30rem,
-  'md': 48rem,
-  'lg': 64rem,
-  'xl': 80rem,
+  'sm': $_breakpoint-sm,
+  'md': $_breakpoint-md,
+  'lg': $_breakpoint-lg,
+  'xl': $_breakpoint-xl,
 );
 
 // Subtracted from a step to make `respond-below`'s upper bound exclusive, so
@@ -227,6 +250,42 @@ $_breakpoint-epsilon: 0.001rem;
 
 
 // =============================================================================
+//  INTERACTION — a hover state that a touch device cannot get stuck in
+// =============================================================================
+
+// Include inside a selector: it attaches `:hover` to the parent, so a top-level
+// include is a compile error rather than a silent no-op — the same shape as
+// `focus-ring` beside it, and idempotent for the same reason.
+//
+// THE DEFECT THIS EXISTS TO PREVENT. A bare `:hover` rule on a touch device is
+// applied on tap and then LEFT APPLIED until something else is tapped, so a row a
+// reader merely touched keeps reading as hovered indefinitely — and on a grid whose
+// selected row is also distinguished by colour, a stuck hover is indistinguishable
+// from a state the reader did not choose. `pointer: fine` is included as well as
+// `hover: hover` because a device can report itself hover-capable while its primary
+// pointer is coarse, which is where the stuck state actually appears.
+//
+// The query is written HERE and only here. Every sibling partial and every
+// component stylesheet is barred from authoring a media feature query of its own,
+// and four of them — the form vocabulary, the table conventions, the pagination
+// component and the record grid — each recorded the absence of this guard as a
+// reported gap and named this file as the place to close it. This is that closure.
+//
+// A rule withdrawn rather than added: a device that cannot hover simply never
+// matches, so the declarations inside are additive decoration and nothing an
+// interaction depends on may live in them. The pointer, the focus ring and the
+// programmatic state carry the affordance for every reader; hover only enriches it
+// for a reader who has a pointer that can express it.
+@mixin hover {
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      @content;
+    }
+  }
+}
+
+
+// =============================================================================
 //  ACCESSIBILITY — invisible to a sighted mouse user at rest, so no visual cost
 // =============================================================================
 
@@ -252,8 +311,11 @@ $_breakpoint-epsilon: 0.001rem;
 // not `display: none` and not `visibility: hidden`: both drop the element from
 // the accessibility tree as well as the page, silencing the very text this
 // exists to announce. `clip-path: inset(50%)` supersedes the deprecated
-// `clip: rect(...)`; the 50% is geometric — it collapses the box to its own
-// centre — and is not a design value with a token to resolve to.
+// `clip: rect(...)`. The clip that does the hiding collapses the box to its own
+// centre, and it resolves to `--clip-collapsed` rather than being written inline:
+// being geometric rather than aesthetic makes a value no less of a value, and the
+// vocabulary rule admits only `0`, `none`, `auto`, `inherit`, `currentColor` and
+// `transparent`.
 // `white-space: nowrap` stops a long string from wrapping inside the hairline
 // box, which in some engines expands its block size and reintroduces a scrollbar
 // on an ancestor. Every length here is either `0` or the hairline
@@ -268,7 +330,7 @@ $_breakpoint-epsilon: 0.001rem;
   margin-block: calc(-1 * var(--border-width));
   padding: 0;
   overflow: hidden;
-  clip-path: inset(50%);
+  clip-path: var(--clip-collapsed);
   white-space: nowrap;
   border-width: 0;
 }

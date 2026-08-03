@@ -17,9 +17,10 @@ namespace DnnMigration.Domain.Entities;
 // Nothing anywhere may read 0 - or the default of int, which is the same value - as "no group", "not
 // saved yet" or "absent". Concretely: never write `RoleGroupId == 0`, `RoleGroupId <= 0`,
 // `RoleGroupId == default`, nor add an IsNew or IsTransient member to this type or infer one from it.
-// Whether a group has been written to the database is DECLARED by the persistence layer through
-// Entity<int>.MarkIdentityPersisted and read back through IdentityIsPersisted; it is never deduced
-// from the key. The absence of a group is expressed where it is genuinely optional - by the nullable
+// Whether a group has been written to the database is DECLARED through
+// Entity<int>.MarkIdentityPersisted by code that already knows it - nothing declares it automatically,
+// so a materialised group reports IdentityIsPersisted as false - and read back through
+// IdentityIsPersisted; it is never deduced from the key. The absence of a group is expressed where it is genuinely optional - by the nullable
 // Role.RoleGroupId foreign key on the referencing side - and never by a reserved value here.
 //
 // MIGRATION: the legacy Null sentinel table (Library/Components/Shared/Null.vb) is not honoured by

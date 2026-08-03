@@ -1,5 +1,6 @@
 using DnnMigration.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 
 namespace DnnMigration.Infrastructure.Persistence;
 
@@ -51,6 +52,31 @@ internal sealed class DnnDbContext : DbContext
         : base(options)
     {
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the unit of work is holding a transaction it opened itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A PLAIN FIELD AND NOT A QUESTION ASKED OF THE DATABASE FACADE. The registered execution
+    /// strategy factory has to know the answer, because a RETRYING strategy refuses to run inside a
+    /// caller-opened transaction and must be substituted for a non-retrying one while a scope is held. The
+    /// obvious way to find out - reading <c>Database.CurrentTransaction</c> from inside the factory - CANNOT
+    /// be used: that property resolves the facade's dependency bundle, and the bundle includes the execution
+    /// strategy factory itself, so the factory ends up asking a question whose answer requires the factory.
+    /// The result is not an exception but a HANG, which was observed rather than predicted: an integration
+    /// run stopped after fixture start-up with no active request and no open transaction on the server at
+    /// all. A field the factory can read without resolving anything removes the cycle rather than
+    /// documenting a way to live near it.
+    /// </para>
+    /// <para>
+    /// Set by the unit of work when it opens a scope and cleared when the scope is disposed, which is the
+    /// only code permitted to touch it. It is not a substitute for
+    /// <c>Database.CurrentTransaction</c> anywhere else - callers that need to know whether a transaction is
+    /// open should still ask the facade, which is authoritative and safe to ask from outside the factory.
+    /// </para>
+    /// </remarks>
+    public bool ExplicitTransactionOpen { get; set; }
 
     /// <summary>Gets the tenant containers.</summary>
     public DbSet<Portal> Portals => Set<Portal>();
@@ -114,6 +140,46 @@ internal sealed class DnnDbContext : DbContext
 
     /// <summary>Gets the grants held against a page.</summary>
     public DbSet<TabPermission> TabPermissions => Set<TabPermission>();
+
+    /// <summary>
+    /// Removes the conventions that would add model artefacts the existing schema does not contain.
+    /// </summary>
+    /// <param name="configurationBuilder">The convention and type-mapping configuration builder.</param>
+    /// <remarks>
+    /// <para>
+    /// <c>ForeignKeyIndexConvention</c> creates a covering index for every foreign key that is not
+    /// already the leading portion of some other index. That is sound advice for a schema Entity
+    /// Framework Core owns, and wrong for this one: Rule T4 makes the existing DotNetNuke database the
+    /// authority, and its terminal state carries exactly thirty-three non-primary-key indexes, every
+    /// one of which is declared explicitly in <c>Persistence/Configurations</c> against the upgrade
+    /// script that created it. Leaving the convention in place added eight more that no script ever
+    /// created - over <c>Modules</c>, <c>Permission</c>, <c>PortalAlias</c>,
+    /// <c>PortalDesktopModules</c>, <c>ProfilePropertyDefinition</c>, <c>Roles</c>,
+    /// <c>TabModules</c> and <c>UserProfile</c> - so the model described forty-one indexes against a
+    /// database holding thirty-three.
+    /// </para>
+    /// <para>
+    /// The consequence was not cosmetic. The model snapshot is what a future migration is diffed
+    /// against, so a convention-invented index is indistinguishable from one the database really has:
+    /// a later scaffold would either propose dropping indexes that were never created or silently
+    /// treat them as present. Removing the convention makes the explicit declarations the only source
+    /// of index metadata, which is the only arrangement under which the model can be compared to the
+    /// real schema and believed.
+    /// </para>
+    /// <para>
+    /// Nothing else is removed. Every other convention either has no effect on a fully explicit
+    /// configuration or supplies behaviour the configurations rely on, and removing conventions
+    /// wholesale would trade one class of invented metadata for another.
+    /// </para>
+    /// </remarks>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        ArgumentNullException.ThrowIfNull(configurationBuilder);
+
+        configurationBuilder.Conventions.Remove(typeof(ForeignKeyIndexConvention));
+
+        base.ConfigureConventions(configurationBuilder);
+    }
 
     /// <summary>
     /// Applies every entity configuration declared in this assembly.

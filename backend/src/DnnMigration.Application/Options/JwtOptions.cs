@@ -18,24 +18,29 @@ namespace DnnMigration.Application.Options;
 /// </para>
 /// <para>
 /// Ownership boundaries, stated once here rather than repeated per member. This
-/// file declares the settings and the conditions under which they are unusable;
-/// the Api layer reads them onto an
-/// instance of this type at startup, calls <see cref="Validate"/> as part of that
-/// binding, and refuses to start when it reports a failure. Token creation and
-/// signature checking
-/// belong to <c>Infrastructure/Security/JwtTokenService.cs</c>; issuing and
-/// rotating refresh tokens belongs to
-/// <c>Infrastructure/Security/RefreshTokenStore.cs</c>. No signing, hashing
-/// or registration logic appears in this file, and none should be
-/// added to it.
+/// file declares the settings, the policy bounds that constrain them and, in
+/// <see cref="Validate"/>, the conditions under which an instance is unusable.
+/// <see cref="Validate"/> is this type's own invariant check and it is genuinely
+/// invoked: the registered <c>IValidateOptions&lt;JwtOptions&gt;</c> implementation in
+/// <c>Api/Extensions/AuthenticationExtensions.cs</c> calls it first (L400) and then
+/// layers the host-added rules on top - the distinct-character floor, the
+/// well-known-placeholder rejection, the issuer and audience bounds and the two
+/// lifetime ranges - so a misconfigured deployment fails while the host is
+/// starting. <c>Infrastructure/Security/JwtTokenService.cs</c> calls it once more
+/// defensively before minting a token (L193). Token creation belongs to that
+/// service; VERIFYING the signature of an inbound token belongs to the API layer's
+/// bearer handler, configured in the same authentication extension, and no other
+/// component checks a signature. Issuing and rotating refresh tokens belongs to
+/// <c>Infrastructure/Security/RefreshTokenStore.cs</c>. No signing, hashing or
+/// registration logic appears in this file, and none should be added to it.
 /// </para>
 /// <para>
 /// MIGRATION: the guard that rejects a missing <see cref="Secret"/> is declared
-/// here rather than in <c>Api/Extensions/AuthenticationExtensions.cs</c>, which is
-/// where an earlier revision of these remarks placed it. Two reasons. The signing
-/// key is materialised in the authentication extension, but so is nothing else
-/// about the lifetimes, so splitting the checks would leave three of the five
-/// settings unguarded; and a guard that fires while the signing key is being
+/// here, beside the setting it governs, rather than only in the authentication
+/// extension. Two reasons. The signing key is materialised in that extension but
+/// nothing there is inherent to the lifetimes, so declaring the checks only at the
+/// materialisation point would leave the remaining settings unguarded by the type
+/// that owns them; and a guard that fires while the signing key is being
 /// materialised has already let the host begin composing, whereas start-up options
 /// validation fails before any service is resolved. Declaring every condition
 /// beside the value it governs also keeps one rule per setting, which is what stops
@@ -74,10 +79,13 @@ public sealed class JwtOptions
     // whoever finds the code that enforces it. They are const rather than
     // configurable for the same reason the credential ceiling in
     // Validation/CredentialBounds.cs is const: a bound that configuration can
-    // widen is not a bound. Declaring them is still not enforcing them - this
-    // type performs no validation - and the enforcement that reads every value
-    // below lives in Api/Extensions/AuthenticationExtensions.cs, where a
-    // rejected configuration can still stop the host from serving traffic.
+    // widen is not a bound. Enforcement is split deliberately and in one
+    // direction only: Validate() below enforces the bounds this type can judge on
+    // its own, and the registered options validator in
+    // Api/Extensions/AuthenticationExtensions.cs calls Validate() first and then
+    // enforces the remaining bounds declared here, so a rejected configuration
+    // stops the host before it serves traffic. No bound is enforced twice with
+    // two different rules.
     // ------------------------------------------------------------------------
 
     /// <summary>
@@ -170,6 +178,35 @@ public sealed class JwtOptions
     /// window unbounded too.
     /// </remarks>
     public const int MaximumRefreshTokenExpirationDays = 30;
+
+    /// <summary>
+    /// Largest acceptable <see cref="RefreshTokenAbsoluteExpirationDays"/> value: 30.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE SETTING THIS BOUNDS IS THE ONE THAT MATTERS MORE. An earlier revision bounded the sliding
+    /// per-token lifetime at thirty days and left the absolute family ceiling with no maximum of its own,
+    /// so a deployment could set a ceiling of a year and pass validation. The two are not
+    /// interchangeable: rotation issues a replacement with a fresh sliding expiry at every exchange, so
+    /// the sliding bound limits only how long one token may sit UNUSED, while THIS setting is the only
+    /// thing that ever forces a caller to authenticate again - and authentication is the only moment a
+    /// credential, an approval state and a lockout state are examined from scratch. An unbounded ceiling
+    /// therefore extends, by exactly its own length, the window in which an account disabled after
+    /// sign-in keeps renewing its session.
+    /// </para>
+    /// <para>
+    /// Thirty days matches the shipped default and the sliding maximum, so the shipped configuration sits
+    /// exactly at the bound and nothing legitimate is refused by introducing it. A deployment that wants a
+    /// longer session must change this constant deliberately, in source, with a reviewer - which is the
+    /// point of a compile-time ceiling rather than a configurable one.
+    /// </para>
+    /// <para>
+    /// <c>Infrastructure/Security/RefreshTokenStore.cs</c> applies a one-year limit of its own to both
+    /// settings. That is now purely a backstop for a store constructed directly, outside the start-up
+    /// validation this file performs, and its own remarks record the distinction.
+    /// </para>
+    /// </remarks>
+    public const int MaximumRefreshTokenAbsoluteExpirationDays = 30;
 
     /// <summary>
     /// Symmetric key used to sign issued access tokens and to verify presented
@@ -329,17 +366,6 @@ public sealed class JwtOptions
     public int RefreshTokenAbsoluteExpirationDays { get; set; } = 30;
 
     /// <summary>
-    /// Shortest usable <see cref="Secret"/>, in characters.
-    /// </summary>
-    /// <remarks>
-    /// Thirty-two characters of UTF-8 carry at least 256 bits, which is the key size HMAC-SHA256
-    /// requires, and it is the figure the repository's own published guidance already states
-    /// (docs/project-guide.md L142). It is a technical floor rather than a policy preference, which
-    /// is why it is a constant here rather than a configurable setting.
-    /// </remarks>
-    private const int MinimumSecretLength = 32;
-
-    /// <summary>
     /// Minutes in a day, used to compare the two lifetimes, which are declared in different units.
     /// </summary>
     private const int MinutesPerDay = 24 * 60;
@@ -378,19 +404,20 @@ public sealed class JwtOptions
                 + $"store, or through the {SectionName}__{nameof(Secret)} environment variable. It "
                 + "must never be committed to source control.");
         }
-        else if (Secret.Length < MinimumSecretLength)
+        else if (System.Text.Encoding.UTF8.GetByteCount(Secret) < MinimumSecretByteLength)
         {
             // Every number reaches the message through an invariant conversion first, so the
             // concatenation below interpolates strings only and cannot pick up a culture. The
             // secret's LENGTH is safe to report; the secret itself never is.
-            string actual = FormattableString.Invariant($"{Secret.Length}");
-            string required = FormattableString.Invariant($"{MinimumSecretLength}");
+            string actual = FormattableString.Invariant(
+                $"{System.Text.Encoding.UTF8.GetByteCount(Secret)}");
+            string required = FormattableString.Invariant($"{MinimumSecretByteLength}");
 
             failures.Add(
-                $"{SectionName}:{nameof(Secret)} is {actual} characters long, and at least "
-                + $"{required} are required. HMAC-SHA256 signs with a key of at least 256 bits, so "
-                + "a shorter secret is rejected by the signing library when the first token is "
-                + "issued.");
+                $"{SectionName}:{nameof(Secret)} is {actual} UTF-8 bytes long, and at least "
+                + $"{required} are required. The signing key is consumed as bytes, and this floor is "
+                + "application policy: it matches the 256-bit output width of the hash the signing "
+                + "algorithm is built on, so a shorter key adds no strength the algorithm can use.");
         }
 
         if (string.IsNullOrWhiteSpace(Issuer))
@@ -452,6 +479,19 @@ public sealed class JwtOptions
                 + "positive number of days is required. A non-positive session ceiling expires every "
                 + "refresh-token family at the instant it is created, so no caller could ever renew "
                 + "a session.");
+        }
+        else if (RefreshTokenAbsoluteExpirationDays > MaximumRefreshTokenAbsoluteExpirationDays)
+        {
+            string ceiling = FormattableString.Invariant($"{RefreshTokenAbsoluteExpirationDays}");
+            string permitted = FormattableString.Invariant($"{MaximumRefreshTokenAbsoluteExpirationDays}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(RefreshTokenAbsoluteExpirationDays)} is {ceiling} day(s), "
+                + $"and at most {permitted} are permitted. This is the only setting that ever forces "
+                + "a caller to authenticate again, and authenticating again is the only moment a "
+                + "credential, an approval state and a lockout state are examined from scratch - so "
+                + "the value is exactly how long an account disabled after sign-in keeps renewing "
+                + "its session.");
         }
         else if (RefreshTokenExpirationDays > 0
             && RefreshTokenAbsoluteExpirationDays < RefreshTokenExpirationDays)

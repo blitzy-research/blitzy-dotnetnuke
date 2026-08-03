@@ -67,10 +67,12 @@ namespace DnnMigration.Infrastructure.Security;
 /// </para>
 /// <para>
 /// <strong>Identifiers are asserted verbatim.</strong> Neither 0 nor -1 is treated as absent anywhere
-/// here, and no identifier is range-checked. <c>Portals.PortalID</c> seeds at -1 and
-/// <c>Roles.RoleID</c> seeds at 0, so both values identify something real; the legacy sentinel table
-/// at <c>Library/Components/Shared/Null.vb:L41</c> happens to use -1 for "no integer", and conflating
-/// the two readings would deny a token to the first portal an installation ever created.
+/// here, and no identifier is range-checked. <c>Portals.PortalID</c> is
+/// <c>IDENTITY (-1, 1)</c>, so the seed and first generated value is -1, while the shipped default
+/// portal row is inserted explicitly with <c>PortalID</c> 0; <c>Roles.RoleID</c> seeds at 0. All
+/// three values identify something real. The legacy sentinel table at
+/// <c>Library/Components/Shared/Null.vb:L41</c> happens to use -1 for "no integer", and conflating
+/// the two readings would deny a token to a real portal.
 /// </para>
 /// <para>
 /// <strong>No inspection member, by design.</strong> This type never validates an inbound token. The
@@ -80,9 +82,12 @@ namespace DnnMigration.Infrastructure.Security;
 /// a security defect rather than a convenience.
 /// </para>
 /// <para>
-/// <strong>Nothing here logs, and nothing here returns credential material.</strong> No token, secret
-/// or hash reaches a log, a message or a failure reason; there is deliberately no logger on this type
-/// at all. A failure says which rule refused the request and nothing more.
+/// <strong>Nothing here logs, and no token reaches a failure channel.</strong> Issuing tokens is this
+/// type's purpose, so a successful result necessarily returns the minted access token and, on the
+/// paths that mint one, the refresh token - that is the return contract and it is the only place
+/// token material travels. What is excluded is every other channel: no token, signing secret or
+/// stored hash reaches a log, a message or a failure reason, and there is deliberately no logger on
+/// this type at all. A failure says which rule refused the request and nothing more.
 /// </para>
 /// </remarks>
 internal sealed class JwtTokenService : ITokenService
@@ -133,6 +138,7 @@ internal sealed class JwtTokenService : ITokenService
     private readonly string _audience;
     private readonly TimeSpan _accessTokenLifetime;
     private readonly JwtSecurityTokenHandler _handler = new();
+    private readonly ISecurityDiagnostics _diagnostics;
 
     /// <summary>Initialises a new instance of the <see cref="JwtTokenService"/> class.</summary>
     /// <param name="refreshTokens">The refresh-token store; a singleton, like this service.</param>
@@ -142,6 +148,11 @@ internal sealed class JwtTokenService : ITokenService
     /// a provider, and used per call rather than held, for the reason given in the type remarks.
     /// </param>
     /// <param name="jwtOptions">The bound JWT configuration.</param>
+    /// <param name="diagnostics">
+    /// Records the one anomaly this service absorbs rather than reports: a permission read that fails while a
+    /// token is being renewed, which yields a token asserting no permission keys instead of refusing the
+    /// renewal.
+    /// </param>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
     /// <exception cref="OptionsValidationException">
     /// The bound configuration cannot sign a token: the secret is missing or shorter than the 256 bits
@@ -172,13 +183,15 @@ internal sealed class JwtTokenService : ITokenService
         RefreshTokenStore refreshTokens,
         IClock clock,
         IServiceScopeFactory scopeFactory,
-        IOptions<JwtOptions> jwtOptions)
+        IOptions<JwtOptions> jwtOptions,
+        ISecurityDiagnostics diagnostics)
     {
         ArgumentNullException.ThrowIfNull(jwtOptions);
 
         _refreshTokens = refreshTokens ?? throw new ArgumentNullException(nameof(refreshTokens));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
 
         JwtOptions options = jwtOptions.Value
             ?? throw new ArgumentNullException(
@@ -483,6 +496,14 @@ internal sealed class JwtTokenService : ITokenService
     /// which is the safe direction, and the server re-evaluates every permission on every request in
     /// any case - the entries in a token inform the client and never decide access.
     /// </para>
+    /// <para>
+    /// BUT THE SUBSTITUTION IS RECORDED, which an earlier revision did not do. An empty key set is
+    /// indistinguishable from a caller who genuinely holds nothing, so silently substituting one turned a
+    /// dependency failure into a plausible-looking token: every affordance vanishes from the client, the
+    /// caller reports that the application has stopped working, and no log line anywhere says why. Only the
+    /// failure CODE is recorded, through a contract that accepts no message and discards anything that is not
+    /// code-shaped.
+    /// </para>
     /// </remarks>
     private async Task<RefreshTokenSubject> ReadCurrentAuthorityAsync(
         RefreshTokenSubject presented,
@@ -513,6 +534,18 @@ internal sealed class JwtTokenService : ITokenService
         Result<IReadOnlyList<string>> effective = await permissions
             .GetEffectivePermissionKeysAsync(portalId, presented.UserId, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        if (effective.IsFailure)
+        {
+            // Nothing here is an expected absence: no module and no page are named, and the tenant is the one
+            // the presented token was minted for, so every documented failure of that contract at this call
+            // site is a genuine dependency or consistency fault.
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.EffectivePermissionResolutionFailed,
+                portalId,
+                presented.UserId,
+                effective.Reason?.Code);
+        }
 
         IReadOnlyList<string> permissionKeys = effective.IsSuccess
             ? effective.Value
@@ -649,8 +682,11 @@ internal sealed class JwtTokenService : ITokenService
     /// <para>
     /// The three advisory booleans are left at their defaults here, because this service is not told
     /// them: a forced credential update, an expiring credential and an incomplete profile are all
-    /// account facts read from rows this service never sees, and the sign-in service sets them alongside
-    /// the fully populated projection.
+    /// account facts read from rows this service never sees. The sign-in service overwrites two of
+    /// the three alongside the fully populated projection - the forced-update and expiring-credential
+    /// advisories (<c>AuthService.cs:L642-L643</c> and <c>L729-L730</c>). The profile advisory has no
+    /// assignment anywhere in production code and therefore stays <see langword="false"/> on every
+    /// response; the reason is recorded on the member itself in <c>LoginResponse</c>.
     /// </para>
     /// </remarks>
     private LoginResponse BuildResponse(RefreshTokenSubject subject, int portalId, string refreshToken)

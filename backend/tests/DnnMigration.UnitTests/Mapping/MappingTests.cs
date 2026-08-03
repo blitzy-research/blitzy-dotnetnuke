@@ -241,29 +241,47 @@ public class MappingTests
         portal.BannerAdvertising.Should().Be(BannerAdvertisingMode.None);
         portal.DefaultLanguage.Should().Be(DefaultLanguageCode);
         portal.TimeZoneOffset.Should().Be(DefaultTimeZoneOffsetMinutes);
-        portal.PortalGuid.Should().NotBeEmpty(
-            "the handle is generated here, and an all-zero handle is the legacy absent-value sentinel");
+        portal.PortalGuid.Should().BeEmpty(
+            "the handle is left at its type default so the store's newid() default supplies it, which is "
+            + "what keeps this mapper a pure function of its arguments");
     }
 
     /// <summary>
-    /// Each new portal receives its own handle.
+    /// The mapper is deterministic: two identical calls produce identical aggregates, handle included.
     /// </summary>
+    /// <remarks>
+    /// The handle is the one member that used to vary between calls, because an earlier revision
+    /// generated it here. Generation now belongs to the store, whose <c>GUID</c> column carries
+    /// <c>DEFAULT (newid())</c>, so the mapper has no non-deterministic member left and this test is the
+    /// assertion that keeps it that way.
+    /// </remarks>
     [Fact]
-    public void PortalToNewPortal_GeneratesADistinctHandleEachTime()
+    public void PortalToNewPortal_IsDeterministicAndLeavesTheHandleToTheStore()
     {
         CreatePortalRequest request = new() { PortalName = "Tenant" };
 
         Portal first = PortalMappings.ToNewPortal(request, "USD", null, 0m, 0, 0, 0, null, "Portals/1");
-        Portal second = PortalMappings.ToNewPortal(request, "USD", null, 0m, 0, 0, 0, null, "Portals/2");
+        Portal second = PortalMappings.ToNewPortal(request, "USD", null, 0m, 0, 0, 0, null, "Portals/1");
 
-        first.PortalGuid.Should().NotBe(second.PortalGuid);
+        first.PortalGuid.Should().BeEmpty();
+        second.PortalGuid.Should().Be(first.PortalGuid);
+        second.PortalName.Should().Be(first.PortalName);
+        second.HomeDirectory.Should().Be(first.HomeDirectory);
     }
 
     /// <summary>
-    /// A new portal floors its hosting terms at zero and tolerates an unnamed request.
+    /// A new portal records its hosting terms exactly as supplied, including negative ones, and
+    /// tolerates an unnamed request.
     /// </summary>
+    /// <remarks>
+    /// The legacy creation path compares these four to nothing:
+    /// <c>PortalController.vb:L326-L375</c> parses each from a host setting and hands it to the insert at
+    /// L369 untouched. The floor that an earlier revision applied here reproduced the ROLE-fee guards at
+    /// <c>PortalController.vb:L395,L398</c>, which clamp a <c>RoleInfo</c> rather than a portal, so it
+    /// altered which values an installation could store. This test now asserts the legacy behaviour.
+    /// </remarks>
     [Fact]
-    public void PortalToNewPortal_FloorsTheHostingTermsAndToleratesAnUnnamedRequest()
+    public void PortalToNewPortal_RecordsTheHostingTermsVerbatimAndToleratesAnUnnamedRequest()
     {
         CreatePortalRequest request = new() { PortalName = null };
 
@@ -272,10 +290,10 @@ public class MappingTests
 
         portal.PortalName.Should().BeEmpty(
             "the name column does not accept null, and the create validator does not require a name");
-        portal.HostFee.Should().Be(0m);
-        portal.HostSpace.Should().Be(0);
-        portal.PageQuota.Should().Be(0);
-        portal.UserQuota.Should().Be(0);
+        portal.HostFee.Should().Be(-50m);
+        portal.HostSpace.Should().Be(-1);
+        portal.PageQuota.Should().Be(-2);
+        portal.UserQuota.Should().Be(-3);
     }
 
     /// <summary>
@@ -389,15 +407,23 @@ public class MappingTests
     }
 
     /// <summary>
-    /// Applying an update floors a negative charge and negative quotas.
+    /// Applying an update stores a negative charge and negative quotas exactly as submitted.
     /// </summary>
+    /// <remarks>
+    /// The legacy save path applied no floor to any of the four: <c>SiteSettings.ascx.vb:L705-L751</c>
+    /// parses each box into a local and <c>L772-L780</c> forwards it, over markup that declares no
+    /// lower-bound validator on any of them - measurably unlike <c>editroles.ascx:L94-L96,L126-L128</c>,
+    /// which do bound a ROLE's fees. This test asserts the legacy behaviour, so that a floor cannot be
+    /// reintroduced into a mapper the plan requires to be mechanical without a test turning red.
+    /// </remarks>
     [Fact]
-    public void PortalApplyUpdate_FloorsNegativeTerms()
+    public void PortalApplyUpdate_StoresNegativeTermsVerbatim()
     {
         Portal portal = FullPortal();
 
         UpdatePortalRequest request = new()
         {
+            PortalId = portal.PortalId,
             PortalName = "Renamed",
             HostFee = -0.01m,
             HostSpace = -5,
@@ -407,10 +433,10 @@ public class MappingTests
 
         PortalMappings.ApplyUpdate(portal, request);
 
-        portal.HostFee.Should().Be(0m);
-        portal.HostSpace.Should().Be(0);
-        portal.PageQuota.Should().Be(0);
-        portal.UserQuota.Should().Be(0);
+        portal.HostFee.Should().Be(-0.01m);
+        portal.HostSpace.Should().Be(-5);
+        portal.PageQuota.Should().Be(-5);
+        portal.UserQuota.Should().Be(-5);
     }
 
     /// <summary>
@@ -729,6 +755,106 @@ public class MappingTests
         inFirstGroup.RoleGroupId = 0;
 
         RoleMappings.ToDetail(inFirstGroup).RoleGroupId.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The membership projection carries the five values the legacy grid rendered plus the three keys a
+    /// caller needs in order to act on the row.
+    /// </summary>
+    /// <remarks>
+    /// Measured against <c>Website/admin/Security/securityroles.ascx:L71-L86</c>. The delete affordance on
+    /// each legacy row was governed by <c>DeleteButtonVisible(UserID, RoleID)</c> at <c>:L68</c>, which is
+    /// why the role key travels beside the role name.
+    /// </remarks>
+    [Fact]
+    public void RoleMembershipToDto_CarriesTheRenderedColumnsAndTheKeys()
+    {
+        DateTime effective = new(2024, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+        DateTime expiry = new(2025, 1, 15, 0, 0, 0, DateTimeKind.Utc);
+
+        UserRole assignment = new()
+        {
+            UserRoleId = 88,
+            UserId = 12,
+            RoleId = 0,
+            EffectiveDate = effective,
+            ExpiryDate = expiry,
+            User = new User { UserId = 12, Username = "grace", DisplayName = "Grace Hopper" },
+            Role = new Role { RoleId = 0, PortalId = -1, RoleName = "Subscribers" },
+        };
+
+        RoleMembershipDto dto = RoleMappings.ToMembership(assignment);
+
+        dto.UserRoleId.Should().Be(88);
+        dto.UserId.Should().Be(12);
+        dto.Username.Should().Be("grace");
+        dto.DisplayName.Should().Be("Grace Hopper");
+        dto.RoleId.Should().Be(0, "Roles.RoleID is IDENTITY(0, 1), so zero is a real key");
+        dto.RoleName.Should().Be("Subscribers");
+        dto.EffectiveDate.Should().Be(effective);
+        dto.ExpiryDate.Should().Be(expiry);
+    }
+
+    /// <summary>
+    /// An open-ended membership projects both dates as absent, never as a sentinel date.
+    /// </summary>
+    /// <remarks>
+    /// The legacy absence marker for a date was <c>Date.MinValue</c>. Coercing a null into it here would
+    /// hand a consumer a value it had to recognise as magic, which is exactly the collision AAP Rule T7
+    /// exists to prevent; the legacy screen's own renderer printed the empty string for it rather than the
+    /// value.
+    /// </remarks>
+    [Fact]
+    public void RoleMembershipToDto_LeavesAnOpenEndedMembershipsDatesAbsent()
+    {
+        UserRole assignment = new()
+        {
+            UserRoleId = 1,
+            UserId = 2,
+            RoleId = 3,
+            EffectiveDate = null,
+            ExpiryDate = null,
+            User = new User { UserId = 2, Username = "ada", DisplayName = "Ada Lovelace" },
+            Role = new Role { RoleId = 3, PortalId = -1, RoleName = "Registered Users" },
+        };
+
+        RoleMembershipDto dto = RoleMappings.ToMembership(assignment);
+
+        dto.EffectiveDate.Should().BeNull();
+        dto.ExpiryDate.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A membership whose account or role was not composed is refused rather than projected with an empty
+    /// name.
+    /// </summary>
+    /// <remarks>
+    /// A row that looks complete and is not would be worse than a failure: the caller would read an empty
+    /// display name as a fact about the account. Raising here names the real cause - a read that did not
+    /// compose its navigations.
+    /// </remarks>
+    [Fact]
+    public void RoleMembershipToDto_RefusesAnAssignmentThatWasNotComposed()
+    {
+        UserRole withoutAccount = new()
+        {
+            UserRoleId = 1,
+            UserId = 2,
+            RoleId = 3,
+            Role = new Role { RoleId = 3, PortalId = -1, RoleName = "Registered Users" },
+        };
+
+        Assert.Throws<ArgumentNullException>(() => RoleMappings.ToMembership(withoutAccount));
+
+        UserRole withoutRole = new()
+        {
+            UserRoleId = 1,
+            UserId = 2,
+            RoleId = 3,
+            User = new User { UserId = 2, Username = "ada", DisplayName = "Ada Lovelace" },
+        };
+
+        Assert.Throws<ArgumentNullException>(() => RoleMappings.ToMembership(withoutRole));
     }
 
     /// <summary>
@@ -1123,8 +1249,8 @@ public class MappingTests
         })
         {
             // MIGRATION: the appearance columns are absent from the UPDATE contract too, so they are
-            // neither readable nor writable through the module API - not write-only, as an earlier
-            // revision of this assertion had it. They remain mapped and PRESERVED in the store; the
+            // neither readable nor writable through the module API - not write-only, which is the
+            // easy misreading of the pair. They remain mapped and PRESERVED in the store; the
             // migration simply declines to manage them, pane layout and server-side rendering being
             // excluded by AAP 0.2.2.1.
             typeof(UpdateModuleRequest).GetProperty(appearance).Should().BeNull(
@@ -1489,10 +1615,18 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A new placement preserves a zero caching period as "do not cache" and floors a negative one.
+    /// A new placement preserves a zero caching period as "do not cache" and carries a negative one
+    /// through unchanged rather than flooring it.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the second half of this test previously asserted a floor at zero. That floor is removed:
+    /// <c>valCacheTime</c> checked integrality alone, the legacy code-behind stored whatever parsed
+    /// (<c>ModuleSettings.ascx.vb</c> L349-L350) and the column is a plain <c>int NOT NULL</c> with no check
+    /// constraint, so a negative period was an accepted submission. A projection that rewrote it returned a
+    /// record that was not the record submitted, with no way for the caller to notice.
+    /// </remarks>
     [Fact]
-    public void ModuleToNewPlacement_PreservesZeroAndFloorsANegativePeriod()
+    public void ModuleToNewPlacement_PreservesZeroAndCarriesANegativePeriodThrough()
     {
         CreateModuleRequest omitted = new() { TabId = 7 };
 
@@ -1509,7 +1643,7 @@ public class MappingTests
 
         CreateModuleRequest negative = new() { TabId = 7, CacheTime = -30 };
 
-        ModuleMappings.ToNewPlacement(negative).CacheTime.Should().Be(0);
+        ModuleMappings.ToNewPlacement(negative).CacheTime.Should().Be(-30);
     }
 
     /// <summary>
@@ -1581,8 +1715,8 @@ public class MappingTests
             "which definition a module instantiates is fixed when it is created, and the update request "
             + "carries no definition field");
         // MIGRATION: 5.6 - the fixture starts deleted and the request clears the flag, so this asserts that
-        // IsDeleted IS applied. An earlier revision expected it to be left alone on the grounds that deletion
-        // was a separate operation; measured, IsDeleted is genuinely the ninth argument of the legacy first
+        // IsDeleted IS applied. Expecting it to be left alone - on the grounds that deletion is a separate
+        // operation - is the wrong reading: measured, IsDeleted is genuinely the ninth argument of the legacy first
         // provider call, and the legacy settings save wrote it unconditionally - as a bare False, so that
         // screen could only ever CLEAR it. Carrying it on the contract consolidates soft delete and restore,
         // a deliberate widening, and it means an omitted flag now clears rather than preserves.
@@ -1596,8 +1730,8 @@ public class MappingTests
     /// The update path falls back to the period already stored, which is not the create path's fallback.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, and an earlier revision of this test asserted the
-    /// opposite, that an omitted period should be left as it was. Measured: the legacy save read the
+    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour. The opposite expectation - that an omitted
+    /// period is left as it was - is wrong. Measured: the legacy save read the
     /// cache-time box and stored a parsed integer when it was non-empty and LITERALLY ZERO when it was empty,
     /// so a blank field DISABLED caching. Zero is consequently a real value meaning "do not cache" and not an
     /// absent one, which is why the member is a non-nullable integer with no "unspecified" state. Treating
@@ -1618,15 +1752,18 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The update path floors a negative period at zero and leaves the stored pane alone.
+    /// The update path writes a negative period through unchanged and leaves the stored pane alone.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the pane is no longer substituted here, because the update contract carries no pane member
-    /// to substitute FOR - the column is excluded and its stored value is preserved. Only the negative-period
-    /// floor remains, which guards a value the store would refuse to interpret.
+    /// MIGRATION: the pane is not substituted here, because the update contract carries no pane member to
+    /// substitute FOR - the column is excluded and its stored value is preserved. The negative-period floor
+    /// this test once asserted is also gone: the legacy validator checked integrality alone, the code-behind
+    /// stored whatever parsed, and the column carries no check constraint, so the earlier claim that the
+    /// store "would refuse to interpret" a negative was simply untrue. Clamping accepted the caller's value
+    /// and then rewrote it undetectably, which is why it was removed rather than kept as a divergence.
     /// </remarks>
     [Fact]
-    public void ModuleApplyUpdate_FloorsANegativePeriodAndLeavesTheStoredPaneAlone()
+    public void ModuleApplyUpdate_WritesANegativePeriodThroughAndLeavesTheStoredPaneAlone()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
@@ -1635,7 +1772,7 @@ public class MappingTests
         ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest { CacheTime = -1 });
 
         placement.PaneName.Should().Be(storedPane);
-        placement.CacheTime.Should().Be(0);
+        placement.CacheTime.Should().Be(-1);
     }
 
     /// <summary>

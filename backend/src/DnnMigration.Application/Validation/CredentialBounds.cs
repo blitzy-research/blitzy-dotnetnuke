@@ -49,8 +49,9 @@ namespace DnnMigration.Application.Validation;
 // The remaining reason to have a ceiling at all is to bound the work an
 // unauthenticated caller can ask the server to do, and 256 bytes does that while
 // leaving room for any passphrase a person will actually type. It also matches the
-// widest credential-adjacent column in the terminal schema, Users.Username
-// nvarchar(256), so the number is recognisable rather than arbitrary.
+// widest credential-adjacent column in the terminal schema, Users.Email nvarchar(256)
+// - Users.Username is nvarchar(100) - so the number is recognisable rather than
+// arbitrary.
 //
 // THIS IS A DIVERGENCE FROM LEGACY BEHAVIOUR AND IS RECORDED AS ONE. DotNetNuke
 // 4.9.0 imposed no server-side ceiling on a submitted password; the twenty-character

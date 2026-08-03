@@ -83,13 +83,12 @@ namespace DnnMigration.Domain.Entities;
 //   Infrastructure layer through the Fluent API; the obligations that configuration inherits are
 //   recorded against the members they concern, and the terminal column contract is tabulated below.
 //   This file introduces no behavioural divergence of its own beyond the removal of TempModuleID,
-//   which is to be recorded in MIGRATION_NOTES.md as an appended entry under the module domain,
-//   worded as: "ModuleDefinitionInfo.TempModuleID is not modelled. It is a manifest-parse-time
+//   which is recorded in MIGRATION_NOTES.md under the module domain: it is a manifest-parse-time
 //   correlation number with no column in dbo.ModuleDefinitions, never passed to any data-provider
-//   call, and referenced only by the excluded ResourceInstaller tree; the target expresses the same
-//   definition-to-control relationship with an object reference." Append to that document only -
-//   mkdocs.yml must not be edited, because its nav entries resolve relative to docs/ and cannot
-//   address a repository-root file.
+//   call, and referenced only by the excluded ResourceInstaller tree, and the target expresses the
+//   same definition-to-control relationship with an object reference. Any further divergence found
+//   here belongs in that same document, which lives at the repository root - mkdocs.yml cannot
+//   reference it, because its nav entries resolve relative to docs/.
 
 /// <summary>
 /// One published definition within an installed module package: the unit a portal actually places
@@ -337,11 +336,14 @@ public sealed class ModuleDefinition : Entity<int>
     /// the database can actually enforce it. The navigation itself is unpopulated on any read that did not
     /// include the relationship, so declaring it non-nullable would state a guarantee the runtime does not
     /// keep: the reference would be null in exactly the case the annotation promises it cannot be, and
-    /// every caller would be invited to dereference it unguarded. It is nullable for the same reason as
-    /// all twenty-five other reference navigations in this layer - including
-    /// <see cref="Entities.PortalDesktopModule.DesktopModule"/>, whose foreign key is required in exactly
-    /// the same way - so the whole model reads consistently and the compiler's nullable analysis is worth
-    /// trusting. Read <see cref="DesktopModuleId"/> when only the identity is needed.
+    /// every caller would be invited to dereference it unguarded. Of the thirty-three reference
+    /// navigations in this layer, thirteen are declared nullable, and this is the one among them whose
+    /// foreign key is nevertheless required - the other twelve, <see cref="Entities.Role.RoleGroup"/>
+    /// and <see cref="Entities.Tab.Parent"/> among them, sit on nullable foreign keys where the null
+    /// additionally means "no related row". Both meanings are read the same way here: test the
+    /// navigation for null before dereferencing it and take requiredness from
+    /// <see cref="DesktopModuleId"/>, which is non-nullable. Read that property when only the identity
+    /// is needed.
     /// </para>
     /// </remarks>
     public DesktopModule? DesktopModule { get; set; }
@@ -389,33 +391,29 @@ public sealed class ModuleDefinition : Entity<int>
     /// </remarks>
     public ICollection<Module> Modules { get; set; } = [];
 
-    /// <summary>
-    /// Gets or sets the permission types this definition defines.
-    /// </summary>
-    /// <value>
-    /// The permission rows whose <c>ModuleDefID</c> refers to this row. Initialised to an empty
-    /// collection, so it is never <see langword="null"/>.
-    /// </value>
-    /// <remarks>
-    /// <para>
-    /// The catalogue of permissions a definition understands - the named actions, such as view and
-    /// edit, that a grant on a placed instance can refer to. <c>dbo.Permission</c> declares
-    /// <c>ModuleDefID</c> as <c>int NOT NULL</c> at <c>02.02.00</c> line 687, so every permission
-    /// type belongs to exactly one definition.
-    /// </para>
-    /// <para>
-    /// Unlike <see cref="ModuleControls"/> and <see cref="Modules"/>, this relationship is
-    /// <b>not</b> backed by a foreign key: no <c>FK_..._ModuleDefinitions</c> constraint over
-    /// <c>dbo.Permission</c> exists anywhere in the upgrade chain. The legacy code performed the
-    /// cascade itself - the terminal <c>DeleteModuleDefinition</c> procedure
-    /// (<c>04.06.00</c> line 507) runs <c>DELETE FROM Permission WHERE moduledefid = @ModuleDefId</c>
-    /// under the comment "delete custom permissions" before deleting the definition row. The
-    /// configuration must therefore declare this relationship explicitly rather than rely on
-    /// discovery from a constraint that is not there, and, because the database will not cascade,
-    /// deleting a definition remains an operation that has to remove these rows deliberately.
-    /// </para>
-    /// </remarks>
-    public ICollection<Permission> Permissions { get; set; } = [];
+    // MIGRATION: THERE IS DELIBERATELY NO Permissions COLLECTION ON THIS ENTITY. The catalogue rows in
+    //   dbo.Permission do carry a ModuleDefID, and the legacy code did cascade by hand - the terminal
+    //   DeleteModuleDefinition procedure (04.06.00:L507) runs
+    //   "DELETE FROM Permission WHERE moduledefid = @ModuleDefId" under the comment "delete custom
+    //   permissions" before deleting the definition row - but that association must not be modelled as a
+    //   relationship, and the reason is arithmetic rather than stylistic.
+    //
+    //   No FK_..._ModuleDefinitions constraint over dbo.Permission exists anywhere in the chain, and the
+    //   database could not have one: the system-level catalogue rows the installer creates carry
+    //   ModuleDefID = -1, a real product-wide marker matching no definition row. Because ModuleDefID is
+    //   int NOT NULL, every relationship Entity Framework Core can express over it is REQUIRED - an
+    //   optional relationship over a non-nullable foreign key is rejected at model validation - so
+    //   declaring one would have the model assert that every catalogue row has a principal, which the -1
+    //   rows falsify. Keeping a collection here would be enough on its own: the relationship-discovery
+    //   convention would rebuild that required relationship from this end alone, so BOTH ends are absent
+    //   and Permission carries no ModuleDefinition navigation either.
+    //
+    //   Two consequences follow and both are intended. The association is read through the scalar
+    //   Permission.ModuleDefinitionId and resolved explicitly, which forces the -1 case to be handled
+    //   deliberately. And, exactly as under the legacy provider, no database cascade removes these rows,
+    //   so deleting a definition remains an operation that has to remove them on purpose - see
+    //   ProfilePropertyDefinitions below, whose nullable column permits the optional relationship this
+    //   one cannot have.
 
     /// <summary>
     /// Gets or sets the user-profile properties this definition contributes.
@@ -436,7 +434,7 @@ public sealed class ModuleDefinition : Entity<int>
     /// Two consequences follow from that nullable column, and the configuration must honour both:
     /// the relationship is optional on the dependent side, so the portal-wide profile properties
     /// that belong to no definition carry a null and simply never appear in any definition's
-    /// collection; and, as with <see cref="Permissions"/>, no foreign key enforces it, so the
+    /// collection; and, as with the permission catalogue described above, no foreign key enforces it, so the
     /// relationship has to be declared explicitly and no database cascade will remove these rows.
     /// </para>
     /// </remarks>

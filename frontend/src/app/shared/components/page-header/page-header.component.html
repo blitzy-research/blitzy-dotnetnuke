@@ -3,9 +3,15 @@
     <h1 class="page-header__title">{{ title }}</h1>
 
     <!--
-      A truthiness guard rather than a presence check: an empty or omitted value renders
-      nothing at all, instead of a blank paragraph that would occupy vertical space and add
-      an empty node to the accessibility tree.
+      A truthiness guard rather than a presence check: an omitted, empty or whitespace-only
+      value renders nothing at all, instead of a blank paragraph that would occupy vertical
+      space and add a node carrying no accessible name to the accessibility tree.
+
+      The guard covers the whitespace-only case because the input NORMALISES it away rather
+      than because truthiness catches it - `' '` is truthy in JavaScript, so this guard alone
+      would have rendered exactly the blank paragraph it exists to prevent. The paired input
+      transform collapses a blank value to `undefined` at assignment, which leaves this read
+      site with only two states to distinguish instead of three.
     -->
     @if (subtitle) {
       <p class="page-header__subtitle">{{ subtitle }}</p>

@@ -5,7 +5,7 @@
 @use 'mixins' as mx;
 
 table {
-  inline-size: 100%;
+  inline-size: var(--size-full);
 
   // THE GRIDS HAVE NO CELL BORDERS, AND THAT IS DELIBERATE. Not one border
   // declaration appears anywhere in this file. It is stated prominently because
@@ -236,7 +236,7 @@ td[data-placeholder] {
   @include mx.respond-below('md') {
     & > table {
       inline-size: auto;
-      min-inline-size: 100%;
+      min-inline-size: var(--size-full);
     }
   }
 }

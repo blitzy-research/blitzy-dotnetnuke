@@ -56,3 +56,91 @@ internal sealed class PortalAdministratorRequirement : IAuthorizationRequirement
     /// </remarks>
     public static PortalAdministratorRequirement Instance { get; } = new();
 }
+
+/// <summary>
+/// Requires that the caller is a host account, for the operations that address no single portal.
+/// </summary>
+/// <remarks>
+/// <para>
+/// WHY THE PORTAL REQUIREMENT CANNOT SERVE THESE OPERATIONS. A handful of endpoints carry no portal binding
+/// at all - the portal collection, portal creation, and the alias resources addressed by their own global
+/// identifier. The portal-administrator requirement, finding no portal in the route, falls back to the
+/// tenant the caller arrived through and asks whether they administer THAT. For a global operation the
+/// answer is truthful and irrelevant: an administrator of one tenant would satisfy it and then enumerate
+/// every tenant, create new ones, or read and delete another tenant's alias by guessing its identifier.
+/// Those operations are host-scoped by nature, so they need a host-scoped requirement.
+/// </para>
+/// <para>
+/// WHY THIS IS NOT THE EXCLUDED HOST-ADMINISTRATION FEATURE. What the migration excludes is the super-user
+/// CONSOLE and the screens reachable only from it. The concept is already present and already load-bearing:
+/// <c>Users.IsSuperUser</c> is a mapped column, the token service emits it as a claim, the current-user
+/// abstraction exposes it, and both the permission service and the portal service already branch on it -
+/// the latter to decide who may alter a portal's hosting charge and quotas. This requirement consumes what
+/// exists rather than adding a feature.
+/// </para>
+/// <para>
+/// Carries no data, for the same reason its sibling does not: a requirement instance is shared by every
+/// request that uses the policy, so a per-request fact stored on one would be frozen at the first request.
+/// </para>
+/// </remarks>
+internal sealed class HostAdministratorRequirement : IAuthorizationRequirement
+{
+    /// <summary>The single shared instance.</summary>
+    public static HostAdministratorRequirement Instance { get; } = new();
+}
+
+/// <summary>
+/// Requires that the caller is the account the route names, and optionally admits an administrator of the
+/// portal the route names as well.
+/// </summary>
+/// <remarks>
+/// <para>
+/// WHY THE ACCOUNT FAMILY NEEDS ITS OWN REQUIREMENT. Every other resource in this API has one legitimate
+/// class of caller. The account resources have two: the holder, reaching their own profile or changing their
+/// own credential, and an administrator of the account's portal acting on their behalf. Authentication alone
+/// - which is what these endpoints previously required - let any bearer token name any portal and any
+/// account in the route and read that account's personal data or overwrite its credential. Portal
+/// administration alone would delete self-service.
+/// </para>
+/// <para>
+/// WHY THE ADMINISTRATOR ARM IS A FLAG RATHER THAN A SECOND TYPE. The two policies differ in exactly one
+/// bit, and the alternative - two requirement types with two handlers - would duplicate the ownership test
+/// so that the two could drift apart on the one comparison that matters. The flag is set at registration,
+/// never per request, so the instances stay shareable.
+/// </para>
+/// <para>
+/// WHY THE CREDENTIAL CHANGE REFUSES THE ADMINISTRATOR ARM. A change presents the current credential and is
+/// therefore something only its owner can perform; an administrator who must intervene uses the separate
+/// reset operation, which is gated on portal administration and recorded as its own administrative act.
+/// Admitting an administrator here would collapse the two into one endpoint whose effect depended on which
+/// fields were populated, which is precisely the shape that allowed a credential to be overwritten without
+/// anyone proving they were entitled to.
+/// </para>
+/// </remarks>
+internal sealed class AccountOwnerRequirement : IAuthorizationRequirement
+{
+    /// <summary>
+    /// Initialises a new instance of the <see cref="AccountOwnerRequirement"/> class.
+    /// </summary>
+    /// <param name="allowPortalAdministrator">
+    /// Whether an administrator of the portal the route names also satisfies the requirement.
+    /// </param>
+    private AccountOwnerRequirement(bool allowPortalAdministrator) =>
+        AllowPortalAdministrator = allowPortalAdministrator;
+
+    /// <summary>
+    /// The instance admitting the account holder only.
+    /// </summary>
+    public static AccountOwnerRequirement OwnerOnly { get; } = new(allowPortalAdministrator: false);
+
+    /// <summary>
+    /// The instance admitting the account holder or an administrator of the account's portal.
+    /// </summary>
+    public static AccountOwnerRequirement OwnerOrPortalAdministrator { get; } =
+        new(allowPortalAdministrator: true);
+
+    /// <summary>
+    /// Gets a value indicating whether an administrator of the route's portal satisfies the requirement.
+    /// </summary>
+    public bool AllowPortalAdministrator { get; }
+}

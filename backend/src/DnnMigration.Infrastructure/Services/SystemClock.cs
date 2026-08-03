@@ -3,21 +3,21 @@ using DnnMigration.Domain.Abstractions.Services;
 namespace DnnMigration.Infrastructure.Services;
 
 // MIGRATION: The legacy trees read the web server's LOCAL clock directly at every
-// MIGRATION: time-dependent site measured for this migration: the demo-expiry and
-// MIGRATION: portal-expiry calculations in
-// MIGRATION: Library/Components/Portal/PortalController.vb at L335 and L1504, the
-// MIGRATION: event-message stamp in Library/Components/Modules/ModuleController.vb at
-// MIGRATION: L273, and the role effective-date and cancellation reads in
-// MIGRATION: Library/Components/Security/Roles/RoleController.vb at L278 and L496. Each
-// MIGRATION: of those is an ambient, server-local, untestable read.
+// time-dependent site measured for this migration: the demo-expiry and
+// portal-expiry calculations in
+// Library/Components/Portal/PortalController.vb at L335 and L1504, the
+// event-message stamp in Library/Components/Modules/ModuleController.vb at
+// L273, and the role effective-date and cancellation reads in
+// Library/Components/Security/Roles/RoleController.vb at L278 and L496. Each
+// of those is an ambient, server-local, untestable read.
 //
 // MIGRATION: DIVERGENCE, server-local to UTC. Those reads are normalized here onto one
-// MIGRATION: injected boundary that speaks Coordinated Universal Time only. A date-only
-// MIGRATION: value derived from this clock can therefore differ by one calendar day from
-// MIGRATION: the legacy figure, according to the host's offset and the moment of
-// MIGRATION: evaluation. The divergence is deliberate rather than accidental, and the
-// MIGRATION: repository-root MIGRATION_NOTES.md is where it is recorded; this file does
-// MIGRATION: not modify that document.
+// injected boundary that speaks Coordinated Universal Time only. A date-only
+// value derived from this clock can therefore differ by one calendar day from
+// the legacy figure, according to the host's offset and the moment of
+// evaluation. The divergence is deliberate rather than accidental, and the
+// repository-root MIGRATION_NOTES.md is where it is recorded; this file does
+// not modify that document.
 
 /// <summary>
 /// Reads the machine clock and reports the present instant in Coordinated Universal

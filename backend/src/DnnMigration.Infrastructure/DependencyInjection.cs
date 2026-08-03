@@ -111,7 +111,7 @@ public static class DependencyInjection
     /// </typeparam>
     /// <param name="services">The collection to add to.</param>
     /// <param name="businessControllerClass">
-    /// The value stored in <c>Modules.BusinessControllerClass</c> that this controller answers to. Matched
+    /// The value stored in <c>DesktopModules.BusinessControllerClass</c> that this controller answers to. Matched
     /// case-insensitively, because the stored column is free text that module manifests hand-entered.
     /// </param>
     /// <returns>The same collection, so registration can be chained.</returns>
@@ -151,8 +151,21 @@ public static class DependencyInjection
         }
 
         services.AddScoped<TController>();
-        services.AddSingleton(
-            new ModuleBusinessControllerRegistration(businessControllerClass, typeof(TController)));
+
+        // M-08: filed under the normalised name with .NET 8 keyed registration, which is the platform
+        // primitive for "resolve the service filed under this name" and replaces the hand-built
+        // name-to-type dictionary the factory used to carry (Rule T8 - adopt the primitive, delete the
+        // workaround). The key is normalised through the factory's own method so that registration and
+        // lookup cannot disagree, and so the case-insensitive matching the legacy column lookup performed
+        // survives keyed resolution's case-sensitive key equality.
+        //
+        // Registered as a FACTORY over the concrete registration rather than as the concrete type itself.
+        // The factory resolves a service selected by name and cannot know the type, so it asks for the
+        // object filed under the key; routing that through the concrete scoped registration is what keeps
+        // one instance per scope rather than one per lookup.
+        services.AddKeyedScoped<object>(
+            ModuleBusinessControllerFactory.RegistrationKey(businessControllerClass)!,
+            (provider, _) => provider.GetRequiredService<TController>());
 
         return services;
     }
@@ -187,11 +200,32 @@ public static class DependencyInjection
     /// <remarks>
     /// <para>
     /// The context is scoped, which is the framework default and the correct choice: its change tracker
-    /// accumulates the edits of one request and the unit of work commits them together. Retry-on-failure
-    /// is deliberately not enabled - the resulting execution strategy refuses to run inside a
-    /// caller-opened transaction, and two collaborators in this layer enlist an open transaction when one
-    /// exists. Turning it on would convert a working write path into a run-time failure that only appears
-    /// once a transaction is actually opened, which is the worst possible time to discover it.
+    /// accumulates the edits of one request and the unit of work commits them together.
+    /// </para>
+    /// <para>
+    /// RETRY-ON-FAILURE IS ENABLED, BUT SUSPENDED INSIDE A CALLER-OPENED TRANSACTION, and this is the one
+    /// arrangement in which both properties can be had at once. A retrying execution strategy REFUSES to
+    /// run while a user-initiated transaction is open - <c>SaveChangesAsync</c> throws
+    /// "the configured execution strategy does not support user-initiated transactions" - and two write
+    /// paths in this layer now open one, because creating and removing a tenant each span more than one
+    /// commit and must be atomic. That refusal was observed rather than reasoned about: it failed a run.
+    /// </para>
+    /// <para>
+    /// The alternative the framework offers is to wrap the whole transactional unit in the strategy's own
+    /// <c>ExecuteAsync</c>, and it is rejected here for a concrete reason rather than a stylistic one. A
+    /// retry re-invokes the delegate, but a rolled-back transaction does NOT reset the change tracker: the
+    /// entities the first attempt saved are left tracked as unchanged, holding store-assigned keys for rows
+    /// that no longer exist. A replay would therefore issue updates against missing rows or insert
+    /// duplicates, which is a data-integrity fault in place of a transient one - strictly worse than the
+    /// failure it was meant to absorb.
+    /// </para>
+    /// <para>
+    /// Deciding at strategy-creation time gives both. Outside a transaction, a transient fault is retried
+    /// exactly as before: a managed SQL Server closes connections during a failover or a throttling episode
+    /// and the request that happened to hold one fails for a reason unrelated to anything the caller did.
+    /// Inside a transaction, retrying is suspended, so the strategy raises no objection and the ATOMICITY
+    /// provides the resilience instead - the whole unit is reversed and the caller retries the operation
+    /// rather than the framework replaying half of it.
     /// </para>
     /// <para>
     /// No <c>EnsureCreated</c> and no automatic migration happens here, by rule. The schema is owned by
@@ -209,13 +243,19 @@ public static class DependencyInjection
                 {
                     sql.MigrationsHistoryTable(MigrationsHistoryTableName, MigrationsHistorySchema);
 
-                    // Transient faults are retried rather than surfaced. A managed SQL Server closes
-                    // connections during a failover or a throttling episode, and the request that
-                    // happened to hold one fails for a reason unrelated to anything the caller did.
-                    // The strategy is safe here because nothing in this layer opens a user-initiated
-                    // transaction - the unit of work commits through SaveChangesAsync, whose own
-                    // transaction the strategy manages - and enabling it alongside one would throw.
+                    // Retry-on-failure is declared so that the retry count and delay are the provider's
+                    // documented defaults rather than values invented here. The factory below decides
+                    // which strategy is actually used, so this call establishes the policy and the
+                    // factory establishes when it applies.
                     sql.EnableRetryOnFailure();
+
+                    // ONE DECISION, DEFERRED TO EXECUTION TIME: retry when it is safe, do not when it is
+                    // not. The substituted strategy keeps the provider's own retry policy and re-evaluates
+                    // only whether retrying applies, each time it runs. Deciding here - in the factory -
+                    // cannot work, because the strategy is resolved once per context scope and is built
+                    // before any transaction opens; TransactionAwareExecutionStrategy documents that in
+                    // full, along with the two failure modes that proved it.
+                    sql.ExecutionStrategy(dependencies => new TransactionAwareExecutionStrategy(dependencies));
                 }));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
@@ -341,18 +381,48 @@ public static class DependencyInjection
     /// business-controller factory and its registry are singletons because the map is fixed at start-up;
     /// the factory nonetheless resolves each controller from a scope created for the call.
     /// </para>
+    /// <para>
+    /// The audit sink is a singleton because it holds no per-request state - every fact it needs arrives
+    /// on the event - and because it must be resolvable from a service whose own lifetime may be longer
+    /// than a request. MIGRATION: it is registered in this layer rather than the api layer even though
+    /// what it writes to is the logging pipeline, for the same reason the cache and the clock are: the
+    /// application layer names only the abstraction, and the concrete logging dependency belongs on this
+    /// side of the boundary. Nothing above can construct one, so no caller can bypass the sink's
+    /// never-throw guarantee with an implementation of its own.
+    /// </para>
     /// </remarks>
     private static void AddPlatformServices(IServiceCollection services)
     {
         services.AddSingleton<IClock, SystemClock>();
+
+        // A singleton, because it holds only a logger and a logger is thread-safe and lifetime-agnostic;
+        // making it scoped would allocate one per request for no benefit. It is registered here rather than
+        // beside the security services because it is a platform capability that layers above cannot reach for
+        // themselves: the Application layer's package surface excludes every logging assembly, so this
+        // registration is the only route by which a service in that layer can report an anomaly at all. A host
+        // that omits it leaves those services unconstructable, which is the intended failure - a missing
+        // diagnostic route must be a start-up error rather than silence.
+        services.AddSingleton<ISecurityDiagnostics, SecurityDiagnostics>();
 
         services.AddMemoryCache();
         services.AddSingleton<ICacheService, MemoryCacheService>();
 
         services.AddScoped<IHostSettingsService, HostSettingsService>();
 
-        services.AddSingleton<ModuleBusinessControllerRegistry>();
-        services.AddSingleton<IModuleBusinessControllerFactory, ModuleBusinessControllerFactory>();
+        // The audit trail is registered HERE, in the layer that owns the logging technology, against a
+        // contract declared by the layer that owns the events. There is exactly ONE audit abstraction, and
+        // deliberately so: two would let one service's events be captured while another's were not, and an
+        // audit trail that is only sometimes complete is worse than one that is uniformly incomplete. That split is not stylistic: the
+        // application project declares FluentValidation and nothing else, so it cannot name a logger, and
+        // an audit abstraction is the only way its services can emit a business event at all. A singleton
+        // because the implementation holds nothing but its logger.
+        services.AddSingleton<IAuditSink, LoggingAuditSink>();
+
+        // Scoped, and deliberately not a singleton: the factory resolves each controller from the CALLER's
+        // scope, so a lifecycle operation shares the request's database context and therefore its unit of
+        // work. A singleton factory holding the root provider would resolve controllers outside the request
+        // scope, and content a controller wrote would then commit independently of the caller's transaction.
+        services.AddScoped<IModuleBusinessControllerFactory, ModuleBusinessControllerFactory>();
     }
 
     /// <summary>Registers the database probes behind the health endpoint.</summary>

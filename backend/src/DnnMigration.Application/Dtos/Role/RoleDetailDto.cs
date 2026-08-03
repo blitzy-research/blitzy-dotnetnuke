@@ -29,9 +29,11 @@ namespace DnnMigration.Application.Dtos.Role;
 /// <para>
 /// The type is inert. It holds no behaviour, no navigation property, no tracked state, no lazily
 /// evaluated getter and no asynchronous member; every property is a plain automatic property over a
-/// value the caller either supplies or reads. Field rules belong to a FluentValidation validator
-/// under <c>Application/Validation/</c> - the legacy screen declared one required-field validator
-/// and eight compare validators, and reproducing them is that validator's job, not this type's.
+/// value the caller either supplies or reads. Field rules are not this type's job: on the create
+/// path they belong to <c>CreateRoleRequestValidator</c>, the only role validator in
+/// <c>Application/Validation/</c>, and on every other role write path to the checks in
+/// <c>Application/Services/RoleService.cs</c>. Between them they reproduce the one required-field
+/// validator and eight compare validators the legacy screen declared.
 /// Translation to and from the persisted model belongs to the hand-written mapper at
 /// <c>Application/Mapping/RoleMappings.cs</c>. Paging, correlation and error reporting belong to
 /// <c>Application/Dtos/Common/</c> and to the response headers.
@@ -74,9 +76,9 @@ namespace DnnMigration.Application.Dtos.Role;
 // portal's groups (cboRoleGroups, populated by BindGroups at EditRoles.ascx.vb L75-L78), so a
 // client holding that list resolves the name from RoleGroupId itself. A member tally was shown on
 // no legacy role screen. Excluding both is also what keeps a single-role read to a single-row
-// query: an earlier revision of this contract carried them and obliged the service to issue two
+// query: carrying them would oblige the service to issue two
 // further round-trips per read - one to fetch the group, one to read the total off a one-row page
-// of assignments purely for its count - neither of which reproduced any legacy behaviour.
+// of assignments purely for its count - neither of which reproduces any legacy behaviour.
 //
 // MIGRATION: no audit members. dbo.Roles has no created-by, created-date or last-modified column
 // in the terminal schema, so no such member is invented here.
@@ -157,7 +159,8 @@ public sealed class RoleDetailDto
     /// <c>As String</c> (<c>RoleInfo.vb</c> L110). Non-nullable to match the column, and
     /// initialised to the empty string so a freshly constructed instance is in a valid state
     /// without a null-forgiving operator. The fifty-character ceiling and the mandatory-value rule
-    /// are reproduced declaratively by the validator - the legacy screen enforced them with
+    /// are reproduced by <c>CreateRoleRequestValidator</c> on the create path and by
+    /// <c>RoleService</c> on the update path - the legacy screen enforced them with
     /// <c>valRoleName</c>, the one required-field validator on <c>editroles.ascx</c> - and this
     /// contract asserts neither.
     /// </remarks>

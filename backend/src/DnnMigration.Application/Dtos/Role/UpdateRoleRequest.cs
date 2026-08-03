@@ -56,11 +56,15 @@ namespace DnnMigration.Application.Dtos.Role;
 /// </para>
 /// <para>
 /// The type is inert: no behaviour, no derived member, no lazily evaluated getter, no guard and no
-/// constructor. Field rules live in
-/// <c>Application/Validation/UpdateRoleRequestValidator.cs</c>, and the cross-field gating the
-/// legacy screen performed - revealing the billing block only for a non-zero fee, and the trial
-/// block only for a trial frequency other than none - belongs to that validator and to
-/// <c>Application/Services/RoleService.cs</c>, never to this type. Translation onto the persisted
+/// constructor. There is no <c>UpdateRoleRequestValidator</c> - <c>CreateRoleRequestValidator</c> is
+/// the only role validator in <c>Application/Validation</c>, and the API's validation filter finds
+/// none registered for this type - so every field rule and the cross-field gating the legacy screen
+/// performed (revealing the billing block only for a non-zero fee, and the trial block only for a
+/// trial frequency other than none) are enforced by
+/// <c>Application/Services/RoleService.cs</c>, which raises <see cref="DnnMigration.Domain.Common.DomainException"/> for a blank
+/// or over-long name, an over-long description, subscription code or icon path, a negative fee, a
+/// non-positive period and an unrecognised frequency code. The API translates each to a 400. Never to
+/// this type. Translation onto the persisted
 /// model lives in <c>Application/Mapping/RoleMappings.cs</c>, which also owns every decision about
 /// whether an empty string and a null are interchangeable on a given column.
 /// </para>

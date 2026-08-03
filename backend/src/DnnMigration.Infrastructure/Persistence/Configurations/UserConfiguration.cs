@@ -329,13 +329,12 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         // hardening it here would exclude accounts that are valid today.
         //
         // MIGRATION: EXISTING CREDENTIALS ARE MIGRATED BY ADMINISTRATIVE RESET, AND BY NOTHING
-        // ELSE. An earlier revision of this note claimed the documented path was a re-hash on
-        // first successful sign-in with administrative reset as a fallback. THAT CLAIM WAS FALSE
-        // and is removed rather than softened, and THIS FILE IS PART OF THE PROOF: it maps no
+        // ELSE. It is not a re-hash on first successful sign-in with administrative reset as a
+        // fallback, and THIS FILE IS PART OF THE PROOF: it maps no
         // credential column at all, so there is nothing for a legacy verifier to read even if one
         // existed - and none does, because the hasher verifies BCrypt digests only. A first
-        // successful sign-in against a legacy value is therefore impossible, and the sequence the
-        // old note described could never have run. Reinstating it would mean mapping the legacy
+        // successful sign-in against a legacy value is therefore impossible, so such a sequence
+        // could never run. Building one would mean mapping the legacy
         // reversible material and decrypting it with the key committed at release.config:L89-L93,
         // which is precisely the arrangement the migration exists to end. Every account that
         // predates the migration needs an administrative password reset; the reduction is

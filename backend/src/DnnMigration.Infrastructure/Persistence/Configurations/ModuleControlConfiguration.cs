@@ -195,11 +195,19 @@ internal sealed class ModuleControlConfiguration : IEntityTypeConfiguration<Modu
         // and the same source under a different key, but not the same pair twice.
         //
         // All three columns are nullable, and the database treats a null as a comparable value here,
-        // admitting at most one fully null combination, whereas the model simply declares the
-        // constraint. That difference is inherent to describing a constraint the database already
-        // enforces, and no filtered index or other workaround is introduced to paper over it.
+        // admitting at most one fully null combination.
+        //
+        // MIGRATION: THE FILTER IS EXPLICITLY SUPPRESSED, and it has to be. The SQL Server provider
+        // attaches a "column IS NOT NULL" predicate to any unique index over a nullable column unless
+        // told not to, which would describe a FILTERED index - one that stops enforcing uniqueness the
+        // moment any of the three columns is null. The terminal constraint is a plain UNIQUE
+        // NONCLUSTERED table constraint with no predicate of any kind, so the generated filter would be
+        // a weaker rule than the database enforces and a false entry in the model snapshot that every
+        // future migration is diffed against. Passing null as the filter removes it and leaves the
+        // index unfiltered, exactly as declared.
         builder.HasIndex(c => new { c.ModuleDefinitionId, c.ControlKey, c.ControlSrc })
             .IsUnique()
+            .HasFilter(null)
             .HasDatabaseName("IX_ModuleControls");
     }
 }

@@ -105,10 +105,10 @@ namespace DnnMigration.Application.Abstractions;
 /// reach the other. That implementation is therefore suitable for a single-instance deployment
 /// only. A deployment that needs either property supplies a durable, shared implementation of these
 /// four members in its place — nothing on this surface changes when it does, which is what makes
-/// the substitution possible. An earlier revision of this paragraph asserted durable storage
-/// outright; THAT CLAIM WAS FALSE of the implementation that satisfies it, and stating a
-/// requirement as a delivered guarantee is the more dangerous of the two mistakes, because it stops
-/// anyone planning for it.
+/// the substitution possible. This contract must never be read, or restated, as promising durable
+/// storage outright: that would be false of the implementation which satisfies it, and stating a
+/// deployment requirement as a delivered guarantee is the more dangerous of the two mistakes,
+/// because it stops anyone planning for it.
 /// </para>
 /// <para>
 /// Why the narrower statement is the correct one rather than a concession. This solution's own
@@ -551,4 +551,3 @@ public static class DnnClaimTypes
     /// <summary>The caller's sign-in name.</summary>
     public const string UniqueName = "unique_name";
 }
-

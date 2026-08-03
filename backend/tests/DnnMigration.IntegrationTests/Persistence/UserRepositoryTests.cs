@@ -523,16 +523,23 @@ public sealed class UserRepositoryTests
 
         (await users.CreateCredentialAsync(UnknownUserId, StoredHash, isApproved: true, DateTime.UtcNow)).Should().BeFalse();
         (await users.SetPasswordHashAsync(UnknownUserId, StoredHash, DateTime.UtcNow)).Should().BeFalse();
-        (await users.RecordSuccessfulLoginAsync(UnknownUserId, DateTime.UtcNow)).Should().BeFalse();
         (await users.SetApprovalAsync(UnknownUserId, isApproved: true)).Should().BeFalse();
         (await users.UnlockAsync(UnknownUserId)).Should().BeFalse();
         (await users.DeleteCredentialAsync(UnknownUserId)).Should().BeFalse();
 
-        // Recording a failure is the one member here whose result does not mean "the operation succeeded": it
-        // reports whether the account is locked out afterwards. An account that does not exist is not locked,
-        // so the same value arrives by a different route and the sign-in path treats it as a plain denial.
+        // The two bookkeeping members report an OUTCOME rather than a boolean, and the distinction this test
+        // pins is the whole reason for that: an account that cannot be resolved reports "no record", which is
+        // emphatically NOT the same answer as "the store could not be reached". The sign-in path escalates the
+        // second as a server fault and proceeds through the first, so a repository that conflated them - as the
+        // previous boolean contract did - would turn a deleted account into a false alarm and, far worse, an
+        // unreachable store into a silently uncounted credential attempt.
+        (await users.RecordSuccessfulLoginAsync(UnknownUserId, DateTime.UtcNow))
+            .Should().Be(MembershipWriteOutcome.NoRecord);
+
         (await users.RecordFailedLoginAsync(UnknownUserId, LockoutThreshold, AttemptWindow, DateTime.UtcNow))
-            .Should().BeFalse();
+            .Should().Be(
+                MembershipWriteOutcome.NoRecord,
+                "an account that does not exist has no record to count against, and the store was reachable");
 
         (bool exists, string? hash, _, _) = await users.GetCredentialStateAsync(UnknownUserId);
         exists.Should().BeFalse();
@@ -549,9 +556,10 @@ public sealed class UserRepositoryTests
     /// verifiable against a real relational store.
     /// </para>
     /// <para>
-    /// The returned value reports whether the account is locked out after the failure has been recorded, which
-    /// is not the same thing as whether the recording succeeded. That is why the early attempts below expect
-    /// it to be false: each one is recorded successfully and each one leaves the account usable.
+    /// The returned outcome distinguishes "recorded, and the account is still usable" from "recorded, and the
+    /// account is now locked", which is why the early attempts below expect the former: each one is counted
+    /// successfully and each one leaves the account usable. Neither is the same fact as whether the write
+    /// happened at all, which is what a third outcome carries.
     /// </para>
     /// </remarks>
     [Fact]
@@ -568,7 +576,8 @@ public sealed class UserRepositoryTests
 
             for (int attempt = 1; attempt < LockoutThreshold; attempt++)
             {
-                (await users.RecordFailedLoginAsync(userId, LockoutThreshold, AttemptWindow, now)).Should().BeFalse(
+                (await users.RecordFailedLoginAsync(userId, LockoutThreshold, AttemptWindow, now)).Should().Be(
+                    MembershipWriteOutcome.Recorded,
                     FormattableString.Invariant($"attempt {attempt} is below the threshold of {LockoutThreshold}"));
 
                 (_, _, _, bool lockedYet) = await users.GetCredentialStateAsync(userId);
@@ -576,7 +585,8 @@ public sealed class UserRepositoryTests
                 (await ReadFailedAttemptCountAsync(userName)).Should().Be(attempt);
             }
 
-            (await users.RecordFailedLoginAsync(userId, LockoutThreshold, AttemptWindow, now)).Should().BeTrue(
+            (await users.RecordFailedLoginAsync(userId, LockoutThreshold, AttemptWindow, now)).Should().Be(
+                MembershipWriteOutcome.RecordedAndLocked,
                 "the attempt that reaches the threshold is the attempt that locks");
 
             (_, _, _, bool locked) = await users.GetCredentialStateAsync(userId);
@@ -589,7 +599,7 @@ public sealed class UserRepositoryTests
             // failure to record, and leaves the count where it was; the update deliberately excludes locked
             // rows so that the lock instant is not pushed forward by continued attempts.
             (await users.RecordFailedLoginAsync(userId, LockoutThreshold, AttemptWindow, now.AddMinutes(1)))
-                .Should().BeTrue();
+                .Should().Be(MembershipWriteOutcome.RecordedAndLocked);
             (await ReadFailedAttemptCountAsync(userName)).Should().Be(LockoutThreshold);
 
             (await users.UnlockAsync(userId)).Should().BeTrue();
@@ -660,7 +670,7 @@ public sealed class UserRepositoryTests
             before.Should().NotBeNull();
             before!.LastLoginDate.Should().BeNull("the account has never signed in");
 
-            (await users.RecordSuccessfulLoginAsync(userId, moment)).Should().BeTrue();
+            (await users.RecordSuccessfulLoginAsync(userId, moment)).Should().Be(MembershipWriteOutcome.Recorded);
 
             User? after = await users.GetAsync(null, userId);
             after.Should().NotBeNull();

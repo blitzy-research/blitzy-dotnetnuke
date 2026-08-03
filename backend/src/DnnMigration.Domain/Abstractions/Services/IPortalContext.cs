@@ -58,7 +58,7 @@ namespace DnnMigration.Domain.Abstractions.Services;
 // deleted in note 1 demonstrably yielded a per-call ambient composite rather than a persisted
 // aggregate.
 
-// MIGRATION: (6 of 7) Where the excluded legacy members went. The host-level settings dictionary
+// MIGRATION: (4 of 7) Where the excluded legacy members went. The host-level settings dictionary
 // (PortalSettings.vb L406, which merely delegated to a shared globals module) is served by the
 // sibling host-level settings contract in this folder. The four skin and container members (L419,
 // L427, L435, L443) have no counterpart at all, because theming and presentation shells are excluded
@@ -75,13 +75,13 @@ namespace DnnMigration.Domain.Abstractions.Services;
 // contract. Which caller is on the wire stays the concern of
 // Application/Abstractions/ICurrentUser.cs, never of this one.
 
-// MIGRATION: (7 of 7) Absence is representable for the administrator and the two portal roles,
+// MIGRATION: (5 of 7) Absence is representable for the administrator and the two portal roles,
 // and it is represented by the ABSENCE OF A VALUE rather than by a sentinel. Three of the columns
 // behind this contract are declared nullable - AdministratorId at
 // Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider L86, AdministratorRoleId
 // at L91 and RegisteredRoleId at L92, the latter two reaffirmed by the table rebuild at
 // 01.00.05.SqlDataProvider L1379-L1380 - and Domain/Entities/Portal.cs models all three as int?.
-// This does not contradict note 4; it is note 4 carried to its conclusion. Note 4 establishes that
+// This does not contradict note 6; it is note 6 carried to its conclusion. Note 6 establishes that
 // minus one and zero are legitimate keys, which is exactly why NO integer is free to mean "unset",
 // and therefore why these three members are nullable rather than carrying a magic value. Coercing
 // the columns' nulls onto integers would assert that some real account administers the portal and
@@ -109,16 +109,26 @@ namespace DnnMigration.Domain.Abstractions.Services;
 /// is that the tenant facts of a call cannot be rewritten halfway through handling it.
 /// </para>
 /// <para>
-/// That bridge is not yet in place, and saying so here is deliberate. Two components have to
-/// cooperate to supply this contract - the registration extension that carries the factory delegate,
-/// and the alias-resolution middleware that settles the values the delegate closes over - and
-/// neither has been authored. The honest reading of that is an unfinished bridge rather than a flaw
-/// in the shape below, because the alternatives all trade a visible gap for an invisible one: a
-/// settable member, a value-free constructor or a fill-in-afterwards step would each make container
-/// activation appear to succeed while handing consumers a blank or rewritable snapshot of a tenant,
-/// which then surfaces as a wrong authorisation answer rather than as a missing registration. A call
-/// whose tenant facts cannot be settled must therefore be failed at the boundary: this contract has
-/// no encoding for an unresolved tenant, and it must never be given one.
+/// That bridge IS in place, and the ordering invariant it rests on is what must be preserved. Three
+/// pieces cooperate. <c>Infrastructure/DependencyInjection.cs</c> registers
+/// <c>IPortalContextHolder</c> and <c>IPortalContext</c> as two scoped registrations, the second
+/// projecting from the first (L277 and L280). <c>Infrastructure/Services/PortalContextAccessor</c> is
+/// the <see langword="internal"/> type that implements this contract over the holder's settled
+/// snapshot, which is why no other assembly can construct one. And the holder is asked to resolve by
+/// whichever of two components reaches it first - <c>Api/Middleware/PortalAliasResolutionMiddleware</c>
+/// on every request, or <c>Api/Authorization/PortalAdministratorAuthorizationHandler</c> before it
+/// decides, since the mandated pipeline order can put authorisation ahead of that middleware. The
+/// holder's entry point is idempotent, so whichever asks first performs the resolution and the other
+/// observes the identical outcome.
+/// </para>
+/// <para>
+/// THE INVARIANT: the snapshot is settled before the first consumer resolves this contract, and it is
+/// never mutated afterwards. No member may be made settable, no value-free construction path may be
+/// added, and no fill-in-afterwards step may be introduced - each would make container activation
+/// appear to succeed while handing a consumer a blank or rewritable tenant snapshot, which surfaces as
+/// a wrong authorisation answer rather than as an obvious failure. A call whose tenant facts cannot be
+/// settled is failed at the boundary instead: this contract has no encoding for an unresolved tenant,
+/// and it must never be given one.
 /// </para>
 /// <para>
 /// It replaces the shared ambient accessor <c>PortalController.GetCurrentPortalSettings()</c> at
@@ -147,12 +157,13 @@ namespace DnnMigration.Domain.Abstractions.Services;
 /// </remarks>
 public interface IPortalContext
 {
-    // MIGRATION: (4 of 7) Minus one and zero are LEGITIMATE portal keys here, never an absence
+    // MIGRATION: (6 of 7) Minus one and zero are LEGITIMATE portal keys here, never an absence
     // marker. The legacy Portals table declares its key as an auto-increment column seeded at minus
     // one and stepping by one
-    // (Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider L77), so the first
-    // real portal is keyed zero, while the legacy sentinel module simultaneously used minus one as
-    // its integer null (Library/Components/Shared/Null.vb L41-L45). The Roles, Tabs and Modules keys
+    // (Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider L77), so minus one is
+    // the seed and first generated value, while the shipped default portal row is inserted explicitly
+    // with key zero (L7125) - both are real keys - and the legacy sentinel module simultaneously used
+    // minus one as its integer null (Library/Components/Shared/Null.vb L41-L45). The Roles, Tabs and Modules keys
     // are seeded at zero in the same script (L115, L140, L221), and that same sentinel module used
     // the empty string rather than null for absent text (L71-L75). A translation that reads a
     // reserved value as unset - minus one, zero, or blank text - silently flips legacy branch
@@ -186,7 +197,7 @@ public interface IPortalContext
     /// </summary>
     /// <remarks>
     /// Legacy origin: <c>PortalSettings.vb</c> L119. Non-nullable, because a call that has reached a
-    /// consumer has resolved to exactly one portal. Read migration note 4 immediately above before
+    /// consumer has resolved to exactly one portal. Read migration note 6 immediately above before
     /// writing any comparison against this value.
     /// </remarks>
     int PortalId { get; }
@@ -201,7 +212,7 @@ public interface IPortalContext
     /// </remarks>
     string PortalName { get; }
 
-    // MIGRATION: (5 of 6) The resolved alias is exposed as a plain string. The legacy member at
+    // MIGRATION: (7 of 7) The resolved alias is exposed as a plain string. The legacy member at
     // PortalSettings.vb L411 exposed an alias entity object instead.
     //
     // The matching story has two stages and only the second one contains the divergence, so both are
@@ -227,7 +238,7 @@ public interface IPortalContext
     /// <remarks>
     /// Legacy origin: <c>PortalSettings.vb</c> L411, which exposed an alias entity object rather
     /// than a value. Always populated, and always the exact stored alias rather than whatever
-    /// fragment the caller supplied; see migration note 5 immediately above.
+    /// fragment the caller supplied; see migration note 7 immediately above.
     /// </remarks>
     string PortalAlias { get; }
 
@@ -243,7 +254,7 @@ public interface IPortalContext
     /// <para>
     /// Nullable because the column is: <c>[AdministratorId] [int] NULL</c> at
     /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> L86, modelled
-    /// as <c>int?</c> on <c>Domain/Entities/Portal.cs</c>. This is migration note 4 applied rather
+    /// as <c>int?</c> on <c>Domain/Entities/Portal.cs</c>. This is migration note 6 applied rather
     /// than waived: precisely BECAUSE minus one and zero are legitimate keys, no integer is free to
     /// mean "absent", so absence has to be carried by the absence of a value. Coercing the column's
     /// null onto any integer would not merely lose information - it would manufacture a real,

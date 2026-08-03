@@ -352,8 +352,19 @@ internal sealed class ModulePermissionConfiguration : IEntityTypeConfiguration<M
         //   live installations held duplicates and that both subject columns are genuinely nullable,
         //   so this rule is load-bearing rather than decorative. The database is the enforcer; no
         //   check in this layer duplicates it.
+        //
+        // MIGRATION: THE FILTER IS EXPLICITLY SUPPRESSED, and on this table it is the difference
+        //   between a constraint that works and one that does not. The SQL Server provider attaches a
+        //   "RoleID IS NOT NULL AND UserID IS NOT NULL" predicate to a unique index over nullable
+        //   columns unless told otherwise. Every real grant on this table targets EITHER a role OR an
+        //   account, never both, so exactly one of those two columns is null on essentially every row -
+        //   which means the generated filter would exclude essentially every row from uniqueness
+        //   enforcement and permit the very duplicate tuples the 04.05.02 script was written to delete.
+        //   The terminal object is a plain UNIQUE NONCLUSTERED table constraint with no predicate.
+        //   Passing null as the filter removes the predicate and restores the declared rule.
         builder.HasIndex(g => new { g.ModuleId, g.PermissionId, g.RoleId, g.UserId })
             .IsUnique()
+            .HasFilter(null)
             .HasDatabaseName("IX_ModulePermission");
 
         // MIGRATION: four single-column lookup indexes, one per foreign-key column plus one for the

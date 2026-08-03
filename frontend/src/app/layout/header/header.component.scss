@@ -561,9 +561,9 @@ header a {
 //  the legacy control was bold. `_reset.scss` does hand buttons `font: inherit`,
 //  but `_forms.scss` then declares `button { font-weight: <normal token> }`, and a
 //  declaration always outranks inheritance — so the band's bold could never reach
-//  this control on its own. An earlier draft justified normal weight from
-//  `.CommandButton` (`default.css` lines 442-447, `font-weight: normal`); that was
-//  the wrong analogue, because no header skin object used that class — it styled
+//  this control on its own. Justifying normal weight from
+//  `.CommandButton` (`default.css` lines 442-447, `font-weight: normal`) is the wrong
+//  analogue, because no header skin object used that class — it styled
 //  in-page command links. Under the precedence order, weight is expressible
 //  exactly by an existing token, so visual continuity decides it and bold wins.
 //  This also restores the legacy pairing: the display name and the sign-out

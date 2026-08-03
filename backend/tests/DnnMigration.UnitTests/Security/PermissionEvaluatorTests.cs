@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Options;
@@ -7,7 +8,9 @@ using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
+using DnnMigration.Infrastructure.Security;
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -25,19 +28,23 @@ namespace DnnMigration.UnitTests.Security;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Allow-and-deny precedence itself is a single set-based reduction performed where the grants are, inside
-/// the infrastructure assembly, which this project deliberately does not reference. That is the right place
-/// for it: reducing thousands of grant rows in memory would be both slower and a second implementation of a
-/// rule that must have exactly one. It is proved end to end by the integration project, where a page-level
-/// denial is shown to suppress a role-level allowance over real HTTP against real rows.
+/// The suite has two subjects, and the split follows where each rule actually lives. Allow-and-deny
+/// precedence, principal reachability and catalogue scoping belong to
+/// <c>DnnMigration.Infrastructure.Security.PermissionEvaluator</c>, and the concrete-evaluator section
+/// constructs that very type over substituted repositories - so a refusal beating an allowance, a
+/// pseudo-role reaching the right callers and a scope code admitting the right entries are all the
+/// production rules rather than a model of them. Everything above the reduction belongs to
+/// <c>DnnMigration.Application.Services.PermissionService</c>, and the sections around it drive that real
+/// service over a substituted evaluator: which scope is being asked about, which roles the caller is
+/// evaluated under, whether a host account short-circuits the question entirely, and - the one place it
+/// composes rather than delegates - how a module that inherits its view permission from the pages it sits
+/// on is resolved. That last rule is genuine deny-over-allow behaviour at the service layer: a view
+/// allowance recorded against the module is withheld unless some page the module sits on also grants view.
 /// </para>
 /// <para>
-/// What this suite owns is everything the reduction cannot see. The service decides which scope is being
-/// asked about, which roles the caller is evaluated under, whether a host account short-circuits the
-/// question entirely, and - the one place it composes rather than delegates - how a module that inherits its
-/// view permission from the pages it sits on is resolved. That last rule is genuine deny-over-allow
-/// behaviour at this layer: a view allowance recorded against the module is withheld unless some page the
-/// module sits on also grants view, so a page-level refusal suppresses a module-level allowance.
+/// Substituting the evaluator in the service tests is isolation rather than avoidance. A service test that
+/// also exercised the reduction could not say which of the two produced a wrong answer, and the reduction
+/// is exercised directly a few hundred lines below with nothing between the test and the arithmetic.
 /// </para>
 /// <para>
 /// The suite also pins the six failure codes. They are the sole input to the status code the caller sees, so
@@ -56,9 +63,32 @@ public class PermissionEvaluatorTests
 
     private const int ModuleId = 0;
 
+    /// <summary>
+    /// The definition identifier the <c>Entry</c> fixture declares its catalogue rows against.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than repeated as a literal because the module-scoped catalogue read resolves the
+    /// module's definition and then takes a union with the product-wide scope, so a test of that read has
+    /// to be able to say which half of the union it is exercising.
+    /// </remarks>
+    private const int EntryModuleDefinitionId = 1;
+
     private const int TabId = 12;
 
     private const int SecondTabId = 13;
+
+    /// <summary>
+    /// The key of the module's placement on <see cref="TabId"/>, used when a test addresses a placement by its
+    /// own key rather than by the page it sits on.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately unrelated to either page identifier, so a test that resolves a placement by its key cannot
+    /// appear to pass because the key happened to be a page identifier as well.
+    /// </remarks>
+    private const int FirstPlacementId = 501;
+
+    /// <summary>The key of the module's placement on <see cref="SecondTabId"/>.</summary>
+    private const int SecondPlacementId = 502;
 
     private const string FilterInvalidCode = "permission.filter_invalid";
 
@@ -93,11 +123,32 @@ public class PermissionEvaluatorTests
     /// <summary>An ordinary role whose identifier is zero, which this schema issues first.</summary>
     private const int ZeroRoleId = 0;
 
+    /// <summary>
+    /// The legacy "Nothing" pseudo-role, which reaches nobody and needs no special case to do so.
+    /// </summary>
+    /// <remarks>
+    /// <c>glbRoleNothing = "-4"</c>. It is listed among the pseudo-roles for completeness and asserted
+    /// because a reader who finds a <c>-4</c> in a grant row deserves to know what governs it: nothing
+    /// does. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so no role name can ever resolve to a negative
+    /// identifier, which is exactly the behaviour this pseudo-role asks for.
+    /// </remarks>
+    private const int NothingRoleId = -4;
+
     private const int MemberRoleId = 5;
 
     private const int ForeignRoleId = 6;
 
+    /// <summary>A real role row carrying the configured everyone name.</summary>
+    private const int EveryoneRoleId = 9;
+
+    /// <summary>A real role row carrying the configured anonymous name.</summary>
+    private const int AnonymousRoleId = 10;
+
     private const string MemberRoleName = "Measured Members";
+
+    private const string ForeignRoleName = "Other Members";
+
+    private const string ZeroRoleName = "Administrators";
 
     /// <summary>A page whose identifier is zero, which <c>Tabs.TabID</c> issues first.</summary>
     private const int ZeroTabId = 0;
@@ -106,7 +157,24 @@ public class PermissionEvaluatorTests
 
     private const int SecondPermissionId = 42;
 
+    private const int ThirdPermissionId = 43;
+
+    /// <summary>A second live module in the same tenant, used to prove suppression stays scoped.</summary>
+    private const int SecondModuleId = 4;
+
+    /// <summary>The definition the module under evaluation was built from.</summary>
+    private const int ModuleDefinitionId = 1;
+
+    /// <summary>A definition some other module was built from.</summary>
+    private const int OtherModuleDefinitionId = 2;
+
     private const string ModuleDefinitionScopeCode = "SYSTEM_MODULE_DEFINITION";
+
+    // A scope code an installed module contributes under its own name. It is a fabricated value rather
+    // than a shipped one, which is the point: the admission rule must accept an entry declared by the
+    // module's own definition WHATEVER code it carries, because every installed module chooses its own
+    // and a check recognising only the shipped code would revoke every permission they define.
+    private const string InstalledModuleScopeCode = "MEASURED_MODULE";
 
     private const string PageScopeCode = "SYSTEM_TAB";
 
@@ -215,7 +283,11 @@ public class PermissionEvaluatorTests
         ];
 
         Result<IReadOnlyList<string>> result = await harness.Service
-            .GetPermissionKeysAsync("SYSTEM_MODULE_DEFINITION", 42, CancellationToken.None);
+            .GetPermissionKeysAsync(
+                "SYSTEM_MODULE_DEFINITION",
+                42,
+                permissionKey: null,
+                CancellationToken.None);
 
         harness.Permissions.Verify(
             permissions => permissions.GetByModuleDefinitionIdAsync(
@@ -297,7 +369,7 @@ public class PermissionEvaluatorTests
         ];
 
         Result<IReadOnlyList<string>> result = await harness.Service
-            .GetPermissionKeysAsync("SYSTEM_TAB", null, CancellationToken.None);
+            .GetPermissionKeysAsync("SYSTEM_TAB", null, permissionKey: null, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "EDIT", "VIEW" }, "the answer is ordinally ordered");
@@ -334,6 +406,7 @@ public class PermissionEvaluatorTests
         Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
             null,
             null,
+            permissionKey: null,
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
@@ -367,11 +440,257 @@ public class PermissionEvaluatorTests
         Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
             null,
             supplied,
+            permissionKey: null,
             CancellationToken.None);
 
         result.IsFailure.Should().BeTrue();
         result.Reason!.Code.Should().Be(FilterInvalidCode);
         result.Reason!.Message.Should().Contain("identifiers start at 1");
+    }
+
+    /// <summary>
+    /// A key filter narrows the catalogue listing to that one key.
+    /// </summary>
+    [Fact]
+    public async Task Catalogue_NarrowsToASingleKeyWhenOneIsNamed()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 1,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View",
+            },
+            new Permission
+            {
+                PermissionId = 2,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.EDIT,
+                PermissionName = "Edit",
+            },
+        ];
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            null,
+            EntryModuleDefinitionId,
+            PermissionKey.EDIT,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal("EDIT");
+    }
+
+    /// <summary>
+    /// A key filter supplied with no other filter is answered from the closed enumeration without touching
+    /// the store at all.
+    /// </summary>
+    /// <remarks>
+    /// The key parameter is the enumeration itself, so a value that reached the service is by construction a
+    /// member of the catalogue's key vocabulary. There is consequently nothing to look up, and querying
+    /// would only risk reporting a key as absent because no row happened to declare it.
+    /// </remarks>
+    [Fact]
+    public async Task Catalogue_AnswersALoneKeyFilterFromTheClosedKeySet()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            null,
+            null,
+            PermissionKey.VIEW,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal("VIEW");
+
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleDefinitionIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A catalogue definition is returned in full by its own identifier.
+    /// </summary>
+    /// <remarks>
+    /// Restores <c>PermissionController.GetPermission(permissionID)</c>
+    /// (<c>PermissionController.vb:L30</c>). The record rather than the bare key is what a caller needs: a
+    /// key alone cannot say which scope code or which module definition declared it, and the same key is
+    /// declared repeatedly across scopes.
+    /// </remarks>
+    [Fact]
+    public async Task Definition_IsReturnedInFullByItsOwnIdentifier()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue = [Entry(PermissionKey.EDIT)];
+
+        Result<PermissionDto?> result = await harness.Service
+            .GetPermissionAsync(1, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().NotBeNull();
+        result.Value!.PermissionId.Should().Be(1);
+        result.Value.PermissionCode.Should().Be("SYSTEM_MODULE_DEFINITION");
+        result.Value.ModuleDefId.Should().Be(EntryModuleDefinitionId);
+        result.Value.PermissionKey.Should().Be("EDIT", "the key travels as the enumeration member's name");
+        result.Value.PermissionName.Should().Be("EDIT");
+    }
+
+    /// <summary>
+    /// An identifier naming no catalogue row is reported as absent, not as a failure.
+    /// </summary>
+    [Fact]
+    public async Task Definition_ReportsAnUnknownIdentifierAsAbsent()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue = [Entry(PermissionKey.VIEW)];
+
+        Result<PermissionDto?> result = await harness.Service
+            .GetPermissionAsync(4242, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue("absence is an answer, not a failure");
+        result.Value.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The module-scoped read answers with the union the terminal statement takes, not with the module's own
+    /// definition alone.
+    /// </summary>
+    /// <remarks>
+    /// Measured from <c>GetPermissionsByModuleID</c> (04.05.03), whose body is
+    /// <c>WHERE ModuleDefID = (SELECT ModuleDefID FROM Modules WHERE ModuleID = @ModuleID)
+    /// OR PermissionCode = 'SYSTEM_MODULE_DEFINITION'</c>. Dropping the second arm would silently narrow
+    /// the answer for every module in the installation.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleDefinitions_AnswerWithTheUnionOfTheDefinitionAndTheProductWideScope()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 1,
+                PermissionCode = "MY_MODULE",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.EDIT,
+                PermissionName = "Edit",
+            },
+            new Permission
+            {
+                PermissionId = 2,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = 99,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View",
+            },
+            new Permission
+            {
+                PermissionId = 3,
+                PermissionCode = "SYSTEM_TAB",
+                ModuleDefinitionId = 99,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View",
+            },
+        ];
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Select(row => row.PermissionId).Should().Equal(
+            new[] { 1, 2 },
+            "the module's own definition contributes the first, the product-wide scope the second, "
+                + "and the page scope belongs to neither arm");
+    }
+
+    /// <summary>
+    /// The page-scoped read answers with the page scope, and ignores its page argument entirely.
+    /// </summary>
+    /// <remarks>
+    /// This pins a legacy QUIRK rather than a design: the terminal <c>GetPermissionsByTabID</c> (04.05.03)
+    /// never references <c>@TabID</c>, so every page receives the identical catalogue. Two different pages
+    /// are asked here precisely so that the equality of the two answers is recorded as intended behaviour;
+    /// if a later change made the argument meaningful, this test would fail and demand a decision rather
+    /// than passing silently.
+    /// </remarks>
+    [Fact]
+    public async Task TabDefinitions_AnswerWithThePageScopeAndIgnoreThePageArgument()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 5,
+                PermissionCode = "SYSTEM_TAB",
+                ModuleDefinitionId = -1,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View",
+            },
+            new Permission
+            {
+                PermissionId = 6,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.EDIT,
+                PermissionName = "Edit",
+            },
+        ];
+
+        Result<IReadOnlyList<PermissionDto>> first = await harness.Service
+            .GetTabPermissionDefinitionsAsync(TabId, CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> second = await harness.Service
+            .GetTabPermissionDefinitionsAsync(SecondTabId, CancellationToken.None);
+
+        first.IsSuccess.Should().BeTrue(first.Reason?.ToString());
+        first.Value.Select(row => row.PermissionId).Should().Equal(5);
+        second.Value.Select(row => row.PermissionId).Should().Equal(
+            first.Value.Select(row => row.PermissionId),
+            "the terminal statement never references the page argument");
+    }
+
+    /// <summary>
+    /// The identifying reads answer each definition once, in identifier order.
+    /// </summary>
+    /// <remarks>
+    /// Ordering and distinctness are promises the application contract makes, so they are asserted against
+    /// the contract rather than left to whatever shape the store query happens to have.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleDefinitions_AnswerEachDefinitionOnceInIdentifierOrder()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 9,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View",
+            },
+            new Permission
+            {
+                PermissionId = 4,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = EntryModuleDefinitionId,
+                PermissionKey = PermissionKey.EDIT,
+                PermissionName = "Edit",
+            },
+        ];
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
+
+        result.Value.Select(row => row.PermissionId).Should().Equal(new[] { 4, 9 });
     }
 
     /// <summary>
@@ -806,7 +1125,7 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A module that inherits its view permission is viewable when a page it sits on grants view.
+    /// A module that inherits its view permission is viewable when the page it sits on grants view.
     /// </summary>
     [Fact]
     public async Task InheritedView_IsGrantedWhenAPlacementPageGrantsIt()
@@ -866,42 +1185,18 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// Inheritance stops asking as soon as one page grants view.
+    /// Inheritance stops asking as soon as one page withholds view, because the unaddressed question is
+    /// answered by every placement at once.
     /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This test measured the opposite short circuit before the placement-insensitivity defect was corrected:
+    /// it stopped at the first page that GRANTED, which is the disjunction that let a permissive placement
+    /// admit callers to a restrictive one. The conjunction settles on the first page that WITHHOLDS instead,
+    /// so the remaining pages are still not worth a round trip — but the outcome it settles on is the safe one.
+    /// </remarks>
     [Fact]
-    public async Task InheritedView_StopsAtTheFirstGrantingPage()
-    {
-        Harness harness = Harness.Ready();
-        harness.Module.InheritViewPermissions = true;
-        harness.Module.TabModules.Add(Placement(TabId));
-        harness.Module.TabModules.Add(Placement(SecondTabId));
-        harness.ModuleKeys = [];
-        harness.PageViewGrants[TabId] = true;
-        harness.PageViewGrants[SecondTabId] = true;
-
-        Result<IReadOnlyList<string>> result = await harness.Service.GetEffectivePermissionKeysAsync(
-            PortalId,
-            UserId,
-            moduleId: ModuleId,
-            cancellationToken: CancellationToken.None);
-
-        result.Value.Should().Equal(new[] { "VIEW" });
-        harness.Evaluator.Verify(
-            evaluator => evaluator.HasTabPermissionAsync(
-                SecondTabId,
-                It.IsAny<PermissionKey>(),
-                It.IsAny<int?>(),
-                It.IsAny<IReadOnlyCollection<string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Never(),
-            "one allowing page is enough, so the rest are not worth a round trip");
-    }
-
-    /// <summary>
-    /// Inheritance considers every page until one allows.
-    /// </summary>
-    [Fact]
-    public async Task InheritedView_ConsidersEveryPageUntilOneAllows()
+    public async Task InheritedView_StopsAtTheFirstWithholdingPage()
     {
         Harness harness = Harness.Ready();
         harness.Module.InheritViewPermissions = true;
@@ -917,7 +1212,406 @@ public class PermissionEvaluatorTests
             moduleId: ModuleId,
             cancellationToken: CancellationToken.None);
 
-        result.Value.Should().Equal(new[] { "VIEW" });
+        result.Value.Should().BeEmpty();
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                SecondTabId,
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "one withholding page settles it, so the rest are not worth a round trip");
+    }
+
+    /// <summary>
+    /// A question that names a module but no page is answered by EVERY placement at once, so a module placed
+    /// on one permissive and one restrictive page is not viewable.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the half of the placement defect that no route could otherwise reach. Every module route in
+    /// this application addresses a module WITHOUT naming a page, so had the unaddressed case kept granting
+    /// when any placement granted, the escalation would have remained fully exploitable however carefully the
+    /// addressed case was decided: place a module on a public page and again on a restricted one, and the
+    /// public placement would answer for both.
+    /// </para>
+    /// <para>
+    /// The conjunction is the only collective reading that cannot exceed the answer for an individual
+    /// placement. A caller genuinely entitled to the permissive placement names it, and is then decided by
+    /// that page alone.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task InheritedView_WithoutAnAddressedPlacementRequiresEveryPlacementToGrant()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.Module.TabModules.Add(Placement(SecondTabId));
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<bool> collective = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        collective.IsSuccess.Should().BeTrue(collective.Reason?.ToString());
+        collective.Value.Should().BeFalse(
+            "a question that names no page is about the module wherever it sits, so the restrictive "
+            + "placement decides");
+
+        // Naming the permissive placement is how a caller entitled to it asks, and that answer is affirmative.
+        Result<bool> addressed = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: TabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        addressed.Value.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A placement addressed by its own key is decided by the page that placement sits on, so the restrictive
+    /// placement of a doubly-placed module is refused while the permissive one is allowed.
+    /// </summary>
+    /// <param name="addressedTabModuleId">The placement key the caller names.</param>
+    /// <param name="expected">Whether the page that placement sits on grants view.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the form of address the module resource itself uses — <c>ModulesController.GetAsync</c> accepts
+    /// <c>tabModuleId</c> as a query field — so it is the form a real request arrives in, and reading it is
+    /// what lets a caller entitled to one particular placement be decided by that placement rather than by the
+    /// stricter collective answer. It is the more precise of the two forms because a module may be placed on
+    /// the same page more than once, which a page identifier alone could not distinguish.
+    /// </remarks>
+    [Theory]
+    [InlineData(FirstPlacementId, true)]
+    [InlineData(SecondPlacementId, false)]
+    public async Task HasModulePermission_ForAPlacementAddressedByItsOwnKeyIsDecidedByThatPlacementsPage(
+        int addressedTabModuleId,
+        bool expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId, FirstPlacementId));
+        harness.Module.TabModules.Add(Placement(SecondTabId, SecondPlacementId));
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: addressedTabModuleId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// A placement key the module does not occupy is refused rather than answered from any other placement.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Falling back would reinstate the collective answer for a request that asked a specific question, and
+    /// would let a caller enumerate a module's placements by observing which keys answer affirmatively.
+    /// </remarks>
+    [Fact]
+    public async Task HasModulePermission_ForAPlacementKeyTheModuleDoesNotOccupyIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId, FirstPlacementId));
+        harness.PageViewGrants[TabId] = true;
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: SecondPlacementId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().BeFalse("the module does not occupy the placement the request addressed");
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "no page is consulted, because the addressed placement does not exist to consult one for");
+    }
+
+    /// <summary>
+    /// Addressing a placement by its own key and simultaneously naming a page that placement does not sit on
+    /// is a contradiction, and is refused rather than resolved in favour of either.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Whichever of the two were preferred would be preferred for the permissions it carries and not for what
+    /// the request meant, which is exactly the shape of a confused-deputy decision. Refusing is also the only
+    /// answer that cannot be widened by adding a second, contradictory field to a request.
+    /// </remarks>
+    [Fact]
+    public async Task HasModulePermission_ForContradictoryFormsOfAddressIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId, FirstPlacementId));
+        harness.Module.TabModules.Add(Placement(SecondTabId, SecondPlacementId));
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = true;
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: SecondTabId,
+            placementTabModuleId: FirstPlacementId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().BeFalse(
+            "the placement key names one page and the page identifier names another, and both pages grant "
+            + "view, so a permissive answer here would be an answer to neither question that was asked");
+    }
+
+    /// <summary>
+    /// Naming a placement by its own key together with the page it really does sit on is consistent, and is
+    /// decided by that page.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task HasModulePermission_ForAgreeingFormsOfAddressIsDecidedByTheNamedPage()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId, FirstPlacementId));
+        harness.Module.TabModules.Add(Placement(SecondTabId, SecondPlacementId));
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: TabId,
+            placementTabModuleId: FirstPlacementId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A module that inherits its view permission and sits on no page at all is not viewable.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The conjunction over an empty set is vacuously true, so this case has to be stated rather than left to
+    /// the loop: a module that takes its view permission from its pages and has no pages inherits nothing, and
+    /// must not thereby become visible to everyone — which is the exact shape of an accidental world-readable
+    /// grant.
+    /// </remarks>
+    [Fact]
+    public async Task InheritedView_IsWithheldFromAModuleThatSitsOnNoPage()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Clear();
+        harness.ModuleKeys = ["VIEW", "EDIT"];
+
+        Result<bool> outcome = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        outcome.Value.Should().BeFalse("there is no page for the module to inherit a view grant from");
+    }
+
+    /// <summary>
+    /// An inheriting module placed on two pages is decided by the page the caller ADDRESSED, so a placement
+    /// that denies view is denied even while the module's other placement allows it.
+    /// </summary>
+    /// <param name="addressedTabId">The placement the caller names.</param>
+    /// <param name="expected">Whether that placement grants view.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the case an earlier revision answered wrongly. It unioned every placement, so the permissive
+    /// placement admitted callers to the restrictive one - a module on a public page and again on a private
+    /// page became viewable on the private page by everybody. Both directions are asserted, because a fix
+    /// that merely denied more would be just as wrong as the union.
+    /// </remarks>
+    [Theory]
+    [InlineData(TabId, true)]
+    [InlineData(SecondTabId, false)]
+    public async Task HasModulePermission_ForAnAddressedPlacementIsDecidedByThatPageAlone(
+        int addressedTabId,
+        bool expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.Module.TabModules.Add(Placement(SecondTabId));
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: addressedTabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Be(expected);
+
+        // The other placement is never consulted: consulting it is what produced the union.
+        int otherTabId = addressedTabId == TabId ? SecondTabId : TabId;
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                otherTabId,
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "the decision is about the addressed placement, so no other placement may influence it");
+    }
+
+    /// <summary>
+    /// Addressing a page the module is not placed on is a denial, and no page's grants are consulted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Falling back to the module's real placements here would reinstate the union through the back door, and
+    /// would additionally let a caller map a module's placements by observing which page identifiers answer
+    /// affirmatively.
+    /// </remarks>
+    [Fact]
+    public async Task HasModulePermission_ForAPlacementTheModuleDoesNotOccupyIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.PageViewGrants[TabId] = true;
+
+        Result<bool> result = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            placementTabId: SecondTabId,
+            placementTabModuleId: null,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().BeFalse();
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never(),
+            "a module that is not on the addressed page cannot inherit that page's grants");
+    }
+
+    /// <summary>
+    /// Naming a module and a page together names a placement, so the effective-key listing resolves the
+    /// inherited view key from that page alone rather than from every placement.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetEffectivePermissionKeys_ForAModuleAndPageResolvesInheritanceAtThatPlacement()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.Module.TabModules.Add(Placement(SecondTabId));
+        harness.ModuleKeys = ["EDIT"];
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<IReadOnlyList<string>> denied = await harness.Service.GetEffectivePermissionKeysAsync(
+            PortalId,
+            UserId,
+            moduleId: ModuleId,
+            tabId: SecondTabId,
+            cancellationToken: CancellationToken.None);
+
+        denied.IsSuccess.Should().BeTrue(denied.Reason?.ToString());
+        denied.Value.Should().NotContain(
+            "VIEW",
+            "the addressed placement denies view, and the module's other placement must not supply it");
+        denied.Value.Should().Contain("EDIT", "keys other than view are not inherited from the page");
+    }
+
+    /// <summary>
+    /// Inheritance considers every page until one withholds, so a granting page does not end the traversal.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The mirror of the short-circuit test above, and the reason both are kept: that one proves the traversal
+    /// STOPS at a withholding page, this one proves it does not stop at a granting one. Together they pin the
+    /// conjunction rather than merely one of its outcomes. Before the placement-insensitivity defect was
+    /// corrected this test asserted the opposite - that a later granting page rescued an earlier withholding
+    /// one - which is precisely the disjunction that made a permissive placement answer for a restrictive one.
+    /// </remarks>
+    [Fact]
+    public async Task InheritedView_ConsidersEveryPageUntilOneWithholds()
+    {
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.Module.TabModules.Add(Placement(TabId));
+        harness.Module.TabModules.Add(Placement(SecondTabId));
+        harness.ModuleKeys = [];
+        harness.PageViewGrants[TabId] = true;
+        harness.PageViewGrants[SecondTabId] = false;
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetEffectivePermissionKeysAsync(
+            PortalId,
+            UserId,
+            moduleId: ModuleId,
+            cancellationToken: CancellationToken.None);
+
+        result.Value.Should().BeEmpty();
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
+                SecondTabId,
+                PermissionKey.VIEW,
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "the first page granting view is not the answer, so the second still has to be asked");
     }
 
     /// <summary>
@@ -986,6 +1680,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
@@ -1022,6 +1718,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             key,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         result.Value.Should().BeTrue(
@@ -1054,6 +1752,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             (PermissionKey)99,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         result.IsFailure.Should().BeTrue();
@@ -1137,6 +1837,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         result.IsFailure.Should().BeTrue();
@@ -1190,6 +1892,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         moduleAnswer.IsSuccess.Should().BeTrue();
@@ -1230,6 +1934,8 @@ public class PermissionEvaluatorTests
             HostUserId,
             ModuleId,
             PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         Result<bool> tabAnswer = await harness.Service.HasTabPermissionAsync(
@@ -1277,6 +1983,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             PermissionKey.EDIT,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         result.Value.Should().Be(
@@ -1304,6 +2012,8 @@ public class PermissionEvaluatorTests
             UserId,
             ModuleId,
             PermissionKey.VIEW,
+            placementTabId: null,
+            placementTabModuleId: null,
             CancellationToken.None);
 
         await harness.Service.HasTabPermissionAsync(
@@ -1838,6 +2548,59 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
+    /// Every member of the evaluation contract reports through an outcome, not bare.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// M-10: this contract previously handed back its verdicts bare - three sequences and two booleans -
+    /// which left it able to say the verdict and nothing else. One consequence was concrete rather than
+    /// theoretical: a denial and a question about a module or page that does not exist produced byte-for-byte
+    /// the same answer, so a caller needing to tell them apart had to read the subject again to discover
+    /// which of the two it had been given.
+    /// </para>
+    /// <para>
+    /// What this pins is only the SHAPE. The verdict semantics are asserted elsewhere in this file and are
+    /// deliberately unchanged by the conversion: a denial remains a successful outcome carrying false, and
+    /// absence still denies. Wrapping is what gives the contract somewhere to put the advisory, not a licence
+    /// to start reporting refusals as errors.
+    /// </para>
+    /// <para>
+    /// Asserted over every member by reflection rather than over a written list of five, so a sixth member
+    /// added later cannot be introduced bare without failing here.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Contract_TheEvaluatorReportsEveryVerdictThroughAnOutcome()
+    {
+        MethodInfo[] members = typeof(IPermissionEvaluator).GetMethods();
+
+        members.Should().HaveCount(
+            5,
+            "the evaluator decides a portal-wide, a module-scoped and a page-scoped listing, plus the two "
+            + "single-key verdicts, and nothing else belongs on a decision contract");
+
+        foreach (MethodInfo member in members)
+        {
+            member.ReturnType.IsGenericType.Should().BeTrue(
+                $"IPermissionEvaluator.{member.Name} must be awaitable and carry a value");
+
+            member.ReturnType.GetGenericTypeDefinition().Should().Be(
+                typeof(Task<>),
+                $"IPermissionEvaluator.{member.Name} performs I/O, so it must return a task");
+
+            Type produced = member.ReturnType.GetGenericArguments()[0];
+
+            produced.IsGenericType.Should().BeTrue(
+                $"IPermissionEvaluator.{member.Name} must wrap its verdict so an advisory can travel with it");
+
+            produced.GetGenericTypeDefinition().Should().Be(
+                typeof(Result<>),
+                $"IPermissionEvaluator.{member.Name} must report through an outcome rather than bare, so that "
+                + "\"no such subject\" is distinguishable from \"you hold nothing\" without a second read");
+        }
+    }
+
+    /// <summary>
     /// Every sequence a permission contract hands back is a read-only generic sequence.
     /// </summary>
     /// <remarks>
@@ -1933,7 +2696,22 @@ public class PermissionEvaluatorTests
     }
 
     // =================================================================================================
-    // The precedence specification.
+    // The concrete evaluator.
+    //
+    // Every test in this section constructs DnnMigration.Infrastructure.Security.PermissionEvaluator
+    // itself over substituted repositories, so the reachability test, the pseudo-role rules, the
+    // catalogue scope admissions and the allow-and-deny reduction are all the production ones.
+    //
+    // An earlier revision of this file asserted those rules against a private specification class
+    // instead, on the ground that the concrete type lived in an assembly this project must not
+    // reference, and it additionally specified a grant-replacement rule the application contract does
+    // not publish at all. BOTH DECISIONS WERE WRONG and are replaced rather than softened. The
+    // replacement tests exercised no production member, so they could not fail however production
+    // behaved; and the precedence specification had drifted from the implementation it claimed to
+    // describe - it modelled a superuser short circuit and an installation-wide account rule that the
+    // real evaluator does not have, and it lacked the scope correlation that the real reduction does
+    // have. A specification that can disagree with the code it specifies is worse than no
+    // specification, because it reads as evidence.
     //
     // MIGRATION: DENY PRECEDENCE UNIFIES TWO INCONSISTENT LEGACY PATHS. THIS IS A DELIBERATE
     //            BEHAVIOURAL DIVERGENCE, AND IT IS THE HEADLINE FINDING OF THIS FILE.
@@ -1951,865 +2729,1206 @@ public class PermissionEvaluatorTests
     //            first-match-wins walk. The measured consequence is that in the legacy application VIEW
     //            honoured the allow-or-deny flag and EDIT silently did not.
     //
-    //            The target unifies both paths under one rule: deny beats allow, for every key. A stored
-    //            refusal now refuses. Every test in this section pins the TARGET rule, never the legacy
-    //            first-match-wins behaviour - so a reader who expects legacy parity here should read this
-    //            note as the explanation rather than these tests as a defect.
+    //            The target unifies both paths under one rule: deny beats allow, for every key, WITHIN
+    //            THE SCOPE THAT CARRIES THE DENIAL. Every test below pins the TARGET rule, never the
+    //            legacy first-match-wins behaviour - so a reader who expects legacy parity here should
+    //            read this note as the explanation rather than these tests as a defect.
     //
-    // These tests exercise a specification written against the domain repository contract and the real
-    // grant entities. They construct no infrastructure type and reach none.
+    // MIGRATION: the suppression is SCOPED rather than global, and that is a second deliberate decision
+    //            with a measurable consequence. The portal-wide read spans every module and page of a
+    //            tenant, so applying one denial across that whole union would let a single forgotten page
+    //            strip a key the caller genuinely holds everywhere else. Two tests below exist only to
+    //            pin the correlation, one across two modules and one across a module and a page sharing
+    //            an identifier - which they can, because Modules.ModuleID and Tabs.TabID both seed at 0.
     // =================================================================================================
 
     /// <summary>
-    /// A caller holding no grant at all is refused rather than failed.
+    /// The evaluator refuses to be constructed without any one of its five collaborators.
     /// </summary>
+    /// <param name="omitted">Which collaborator is withheld.</param>
     /// <remarks>
-    /// Two distinct absences, one answer. An empty catalogue means the permission is not defined for this
-    /// scope; an empty grant set means it is defined but conferred on nobody. Neither is an error, and
-    /// both must resolve to a successful refusal: a caller asking "may I?" is entitled to be told "no"
-    /// rather than handed an exception to interpret.
-    /// </remarks>
-    [Fact]
-    public async Task Precedence_WithNoCatalogueEntryAndNoGrantRefusesWithoutFailing()
-    {
-        GrantPrecedenceSpecification withoutCatalogue = new(StoreWith([], [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId)]).Object);
-
-        Result<bool> noCatalogue = await withoutCatalogue.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        noCatalogue.IsSuccess.Should().BeTrue("an undefined permission is a question with an answer, not a fault");
-        noCatalogue.Value.Should().BeFalse("a permission the catalogue does not define cannot be held by anyone");
-
-        GrantPrecedenceSpecification withoutGrants = new(StoreWith([CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode)]).Object);
-
-        Result<bool> noGrants = await withoutGrants.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        noGrants.IsSuccess.Should().BeTrue("a permission conferred on nobody is still a question with an answer");
-        noGrants.Value.Should().BeFalse("a defined permission with no grant row confers nothing");
-    }
-
-    /// <summary>
-    /// The principal matrix: which stored role identifier matches which caller.
-    /// </summary>
-    /// <param name="grantedRoleId">The role identifier recorded on the grant row.</param>
-    /// <param name="callerIsAuthenticated">Whether the caller has been identified.</param>
-    /// <param name="callerIsHost">Whether the caller is an installation-wide account.</param>
-    /// <param name="expected">Whether the row should match the caller.</param>
-    /// <remarks>
-    /// <para>
-    /// Ported from the legacy membership loop at <c>PortalSecurity.vb:L115-L136</c>, which tested the
-    /// installation-wide flag FIRST inside the loop and then, for an ordinary row, admitted the
-    /// unauthenticated pseudo-role only when the request was in fact unauthenticated and the all-users
-    /// pseudo-role unconditionally.
-    /// </para>
-    /// <para>
-    /// The row identified by zero is the case worth stating out loud. <c>Roles.RoleID</c> is
-    /// <c>IDENTITY (0, 1)</c>, so zero is the first role the schema ever issues and grants exactly like
-    /// any other. A future reader who "tidies" this rule into a positive-identifier test would break this
-    /// case and, with it, the shipped administrators role of a real installation - which is precisely why
-    /// it is pinned here rather than left implicit.
-    /// </para>
+    /// Five arguments and every one of them earns its place: the grants and the catalogue, the roles a
+    /// name resolves through, and the module and page reads that establish which portal owns the scope
+    /// under evaluation - without which a role name could only be resolved installation-wide, which is
+    /// the cross-tenant escalation the contract forbids. A missing collaborator must fail at
+    /// construction rather than produce a decision that quietly consulted less than it should.
     /// </remarks>
     [Theory]
-    [InlineData(AllUsersRoleId, true, false, true)]
-    [InlineData(AllUsersRoleId, false, false, true)]
-    [InlineData(UnauthenticatedRoleId, false, false, true)]
-    [InlineData(UnauthenticatedRoleId, true, false, false)]
-    [InlineData(SuperUserRoleId, true, true, true)]
-    [InlineData(SuperUserRoleId, true, false, false)]
-    [InlineData(ZeroRoleId, true, false, true)]
-    [InlineData(MemberRoleId, true, false, true)]
-    [InlineData(ForeignRoleId, true, false, false)]
-    public async Task Precedence_MatchesAStoredRoleIdentifierAgainstTheCaller(
-        int grantedRoleId,
-        bool callerIsAuthenticated,
-        bool callerIsHost,
-        bool expected)
+    [InlineData("permissions")]
+    [InlineData("roles")]
+    [InlineData("modules")]
+    [InlineData("tabs")]
+    [InlineData("portalOptions")]
+    public void Evaluator_RequiresEveryCollaborator(string omitted)
     {
-        CallerIdentity caller = new(
-            callerIsAuthenticated ? UserId : null,
-            new HashSet<int> { ZeroRoleId, MemberRoleId },
-            [MemberRoleName],
-            callerIsAuthenticated,
-            callerIsHost);
+        EvaluatorWorld world = EvaluatorWorld.Create();
 
-        GrantPrecedenceSpecification specification = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: grantedRoleId)]).Object);
+        Action construct = () => _ = new PermissionEvaluator(
+            omitted == "permissions" ? null! : world.Permissions.Object,
+            omitted == "roles" ? null! : world.RoleStore.Object,
+            omitted == "modules" ? null! : world.ModuleStore.Object,
+            omitted == "tabs" ? null! : world.TabStore.Object,
+            omitted == "portalOptions" ? null! : Options.Create(world.Portal));
 
-        Result<bool> result = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            caller,
-            CancellationToken.None);
-
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Be(
-            expected,
-            $"a grant to role {grantedRoleId} against an authenticated={callerIsAuthenticated}, host={callerIsHost} caller must resolve this way");
+        construct.Should().Throw<ArgumentNullException>().And.ParamName.Should().Be(omitted);
     }
 
     /// <summary>
-    /// A grant naming an account matches that account and no other.
+    /// A blank built-in role name is refused at construction rather than left to match nothing.
     /// </summary>
+    /// <param name="allUsersRoleName">The configured name standing for every caller.</param>
+    /// <param name="unauthenticatedRoleName">The configured name standing for an anonymous caller.</param>
     /// <remarks>
-    /// MIGRATION: the bracketed pseudo-role encoding is gone. A legacy account-scoped grant was tested by
-    /// synthesising the literal text <c>"["</c>, the account identifier and <c>"]"</c> and passing that
-    /// through the very same role-name membership helper a real role name went through, so an account and
-    /// a role were indistinguishable to the matcher. The target records an account-scoped grant in its own
-    /// nullable account column, so the two principals are different columns rather than different string
-    /// shapes, and no encoding has to be parsed to tell them apart.
+    /// Both values are load-bearing: they are the names by which a caller is taken to stand for every
+    /// user or for an unidentified one, and the comparison against a stored role name is exact. A blank
+    /// value would therefore stop matching silently, revoking every public grant in the installation
+    /// without any error to explain it, which is precisely the failure mode a start-up refusal exists to
+    /// convert into a visible one.
     /// </remarks>
-    [Fact]
-    public async Task Precedence_AGrantNamingAnAccountMatchesOnlyThatAccount()
+    [Theory]
+    [InlineData("", UnauthenticatedRoleName)]
+    [InlineData("   ", UnauthenticatedRoleName)]
+    [InlineData(AllUsersRoleName, "")]
+    [InlineData(AllUsersRoleName, "   ")]
+    public void Evaluator_RefusesABlankBuiltInRoleName(
+        string allUsersRoleName,
+        string unauthenticatedRoleName)
     {
-        Mock<IPermissionRepository> store = StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, userId: UserId)]);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.Portal.AllUsersRoleName = allUsersRoleName;
+        world.Portal.UnauthenticatedRoleName = unauthenticatedRoleName;
 
-        GrantPrecedenceSpecification specification = new(store.Object);
+        Action construct = () => _ = world.Build();
 
-        Result<bool> named = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        named.Value.Should().BeTrue("the grant names this account");
-
-        Result<bool> other = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            new CallerIdentity(UserId + 1, new HashSet<int> { MemberRoleId }, [MemberRoleName], true, false),
-            CancellationToken.None);
-
-        other.Value.Should().BeFalse(
-            "an account-scoped grant confers nothing on a different account, however many roles that account shares with the named one");
+        construct.Should().Throw<ArgumentException>().And.ParamName.Should().Be("portalOptions");
     }
 
     /// <summary>
-    /// A row naming neither a role nor an account matches nobody.
+    /// Every member refuses an absent role-name collection.
     /// </summary>
     /// <remarks>
-    /// Both principal columns are nullable, so a row naming neither is representable and someone will
-    /// eventually store one. It has to fail closed. The alternative - treating an unspecified principal as
-    /// unrestricted - would turn a data-entry mistake into an open door, and it would do so silently.
+    /// An empty collection is a legitimate caller - it describes someone holding no named role, who is
+    /// still reachable through the everyone, anonymous and account-scoped grants - so absence cannot be
+    /// modelled as emptiness and has to be a fault.
     /// </remarks>
     [Fact]
-    public async Task Precedence_ARowNamingNeitherRoleNorAccountFailsClosed()
+    public async Task EveryMember_RefusesAnAbsentRoleNameCollection()
     {
-        GrantPrecedenceSpecification specification = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true)]).Object);
+        IPermissionEvaluator evaluator = EvaluatorWorld.Create().Build();
 
-        Result<bool> forMember = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        Result<bool> forHost = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            HostAccount(),
-            CancellationToken.None);
-
-        forMember.Value.Should().BeFalse("a grant that names no principal confers nothing on anyone");
-        forHost.Value.Should().BeFalse("not even an installation-wide account benefits from a row that names nobody");
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectivePortalPermissionKeysAsync(PortalId, UserId, null!))
+            .Should().ThrowAsync<ArgumentNullException>();
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, null!))
+            .Should().ThrowAsync<ArgumentNullException>();
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectiveTabPermissionKeysAsync(TabId, UserId, null!))
+            .Should().ThrowAsync<ArgumentNullException>();
+        await FluentActions
+            .Awaiting(() => evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, null!))
+            .Should().ThrowAsync<ArgumentNullException>();
+        await FluentActions
+            .Awaiting(() => evaluator.HasTabPermissionAsync(TabId, PermissionKey.VIEW, UserId, null!))
+            .Should().ThrowAsync<ArgumentNullException>();
     }
 
     /// <summary>
-    /// A stored refusal refuses, and it does so whichever order the rows arrive in.
+    /// An allowing grant the caller reaches confers its key.
+    /// </summary>
+    [Fact]
+    public async Task ModuleKeys_AnAllowingGrantConfersItsKey()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+
+        keys.Should().Equal("VIEW");
+    }
+
+    /// <summary>
+    /// A denying grant on its own confers nothing, which is the same answer absence produces.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the assertion the whole section exists for. Under the legacy first-match-wins walk the
-    /// answer depended on which row the store happened to return first, so the same data could grant or
-    /// refuse across two runs. The target reduces the entire matching set before answering, which makes
-    /// the outcome a property of the data rather than of the row order - and the only honest way to prove
-    /// that is to assert the same answer from both orderings of the same two rows.
-    /// </para>
-    /// <para>
-    /// Read the arrangement carefully: the allowance and the refusal both match this caller, and the
-    /// refusal wins. That is the divergence recorded in the section note above, asserted deliberately.
-    /// </para>
+    /// Under the legacy first-match-wins walk this row would have GRANTED the key, because that walk
+    /// never read the allow-or-deny flag. This test is the point at which the divergence recorded above
+    /// becomes executable.
     /// </remarks>
     [Fact]
-    public async Task Precedence_AnAllowanceAndARefusalResolveToRefusalInEitherRowOrder()
+    public async Task ModuleKeys_ADenyingGrantAloneConfersNothing()
     {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: false, roleId: MemberRoleId));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().BeEmpty();
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A caller reaching neither a catalogue entry nor a grant holds nothing, and is refused rather than
+    /// failed.
+    /// </summary>
+    /// <param name="withCatalogue">Whether the catalogue defines the key at all.</param>
+    /// <param name="withGrant">Whether any grant row exists for it.</param>
+    /// <remarks>
+    /// Two distinct absences, one answer. An empty catalogue means the permission is not defined for
+    /// this scope; an empty grant set means it is defined but conferred on nobody. Neither is an error:
+    /// a caller asking "may I?" is entitled to be told "no" rather than handed an exception to
+    /// interpret, and absence must produce exactly the answer an explicit denial does.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ModuleKeys_WithNoCatalogueEntryOrNoGrantRefuseWithoutFailing(
+        bool withCatalogue,
+        bool withGrant)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+
+        if (withCatalogue)
+        {
+            world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        }
+
+        if (withGrant)
+        {
+            world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        }
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().BeEmpty();
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A denial suppresses an allowance of the same key on the same module, in either row order.
+    /// </summary>
+    /// <param name="denyFirst">Whether the refusing row is returned before the allowing one.</param>
+    /// <remarks>
+    /// The order-independence proof, and the single most valuable assertion in this section. A grant and
+    /// a denial of one key on one scope is a legitimate configuration, so "whichever row came first
+    /// wins" would make an access decision depend on a query plan. The implementation collects every
+    /// denial in a separate pass before judging any allowance, which is what makes the outcome a
+    /// property of the data rather than of its ordering.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ModuleKeys_ADenialSuppressesAnAllowanceInEitherRowOrder(bool denyFirst)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+
         ModulePermission allowance = ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId);
         ModulePermission refusal = ModuleGrantRow(FirstPermissionId, allowAccess: false, roleId: AllUsersRoleId);
 
-        IReadOnlyList<Permission> catalogue = [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)];
+        if (denyFirst)
+        {
+            world.ModuleGrants.Add(refusal);
+            world.ModuleGrants.Add(allowance);
+        }
+        else
+        {
+            world.ModuleGrants.Add(allowance);
+            world.ModuleGrants.Add(refusal);
+        }
 
-        GrantPrecedenceSpecification allowanceFirst = new(StoreWith(catalogue, [allowance, refusal]).Object);
-        GrantPrecedenceSpecification refusalFirst = new(StoreWith(catalogue, [refusal, allowance]).Object);
+        IPermissionEvaluator evaluator = world.Build();
 
-        Result<bool> withAllowanceFirst = await allowanceFirst.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        Result<bool> withRefusalFirst = await refusalFirst.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        withAllowanceFirst.Value.Should().BeFalse(
-            "a matching refusal suppresses a matching allowance even when the allowance is encountered first");
-        withRefusalFirst.Value.Should().BeFalse(
-            "the same data must produce the same answer, so the reversed ordering resolves identically");
-        withRefusalFirst.Value.Should().Be(
-            withAllowanceFirst.Value,
-            "the decision is a property of the grant set and must not depend on the order the store returned it in");
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().BeEmpty("a refusal beats an allowance, whichever order the store returned them in");
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
     }
 
     /// <summary>
-    /// A refusal recorded on its own refuses.
-    /// </summary>
-    [Fact]
-    public async Task Precedence_ARefusalOnItsOwnRefuses()
-    {
-        GrantPrecedenceSpecification specification = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: false, roleId: MemberRoleId)]).Object);
-
-        Result<bool> result = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().BeFalse(
-            "the legacy walk read this row as permission because it never looked at the flag; the target reads it as the refusal it was recorded to be");
-    }
-
-    /// <summary>
-    /// An installation-wide account is bound by a refusal and cannot invent a permission.
+    /// A denial recorded on one module leaves the same key intact on another.
     /// </summary>
     /// <remarks>
-    /// The legacy loop tested the installation-wide flag first, which made such an account match any row
-    /// it encountered - but it still had to encounter a row, because the loop over an empty set returned
-    /// False. Both halves of that are preserved: the account matches rows it would not otherwise match,
-    /// and it conjures nothing where nothing is recorded. It also does not outrank a refusal, because
-    /// matching a row is not the same as overriding what the row says.
+    /// The suppression is correlated to the scope that carries the denial. Applying it across the
+    /// tenant-wide union instead would let one forgotten module strip a key the caller genuinely holds
+    /// on every other one, which is a silent revocation rather than a visible configuration.
     /// </remarks>
     [Fact]
-    public async Task Precedence_AnInstallationWideAccountIsStillBoundByARefusalAndByAnEmptySet()
+    public async Task PortalKeys_ADenialOnOneModuleLeavesTheKeyIntactOnAnother()
     {
-        GrantPrecedenceSpecification refused = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: false, roleId: ForeignRoleId)]).Object);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithModule(SecondModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: false, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(
+            FirstPermissionId,
+            allowAccess: true,
+            roleId: MemberRoleId,
+            moduleId: SecondModuleId));
 
-        Result<bool> againstRefusal = await refused.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            HostAccount(),
-            CancellationToken.None);
+        IPermissionEvaluator evaluator = world.Build();
 
-        againstRefusal.Value.Should().BeFalse(
-            "matching every row is not the same as overruling one, so an explicit refusal still refuses");
-
-        GrantPrecedenceSpecification empty = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)]).Object);
-
-        Result<bool> againstNothing = await empty.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.EDIT,
-            HostAccount(),
-            CancellationToken.None);
-
-        againstNothing.Value.Should().BeFalse(
-            "an account that matches any row it finds still finds none here, and cannot create a permission that was never conferred");
+        Succeeded(await evaluator.ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName]))
+            .Should().Equal(
+                new[] { "VIEW" },
+                "the allowance on the second module survives the refusal on the first");
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().BeEmpty("while the module carrying the refusal confers nothing");
     }
 
     /// <summary>
-    /// Several catalogue entries naming one key are all consulted, and a refusal under any of them wins.
+    /// A denial recorded on a page does not suppress the same key on a module that shares its
+    /// identifier.
     /// </summary>
     /// <remarks>
-    /// The catalogue can define one key more than once - the code-and-key read is documented as able to
-    /// match many rows, which is why it returns a sequence and not a single entry. Grants hang off a
-    /// specific entry, so a key defined twice has two independent grant sets and both have to be reduced
-    /// together. Consulting only the first entry would let a refusal hide behind whichever definition the
-    /// store happened to order first.
+    /// Both identity columns seed at zero, so an identifier on its own does not say what it identifies.
+    /// This test uses module zero and page zero deliberately: a reduction keyed on the identifier alone
+    /// rather than on the pair of kind and identifier would collapse the two scopes and fail here.
     /// </remarks>
     [Fact]
-    public async Task Precedence_ReducesEveryCatalogueEntryNamingTheSameKey()
+    public async Task PortalKeys_ADenialOnAPageDoesNotSuppressTheSameKeyOnAModuleSharingItsIdentifier()
     {
-        IReadOnlyList<Permission> catalogue =
-        [
-            CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode),
-            CatalogueEntry(SecondPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode),
-        ];
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithTab(ZeroTabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.TabGrants.Add(PageGrantRow(ZeroTabId, FirstPermissionId, allowAccess: false, roleId: MemberRoleId));
 
-        GrantPrecedenceSpecification bothAllow = new(StoreWith(
-            catalogue,
+        ModuleId.Should().Be(ZeroTabId, "the premise of this test is that the two identifiers collide");
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName]));
+
+        keys.Should().Equal(
+            new[] { "VIEW" },
+            "a refusal on page zero must not reach module zero, because a bare identifier does not say "
+            + "what it identifies");
+    }
+
+    /// <summary>
+    /// The principal matrix: which stored role identifier reaches which caller.
+    /// </summary>
+    /// <param name="grantedRoleId">The role identifier recorded on the grant row.</param>
+    /// <param name="identified">Whether the caller carries an account identifier.</param>
+    /// <param name="expected">Whether the row should reach the caller.</param>
+    /// <remarks>
+    /// <para>
+    /// Ported from the legacy membership loop at <c>PortalSecurity.vb:L115-L136</c>: the all-users
+    /// pseudo-role was admitted unconditionally at L125 and the unauthenticated one only while the
+    /// request was in fact unauthenticated at L124, so the two are genuinely different widths and not
+    /// interchangeable. The contract carries no authentication flag of its own - an absent account
+    /// identifier <em>is</em> the anonymous caller.
+    /// </para>
+    /// <para>
+    /// The superuser identifier reaches NOBODY here, which is deliberate rather than an omission. No
+    /// member of this contract accepts a host-account flag, so admitting <c>-2</c> would have to admit
+    /// every caller; a host account is answered by the application service before a grant is read, just
+    /// as <c>PortalSecurity.vb:L123</c> answered it before examining a role. The legacy "Nothing" role
+    /// <c>-4</c> needs no special case and gets none: <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so
+    /// no role name can ever resolve to it and it therefore reaches nobody, which is exactly what it
+    /// asks for.
+    /// </para>
+    /// <para>
+    /// The row identified by zero is the case worth stating out loud. Zero is the first role the schema
+    /// ever issues and grants exactly like any other, so a future reader who "tidies" this rule into a
+    /// positive-identifier test would break the shipped administrators role of a real installation.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(AllUsersRoleId, true, true)]
+    [InlineData(AllUsersRoleId, false, true)]
+    [InlineData(UnauthenticatedRoleId, false, true)]
+    [InlineData(UnauthenticatedRoleId, true, false)]
+    [InlineData(SuperUserRoleId, true, false)]
+    [InlineData(SuperUserRoleId, false, false)]
+    [InlineData(NothingRoleId, true, false)]
+    [InlineData(NothingRoleId, false, false)]
+    [InlineData(ZeroRoleId, true, true)]
+    [InlineData(MemberRoleId, true, true)]
+    [InlineData(ForeignRoleId, true, false)]
+    public async Task ModuleKeys_MatchAStoredRoleIdentifierAgainstTheCaller(
+        int grantedRoleId,
+        bool identified,
+        bool expected)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(ZeroRoleId, ZeroRoleName);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.WithRole(ForeignRoleId, ForeignRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: grantedRoleId));
+
+        bool held = Succeeded(await world.Build().HasModulePermissionAsync(
+            ModuleId,
+            PermissionKey.VIEW,
+            identified ? UserId : null,
+            identified ? [ZeroRoleName, MemberRoleName] : []));
+
+        held.Should().Be(
+            expected,
+            $"a grant to role {grantedRoleId} against an identified={identified} caller must resolve "
+            + "this way");
+    }
+
+    /// <summary>
+    /// A grant naming an account reaches that account and no other, and its role column is not
+    /// consulted at all.
+    /// </summary>
+    /// <param name="callerUserId">The account asking, or <see langword="null"/> when anonymous.</param>
+    /// <param name="expected">Whether the row should reach that caller.</param>
+    /// <remarks>
+    /// MIGRATION: the bracketed pseudo-role encoding is gone. A legacy account-scoped grant was tested by
+    /// synthesising the literal <c>"["</c>, the account identifier and <c>"]"</c> and passing that through
+    /// the very same role-name membership helper a real role name went through, so an account and a role
+    /// were indistinguishable to the matcher. The target records an account-scoped grant in its own
+    /// nullable account column, so the two principals are different columns rather than different string
+    /// shapes and no encoding has to be parsed to tell them apart. The account column also takes
+    /// precedence, which is the order the legacy code tested in
+    /// (<c>ModulePermissionController.vb:L37-L45</c>) - the row below names the everyone pseudo-role as
+    /// well, and it still reaches only the one account.
+    /// </remarks>
+    [Theory]
+    [InlineData(UserId, true)]
+    [InlineData(UserId + 1, false)]
+    [InlineData(null, false)]
+    public async Task ModuleKeys_AGrantNamingAnAccountReachesOnlyThatAccount(
+        int? callerUserId,
+        bool expected)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(
+            FirstPermissionId,
+            allowAccess: true,
+            roleId: AllUsersRoleId,
+            userId: UserId));
+
+        bool held = Succeeded(await world.Build().HasModulePermissionAsync(
+            ModuleId,
+            PermissionKey.VIEW,
+            callerUserId,
+            [MemberRoleName]));
+
+        held.Should().Be(
+            expected,
+            "the account column decides on its own, so the everyone role beside it confers nothing");
+    }
+
+    /// <summary>
+    /// A grant naming neither a role nor an account reaches nobody.
+    /// </summary>
+    /// <remarks>
+    /// Both columns became nullable in the same upgrade, so the combination is representable in the
+    /// terminal schema. The closed reading is the only safe one: a row that names no principal describes
+    /// no principal, and guessing that it means "everybody" would turn a broken row into an open door.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_AGrantNamingNeitherRoleNorAccountReachesNobody()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, null, []))
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A role name resolves only within the portal that owns the module under evaluation.
+    /// </summary>
+    /// <remarks>
+    /// Role names are unique per portal rather than per installation, so resolving one installation-wide
+    /// would let a grant to one tenant's "Administrators" be honoured for another tenant's. That is a
+    /// silent cross-tenant escalation rather than a visible failure, which is why the identifier the name
+    /// resolves to is read from the owning portal's roles and from nowhere else.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_ResolveARoleNameOnlyWithinThePortalThatOwnsTheModule()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(ForeignRoleId, MemberRoleName, OtherPortalId);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: ForeignRoleId));
+
+        bool held = Succeeded(await world.Build().HasModulePermissionAsync(
+            ModuleId,
+            PermissionKey.VIEW,
+            UserId,
+            [MemberRoleName]));
+
+        held.Should().BeFalse(
+            "the role carrying that name belongs to another tenant, so the name must not resolve to its "
+            + "identifier here");
+    }
+
+    /// <summary>
+    /// A declared role name is compared to the stored one exactly.
+    /// </summary>
+    /// <param name="declaredName">The name the caller declares.</param>
+    /// <param name="expected">Whether it should resolve to the stored role.</param>
+    /// <remarks>
+    /// Nothing is trimmed, case-folded or localised, because the value in <c>Roles.RoleName</c> is the
+    /// value a grant was made against. Normalising the comparison here would make the evaluator disagree
+    /// with the store on any installation whose collation does not, and disagreeing about who holds a
+    /// permission is the one thing this component cannot do.
+    /// </remarks>
+    [Theory]
+    [InlineData(MemberRoleName, true)]
+    [InlineData("measured members", false)]
+    [InlineData("MEASURED MEMBERS", false)]
+    [InlineData(" Measured Members", false)]
+    [InlineData("Measured Members ", false)]
+    public async Task ModuleKeys_CompareRoleNamesOrdinally(string declaredName, bool expected)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        bool held = Succeeded(await world.Build().HasModulePermissionAsync(
+            ModuleId,
+            PermissionKey.VIEW,
+            UserId,
+            [declaredName]));
+
+        held.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// A blank declared role name is discarded rather than matched.
+    /// </summary>
+    /// <remarks>
+    /// This is the <c>role &lt;&gt; ""</c> guard at <c>PortalSecurity.vb:L123</c>, which existed because
+    /// the semicolon-delimited string the legacy code split carried a leading delimiter and so always
+    /// produced an empty first element. The target takes a collection rather than a delimited string, so
+    /// the empty element no longer arises by construction - but a caller can still send one, and a role
+    /// row whose name is blank must not become a principal everybody reaches.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_DiscardABlankDeclaredRoleName()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, "   ");
+        world.WithRole(ForeignRoleId, string.Empty);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: ForeignRoleId));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, ["", "   ", "\t"]));
+
+        keys.Should().BeEmpty("a blank name is not a name, so it resolves to no identifier at all");
+    }
+
+    /// <summary>
+    /// The configured everyone role participates for every caller, and the configured anonymous role
+    /// only for a caller with no account.
+    /// </summary>
+    /// <param name="identified">Whether the caller carries an account identifier.</param>
+    /// <param name="expectedKeys">The keys the caller should hold.</param>
+    /// <remarks>
+    /// Both names are matched against real role rows, which is why they are configurable rather than
+    /// compiled in: the legacy comparison matched a persisted display name as a string, so an
+    /// installation that renamed either role would silently stop matching a literal. Neither name has to
+    /// be declared by the caller - that is the whole point of them - and the two are asserted together
+    /// because the difference between "unconditionally" and "only when anonymous" is the difference
+    /// between a public grant and a narrower one.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, new[] { "VIEW" })]
+    [InlineData(false, new[] { "EDIT", "VIEW" })]
+    public async Task ModuleKeys_ApplyTheBuiltInRoleNamesWithTheirLegacyWidths(
+        bool identified,
+        string[] expectedKeys)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(EveryoneRoleId, AllUsersRoleName);
+        world.WithRole(AnonymousRoleId, UnauthenticatedRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: EveryoneRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: AnonymousRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build().ListEffectiveModulePermissionKeysAsync(
+            ModuleId,
+            identified ? UserId : null,
+            []));
+
+        keys.Should().Equal(expectedKeys);
+    }
+
+    /// <summary>
+    /// The built-in role names come from configuration, so renaming one moves which stored role it
+    /// matches.
+    /// </summary>
+    [Fact]
+    public async Task ModuleKeys_UseTheConfiguredBuiltInRoleNames()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.Portal.AllUsersRoleName = "Everybody";
+        world.WithModule(ModuleId);
+        world.WithRole(EveryoneRoleId, "Everybody");
+        world.WithRole(ForeignRoleId, AllUsersRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: EveryoneRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: ForeignRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, []));
+
+        keys.Should().Equal(
+            new[] { "VIEW" },
+            "the renamed role is the one that stands for every caller, and the role still carrying the "
+            + "default name is now an ordinary role nobody declared");
+    }
+
+    /// <summary>
+    /// A module catalogue entry is admitted under the shared module scope code or by the module's own
+    /// definition, and under nothing else.
+    /// </summary>
+    /// <param name="permissionCode">The scope code on the catalogue entry.</param>
+    /// <param name="entryModuleDefinitionId">The definition the entry declares.</param>
+    /// <param name="expected">Whether the entry should be admitted.</param>
+    /// <remarks>
+    /// Two admissions, and both are needed. An entry carrying the product-wide code applies to every
+    /// module; an entry declared by the module's own definition applies to that module. The second
+    /// admission is why this is not a fixed list of known codes - every installed module contributes
+    /// catalogue entries under a code of its own choosing, and a check recognising only the shipped code
+    /// would revoke every permission those modules define. What must never be admitted is an entry
+    /// belonging to some other definition under some other code, which is how a scope this solution
+    /// models no entity for could otherwise reach a module verdict.
+    /// </remarks>
+    [Theory]
+    [InlineData(ModuleDefinitionScopeCode, ModuleDefinitionId, true)]
+    [InlineData(ModuleDefinitionScopeCode, OtherModuleDefinitionId, true)]
+    [InlineData(InstalledModuleScopeCode, ModuleDefinitionId, true)]
+    [InlineData(InstalledModuleScopeCode, OtherModuleDefinitionId, false)]
+    [InlineData(PageScopeCode, OtherModuleDefinitionId, false)]
+    [InlineData(ExcludedSubsystemScopeCode, OtherModuleDefinitionId, false)]
+    public async Task ModuleKeys_AdmitOnlyCatalogueEntriesThatBelongToTheModule(
+        string permissionCode,
+        int entryModuleDefinitionId,
+        bool expected)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(
+            FirstPermissionId,
+            PermissionKey.VIEW,
+            permissionCode,
+            entryModuleDefinitionId));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        bool held = Succeeded(await world.Build().HasModulePermissionAsync(
+            ModuleId,
+            PermissionKey.VIEW,
+            UserId,
+            [MemberRoleName]));
+
+        held.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// A page catalogue entry is admitted under the page scope code and under nothing else.
+    /// </summary>
+    /// <param name="permissionCode">The scope code on the catalogue entry.</param>
+    /// <param name="expected">Whether the entry should be admitted.</param>
+    /// <remarks>
+    /// Unlike the module vocabulary this one is closed: the terminal page catalogue read filters on the
+    /// product-wide page code and on nothing else, so every page shares one vocabulary and no definition
+    /// widens it. Keeping the two scopes apart is what stops a grant recorded in one from being read as
+    /// the other, which matters because both scope identifiers seed at zero.
+    /// </remarks>
+    [Theory]
+    [InlineData(PageScopeCode, true)]
+    [InlineData(ModuleDefinitionScopeCode, false)]
+    [InlineData(InstalledModuleScopeCode, false)]
+    [InlineData(ExcludedSubsystemScopeCode, false)]
+    public async Task TabKeys_AdmitOnlyThePageScopeCode(string permissionCode, bool expected)
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithTab(TabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, permissionCode));
+        world.TabGrants.Add(PageGrantRow(TabId, FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        bool held = Succeeded(await world.Build().HasTabPermissionAsync(
+            TabId,
+            PermissionKey.VIEW,
+            UserId,
+            [MemberRoleName]));
+
+        held.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// A catalogue entry carrying the reader's own wildcard identifier is skipped rather than queried.
+    /// </summary>
+    /// <remarks>
+    /// The grant readers accept minus one in the permission position as "every permission". No catalogue
+    /// row can legitimately carry it, because <c>Permission.PermissionID</c> is <c>IDENTITY(1, 1)</c>, so
+    /// the guard can never reject a real entry - but the consequence of losing it is silent and severe:
+    /// passing the wildcard would return the grants of every permission and they would then all be
+    /// judged as though they carried the key being asked about.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_SkipACatalogueEntryCarryingTheReadersWildcardIdentifier()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(
+            WildcardPermissionId,
+            PermissionKey.VIEW,
+            ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(
+            WildcardPermissionId,
+            allowAccess: true,
+            roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+
+        keys.Should().BeEmpty();
+        world.Permissions.Verify(
+            permissions => permissions.GetModulePermissionsByModuleIdAsync(
+                It.IsAny<int>(),
+                WildcardPermissionId,
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the wildcard must never be passed through as though it named a permission");
+    }
+
+    /// <summary>
+    /// A catalogue identifier appearing twice is judged once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A catalogue read is per module rather than per grant, and the same identifier can appear in it
+    /// more than once - two rows may name one permission under different codes. Judging its grants twice
+    /// would double every row they contribute, and a duplicated refusal is harmless while a duplicated
+    /// allowance beside a single refusal is not, so collapsing the duplicate is load-bearing rather than
+    /// an optimisation.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the collapsing moved. An earlier revision spent one grant read per surviving catalogue
+    /// entry and de-duplicated with a visited set to avoid reading the same identifier twice; the grants
+    /// are now fetched for the whole module in ONE read and joined in memory, so the duplicate collapses
+    /// in the applicable-entry dictionary instead. The property asserted is unchanged - a repeated
+    /// identifier neither doubles the rows judged nor duplicates the key returned - so both the read
+    /// shape and the surviving key set are asserted below, the first to pin the single read and the
+    /// second to pin the outcome that read exists to produce.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_JudgeADuplicatedCatalogueIdentifierOnlyOnce()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(
+            FirstPermissionId,
+            PermissionKey.VIEW,
+            InstalledModuleScopeCode,
+            ModuleDefinitionId));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+
+        keys.Should().Equal(
+            new[] { "VIEW" },
+            "a key survives once, however many catalogue rows name it");
+        world.Permissions.Verify(
+            permissions => permissions.GetModulePermissionsByModuleIdAsync(
+                ModuleId,
+                WildcardPermissionId,
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the module's grants are read once for the whole module, not once per catalogue entry");
+        world.Permissions.Verify(
+            permissions => permissions.GetModulePermissionsByModuleIdAsync(
+                ModuleId,
+                FirstPermissionId,
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "so the duplicated identifier cannot cost a second read either");
+    }
+
+    /// <summary>
+    /// A grant row answering a wider question than the one asked is discarded.
+    /// </summary>
+    /// <remarks>
+    /// Both arguments of the module grant reader carry a documented wildcard, so a substituted or future
+    /// store may legitimately return rows belonging to another module or another permission. Judging
+    /// such a row as though it carried the requested key on the requested module is how a grant made
+    /// somewhere else silently becomes a grant here, which is why the identifiers are re-asserted on the
+    /// way out rather than assumed from the way in.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_DiscardAGrantRowNamingADifferentModuleOrPermission()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+
+        world.Permissions
+            .Setup(permissions => permissions.GetModulePermissionsByModuleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<ModulePermission>)
             [
-                ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId),
+                ModuleGrantRow(
+                    FirstPermissionId,
+                    allowAccess: true,
+                    roleId: MemberRoleId,
+                    moduleId: SecondModuleId),
                 ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: MemberRoleId),
-            ]).Object);
+            ]);
 
-        Result<bool> allowed = await bothAllow.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
 
-        allowed.Value.Should().BeTrue("both definitions confer the key and neither refuses it");
-
-        GrantPrecedenceSpecification secondRefuses = new(StoreWith(
-            catalogue,
-            [
-                ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId),
-                ModuleGrantRow(SecondPermissionId, allowAccess: false, roleId: MemberRoleId),
-            ]).Object);
-
-        Result<bool> refused = await secondRefuses.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        refused.Value.Should().BeFalse(
-            "a refusal recorded against the second definition of the same key is not hidden by an allowance under the first");
+        keys.Should().BeEmpty(
+            "one row belongs to another module and the other to another permission, so neither confers "
+            + "the key that was asked about");
     }
 
     /// <summary>
-    /// A catalogue entry belonging to another scope code is never admitted.
+    /// A page grant row answering a wider question than the one asked is discarded too.
     /// </summary>
     /// <remarks>
-    /// The scope code is deliberately free text - the product ships its own codes and every installed
-    /// module contributes more - so the read is filtered on the code rather than on a closed set, and the
-    /// comparison is exact. This matters beyond tidiness: one of the codes present in a real installation
-    /// belongs to a subsystem this migration excludes, and admitting an entry from it would resurrect a
-    /// feature that has no target implementation to enforce it. That subsystem's own code is not written
-    /// here on purpose, as the constant's comment explains; what the test needs is only that the code
-    /// differs.
+    /// The page reader treats only its permission argument as a wildcard, never its page argument, so the
+    /// page half of the check is defensive symmetry rather than a requirement. It is asserted anyway so
+    /// that the two collectors read identically and neither can be tightened without the other.
     /// </remarks>
     [Fact]
-    public async Task Precedence_NeverAdmitsACatalogueEntryFromAnotherScopeCode()
+    public async Task TabKeys_DiscardAGrantRowNamingADifferentPageOrPermission()
     {
-        GrantPrecedenceSpecification specification = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ExcludedSubsystemScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: AllUsersRoleId)]).Object);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithTab(TabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, PageScopeCode));
 
-        Result<bool> result = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
+        world.Permissions
+            .Setup(permissions => permissions.GetTabPermissionsByTabIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<TabPermission>)
+            [
+                PageGrantRow(SecondTabId, FirstPermissionId, allowAccess: true, roleId: MemberRoleId),
+                PageGrantRow(TabId, SecondPermissionId, allowAccess: true, roleId: MemberRoleId),
+            ]);
 
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().BeFalse(
-            "the entry belongs to a different scope code, so its grants say nothing about the code that was asked about");
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveTabPermissionKeysAsync(TabId, UserId, [MemberRoleName]));
+
+        keys.Should().BeEmpty();
     }
 
     /// <summary>
-    /// A catalogue entry naming a different key is never admitted.
+    /// A module or page that does not exist confers nothing, and says so without failing.
     /// </summary>
-    [Fact]
-    public async Task Precedence_NeverAdmitsACatalogueEntryNamingADifferentKey()
-    {
-        GrantPrecedenceSpecification specification = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: AllUsersRoleId)]).Object);
-
-        Result<bool> result = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        result.Value.Should().BeFalse(
-            "an unrestricted grant of one key confers nothing about a different key");
-    }
-
-    /// <summary>
-    /// Page-scoped resolution answers both live keys from the page's own grants.
-    /// </summary>
-    /// <param name="permissionKey">The key being tested.</param>
     /// <remarks>
-    /// The grant tables are keyed by page identifier, which is the whole reason the page aggregate is in
-    /// scope at all. Both keys are exercised because the legacy source resolved them through two different
-    /// code paths - the one that honoured the allow-or-deny flag and the one that did not - and the target
-    /// resolves them through one.
+    /// The closed default rather than an error: this contract is asked what a caller holds, and the
+    /// answer for something that does not exist is "nothing". Reporting existence is the application
+    /// service's job, and it does it before asking - which is why an unknown scope must not become an
+    /// exception here.
+    /// </remarks>
+    [Fact]
+    public async Task Keys_ForAnUnknownModuleOrPageAreEmptyAndTheVerdictIsFalse()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: AllUsersRoleId));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().BeEmpty();
+        Succeeded(await evaluator.HasModulePermissionAsync(ModuleId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
+        Succeeded(await evaluator.ListEffectiveTabPermissionKeysAsync(TabId, UserId, [MemberRoleName]))
+            .Should().BeEmpty();
+        Succeeded(await evaluator.HasTabPermissionAsync(TabId, PermissionKey.VIEW, UserId, [MemberRoleName]))
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Module zero, page zero and portal minus one are real identifiers, not absences.
+    /// </summary>
+    /// <remarks>
+    /// <c>Modules.ModuleID</c> and <c>Tabs.TabID</c> are both <c>IDENTITY(0, 1)</c> and
+    /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, while the legacy absent-integer sentinel is
+    /// also minus one. All three values therefore address real rows, and every one of them is the value
+    /// a plausible-looking guard would reject.
+    /// </remarks>
+    [Fact]
+    public async Task Keys_TreatZeroAndMinusOneIdentifiersAsRealRows()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithTab(ZeroTabId);
+        world.WithRole(ZeroRoleId, ZeroRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, PageScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: ZeroRoleId));
+        world.TabGrants.Add(PageGrantRow(ZeroTabId, SecondPermissionId, allowAccess: true, roleId: ZeroRoleId));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        PortalId.Should().Be(-1, "the portal identity column seeds at minus one");
+
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [ZeroRoleName]))
+            .Should().Equal(new[] { "VIEW" }, "module zero is a real module");
+        Succeeded(await evaluator.ListEffectiveTabPermissionKeysAsync(ZeroTabId, UserId, [ZeroRoleName]))
+            .Should().Equal(new[] { "EDIT" }, "page zero is a real page");
+        Succeeded(await evaluator.ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [ZeroRoleName]))
+            .Should().Equal(new[] { "EDIT", "VIEW" }, "and portal minus one is a real portal");
+    }
+
+    /// <summary>
+    /// The tenant-wide union excludes grants on soft-deleted modules and pages.
+    /// </summary>
+    /// <remarks>
+    /// A grant on something the caller can no longer reach confers nothing, so the recycled content is
+    /// filtered before its grants are considered rather than after - which also keeps the catalogue read
+    /// down to the permissions that can still affect the answer.
+    /// </remarks>
+    [Fact]
+    public async Task PortalKeys_ExcludeGrantsOnSoftDeletedModulesAndPages()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId, isDeleted: true);
+        world.WithTab(TabId, isDeleted: true);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, PageScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.TabGrants.Add(PageGrantRow(TabId, SecondPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName]));
+
+        keys.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A grant naming a catalogue entry that does not exist confers nothing.
+    /// </summary>
+    /// <remarks>
+    /// A broken row rather than a denial, and failing closed is the only safe reading of it: there is no
+    /// key to confer, so nothing is conferred. The key is resolved from the grant's own permission
+    /// identifier rather than from a navigation property, so whether the store loaded that reference
+    /// cannot change the answer - a decision that quietly returned "holds nothing" because a reference
+    /// happened to be unloaded would be an authorisation defect no test of this type could see.
+    /// </remarks>
+    [Fact]
+    public async Task PortalKeys_ConferNothingForAGrantWhoseCatalogueEntryIsMissing()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName]));
+
+        keys.Should().BeEmpty();
+        world.Permissions.Verify(
+            permissions => permissions.GetByIdsAsync(
+                It.Is<IReadOnlyCollection<int>>(ids => ids.Contains(FirstPermissionId)),
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the key is resolved by the grant's own permission identifier, and the whole set of "
+            + "identifiers the grants name is resolved in one read");
+    }
+
+    /// <summary>
+    /// The tenant-wide union is distinct and ordered ordinally.
+    /// </summary>
+    /// <remarks>
+    /// The ordering is not cosmetic. An access token minted twice from the same grants must carry an
+    /// identical claim set both times, and the enumeration order of a set is not a contract - so the
+    /// answer is sorted before it leaves.
+    /// </remarks>
+    [Fact]
+    public async Task PortalKeys_AreDistinctAndOrderedOrdinally()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithModule(SecondModuleId);
+        world.WithTab(TabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(ThirdPermissionId, PermissionKey.WRITE, PageScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(
+            FirstPermissionId,
+            allowAccess: true,
+            roleId: MemberRoleId,
+            moduleId: SecondModuleId));
+        world.TabGrants.Add(PageGrantRow(TabId, ThirdPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName]));
+
+        keys.Should().Equal(
+            "EDIT",
+            "VIEW",
+            "WRITE");
+    }
+
+    /// <summary>
+    /// A module the installation owns rather than a tenant resolves no named role, and is still reachable
+    /// through the pseudo-roles and through an account.
+    /// </summary>
+    /// <remarks>
+    /// A host-level scope carries no portal, and that is deliberate and closed: with no portal there is
+    /// no set of role names that can be resolved without reaching installation-wide, and reaching
+    /// installation-wide is the cross-tenant escalation the contract forbids. Such a scope stays
+    /// reachable through the everyone, anonymous and account-scoped grants, none of which needs a role
+    /// identifier at all.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_ForAnInstallationOwnedModuleResolveNoNamedRole()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId, portalId: null);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(ThirdPermissionId, PermissionKey.WRITE, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: AllUsersRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(ThirdPermissionId, allowAccess: true, userId: UserId));
+
+        IReadOnlyList<string> keys = Succeeded(await world.Build()
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+
+        keys.Should().Equal(
+            "VIEW",
+            "WRITE");
+        world.RoleStore.Verify(
+            roles => roles.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "there is no portal whose roles could be read without reaching across tenants");
+    }
+
+    /// <summary>
+    /// A verdict is membership in the very set the listing returns, for both scopes.
+    /// </summary>
+    /// <param name="permissionKey">The key asked about.</param>
+    /// <remarks>
+    /// Expressing the verdict a second time is how a verdict and a listing come to disagree, and a user
+    /// offered an action that is then refused is a defect they experience and a test rarely catches. The
+    /// implementation defines the verdict as a membership test over the same reduction, and this test
+    /// pins that identity across every member of the key vocabulary rather than asserting the two
+    /// separately and hoping they agree.
     /// </remarks>
     [Theory]
     [InlineData(PermissionKey.VIEW)]
     [InlineData(PermissionKey.EDIT)]
-    public async Task Precedence_ResolvesAPageScopedGrantForBothLiveKeys(PermissionKey permissionKey)
+    [InlineData(PermissionKey.READ)]
+    [InlineData(PermissionKey.WRITE)]
+    public async Task Verdicts_AreMembershipInTheSetTheListingReturns(PermissionKey permissionKey)
     {
-        GrantPrecedenceSpecification allowed = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, permissionKey, PageScopeCode)],
-            pageGrants: [PageGrantRow(TabId, FirstPermissionId, allowAccess: true, roleId: MemberRoleId)]).Object);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithTab(TabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.READ, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(ThirdPermissionId, PermissionKey.EDIT, PageScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: false, roleId: MemberRoleId));
+        world.TabGrants.Add(PageGrantRow(TabId, ThirdPermissionId, allowAccess: true, roleId: MemberRoleId));
 
-        Result<bool> granted = await allowed.HasPageGrantAsync(
-            TabId,
-            PageScopeCode,
-            permissionKey,
-            Member(MemberRoleId),
-            CancellationToken.None);
+        IPermissionEvaluator evaluator = world.Build();
 
-        granted.Value.Should().BeTrue($"the page confers {permissionKey} on a role the caller holds");
+        IReadOnlyList<string> moduleKeys = Succeeded(await evaluator
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+        bool moduleVerdict = Succeeded(await evaluator
+            .HasModulePermissionAsync(ModuleId, permissionKey, UserId, [MemberRoleName]));
 
-        GrantPrecedenceSpecification refused = new(StoreWith(
-            [CatalogueEntry(FirstPermissionId, permissionKey, PageScopeCode)],
-            pageGrants:
-            [
-                PageGrantRow(TabId, FirstPermissionId, allowAccess: true, roleId: MemberRoleId),
-                PageGrantRow(TabId, FirstPermissionId, allowAccess: false, roleId: AllUsersRoleId),
-            ]).Object);
+        moduleVerdict.Should().Be(moduleKeys.Contains(permissionKey.ToString()));
 
-        Result<bool> denied = await refused.HasPageGrantAsync(
-            TabId,
-            PageScopeCode,
-            permissionKey,
-            Member(MemberRoleId),
-            CancellationToken.None);
+        IReadOnlyList<string> tabKeys = Succeeded(await evaluator
+            .ListEffectiveTabPermissionKeysAsync(TabId, UserId, [MemberRoleName]));
+        bool tabVerdict = Succeeded(await evaluator
+            .HasTabPermissionAsync(TabId, permissionKey, UserId, [MemberRoleName]));
 
-        denied.Value.Should().BeFalse(
-            $"deny precedence applies to {permissionKey} on a page exactly as it does on a module, which is the unification this migration performs");
-    }
-
-    /// <summary>
-    /// The page whose identifier is zero is a real page.
-    /// </summary>
-    /// <remarks>
-    /// <c>Tabs.TabID</c> is <c>IDENTITY (0, 1)</c>, so zero is the first page a portal ever gets and is
-    /// frequently the home page of a real installation. Treating it as "no page" - which any truthiness or
-    /// positive-identifier test would do - would silently drop every grant recorded against it. Asserted
-    /// both that the answer is correct and that the store was genuinely asked about page zero.
-    /// </remarks>
-    [Fact]
-    public async Task Precedence_TreatsThePageIdentifiedByZeroAsARealPage()
-    {
-        Mock<IPermissionRepository> store = StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, PageScopeCode)],
-            pageGrants: [PageGrantRow(ZeroTabId, FirstPermissionId, allowAccess: true, roleId: MemberRoleId)]);
-
-        GrantPrecedenceSpecification specification = new(store.Object);
-
-        Result<bool> result = await specification.HasPageGrantAsync(
-            ZeroTabId,
-            PageScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().BeTrue("page zero is an ordinary page and its grants confer exactly as any other page's do");
-
-        store.Verify(
-            permissions => permissions.GetTabPermissionsByTabIdAsync(
-                ZeroTabId,
-                FirstPermissionId,
-                It.IsAny<CancellationToken>()),
-            Times.Once,
-            "the store must be asked about page zero rather than have the question skipped as though no page were named");
+        tabVerdict.Should().Be(tabKeys.Contains(permissionKey.ToString()));
     }
 
     /// <summary>
     /// The supplied cancellation token reaches every read a decision performs.
     /// </summary>
     /// <remarks>
-    /// AAP Rule T6 and baseline B4 are not satisfied by returning a task; a token that is accepted and then
-    /// dropped leaves a cancelled request still reading. Verified against the exact token instance rather
-    /// than against any token, which is the only form of this assertion that can actually fail.
+    /// A token that is accepted and then dropped is worse than no token at all: the caller believes the
+    /// work can be abandoned and it cannot. The token is matched by identity rather than by shape, so
+    /// substituting a different one - or the default - fails here.
     /// </remarks>
     [Fact]
-    public async Task Precedence_PassesTheSuppliedCancellationTokenToEveryRead()
+    public async Task PortalKeys_PassTheSuppliedCancellationTokenToEveryRead()
     {
-        Mock<IPermissionRepository> store = StoreWith(
-            [CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode)],
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId)]);
-
-        GrantPrecedenceSpecification specification = new(store.Object);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithTab(TabId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
 
         using CancellationTokenSource source = new();
+        CancellationToken token = source.Token;
 
-        Result<bool> result = await specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            source.Token);
+        await world.Build().ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [MemberRoleName], token);
 
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        world.RoleStore.Verify(roles => roles.GetByPortalIdAsync(PortalId, token), Times.Once);
+        world.ModuleStore.Verify(modules => modules.GetByPortalIdAsync(PortalId, token), Times.Once);
+        world.TabStore.Verify(tabs => tabs.GetByPortalIdAsync(PortalId, token), Times.Once);
+        world.Permissions.Verify(
+            permissions => permissions.GetModulePermissionsByPortalIdAsync(PortalId, token),
+            Times.Once);
+        world.Permissions.Verify(
+            permissions => permissions.GetTabPermissionsByPortalIdAsync(PortalId, token),
+            Times.Once);
+        world.Permissions.Verify(
+            permissions => permissions.GetByIdsAsync(
+                It.Is<IReadOnlyCollection<int>>(ids => ids.Contains(FirstPermissionId)),
+                token),
+            Times.Once);
+    }
 
-        store.Verify(
-            permissions => permissions.GetByCodeAndKeyAsync(
-                ModuleDefinitionScopeCode,
-                PermissionKey.VIEW,
-                source.Token),
-            Times.Once,
-            "the catalogue read must carry the caller's token");
+    /// <summary>
+    /// A token already cancelled stops every member before it reads anything.
+    /// </summary>
+    /// <remarks>
+    /// Observing cancellation at entry rather than only between reads is what makes a cancelled request
+    /// cost nothing. It also keeps a cancellation distinguishable from a refusal: an abandoned request
+    /// must not come back as "you are not allowed".
+    /// </remarks>
+    [Fact]
+    public async Task EveryMember_ObservesATokenThatIsAlreadyCancelled()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithTab(TabId);
+        IPermissionEvaluator evaluator = world.Build();
 
-        store.Verify(
-            permissions => permissions.GetModulePermissionsByModuleIdAsync(
+        using CancellationTokenSource source = new();
+        await source.CancelAsync();
+        CancellationToken cancelled = source.Token;
+
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectivePortalPermissionKeysAsync(PortalId, UserId, [], cancelled))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [], cancelled))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectiveTabPermissionKeysAsync(TabId, UserId, [], cancelled))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions
+            .Awaiting(() => evaluator.HasModulePermissionAsync(
                 ModuleId,
-                FirstPermissionId,
-                source.Token),
-            Times.Once,
-            "the grant read must carry the same token, so cancelling the request abandons both reads");
-    }
+                PermissionKey.VIEW,
+                UserId,
+                [],
+                cancelled))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions
+            .Awaiting(() => evaluator.HasTabPermissionAsync(TabId, PermissionKey.VIEW, UserId, [], cancelled))
+            .Should().ThrowAsync<OperationCanceledException>();
 
-    /// <summary>
-    /// A store that cannot be reached produces a fault, never a refusal.
-    /// </summary>
-    /// <remarks>
-    /// The most consequential failure mode in this area, and the easiest to get wrong by being defensive in
-    /// the wrong direction. Swallowing the fault and answering false would tell the caller they are not
-    /// allowed, when the truth is that nobody currently knows - which sends an operator to the permission
-    /// grid to debug an outage. Unexpected faults propagate and are translated once at the api boundary;
-    /// only <em>expected</em> conditions are reported through the outcome type.
-    /// </remarks>
-    [Fact]
-    public async Task Precedence_WhenTheStoreCannotBeReachedTheFaultSurfacesRatherThanARefusal()
-    {
-        Mock<IPermissionRepository> store = new(MockBehavior.Strict);
-
-        store
-            .Setup(permissions => permissions.GetByCodeAndKeyAsync(
-                It.IsAny<string>(),
-                It.IsAny<PermissionKey>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new TimeoutException("the grant store did not respond"));
-
-        GrantPrecedenceSpecification specification = new(store.Object);
-
-        Func<Task> asking = () => specification.HasModuleGrantAsync(
-            ModuleId,
-            ModuleDefinitionScopeCode,
-            PermissionKey.VIEW,
-            Member(MemberRoleId),
-            CancellationToken.None);
-
-        await asking.Should().ThrowAsync<TimeoutException>(
-            "an unreachable store is an availability fault, and reporting it as a denial would misdiagnose an outage as a permissions problem");
-    }
-
-    /// <summary>
-    /// Role names are compared ordinally, so a differently cased name is a different role.
-    /// </summary>
-    /// <param name="storedRoleName">The role name recorded against the grant.</param>
-    /// <param name="expected">Whether the caller's own role should match it.</param>
-    /// <remarks>
-    /// The legacy comparison was Visual Basic string equality, which is binary rather than culture-aware,
-    /// so ordinal comparison is behavioural parity rather than a hardening choice. It also has to stay
-    /// ordinal: a culture-sensitive or case-insensitive comparison would make role matching depend on the
-    /// server's locale, which is how a permission check starts behaving differently in one deployment than
-    /// in another. Trimming would be just as wrong, because a stored name with a trailing space is a
-    /// distinct row that an administrator can see and delete.
-    /// </remarks>
-    [Theory]
-    [InlineData(MemberRoleName, true)]
-    [InlineData("measured members", false)]
-    [InlineData("MEASURED MEMBERS", false)]
-    [InlineData("Measured Members ", false)]
-    [InlineData("", false)]
-    public void Precedence_ComparesRoleNamesOrdinally(string storedRoleName, bool expected)
-    {
-        bool matched = GrantPrecedenceSpecification.IsInRoles(
-            [storedRoleName],
-            Member(MemberRoleId),
-            AllUsersRoleName,
-            UnauthenticatedRoleName);
-
-        matched.Should().Be(
-            expected,
-            $"the stored name \"{storedRoleName}\" must be compared to the caller's roles as raw text, without folding case, trimming, or applying a culture");
-    }
-
-    /// <summary>
-    /// The pseudo-role names keep their legacy admission rules.
-    /// </summary>
-    /// <remarks>
-    /// The named pseudo-roles are the string-keyed counterpart of the numeric principals covered above, and
-    /// they are still reachable because the delimited role columns in the schema store names rather than
-    /// identifiers. The all-users name admits everyone; the unauthenticated name admits only a caller who
-    /// has not been identified, which is what makes an anonymous caller a supported question rather than a
-    /// rejected one; and an empty entry admits nobody, because the legacy loop skipped empty entries and a
-    /// trailing delimiter produces one on almost every stored value.
-    /// </remarks>
-    [Fact]
-    public void Precedence_AppliesTheLegacyAdmissionRulesToThePseudoRoleNames()
-    {
-        GrantPrecedenceSpecification.IsInRoles(
-            [AllUsersRoleName],
-            Anonymous(),
-            AllUsersRoleName,
-            UnauthenticatedRoleName).Should().BeTrue("the all-users name admits an unidentified caller");
-
-        GrantPrecedenceSpecification.IsInRoles(
-            [AllUsersRoleName],
-            Member(MemberRoleId),
-            AllUsersRoleName,
-            UnauthenticatedRoleName).Should().BeTrue("the all-users name admits an identified caller too, unconditionally");
-
-        GrantPrecedenceSpecification.IsInRoles(
-            [UnauthenticatedRoleName],
-            Anonymous(),
-            AllUsersRoleName,
-            UnauthenticatedRoleName).Should().BeTrue("the unauthenticated name admits a caller who has not been identified");
-
-        GrantPrecedenceSpecification.IsInRoles(
-            [UnauthenticatedRoleName],
-            Member(MemberRoleId),
-            AllUsersRoleName,
-            UnauthenticatedRoleName).Should().BeFalse("an identified caller is not unauthenticated, however the row is worded");
-
-        GrantPrecedenceSpecification.IsInRoles(
-            [],
-            HostAccount(),
-            AllUsersRoleName,
-            UnauthenticatedRoleName).Should().BeFalse("an installation-wide account matches rows it finds and conjures none, so an empty set admits nobody");
-    }
-
-    /// <summary>
-    /// An absent page scope means "not scoped to a page", and is never read as page zero.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The two states are genuinely different questions and this is the collision that makes them easy to
-    /// confuse: an absent scope asks about the whole portal, while page zero asks about one specific page
-    /// that happens to carry the first identifier the schema issues. Because a nullable integer defaults to
-    /// zero when it is coalesced carelessly, the failure mode is silent - the caller asks a portal-wide
-    /// question and receives one page's answer.
-    /// </para>
-    /// <para>
-    /// MIGRATION: an absent identifier is a null nullable, never a numeric sentinel. The legacy source
-    /// passed the integer absence sentinel to mean "no page", and that value is not free: it identifies the
-    /// first portal in this schema and, in a role column, the all-users principal. Zero is not free either,
-    /// because the page, role and module identity columns all seed at zero. This test is the executable form
-    /// of that rule for the page argument.
-    /// </para>
-    /// </remarks>
-    [Fact]
-    public async Task PageScope_AbsentIsNotTheSameQuestionAsPageZero()
-    {
-        Harness withoutPageScope = Harness.Ready();
-        withoutPageScope.PortalKeys = ["VIEW"];
-
-        Result<IReadOnlyList<string>> portalWide = await withoutPageScope.Service.GetEffectivePermissionKeysAsync(
-            PortalId,
-            UserId,
-            moduleId: null,
-            tabId: null,
-            cancellationToken: CancellationToken.None);
-
-        portalWide.IsSuccess.Should().BeTrue(portalWide.Reason?.ToString());
-
-        withoutPageScope.Evaluator.Verify(
-            evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
-                It.IsAny<int>(),
-                It.IsAny<int?>(),
-                It.IsAny<IReadOnlyCollection<string>>(),
-                It.IsAny<CancellationToken>()),
+        world.ModuleStore.Verify(
+            modules => modules.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never,
-            "an absent page scope must ask no page-scoped question at all, rather than quietly asking about page zero");
-
-        Harness withPageZero = Harness.Ready();
-        withPageZero.Tab.TabId = ZeroTabId;
-        withPageZero.TabKeys = ["VIEW"];
-
-        Result<IReadOnlyList<string>> pageZero = await withPageZero.Service.GetEffectivePermissionKeysAsync(
-            PortalId,
-            UserId,
-            moduleId: null,
-            tabId: ZeroTabId,
-            cancellationToken: CancellationToken.None);
-
-        pageZero.IsSuccess.Should().BeTrue(pageZero.Reason?.ToString());
-
-        withPageZero.Evaluator.Verify(
-            evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
-                ZeroTabId,
-                It.IsAny<int?>(),
-                It.IsAny<IReadOnlyCollection<string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once,
-            "page zero is a real page and must be asked about by its own identifier");
+            "a cancelled request must cost nothing at all");
     }
 
-    // =================================================================================================
-    // The write side of inherited view permissions.
-    //
-    // The read side is covered above against the real service. The write side is a separate rule that the
-    // legacy source applied when persisting a module's grants, and it is specified here because the
-    // application contract deliberately publishes no grant-replacement member: the planned api gives
-    // permissions a read-only catalogue endpoint only, and a contract member nothing calls is a contract
-    // member nobody validates. The rule is nevertheless real and will bind whoever adds the grid screen.
-    // =================================================================================================
-
     /// <summary>
-    /// Replacing a module's grants clears the whole set before writing, rather than merging into it.
+    /// A store that cannot be reached produces a fault rather than a refusal.
     /// </summary>
     /// <remarks>
-    /// The legacy sequence deleted every grant recorded against the module and then re-added the survivors,
-    /// so replacement is genuinely replacement: a row absent from the incoming set is gone afterwards.
-    /// Merging instead would make a removal impossible to express, which for a refusal row is a security
-    /// difference rather than a convenience one. The clear must also happen before any write, or a
-    /// re-added row would be deleted by its own clear.
+    /// The distinction is the whole point. "The database is unavailable" and "you are not allowed" are
+    /// different answers, and collapsing the first into the second would tell an operator their
+    /// permissions were wrong while the real problem was elsewhere - and would, on a write path, let a
+    /// transient outage read as a deliberate denial.
     /// </remarks>
     [Fact]
-    public async Task Replacement_ClearsTheWholeSetBeforeWritingAnySurvivor()
+    public async Task ModuleKeys_LetAStoreFaultSurfaceRatherThanBecomingARefusal()
     {
-        Mock<IPermissionRepository> store = ReplacementStore();
-        GrantReplacementSpecification specification = new(store.Object);
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Permissions
+            .Setup(permissions => permissions.GetByModuleIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("the grant store is unreachable"));
 
-        await specification.ReplaceModuleGrantsAsync(
-            ModuleId,
-            inheritViewPermissions: false,
-            [ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId)],
-            KeyByPermissionId(),
-            CancellationToken.None);
+        IPermissionEvaluator evaluator = world.Build();
 
-        store.Verify(
-            permissions => permissions.DeleteModulePermissionsByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
-            Times.Once,
-            "the existing set is cleared exactly once, so replacement cannot silently become a merge");
-
-        specification.Written.Should().HaveCount(1, "the one incoming row survives and is written");
-        specification.ClearedBeforeFirstWrite.Should().BeTrue(
-            "the clear must precede every write, or a surviving row would be removed by its own clear");
+        await FluentActions
+            .Awaiting(() => evaluator.ListEffectiveModulePermissionKeysAsync(
+                ModuleId,
+                UserId,
+                [MemberRoleName]))
+            .Should().ThrowAsync<InvalidOperationException>();
+        await FluentActions
+            .Awaiting(() => evaluator.HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.VIEW,
+                UserId,
+                [MemberRoleName]))
+            .Should().ThrowAsync<InvalidOperationException>();
     }
 
-    /// <summary>
-    /// An inheriting module does not persist an explicit view grant of its own.
-    /// </summary>
-    /// <param name="inheritViewPermissions">Whether the module takes its view permission from its pages.</param>
-    /// <param name="viewRowIsPersisted">Whether the incoming view row should survive.</param>
-    /// <remarks>
-    /// The legacy write discarded an explicit view row when the module was configured to inherit, and it
-    /// discarded only that key. The reason it matters is consistency with the read side: a module that
-    /// inherits is answered for view from its pages, so a stored module-level view row could never be
-    /// consulted and would sit in the table contradicting the answer the application gives. Every other key
-    /// is unaffected in both states, because only view is inherited.
-    /// </remarks>
-    [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public async Task Replacement_PersistsAnExplicitViewRowOnlyWhenTheModuleDoesNotInherit(
-        bool inheritViewPermissions,
-        bool viewRowIsPersisted)
-    {
-        Mock<IPermissionRepository> store = ReplacementStore();
-        GrantReplacementSpecification specification = new(store.Object);
 
-        await specification.ReplaceModuleGrantsAsync(
-            ModuleId,
-            inheritViewPermissions,
-            [
-                ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId),
-                ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: MemberRoleId),
-            ],
-            KeyByPermissionId(),
-            CancellationToken.None);
-
-        specification.Written
-            .Any(grant => grant.PermissionId == FirstPermissionId)
-            .Should()
-            .Be(
-                viewRowIsPersisted,
-                $"with inheritance {inheritViewPermissions} an explicit view row must {(viewRowIsPersisted ? "survive" : "be discarded")}, because an inheriting module is answered for view from its pages");
-
-        specification.Written
-            .Should()
-            .Contain(grant => grant.PermissionId == SecondPermissionId,
-                "only view is inherited, so an edit row survives in either state");
-    }
-
-    /// <summary>
-    /// A refusal row is not written, in either inheritance state.
-    /// </summary>
-    /// <param name="inheritViewPermissions">Whether the module takes its view permission from its pages.</param>
-    /// <remarks>
-    /// <para>
-    /// The legacy write gated the persist on the allow-or-deny flag being set, so a refusal row was dropped
-    /// rather than stored. That is measured legacy behaviour and is preserved here.
-    /// </para>
-    /// <para>
-    /// MIGRATION: note the asymmetry this creates with the read side, because it is genuine and not an
-    /// error in either place. Reading applies deny precedence to whatever refusal rows exist, while writing
-    /// through this legacy path never creates one. The rows the reader honours are therefore the ones the
-    /// upgrade scripts and older versions of the product left behind - which is exactly why the reader must
-    /// honour them, and why silently ignoring the flag on the read side was the defect this migration fixes.
-    /// </para>
-    /// </remarks>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Replacement_DoesNotWriteARefusalRow(bool inheritViewPermissions)
-    {
-        Mock<IPermissionRepository> store = ReplacementStore();
-        GrantReplacementSpecification specification = new(store.Object);
-
-        await specification.ReplaceModuleGrantsAsync(
-            ModuleId,
-            inheritViewPermissions,
-            [ModuleGrantRow(SecondPermissionId, allowAccess: false, roleId: MemberRoleId)],
-            KeyByPermissionId(),
-            CancellationToken.None);
-
-        specification.Written.Should().BeEmpty(
-            "the legacy write persisted a row only when it conferred access, so a refusal row is dropped rather than stored");
-    }
-
-    /// <summary>
-    /// Every surviving row is stamped with the module it is being recorded against.
-    /// </summary>
-    /// <remarks>
-    /// The legacy write assigned the module identifier onto each row before persisting it, which mattered
-    /// because the incoming rows came from a screen that had not necessarily set it. Zero is used here
-    /// deliberately: it is the module identifier under test throughout this file and a genuine value, so a
-    /// stamp that silently skipped it would pass a test written against any other number.
-    /// </remarks>
-    [Fact]
-    public async Task Replacement_StampsEverySurvivingRowWithTheModuleIdentifier()
-    {
-        Mock<IPermissionRepository> store = ReplacementStore();
-        GrantReplacementSpecification specification = new(store.Object);
-
-        ModulePermission incoming = ModuleGrantRow(SecondPermissionId, allowAccess: true, roleId: MemberRoleId);
-        incoming.ModuleId = ForeignRoleId;
-
-        await specification.ReplaceModuleGrantsAsync(
-            ModuleId,
-            inheritViewPermissions: false,
-            [incoming],
-            KeyByPermissionId(),
-            CancellationToken.None);
-
-        specification.Written.Should().OnlyContain(
-            grant => grant.ModuleId == ModuleId,
-            "each row is stamped with the module it is recorded against before it is written");
-    }
 
     // =================================================================================================
     // The grant entities.
@@ -2982,10 +4101,15 @@ public class PermissionEvaluatorTests
     /// Builds a placement of the module under test on a page.
     /// </summary>
     /// <param name="tabId">The page the module sits on.</param>
+    /// <param name="tabModuleId">
+    /// The placement's own key, when a test addresses the placement by it rather than by its page. Defaults to
+    /// a value derived from the page so that the many tests which never name a placement key keep working
+    /// unchanged, and so that no two placements built for one module ever collide.
+    /// </param>
     /// <returns>The placement.</returns>
-    private static TabModule Placement(int tabId) => new()
+    private static TabModule Placement(int tabId, int? tabModuleId = null) => new()
     {
-        TabModuleId = 1000 + tabId,
+        TabModuleId = tabModuleId ?? (1000 + tabId),
         TabId = tabId,
         ModuleId = ModuleId,
         PaneName = "ContentPane",
@@ -3008,15 +4132,23 @@ public class PermissionEvaluatorTests
     /// <param name="permissionId">The row's own identifier, which grants reference.</param>
     /// <param name="permissionKey">The key the row defines.</param>
     /// <param name="permissionCode">The scope code the row belongs to.</param>
+    /// <param name="moduleDefinitionId">
+    /// The definition the row declares. Defaults to the definition the module under evaluation was built
+    /// from, so a row is in scope unless a test deliberately places it elsewhere.
+    /// </param>
     /// <returns>The catalogue row.</returns>
-    private static Permission CatalogueEntry(int permissionId, PermissionKey permissionKey, string permissionCode) => new()
-    {
-        PermissionId = permissionId,
-        PermissionCode = permissionCode,
-        ModuleDefinitionId = 1,
-        PermissionKey = permissionKey,
-        PermissionName = permissionKey.ToString(),
-    };
+    private static Permission CatalogueEntry(
+        int permissionId,
+        PermissionKey permissionKey,
+        string permissionCode,
+        int moduleDefinitionId = ModuleDefinitionId) => new()
+        {
+            PermissionId = permissionId,
+            PermissionCode = permissionCode,
+            ModuleDefinitionId = moduleDefinitionId,
+            PermissionKey = permissionKey,
+            PermissionName = permissionKey.ToString(),
+        };
 
     /// <summary>
     /// Builds one grant recorded against the module under test.
@@ -3025,17 +4157,21 @@ public class PermissionEvaluatorTests
     /// <param name="allowAccess">Whether the row confers the key or refuses it.</param>
     /// <param name="roleId">The role the grant names, or <see langword="null"/> when it names none.</param>
     /// <param name="userId">The account the grant names, or <see langword="null"/> when it names none.</param>
+    /// <param name="moduleId">The module the grant is recorded against.</param>
     /// <returns>The grant row.</returns>
     private static ModulePermission ModuleGrantRow(
         int permissionId,
         bool allowAccess,
         int? roleId = null,
-        int? userId = null)
+        int? userId = null,
+        int moduleId = ModuleId)
     {
         return new ModulePermission
         {
-            ModulePermissionId = 500 + permissionId,
-            ModuleId = ModuleId,
+            // The surrogate key has to differ per row, and rows for one permission may be recorded
+            // against several modules, so both coordinates contribute to it.
+            ModulePermissionId = (1000 * (moduleId + 2)) + permissionId,
+            ModuleId = moduleId,
             PermissionId = permissionId,
             RoleId = roleId,
             UserId = userId,
@@ -3061,7 +4197,8 @@ public class PermissionEvaluatorTests
     {
         return new TabPermission
         {
-            TabPermissionId = 700 + permissionId,
+            // Distinct per page as well as per permission, for the reason given on the module row above.
+            TabPermissionId = (1000 * (tabId + 2)) + permissionId,
             TabId = tabId,
             PermissionId = permissionId,
             RoleId = roleId,
@@ -3070,481 +4207,241 @@ public class PermissionEvaluatorTests
         };
     }
 
-    /// <summary>
-    /// Builds an identified caller holding the supplied roles.
-    /// </summary>
-    /// <param name="roleIds">The roles the caller holds.</param>
-    /// <returns>The caller.</returns>
-    private static CallerIdentity Member(params int[] roleIds)
-        => new(UserId, roleIds.ToHashSet(), [MemberRoleName], true, false);
 
     /// <summary>
-    /// Builds an unidentified caller, which is a supported case rather than a rejected one.
+    /// The rows the concrete evaluator reads, together with the substituted repositories that serve them
+    /// and the configuration it is constructed over.
     /// </summary>
-    /// <returns>The caller.</returns>
-    private static CallerIdentity Anonymous()
-        => new(null, new HashSet<int>(), [], false, false);
-
-    /// <summary>
-    /// Builds an installation-wide account.
-    /// </summary>
-    /// <returns>The caller.</returns>
-    private static CallerIdentity HostAccount()
-        => new(HostUserId, new HashSet<int>(), [], true, true);
-
-    /// <summary>
-    /// Builds a substituted grant store holding the supplied catalogue and grant rows.
-    /// </summary>
-    /// <param name="catalogue">The catalogue rows the store returns for any code-and-key read.</param>
-    /// <param name="moduleGrants">The module grants the store holds.</param>
-    /// <param name="pageGrants">The page grants the store holds.</param>
-    /// <returns>The substituted store.</returns>
     /// <remarks>
     /// <para>
-    /// Substituted strictly, which buys a second guarantee for free: the specification under test cannot
-    /// touch a repository member that was not set up here without failing, so these tests also pin how
-    /// narrow the read surface of a decision is.
+    /// Every repository is substituted <em>strictly</em>, and every read the evaluator can perform is
+    /// wired here from these lists. That combination buys two things at once: a test arranges rows rather
+    /// than call expectations, so it reads like the data it describes; and the evaluator cannot touch a
+    /// repository member that was not wired without failing outright, so this type also pins how narrow
+    /// the read surface of an access decision is.
     /// </para>
     /// <para>
-    /// The code-and-key read deliberately returns the catalogue unfiltered. The real read filters, but a
-    /// substitute that also filtered would hide whether the specification applies the scope-code and key
-    /// checks itself, and those checks are exactly what the admission tests assert.
+    /// The lists are mutable and public on purpose. A test adds the rows it needs after
+    /// <see cref="Create"/> and before <see cref="Build"/>, and the wiring closes over the lists rather
+    /// than over snapshots of them, so ordering the two the other way round would still work. Any wired
+    /// member may also be re-substituted by a test that needs a store to return something the lists
+    /// cannot express - a row answering a wider question than the one asked, or a fault.
+    /// </para>
+    /// <para>
+    /// Nothing here is production code and nothing here re-implements a rule. The filtering below
+    /// reproduces only what the repository CONTRACT documents - which rows a read returns, including the
+    /// minus-one wildcard the two grant readers accept in their permission position - so the reachability
+    /// test, the pseudo-role rules, the scope admissions and the allow-and-deny reduction all remain
+    /// entirely the evaluator's own.
     /// </para>
     /// </remarks>
-    private static Mock<IPermissionRepository> StoreWith(
-        IReadOnlyList<Permission> catalogue,
-        IReadOnlyList<ModulePermission>? moduleGrants = null,
-        IReadOnlyList<TabPermission>? pageGrants = null)
+    private sealed class EvaluatorWorld
     {
-        IReadOnlyList<ModulePermission> modules = moduleGrants ?? [];
-        IReadOnlyList<TabPermission> pages = pageGrants ?? [];
-
-        Mock<IPermissionRepository> store = new(MockBehavior.Strict);
-
-        store
-            .Setup(permissions => permissions.GetByCodeAndKeyAsync(
-                It.IsAny<string>(),
-                It.IsAny<PermissionKey>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(catalogue);
-
-        store
-            .Setup(permissions => permissions.GetModulePermissionsByModuleIdAsync(
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((int moduleId, int permissionId, CancellationToken _) => modules
-                .Where(grant => grant.ModuleId == moduleId
-                    && (permissionId == WildcardPermissionId || grant.PermissionId == permissionId))
-                .ToList());
-
-        store
-            .Setup(permissions => permissions.GetTabPermissionsByTabIdAsync(
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((int tabId, int permissionId, CancellationToken _) => pages
-                .Where(grant => grant.TabId == tabId
-                    && (permissionId == WildcardPermissionId || grant.PermissionId == permissionId))
-                .ToList());
-
-        return store;
-    }
-
-    /// <summary>
-    /// Maps the two catalogue identifiers used by the replacement tests to the keys they define.
-    /// </summary>
-    /// <returns>The key each catalogue identifier defines.</returns>
-    /// <remarks>
-    /// MIGRATION: a grant row no longer carries the key it grants. The legacy grant type was a denormalised
-    /// join that repeated the catalogue's key and name alongside the grant, so the write rule could read the
-    /// key straight off the row. The target row carries only a foreign key to the catalogue, which is the
-    /// normalised shape the terminal schema actually has, so a rule that needs the key resolves it from the
-    /// catalogue instead. Passing that resolution in explicitly keeps this specification honest about the
-    /// extra read the real implementation owes.
-    /// </remarks>
-    private static IReadOnlyDictionary<int, PermissionKey> KeyByPermissionId()
-        => new Dictionary<int, PermissionKey>
+        private EvaluatorWorld()
         {
-            [FirstPermissionId] = PermissionKey.VIEW,
-            [SecondPermissionId] = PermissionKey.EDIT,
+            ModuleStore
+                .Setup(modules => modules.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int moduleId, CancellationToken _) =>
+                    Modules.FirstOrDefault(module => module.ModuleId == moduleId));
+
+            ModuleStore
+                .Setup(modules => modules.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) => (IReadOnlyList<Module>)
+                    Modules.Where(module => module.PortalId == portalId).ToList());
+
+            TabStore
+                .Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, CancellationToken _) =>
+                    Tabs.FirstOrDefault(tab => tab.TabId == tabId));
+
+            TabStore
+                .Setup(tabs => tabs.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) => (IReadOnlyList<Tab>)
+                    Tabs.Where(tab => tab.PortalId == portalId).ToList());
+
+            RoleStore
+                .Setup(roles => roles.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) => (IReadOnlyList<Role>)
+                    Roles.Where(role => role.PortalId == portalId).ToList());
+
+            // The module and page catalogue reads are narrowed by the scope in the real store. They are
+            // returned UNFILTERED here so that the scope-code and definition admissions stay the
+            // evaluator's own: a substitute that also filtered would hide whether those checks are
+            // applied at all, and they are exactly what the admission tests assert.
+            Permissions
+                .Setup(permissions => permissions.GetByModuleIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, CancellationToken __) => (IReadOnlyList<Permission>)
+                    Catalogue.ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetByTabIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, CancellationToken __) => (IReadOnlyList<Permission>)
+                    Catalogue.ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int permissionId, CancellationToken _) =>
+                    Catalogue.FirstOrDefault(entry => entry.PermissionId == permissionId));
+
+            // The SET-WISE catalogue read, which is how the portal-wide walk resolves the entries its
+            // reached grants name: the distinct identifiers are collected and resolved in one read rather
+            // than one read per identifier. Stubbed from the same fixture as the single-identifier read, and
+            // reproducing the one contract difference that matters to the caller - an identifier naming no
+            // entry is OMITTED from the result rather than yielding a null element, so the caller may index
+            // the result without a per-element null test. Returning a null-padded list here would let a
+            // regression in that handling pass unnoticed.
+            Permissions
+                .Setup(permissions => permissions.GetByIdsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> permissionIds, CancellationToken _) =>
+                    (IReadOnlyList<Permission>)Catalogue
+                        .Where(entry => permissionIds.Contains(entry.PermissionId))
+                        .ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetModulePermissionsByModuleIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int moduleId, int permissionId, CancellationToken _) =>
+                    (IReadOnlyList<ModulePermission>)ModuleGrants
+                        .Where(grant => grant.ModuleId == moduleId
+                            && (permissionId == WildcardPermissionId || grant.PermissionId == permissionId))
+                        .ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetTabPermissionsByTabIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, int permissionId, CancellationToken _) =>
+                    (IReadOnlyList<TabPermission>)TabGrants
+                        .Where(grant => grant.TabId == tabId
+                            && (permissionId == WildcardPermissionId || grant.PermissionId == permissionId))
+                        .ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetModulePermissionsByPortalIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) =>
+                    (IReadOnlyList<ModulePermission>)ModuleGrants
+                        .Where(grant => Modules.Any(module =>
+                            module.ModuleId == grant.ModuleId && module.PortalId == portalId))
+                        .ToList());
+
+            Permissions
+                .Setup(permissions => permissions.GetTabPermissionsByPortalIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) =>
+                    (IReadOnlyList<TabPermission>)TabGrants
+                        .Where(grant => Tabs.Any(tab => tab.TabId == grant.TabId && tab.PortalId == portalId))
+                        .ToList());
+        }
+
+        /// <summary>Gets the grant and catalogue store.</summary>
+        public Mock<IPermissionRepository> Permissions { get; } = new(MockBehavior.Strict);
+
+        /// <summary>Gets the store role names resolve through.</summary>
+        public Mock<IRoleRepository> RoleStore { get; } = new(MockBehavior.Strict);
+
+        /// <summary>Gets the store that establishes which portal owns a module.</summary>
+        public Mock<IModuleRepository> ModuleStore { get; } = new(MockBehavior.Strict);
+
+        /// <summary>Gets the store that establishes which portal owns a page.</summary>
+        public Mock<ITabRepository> TabStore { get; } = new(MockBehavior.Strict);
+
+        /// <summary>Gets the configuration supplying the two built-in role names.</summary>
+        public PortalOptions Portal { get; } = new()
+        {
+            AllUsersRoleName = AllUsersRoleName,
+            UnauthenticatedRoleName = UnauthenticatedRoleName,
         };
 
-    /// <summary>
-    /// Builds a substituted store that accepts a clear followed by any number of writes.
-    /// </summary>
-    /// <returns>The substituted store.</returns>
-    private static Mock<IPermissionRepository> ReplacementStore()
-    {
-        Mock<IPermissionRepository> store = new(MockBehavior.Strict);
+        /// <summary>Gets the modules the store holds.</summary>
+        public List<Module> Modules { get; } = [];
 
-        store
-            .Setup(permissions => permissions.DeleteModulePermissionsByModuleIdAsync(
-                It.IsAny<int>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        /// <summary>Gets the pages the store holds.</summary>
+        public List<Tab> Tabs { get; } = [];
 
-        store
-            .Setup(permissions => permissions.AddModulePermissionAsync(
-                It.IsAny<ModulePermission>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        /// <summary>Gets the roles the store holds.</summary>
+        public List<Role> Roles { get; } = [];
 
-        return store;
-    }
+        /// <summary>Gets the catalogue rows the store holds.</summary>
+        public List<Permission> Catalogue { get; } = [];
 
-    /// <summary>
-    /// The rule the legacy source applied when persisting a module's grants, written as runnable code.
-    /// </summary>
-    /// <remarks>
-    /// Private and nested for the same reason as the precedence specification: it records a rule so that it
-    /// is executable rather than only described, and it must never be mistaken for production code.
-    /// </remarks>
-    private sealed class GrantReplacementSpecification
-    {
-        private readonly IPermissionRepository _permissions;
+        /// <summary>Gets the module grants the store holds.</summary>
+        public List<ModulePermission> ModuleGrants { get; } = [];
 
-        private readonly List<ModulePermission> _written = [];
+        /// <summary>Gets the page grants the store holds.</summary>
+        public List<TabPermission> TabGrants { get; } = [];
 
-        private bool _cleared;
+        /// <summary>Builds an empty world whose every read is wired and returns nothing.</summary>
+        /// <returns>The world.</returns>
+        public static EvaluatorWorld Create() => new();
 
-        private bool _clearedBeforeFirstWrite = true;
-
-        /// <summary>
-        /// Initialises the specification over a grant store.
-        /// </summary>
-        /// <param name="permissions">The grant store.</param>
-        public GrantReplacementSpecification(IPermissionRepository permissions)
-            => _permissions = permissions;
-
-        /// <summary>The rows that were actually written, in the order they were written.</summary>
-        public IReadOnlyList<ModulePermission> Written => _written;
-
-        /// <summary>Whether the existing set was cleared before the first row was written.</summary>
-        public bool ClearedBeforeFirstWrite => _clearedBeforeFirstWrite;
-
-        /// <summary>
-        /// Replaces every grant recorded against one module with the supplied set.
-        /// </summary>
-        /// <param name="moduleId">The module whose grants are being replaced.</param>
-        /// <param name="inheritViewPermissions">Whether the module takes its view permission from its pages.</param>
-        /// <param name="desired">The grants the caller wants recorded.</param>
-        /// <param name="keyByPermissionId">The key each referenced catalogue row defines.</param>
-        /// <param name="cancellationToken">Token that cancels the writes.</param>
-        /// <returns>A task that completes when the replacement has been staged.</returns>
-        public async Task ReplaceModuleGrantsAsync(
+        /// <summary>Adds a module owned by a portal.</summary>
+        /// <param name="moduleId">The module key, which the schema seeds at zero.</param>
+        /// <param name="portalId">
+        /// The owning portal, or <see langword="null"/> when the installation owns the module rather than
+        /// a tenant.
+        /// </param>
+        /// <param name="isDeleted">Whether the module sits in the recycle bin.</param>
+        /// <param name="moduleDefinitionId">The definition the module was built from.</param>
+        public void WithModule(
             int moduleId,
-            bool inheritViewPermissions,
-            IReadOnlyList<ModulePermission> desired,
-            IReadOnlyDictionary<int, PermissionKey> keyByPermissionId,
-            CancellationToken cancellationToken)
-        {
-            await _permissions.DeleteModulePermissionsByModuleIdAsync(moduleId, cancellationToken);
-            _cleared = true;
-
-            foreach (ModulePermission grant in desired)
+            int? portalId = PortalId,
+            bool isDeleted = false,
+            int moduleDefinitionId = ModuleDefinitionId)
+            => Modules.Add(new Module
             {
-                grant.ModuleId = moduleId;
+                ModuleId = moduleId,
+                ModuleDefinitionId = moduleDefinitionId,
+                PortalId = portalId,
+                IsDeleted = isDeleted,
+            });
 
-                bool isInheritedViewRow = inheritViewPermissions
-                    && keyByPermissionId.TryGetValue(grant.PermissionId, out PermissionKey key)
-                    && key == PermissionKey.VIEW;
-
-                if (isInheritedViewRow)
-                {
-                    // An inheriting module is answered for view from its pages, so storing a module-level
-                    // view row would leave a row in the table that no read can ever consult.
-                    continue;
-                }
-
-                if (!grant.AllowAccess)
-                {
-                    // Measured legacy behaviour: the persist was gated on the row conferring access.
-                    continue;
-                }
-
-                if (!_cleared)
-                {
-                    _clearedBeforeFirstWrite = false;
-                }
-
-                await _permissions.AddModulePermissionAsync(grant, cancellationToken);
-                _written.Add(grant);
-            }
-        }
-    }
-
-    /// <summary>
-    /// The caller a grant row is matched against.
-    /// </summary>
-    /// <param name="UserId">The caller's account, or <see langword="null"/> when unidentified.</param>
-    /// <param name="RoleIds">The role identifiers the caller holds.</param>
-    /// <param name="RoleNames">The role names the caller holds.</param>
-    /// <param name="IsAuthenticated">Whether the caller has been identified.</param>
-    /// <param name="IsSuperUser">Whether the caller is an installation-wide account.</param>
-    /// <remarks>
-    /// MIGRATION: the ambient page and settings read is gone. The legacy no-argument access check reached
-    /// into the current request's portal settings object and used whichever page that object happened to be
-    /// pointing at, and the membership helper beside it read the current request to discover whether the
-    /// caller was authenticated. Both facts are now arguments: an immutable scoped context resolved once
-    /// per request in api middleware supplies them, so a decision is reproducible from its inputs alone
-    /// and this specification can be exercised without any request at all.
-    /// </remarks>
-    private sealed record CallerIdentity(
-        int? UserId,
-        IReadOnlySet<int> RoleIds,
-        IReadOnlyList<string> RoleNames,
-        bool IsAuthenticated,
-        bool IsSuperUser);
-
-    /// <summary>
-    /// The allow-and-deny precedence rule the concrete reducer must satisfy, written as runnable code.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This is a specification, not a second implementation: nothing in production calls it, and it exists
-    /// so the rule the concrete reducer implements is stated somewhere executable rather than only in
-    /// prose. Keeping it private and nested makes that impossible to misuse - it cannot be referenced from
-    /// another file, let alone registered in a container.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the reflection-driven row hydrator and the reflection-created static provider accessor
-    /// are both gone. Every read below is a plain call on an injected repository contract that hands back
-    /// materialised entities, where the legacy path reached a static accessor built by reflection and then
-    /// hydrated each row by reflecting over its properties. The untyped sequences those reads returned are
-    /// now read-only generic sequences, and the hand-written pre-generics wrapper classes that fronted
-    /// them produce no target type at all.
-    /// </para>
-    /// </remarks>
-    private sealed class GrantPrecedenceSpecification
-    {
-        private readonly IPermissionRepository _permissions;
-
-        /// <summary>
-        /// Initialises the specification over a grant store.
-        /// </summary>
-        /// <param name="permissions">The grant store.</param>
-        public GrantPrecedenceSpecification(IPermissionRepository permissions)
-            => _permissions = permissions;
-
-        /// <summary>
-        /// Decides whether a caller holds one key on one module.
-        /// </summary>
-        /// <param name="moduleId">The module. Zero is a genuine module identifier.</param>
-        /// <param name="permissionCode">The scope code the key is defined under.</param>
-        /// <param name="permissionKey">The key being tested.</param>
-        /// <param name="caller">The caller.</param>
-        /// <param name="cancellationToken">Token that cancels the reads.</param>
-        /// <returns>A successful outcome carrying the decision; a refusal is a successful false.</returns>
-        public async Task<Result<bool>> HasModuleGrantAsync(
-            int moduleId,
-            string permissionCode,
-            PermissionKey permissionKey,
-            CallerIdentity caller,
-            CancellationToken cancellationToken)
-        {
-            IReadOnlyList<int> permissionIds =
-                await AdmittedPermissionIdsAsync(permissionCode, permissionKey, cancellationToken);
-
-            List<bool> matching = [];
-
-            foreach (int permissionId in permissionIds)
+        /// <summary>Adds a page owned by a portal.</summary>
+        /// <param name="tabId">The page key, which the schema seeds at zero.</param>
+        /// <param name="portalId">The owning portal, or <see langword="null"/> for a host page.</param>
+        /// <param name="isDeleted">Whether the page sits in the recycle bin.</param>
+        public void WithTab(int tabId, int? portalId = PortalId, bool isDeleted = false)
+            => Tabs.Add(new Tab
             {
-                IReadOnlyList<ModulePermission> grants = await _permissions
-                    .GetModulePermissionsByModuleIdAsync(moduleId, permissionId, cancellationToken);
+                TabId = tabId,
+                TabName = "Page " + tabId.ToString(CultureInfo.InvariantCulture),
+                PortalId = portalId,
+                IsDeleted = isDeleted,
+            });
 
-                matching.AddRange(grants
-                    .Where(grant => grant.ModuleId == moduleId && grant.PermissionId == permissionId)
-                    .Where(grant => Matches(grant.RoleId, grant.UserId, caller))
-                    .Select(grant => grant.AllowAccess));
-            }
-
-            return Reduce(matching);
-        }
-
-        /// <summary>
-        /// Decides whether a caller holds one key on one page.
-        /// </summary>
-        /// <param name="tabId">The page. Zero is a genuine page identifier.</param>
-        /// <param name="permissionCode">The scope code the key is defined under.</param>
-        /// <param name="permissionKey">The key being tested.</param>
-        /// <param name="caller">The caller.</param>
-        /// <param name="cancellationToken">Token that cancels the reads.</param>
-        /// <returns>A successful outcome carrying the decision.</returns>
-        public async Task<Result<bool>> HasPageGrantAsync(
-            int tabId,
-            string permissionCode,
-            PermissionKey permissionKey,
-            CallerIdentity caller,
-            CancellationToken cancellationToken)
-        {
-            IReadOnlyList<int> permissionIds =
-                await AdmittedPermissionIdsAsync(permissionCode, permissionKey, cancellationToken);
-
-            List<bool> matching = [];
-
-            foreach (int permissionId in permissionIds)
+        /// <summary>Adds a role belonging to a portal.</summary>
+        /// <param name="roleId">The role key, which the schema seeds at zero.</param>
+        /// <param name="roleName">The stored name, matched exactly.</param>
+        /// <param name="portalId">The owning portal.</param>
+        public void WithRole(int roleId, string roleName, int? portalId = PortalId)
+            => Roles.Add(new Role
             {
-                IReadOnlyList<TabPermission> grants = await _permissions
-                    .GetTabPermissionsByTabIdAsync(tabId, permissionId, cancellationToken);
+                RoleId = roleId,
+                RoleName = roleName,
+                PortalId = portalId,
+            });
 
-                matching.AddRange(grants
-                    .Where(grant => grant.TabId == tabId && grant.PermissionId == permissionId)
-                    .Where(grant => Matches(grant.RoleId, grant.UserId, caller))
-                    .Select(grant => grant.AllowAccess));
-            }
-
-            return Reduce(matching);
-        }
-
-        /// <summary>
-        /// Decides whether a caller belongs to any of a set of named roles.
-        /// </summary>
-        /// <param name="grantedRoleNames">The role names recorded against the grant.</param>
-        /// <param name="caller">The caller.</param>
-        /// <param name="allUsersRoleName">The configured name of the all-users pseudo-role.</param>
-        /// <param name="unauthenticatedRoleName">The configured name of the unauthenticated pseudo-role.</param>
-        /// <returns>Whether any name admits the caller.</returns>
-        /// <remarks>
-        /// <para>
-        /// The name-keyed counterpart of <see cref="Matches"/>, ported from the legacy membership loop. It
-        /// is still needed because the schema stores delimited role <em>names</em> in the authorised-roles
-        /// columns, so names remain a real currency alongside the identifiers on the grant tables.
-        /// </para>
-        /// <para>
-        /// MIGRATION: the delimited permission string is gone from every contract. Three legacy members
-        /// flattened a grant set into one value - a leading delimiter, then every granted role name, then
-        /// every granted account in a bracketed pseudo-role form - purely to push one string into one
-        /// server-rendered control property. It was never a data contract, and nothing here parses one:
-        /// this predicate takes an already-separated sequence, so the empty entry a trailing delimiter used
-        /// to produce is handled as data rather than as a parsing quirk.
-        /// </para>
-        /// </remarks>
-        public static bool IsInRoles(
-            IReadOnlyList<string> grantedRoleNames,
-            CallerIdentity caller,
-            string allUsersRoleName,
-            string unauthenticatedRoleName)
-        {
-            foreach (string granted in grantedRoleNames)
-            {
-                // The installation-wide flag was tested first inside the legacy loop, so such an account
-                // matches any entry it reaches - but an empty sequence never reaches one.
-                if (caller.IsSuperUser)
-                {
-                    return true;
-                }
-
-                if (granted.Length == 0)
-                {
-                    continue;
-                }
-
-                if (!caller.IsAuthenticated
-                    && string.Equals(granted, unauthenticatedRoleName, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-
-                if (string.Equals(granted, allUsersRoleName, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-
-                if (caller.RoleNames.Contains(granted, StringComparer.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// Reduces every matching row to one decision.
-        /// </summary>
-        /// <param name="matching">The allow-or-deny flag of each row that matched the caller.</param>
-        /// <returns>A successful outcome carrying the decision.</returns>
-        /// <remarks>
-        /// Deliberately a reduction over the whole set rather than a walk that returns early. That is what
-        /// makes the answer a property of the data instead of a property of the row order, and it is the
-        /// single structural difference from the legacy first-match-wins predicate. An empty set reduces to
-        /// a refusal, which is why no caller - including an installation-wide account - can hold a key that
-        /// was never conferred.
-        /// </remarks>
-        private static Result<bool> Reduce(IReadOnlyList<bool> matching)
-        {
-            bool refused = matching.Any(allowAccess => !allowAccess);
-            bool allowed = matching.Any(allowAccess => allowAccess);
-
-            return Result<bool>.Success(allowed && !refused);
-        }
-
-        /// <summary>
-        /// Decides whether one grant row names this caller.
-        /// </summary>
-        /// <param name="roleId">The role the row names, if any.</param>
-        /// <param name="userId">The account the row names, if any.</param>
-        /// <param name="caller">The caller.</param>
-        /// <returns>Whether the row applies to the caller.</returns>
-        /// <remarks>
-        /// Ported from the legacy membership loop, which tested the installation-wide flag first and then
-        /// admitted the unauthenticated pseudo-role only for an unauthenticated request and the all-users
-        /// pseudo-role unconditionally. Note what is deliberately absent: no arithmetic on the identifier,
-        /// no sign test, and no absolute value. Every branch compares against a named principal or asks the
-        /// caller's own role set, because in this schema zero is an ordinary role and the negatives are
-        /// shipped principals rather than absence markers.
-        /// </remarks>
-        private static bool Matches(int? roleId, int? userId, CallerIdentity caller)
-        {
-            if (userId.HasValue)
-            {
-                return caller.IsSuperUser
-                    || (caller.UserId.HasValue && caller.UserId.Value == userId.Value);
-            }
-
-            if (!roleId.HasValue)
-            {
-                return false;
-            }
-
-            return roleId.Value switch
-            {
-                AllUsersRoleId => true,
-                UnauthenticatedRoleId => !caller.IsAuthenticated,
-                SuperUserRoleId => caller.IsSuperUser,
-                _ => caller.IsSuperUser || caller.RoleIds.Contains(roleId.Value),
-            };
-        }
-
-        /// <summary>
-        /// Reads the catalogue and keeps only the entries that genuinely answer the question asked.
-        /// </summary>
-        /// <param name="permissionCode">The scope code asked about.</param>
-        /// <param name="permissionKey">The key asked about.</param>
-        /// <param name="cancellationToken">Token that cancels the read.</param>
-        /// <returns>The distinct catalogue identifiers whose grants may be consulted.</returns>
-        /// <remarks>
-        /// The scope code is compared with ordinal string equality, matching the exact comparison the
-        /// repository read documents, and the key is compared as an enumeration member so there is nothing
-        /// to case-fold or parse. The key set being closed is what removes the whole class of
-        /// mixed-case and whitespace hazards that a free-text key column would carry.
-        /// </remarks>
-        private async Task<IReadOnlyList<int>> AdmittedPermissionIdsAsync(
-            string permissionCode,
-            PermissionKey permissionKey,
-            CancellationToken cancellationToken)
-        {
-            IReadOnlyList<Permission> catalogue =
-                await _permissions.GetByCodeAndKeyAsync(permissionCode, permissionKey, cancellationToken);
-
-            return catalogue
-                .Where(entry => string.Equals(entry.PermissionCode, permissionCode, StringComparison.Ordinal))
-                .Where(entry => entry.PermissionKey == permissionKey)
-                .Select(entry => entry.PermissionId)
-                .Distinct()
-                .ToList();
-        }
+        /// <summary>Constructs the concrete evaluator over this world.</summary>
+        /// <returns>The evaluator, typed as the contract its callers depend on.</returns>
+        public IPermissionEvaluator Build() => new PermissionEvaluator(
+            Permissions.Object,
+            RoleStore.Object,
+            ModuleStore.Object,
+            TabStore.Object,
+            Options.Create(Portal));
     }
 
     /// <summary>
@@ -3716,6 +4613,43 @@ public class PermissionEvaluatorTests
                         && string.Equals(entry.PermissionCode, code, StringComparison.OrdinalIgnoreCase))
                     .ToList());
 
+            // The three IDENTIFYING catalogue reads. Each is stubbed from the same Catalogue fixture, and
+            // each reproduces the shape of the terminal procedure it realises, measured from the DDL:
+            //   - by identifier: at most one row, so an unknown key yields null.
+            //   - by module: the UNION of the module's own definition's entries with every entry carrying
+            //     the product-wide SYSTEM_MODULE_DEFINITION code (04.05.03).
+            //   - by page: filters on the SYSTEM_TAB code and never references its page argument at all
+            //     (04.05.03), so every page receives the identical catalogue.
+            harness.Permissions
+                .Setup(permissions => permissions.GetByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int permissionId, CancellationToken _) => harness.Catalogue
+                    .FirstOrDefault(entry => entry.PermissionId == permissionId));
+
+            harness.Permissions
+                .Setup(permissions => permissions.GetByModuleIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.Catalogue
+                    .Where(entry => entry.ModuleDefinitionId == EntryModuleDefinitionId
+                        || string.Equals(
+                            entry.PermissionCode,
+                            "SYSTEM_MODULE_DEFINITION",
+                            StringComparison.OrdinalIgnoreCase))
+                    .ToList());
+
+            harness.Permissions
+                .Setup(permissions => permissions.GetByTabIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.Catalogue
+                    .Where(entry => string.Equals(
+                        entry.PermissionCode,
+                        "SYSTEM_TAB",
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList());
+
             harness.Evaluator
                 .Setup(evaluator => evaluator.ListEffectivePortalPermissionKeysAsync(
                     It.IsAny<int>(),
@@ -3724,7 +4658,7 @@ public class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .Callback<int, int?, IReadOnlyCollection<string>, CancellationToken>(
                     (_, _, roleNames, _) => harness.Capture(roleNames))
-                .ReturnsAsync(() => harness.PortalKeys);
+                .ReturnsAsync(() => Result<IReadOnlyList<string>>.Success(harness.PortalKeys));
 
             harness.Evaluator
                 .Setup(evaluator => evaluator.ListEffectiveModulePermissionKeysAsync(
@@ -3734,7 +4668,7 @@ public class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .Callback<int, int?, IReadOnlyCollection<string>, CancellationToken>(
                     (_, _, roleNames, _) => harness.Capture(roleNames))
-                .ReturnsAsync(() => harness.ModuleKeys);
+                .ReturnsAsync(() => Result<IReadOnlyList<string>>.Success(harness.ModuleKeys));
 
             harness.Evaluator
                 .Setup(evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
@@ -3744,7 +4678,7 @@ public class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .Callback<int, int?, IReadOnlyCollection<string>, CancellationToken>(
                     (_, _, roleNames, _) => harness.Capture(roleNames))
-                .ReturnsAsync(() => harness.TabKeys);
+                .ReturnsAsync(() => Result<IReadOnlyList<string>>.Success(harness.TabKeys));
 
             harness.Evaluator
                 .Setup(evaluator => evaluator.HasModulePermissionAsync(
@@ -3755,7 +4689,7 @@ public class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .Callback<int, PermissionKey, int?, IReadOnlyCollection<string>, CancellationToken>(
                     (_, _, _, roleNames, _) => harness.Capture(roleNames))
-                .ReturnsAsync(() => harness.ModuleGrant);
+                .ReturnsAsync(() => Result<bool>.Success(harness.ModuleGrant));
 
             harness.Evaluator
                 .Setup(evaluator => evaluator.HasTabPermissionAsync(
@@ -3771,7 +4705,7 @@ public class PermissionEvaluatorTests
                     PermissionKey key,
                     int? userId,
                     IReadOnlyCollection<string> roleNames,
-                    CancellationToken token) => harness.AnswerPage(tabId, key));
+                    CancellationToken token) => Result<bool>.Success(harness.AnswerPage(tabId, key)));
 
             harness.Permissions
                 .Setup(permissions => permissions.DeleteModulePermissionsByUserIdAsync(
@@ -3810,5 +4744,25 @@ public class PermissionEvaluatorTests
             => permissionKey == PermissionKey.VIEW && PageViewGrants.TryGetValue(tabId, out bool granted)
                 ? granted
                 : TabGrant;
+    }
+
+    /// <summary>
+    /// Unwraps a successful evaluator answer, failing the test when the evaluator reported a failure.
+    /// </summary>
+    /// <typeparam name="TValue">The answer type.</typeparam>
+    /// <param name="result">The outcome the evaluator produced.</param>
+    /// <returns>The answer carried by a successful outcome.</returns>
+    /// <remarks>
+    /// The evaluator reports its answers as outcomes rather than as bare values, so that a caller can tell
+    /// "this caller holds nothing" apart from "the question could not be answered" - two conditions an empty
+    /// list conflates, and conflating them silently denies access for an infrastructure reason. Every fact
+    /// in this suite is about the ANSWER, so each one asserts that the question was answerable and then reads
+    /// the answer; a failure surfaces here as a failing test rather than as an empty list that looks like a
+    /// legitimate refusal.
+    /// </remarks>
+    private static TValue Succeeded<TValue>(Result<TValue> result)
+    {
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        return result.Value;
     }
 }

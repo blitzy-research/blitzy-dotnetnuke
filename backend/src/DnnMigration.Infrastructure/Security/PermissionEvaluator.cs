@@ -1,6 +1,7 @@
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
 using Microsoft.Extensions.Options;
@@ -163,6 +164,20 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// </remarks>
     private const int AnyPermissionId = -1;
 
+    /// <summary>
+    /// Advisory code reported when a module identifier names no module.
+    /// </summary>
+    /// <remarks>
+    /// M-10: deliberately NOT spelled with a token the API edge's status mapper screens for. It travels on
+    /// a successful outcome, so it is never translated into a status code at all, and a spelling the mapper
+    /// recognised would become a trap the moment some future caller propagated it onto a failure.
+    /// </remarks>
+    private const string UnknownModuleCode = "permission.module_unknown";
+
+    /// <summary>Advisory code reported when a page identifier names no page.</summary>
+    /// <remarks>Spelled under the same restriction as <see cref="UnknownModuleCode"/>.</remarks>
+    private const string UnknownTabCode = "permission.tab_unknown";
+
     private readonly IPermissionRepository _permissions;
 
     private readonly IRoleRepository _roles;
@@ -268,7 +283,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// reports for a module is exactly the key the module-scoped member reports for it.
     /// </para>
     /// </remarks>
-    public async Task<IReadOnlyList<string>> ListEffectivePortalPermissionKeysAsync(
+    public async Task<Result<IReadOnlyList<string>>> ListEffectivePortalPermissionKeysAsync(
         int portalId,
         int? userId,
         IReadOnlyCollection<string> roleNames,
@@ -381,7 +396,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             }
         }
 
-        return Names(Survivors(matched));
+        return Result<IReadOnlyList<string>>.Success(Names(Survivors(matched)));
     }
 
     /// <inheritdoc />
@@ -391,7 +406,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// answers; that composition is not performed here, because a module's grant rows are all this member
     /// is asked about.
     /// </remarks>
-    public async Task<IReadOnlyList<string>> ListEffectiveModulePermissionKeysAsync(
+    public async Task<Result<IReadOnlyList<string>>> ListEffectiveModulePermissionKeysAsync(
         int moduleId,
         int? userId,
         IReadOnlyCollection<string> roleNames,
@@ -400,7 +415,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         ArgumentNullException.ThrowIfNull(roleNames);
         cancellationToken.ThrowIfCancellationRequested();
 
-        List<MatchedGrant> matched = await CollectModuleGrantsAsync(
+        List<MatchedGrant>? matched = await CollectModuleGrantsAsync(
                 moduleId,
                 permissionKey: null,
                 userId,
@@ -408,12 +423,14 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return Names(Survivors(matched));
+        return matched is null
+            ? Result<IReadOnlyList<string>>.Success(Array.Empty<string>(), UnknownModule(moduleId))
+            : Result<IReadOnlyList<string>>.Success(Names(Survivors(matched)));
     }
 
     /// <inheritdoc />
     /// <remarks>The page counterpart of <see cref="ListEffectiveModulePermissionKeysAsync"/>.</remarks>
-    public async Task<IReadOnlyList<string>> ListEffectiveTabPermissionKeysAsync(
+    public async Task<Result<IReadOnlyList<string>>> ListEffectiveTabPermissionKeysAsync(
         int tabId,
         int? userId,
         IReadOnlyCollection<string> roleNames,
@@ -422,7 +439,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         ArgumentNullException.ThrowIfNull(roleNames);
         cancellationToken.ThrowIfCancellationRequested();
 
-        List<MatchedGrant> matched = await CollectTabGrantsAsync(
+        List<MatchedGrant>? matched = await CollectTabGrantsAsync(
                 tabId,
                 permissionKey: null,
                 userId,
@@ -430,7 +447,9 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return Names(Survivors(matched));
+        return matched is null
+            ? Result<IReadOnlyList<string>>.Success(Array.Empty<string>(), UnknownTab(tabId))
+            : Result<IReadOnlyList<string>>.Success(Names(Survivors(matched)));
     }
 
     /// <inheritdoc />
@@ -447,7 +466,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// asked whether the key survived.
     /// </para>
     /// </remarks>
-    public async Task<bool> HasModulePermissionAsync(
+    public async Task<Result<bool>> HasModulePermissionAsync(
         int moduleId,
         PermissionKey permissionKey,
         int? userId,
@@ -457,7 +476,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         ArgumentNullException.ThrowIfNull(roleNames);
         cancellationToken.ThrowIfCancellationRequested();
 
-        List<MatchedGrant> matched = await CollectModuleGrantsAsync(
+        List<MatchedGrant>? matched = await CollectModuleGrantsAsync(
                 moduleId,
                 permissionKey,
                 userId,
@@ -465,12 +484,14 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return Holds(matched, permissionKey);
+        return matched is null
+            ? Result<bool>.Success(false, UnknownModule(moduleId))
+            : Result<bool>.Success(Holds(matched, permissionKey));
     }
 
     /// <inheritdoc />
     /// <remarks>The page counterpart of <see cref="HasModulePermissionAsync"/>, with the same rule.</remarks>
-    public async Task<bool> HasTabPermissionAsync(
+    public async Task<Result<bool>> HasTabPermissionAsync(
         int tabId,
         PermissionKey permissionKey,
         int? userId,
@@ -480,7 +501,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         ArgumentNullException.ThrowIfNull(roleNames);
         cancellationToken.ThrowIfCancellationRequested();
 
-        List<MatchedGrant> matched = await CollectTabGrantsAsync(
+        List<MatchedGrant>? matched = await CollectTabGrantsAsync(
                 tabId,
                 permissionKey,
                 userId,
@@ -488,7 +509,9 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return Holds(matched, permissionKey);
+        return matched is null
+            ? Result<bool>.Success(false, UnknownTab(tabId))
+            : Result<bool>.Success(Holds(matched, permissionKey));
     }
 
     /// <summary>Collects the grants on one module that the given caller reaches.</summary>
@@ -507,8 +530,10 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// names the portal that role names must resolve within - which is what
     /// <see cref="BuildPrincipalAsync"/> then reads the roles of - and the definition that bounds its
     /// catalogue. The catalogue is read next and narrowed to the keys being asked about. The grants are
-    /// read last, once per surviving catalogue entry, because that is the shape the repository contract
-    /// offers: a grant reader taking a module and one permission.
+    /// read last, and <strong>in a single read</strong>: the grant reader's permission argument carries a
+    /// documented wildcard, so every grant on the module comes back at once and the narrowing is completed
+    /// by an in-memory lookup against the catalogue already in hand. The number of round trips is therefore
+    /// fixed at four regardless of how many permissions the module's definition declares.
     /// </para>
     /// <para>
     /// An unknown module yields nothing. That is the closed default rather than an error - this member is
@@ -516,7 +541,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// existence is the application service's job, and it does it before asking.
     /// </para>
     /// </remarks>
-    private async Task<List<MatchedGrant>> CollectModuleGrantsAsync(
+    private async Task<List<MatchedGrant>?> CollectModuleGrantsAsync(
         int moduleId,
         PermissionKey? permissionKey,
         int? userId,
@@ -528,7 +553,11 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         Module? module = await _modules.GetByIdAsync(moduleId, cancellationToken).ConfigureAwait(false);
         if (module is null)
         {
-            return matched;
+            // M-10: null and an empty list mean different things to the caller, and the difference is the
+            // reason this method is nullable. Null is "no module carries that identifier"; an empty list is
+            // "the module exists and the caller reached none of its grants". Both deny, so the VERDICT is
+            // the same either way - what differs is only whether the outcome can name the absence.
+            return null;
         }
 
         Principal principal = await BuildPrincipalAsync(module.PortalId, userId, roleNames, cancellationToken)
@@ -538,42 +567,59 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             .GetByModuleIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
-        HashSet<int> visited = new();
+        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(
+            catalogue,
+            permissionKey,
+            entry => IsModuleScoped(entry, module.ModuleDefinitionId));
 
-        foreach (Permission entry in catalogue)
+        if (applicable.Count == 0)
         {
-            if (!Applies(entry, permissionKey) || !IsModuleScoped(entry, module.ModuleDefinitionId))
+            // Nothing in the catalogue can confer the key being asked about, so no grant on this module
+            // could matter. Returning here spends no read at all, which is also what the per-entry loop
+            // this replaced did in the same situation - it simply never entered its body.
+            return matched;
+        }
+
+        // MIGRATION: ONE READ FOR EVERY GRANT ON THE MODULE, then an in-memory join against the catalogue
+        // already in hand. This replaces a read per surviving catalogue entry, which made the round-trip
+        // count a function of how many permissions the caller asked about - and on the unnarrowed path,
+        // where permissionKey is null, that is every permission the module's definition declares. The
+        // wildcard is not a trick: GetModulePermissionsByModuleIdAsync documents -1 in its permission
+        // position as "every permission", measured from the terminal procedure's own
+        // (PermissionID = @PermissionID OR @PermissionID = -1) guard, so this is the member's stated way
+        // of asking the question. The narrowing that the per-entry reads used to perform in the database
+        // is performed by the dictionary lookup below over exactly the same set of identifiers, so the
+        // grants judged are the same grants. Order changes and does not matter: deny precedence is
+        // computed as a set operation and the key names are sorted before they are returned.
+        IReadOnlyList<ModulePermission> grants = await _permissions
+            .GetModulePermissionsByModuleIdAsync(moduleId, AnyPermissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (ModulePermission grant in grants)
+        {
+            // The module check re-asserts the argument just passed to the reader, whose module position
+            // also carries a documented wildcard, so a row answering a wider question than the one asked
+            // is discarded rather than judged.
+            if (grant.ModuleId != moduleId)
             {
                 continue;
             }
 
-            if (entry.PermissionId == AnyPermissionId || !visited.Add(entry.PermissionId))
+            // The permission check is the in-memory half of the join, and it is exactly as strict as the
+            // equality it replaces: a grant survives only when its own PermissionID is one of the entries
+            // that passed the key filter and the scope test above.
+            if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
             {
                 continue;
             }
 
-            IReadOnlyList<ModulePermission> grants = await _permissions
-                .GetModulePermissionsByModuleIdAsync(moduleId, entry.PermissionId, cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (ModulePermission grant in grants)
+            if (Matches(grant.RoleId, grant.UserId, principal))
             {
-                // The two equality checks re-assert the arguments just passed to the reader. Both of that
-                // reader's arguments carry a documented wildcard, so a row that answers a wider question
-                // than the one asked must not be judged as though it carried the requested key.
-                if (grant.ModuleId != moduleId || grant.PermissionId != entry.PermissionId)
-                {
-                    continue;
-                }
-
-                if (Matches(grant.RoleId, grant.UserId, principal))
-                {
-                    matched.Add(new MatchedGrant(
-                        PermissionScope.Module,
-                        grant.ModuleId,
-                        entry.PermissionKey,
-                        grant.AllowAccess));
-                }
+                matched.Add(new MatchedGrant(
+                    PermissionScope.Module,
+                    grant.ModuleId,
+                    key,
+                    grant.AllowAccess));
             }
         }
 
@@ -598,7 +644,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// than a requirement - it is kept so that the two collectors read identically and neither can be
     /// tightened without the other.
     /// </remarks>
-    private async Task<List<MatchedGrant>> CollectTabGrantsAsync(
+    private async Task<List<MatchedGrant>?> CollectTabGrantsAsync(
         int tabId,
         PermissionKey? permissionKey,
         int? userId,
@@ -610,7 +656,8 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
         if (tab is null)
         {
-            return matched;
+            // Null rather than an empty list, for the reason given in CollectModuleGrantsAsync.
+            return null;
         }
 
         Principal principal = await BuildPrincipalAsync(tab.PortalId, userId, roleNames, cancellationToken)
@@ -620,43 +667,101 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             .GetByTabIdAsync(tabId, cancellationToken)
             .ConfigureAwait(false);
 
-        HashSet<int> visited = new();
+        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
 
-        foreach (Permission entry in catalogue)
+        if (applicable.Count == 0)
         {
-            if (!Applies(entry, permissionKey) || !IsTabScoped(entry))
+            return matched;
+        }
+
+        // One read for every grant on the page, then the same in-memory join the module collector performs.
+        // GetTabPermissionsByTabIdAsync documents -1 in its permission position as "every permission",
+        // measured from the terminal procedure's own guard; its page position, unlike the module reader's,
+        // carries no wildcard at all, which is why the page equality below is defensive symmetry rather
+        // than a requirement. It is kept so the two collectors read identically.
+        IReadOnlyList<TabPermission> grants = await _permissions
+            .GetTabPermissionsByTabIdAsync(tabId, AnyPermissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (TabPermission grant in grants)
+        {
+            if (grant.TabId != tabId)
             {
                 continue;
             }
 
-            if (entry.PermissionId == AnyPermissionId || !visited.Add(entry.PermissionId))
+            if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
             {
                 continue;
             }
 
-            IReadOnlyList<TabPermission> grants = await _permissions
-                .GetTabPermissionsByTabIdAsync(tabId, entry.PermissionId, cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (TabPermission grant in grants)
+            if (Matches(grant.RoleId, grant.UserId, principal))
             {
-                if (grant.TabId != tabId || grant.PermissionId != entry.PermissionId)
-                {
-                    continue;
-                }
-
-                if (Matches(grant.RoleId, grant.UserId, principal))
-                {
-                    matched.Add(new MatchedGrant(
-                        PermissionScope.Tab,
-                        grant.TabId,
-                        entry.PermissionKey,
-                        grant.AllowAccess));
-                }
+                matched.Add(new MatchedGrant(
+                    PermissionScope.Tab,
+                    grant.TabId,
+                    key,
+                    grant.AllowAccess));
             }
         }
 
         return matched;
+    }
+
+    /// <summary>
+    /// Reduces a catalogue to the permission identifiers a grant may legitimately be judged against, and
+    /// the key each one confers.
+    /// </summary>
+    /// <param name="catalogue">The entries the catalogue reader returned.</param>
+    /// <param name="permissionKey">
+    /// The single key to narrow to, or <see langword="null"/> to keep every key the catalogue declares.
+    /// </param>
+    /// <param name="inScope">The scope test for the collector calling this - definition-bound or page-wide.</param>
+    /// <returns>The surviving keys, indexed by permission identifier.</returns>
+    /// <remarks>
+    /// <para>
+    /// Extracted so the module and page collectors cannot drift apart on the three rules that decide which
+    /// catalogue entries are eligible, since a divergence here is an authorisation defect rather than an
+    /// inconsistency. The rules are, in order: the entry must carry the key being asked about, it must
+    /// belong to the scope being evaluated, and its identifier must not be the wildcard.
+    /// </para>
+    /// <para>
+    /// The wildcard identifier is excluded because a catalogue row bearing it is not a permission a grant
+    /// can name - the value means "every permission" in a reader's argument, so admitting it as a join key
+    /// would make any grant match any key. It was excluded by the per-entry reads this replaced, for the
+    /// same reason expressed differently: passing it to a grant reader turned that read into a wildcard
+    /// whose rows the subsequent equality check then discarded wholesale.
+    /// </para>
+    /// <para>
+    /// The first entry for a given identifier wins, which preserves the behaviour of the visited-set guard
+    /// this replaced. Duplicate identifiers are reachable: the module catalogue reader deliberately unions
+    /// a definition's own entries with the product-wide module-definition scope, so one entry can arrive
+    /// through both halves.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<int, PermissionKey> NarrowCatalogue(
+        IReadOnlyList<Permission> catalogue,
+        PermissionKey? permissionKey,
+        Func<Permission, bool> inScope)
+    {
+        Dictionary<int, PermissionKey> applicable = new(catalogue.Count);
+
+        foreach (Permission entry in catalogue)
+        {
+            if (!Applies(entry, permissionKey) || !inScope(entry))
+            {
+                continue;
+            }
+
+            if (entry.PermissionId == AnyPermissionId)
+            {
+                continue;
+            }
+
+            applicable.TryAdd(entry.PermissionId, entry.PermissionKey);
+        }
+
+        return applicable;
     }
 
     /// <summary>Reads the catalogue entry behind each distinct permission a set of grants names.</summary>
@@ -664,10 +769,21 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The entries that exist, indexed by permission identifier.</returns>
     /// <remarks>
-    /// One read per <em>distinct</em> permission, never one per grant: a tenant records the same handful of
-    /// permissions across all of its content, so resolving them per row would multiply the reads by the
-    /// size of the portal for no additional information. An identifier naming no entry is simply absent
-    /// from the result, and the caller treats that as conferring nothing.
+    /// <para>
+    /// ONE READ FOR THE WHOLE SET. The distinct identifiers are collected first - a tenant records the same
+    /// handful of permissions across all of its content, so resolving per grant row would multiply the work
+    /// by the size of the portal for no additional information - and then resolved in a single set-wise
+    /// read. MIGRATION: an earlier revision issued one read per distinct identifier, which on this path
+    /// made the round-trip count a function of how many distinct permissions the tenant uses; the set-wise
+    /// catalogue reader was added to <c>IPermissionRepository</c> precisely so the batching lives where the
+    /// query is composed rather than being simulated in a loop here.
+    /// </para>
+    /// <para>
+    /// An identifier naming no entry is simply absent from the result, and the caller treats that as
+    /// conferring nothing - the fail-closed reading of a broken row. The set-wise reader makes the same
+    /// guarantee, omitting an unmatched identifier rather than returning a null element, so this indexing
+    /// is safe without a per-element null test.
+    /// </para>
     /// </remarks>
     private async Task<Dictionary<int, Permission>> ReadCatalogueAsync(
         IReadOnlyCollection<ReachedGrant> reached,
@@ -679,17 +795,14 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             permissionIds.Add(grant.PermissionId);
         }
 
-        Dictionary<int, Permission> catalogue = new(permissionIds.Count);
-        foreach (int permissionId in permissionIds)
-        {
-            Permission? entry = await _permissions
-                .GetByIdAsync(permissionId, cancellationToken)
-                .ConfigureAwait(false);
+        IReadOnlyList<Permission> entries = await _permissions
+            .GetByIdsAsync(permissionIds, cancellationToken)
+            .ConfigureAwait(false);
 
-            if (entry is not null)
-            {
-                catalogue[permissionId] = entry;
-            }
+        Dictionary<int, Permission> catalogue = new(entries.Count);
+        foreach (Permission entry in entries)
+        {
+            catalogue[entry.PermissionId] = entry;
         }
 
         return catalogue;
@@ -886,6 +999,36 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         }
 
         return held;
+    }
+
+    /// <summary>Builds the advisory reason for a module identifier that names no module.</summary>
+    /// <param name="moduleId">The identifier the caller supplied.</param>
+    /// <returns>The advisory reason accompanying the closed-default verdict.</returns>
+    /// <remarks>
+    /// M-10: carried on a SUCCESSFUL outcome, never a failed one. The verdict for a module that does not
+    /// exist is the same closed default a denial produces - the caller holds nothing - and turning it into
+    /// a failure would convert "you may not" into "something went wrong" for every anonymous caller who
+    /// followed a stale link. The reason exists so a caller that needs to tell the two apart can, without
+    /// reading the module a second time to find out which answer it received.
+    /// </remarks>
+    private static ResultReason UnknownModule(int moduleId)
+    {
+        return new ResultReason(
+            UnknownModuleCode,
+            FormattableString.Invariant(
+                $"No module carries identifier {moduleId}, so the caller holds nothing on it."));
+    }
+
+    /// <summary>Builds the advisory reason for a page identifier that names no page.</summary>
+    /// <param name="tabId">The identifier the caller supplied.</param>
+    /// <returns>The advisory reason accompanying the closed-default verdict.</returns>
+    /// <remarks>The page counterpart of <see cref="UnknownModule"/>, carried the same way.</remarks>
+    private static ResultReason UnknownTab(int tabId)
+    {
+        return new ResultReason(
+            UnknownTabCode,
+            FormattableString.Invariant(
+                $"No page carries identifier {tabId}, so the caller holds nothing on it."));
     }
 
     /// <summary>Decides whether reached grants confer one particular key.</summary>

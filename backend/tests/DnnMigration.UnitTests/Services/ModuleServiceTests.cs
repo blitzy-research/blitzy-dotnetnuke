@@ -105,14 +105,51 @@ public class ModuleServiceTests
     private const string WideEffectCode = "module.update.wide_effect";
 
     /// <summary>
-    /// The module contract exposes ten asynchronous operations and nothing else.
+    /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the module
+    /// whose content is being replaced. The token <c>forbidden</c> is what makes the shared status translator
+    /// answer <c>403</c> rather than <c>400</c>, so the spelling is part of the contract.
     /// </summary>
+    private const string EditForbiddenCode = "module.edit_forbidden";
+
+    /// <summary>
+    /// The module contract exposes exactly these twelve asynchronous operations and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The inventory is named rather than merely counted. A count alone fails just as loudly when a member
+    /// is added correctly as when one is added by mistake, and it tells the reader neither which member
+    /// arrived nor which one it displaced - so the first thing anyone did with the failure was go and
+    /// look. Naming them makes the diff itself the explanation.
+    /// </para>
+    /// <para>
+    /// The two catalogue reads at the end of the list are deliberate additions: the legacy
+    /// <c>DesktopModuleController</c> and <c>ModuleDefinitionController</c> answered a definition by its
+    /// own identifier and by the package that declares it, and neither question had an expression on this
+    /// contract before. If this assertion fails, the correct response is to update the list to match the
+    /// contract - never to relax the assertion.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public void ModuleContract_OffersExactlyTenOperations()
+    public void ModuleContract_OffersExactlyTwelveOperations()
     {
         MethodInfo[] members = typeof(IModuleService).GetMethods();
 
-        members.Should().HaveCount(10);
+        members.Select(member => member.Name).Should().BeEquivalentTo(
+        [
+            "ListModulesAsync",
+            "GetModuleAsync",
+            "CreateModuleAsync",
+            "UpdateModuleAsync",
+            "DeleteModuleAsync",
+            "GetModuleSettingsAsync",
+            "UpdateModuleSettingsAsync",
+            "ExportModuleAsync",
+            "ImportModuleAsync",
+            "ListModuleDefinitionsAsync",
+            "GetModuleDefinitionAsync",
+            "ListDesktopModuleDefinitionsAsync",
+        ]);
+
         foreach (MethodInfo member in members)
         {
             member.Name.Should().EndWith("Async");
@@ -135,44 +172,49 @@ public class ModuleServiceTests
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var cache = new Mock<ICacheService>().Object;
         var currentUser = new Mock<ICurrentUser>().Object;
+        var permissions = new Mock<IPermissionService>().Object;
         var controllers = new Mock<IModuleBusinessControllerFactory>().Object;
         var caching = new CachingOptions();
 
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new ModuleService(null!, definitions, tabs, portals, unitOfWork, cache, currentUser, controllers, caching);
+            _ = new ModuleService(null!, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new ModuleService(modules, null!, tabs, portals, unitOfWork, cache, currentUser, controllers, caching);
+            _ = new ModuleService(modules, null!, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new ModuleService(modules, definitions, null!, portals, unitOfWork, cache, currentUser, controllers, caching);
+            _ = new ModuleService(modules, definitions, null!, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, null!, unitOfWork, cache, currentUser, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, null!, unitOfWork, cache, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, null!, cache, currentUser, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, null!, cache, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, null!, currentUser, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, null!, currentUser, permissions, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, null!, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, null!, permissions, controllers, caching);
+        });
+        Assert.Throws<ArgumentNullException>("permissions", () =>
+        {
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, null!, controllers, caching);
         });
         Assert.Throws<ArgumentNullException>("businessControllers", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, null!, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, controllers, null!);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, null!);
         });
     }
 
@@ -226,6 +268,123 @@ public class ModuleServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RequestInvalidCode);
         outcome.Reason!.Message.Should().Be(expectedMessage);
+    }
+
+    /// <summary>
+    /// An ordering this listing cannot honour is refused before any read is spent.
+    /// </summary>
+    /// <param name="field">A field name a caller might reach for.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The shared request validator applies the union of every collection's sortable set, so each of
+    /// these names passes it and would reach this listing. Silently discarding it is the defect being
+    /// closed. Each name below is unhonourable HERE for a measured reason: a placement position belongs to
+    /// the pane rather than to the module and carries the append sentinel, a derived display title does
+    /// not exist until after the ordering has run, and the remainder belong to other collections. The read
+    /// is asserted never to happen, because a refusal issued after the read would still have spent the
+    /// query.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this listing is NOT orderless, and an earlier revision of this fact said it was. The
+    /// ordering is applied to the modules before the page window is taken, so it orders the collection
+    /// rather than one arbitrary page; the companion fact below asserts the accepted half, so the admitted
+    /// set and the ordering arms cannot drift apart in either direction.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("ModuleOrder")]
+    [InlineData("DisplayTitle")]
+    [InlineData("PortalName")]
+    [InlineData("RoleName")]
+    [InlineData("DisplayName")]
+    public async Task ListModules_RefusesEveryNamedOrdering(string field)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<ModuleListItemDto>> outcome = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { SortBy = field },
+            null,
+            false,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(RequestInvalidCode);
+        outcome.Reason!.Message.Should().Be($"Modules cannot be ordered by '{field}'.");
+        harness.Portals.Verify(
+            p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Modules.Verify(
+            m => m.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Every ordering this listing declares is accepted and changes the order of the rows returned.
+    /// </summary>
+    /// <param name="field">A name the listing admits and has an ordering arm for.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The companion of the refusal above. Asserting acceptance alone would not distinguish an ordering
+    /// that is applied from one that is admitted and ignored - which is the defect this pair exists to
+    /// prevent - so the ascending and descending answers are compared to each other: an ordering that was
+    /// discarded would return the two in the same order.
+    /// </remarks>
+    [Theory]
+    [InlineData("ModuleId")]
+    [InlineData("ModuleTitle")]
+    [InlineData("IsDeleted")]
+    [InlineData("StartDate")]
+    [InlineData("EndDate")]
+    public async Task ListModules_AcceptsEveryOrderingItDeclares(string field)
+    {
+        Harness ascendingWorld = Harness.Ready();
+        Result<PagedResult<ModuleListItemDto>> ascending = await ascendingWorld.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { SortBy = field, SortDir = SortDirection.Ascending },
+            null,
+            false,
+            CancellationToken.None);
+
+        Harness descendingWorld = Harness.Ready();
+        Result<PagedResult<ModuleListItemDto>> descending = await descendingWorld.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { SortBy = field, SortDir = SortDirection.Descending },
+            null,
+            false,
+            CancellationToken.None);
+
+        ascending.IsSuccess.Should().BeTrue();
+        descending.IsSuccess.Should().BeTrue();
+        descending.Value.Items.Select(row => row.ModuleId)
+            .Should().BeEquivalentTo(
+                ascending.Value.Items.Select(row => row.ModuleId),
+                "the direction selects an order, it does not change which modules qualify");
+    }
+
+    /// <summary>
+    /// A request that names no ordering is answered normally, so the refusal above is scoped to an
+    /// explicit preference and does not make the listing unusable.
+    /// </summary>
+    /// <param name="sortBy">The absent-or-blank sort field to submit.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ListModules_AcceptsARequestThatNamesNoOrdering(string? sortBy)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<ModuleListItemDto>> outcome = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { SortBy = sortBy },
+            null,
+            false,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
     }
 
     /// <summary>
@@ -863,6 +1022,113 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// A caller holding no edit grant on the target page is refused, and nothing is written.
+    /// </summary>
+    /// <remarks>
+    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR CREATION. This member verified only that the page belonged
+    /// to the tenant and never asked whether the caller could edit it, while its own commentary asserted that it
+    /// did - so any authenticated caller could place a module on any page of any tenant. The check cannot live in
+    /// a route-reading policy because the target page arrives in the request BODY.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_RefusesACallerWithoutTheEditGrantOnThePage()
+    {
+        Harness harness = Harness.Ready();
+        harness.GrantEdit(granted: false);
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(EditForbiddenCode);
+        outcome.Reason!.Message.Should()
+            .Be($"The caller may not place a module on page {TabId} in portal {PortalId}.");
+        harness.AddedModules.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The grant is asked for against the PAGE THE REQUEST NAMES and for the EDIT key, not against some other
+    /// page or a weaker key. A check that consulted the wrong scope would pass this suite's other facts while
+    /// authorising nothing in particular.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_AsksForTheEditGrantOnTheRequestedPage()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        harness.Permissions.Verify(
+            permissions => permissions.HasTabPermissionAsync(
+                PortalId,
+                It.IsAny<int?>(),
+                TabId,
+                PermissionKey.EDIT,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A page that does not exist and a page the caller may not edit are refused for DIFFERENT reasons, and the
+    /// tenant test comes first. That ordering is deliberate: the tenant test is what keeps the permission
+    /// question from being asked about another tenant's page at all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_TestsTenantOwnershipBeforeThePermission()
+    {
+        Harness harness = Harness.Ready();
+        harness.GrantEdit(granted: false);
+        harness.TabsById[TabId] = new Tab { TabId = TabId, PortalId = OtherPortalId, TabName = "Foreign" };
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(TabNotFoundCode);
+        harness.Permissions.Verify(
+            permissions => permissions.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A permission evaluator that FAILS - rather than answering no - is treated as a refusal. Treating a failed
+    /// evaluation as a grant is the classic fail-open defect, and nothing about a failed read tells this member
+    /// that the caller was entitled.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateModule_TreatsAFailedPermissionEvaluationAsARefusal()
+    {
+        Harness harness = Harness.Ready();
+        harness.Permissions
+            .Setup(permissions => permissions.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Failure("permission.key_invalid", "Permission key 0 is not defined."));
+
+        Result<ModuleDetailDto> outcome = await harness.Service
+            .CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(EditForbiddenCode);
+        harness.AddedModules.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// The submitted shape reaches both rows, with the tenant taken from the route.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -929,12 +1195,22 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A negative cache lifetime is clamped to nothing rather than stored, because the column records
-    /// seconds and a negative interval has no meaning.
+    /// A negative cache lifetime is stored exactly as submitted rather than clamped, because the legacy
+    /// screen stored whatever parsed and nothing in the schema forbids it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this test previously asserted the opposite, and the assertion was the defect rather than
+    /// the record of a decision. <c>valCacheTime</c> (<c>modulesettings.ascx</c> L172) declared
+    /// <c>Operator="DataTypeCheck" Type="Integer"</c> and nothing further, and the code-behind stored the
+    /// parsed value with no comparison (<c>ModuleSettings.ascx.vb</c> L349-L350), so a negative period was
+    /// an accepted legacy submission. The column is a plain <c>int NOT NULL</c> with no check constraint
+    /// anywhere in the eighty-eight-script chain. Clamping accepted the caller's value and then silently
+    /// rewrote it, so the record read back was not the record submitted - which is a worse outcome than
+    /// either storing it or refusing it, because the caller cannot detect a substitution.
+    /// </remarks>
     [Fact]
-    public async Task CreateModule_ClampsANegativeCacheTime()
+    public async Task CreateModule_StoresANegativeCacheTimeVerbatim()
     {
         Harness harness = Harness.Ready();
         CreateModuleRequest request = ValidCreateRequest();
@@ -942,7 +1218,7 @@ public class ModuleServiceTests
 
         await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
 
-        harness.AddedModules.Single().TabModules.Single().CacheTime.Should().Be(0);
+        harness.AddedModules.Single().TabModules.Single().CacheTime.Should().Be(-60);
     }
 
     /// <summary>
@@ -1018,6 +1294,131 @@ public class ModuleServiceTests
         Module stored = harness.AddedModules.Single();
         stored.TabModules.Select(placement => placement.TabId).Should().NotContain(AdminTabId);
         stored.TabModules.Select(placement => placement.TabId).Should().NotContain(AdminChildTabId);
+    }
+
+    /// <summary>
+    /// The append instruction never reaches a column, on any path that writes one.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the fact the defect would have failed, and it is stated over EVERY placement rather than
+    /// over the addressed one because the every-page fan-out built each of its placements from the same
+    /// unresolved request. The harm is specific: stored positions are non-negative, so a persisted -1
+    /// sorts an appended module ahead of every deliberately positioned one - the exact opposite of the
+    /// bottom of the pane the caller asked for.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_NeverStoresTheAppendInstruction()
+    {
+        Harness harness = Harness.Ready();
+        CreateModuleRequest request = ValidCreateRequest();
+        request.AllTabs = true;
+
+        request.ModuleOrder.Should().Be(
+            -1,
+            "the contract initialises the position to the append instruction, so a request that says "
+            + "nothing about position is exactly the request this fact is about");
+
+        await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
+
+        harness.AddedModules.Single().TabModules
+            .Select(placement => placement.ModuleOrder)
+            .Should().OnlyContain(order => order >= 0);
+    }
+
+    /// <summary>
+    /// Appending to a pane that already holds a module steps past the highest position in it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The step of two is measured rather than chosen: the legacy resolver added exactly two
+    /// (<c>ModuleController.vb</c>:L1170) so that an appended position stays on the odd sequence the
+    /// renumbering pass produces, leaving the even numbers free for an insertion between two modules.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WhenAppendingToAnOccupiedPane_StepsPastTheHighestPosition()
+    {
+        Harness harness = Harness.Ready();
+
+        harness.PlacementsByModuleId[ModuleId].Single().ModuleOrder.Should().Be(
+            1,
+            "the seeded page already holds one module at the first position, which is what makes this an "
+            + "append onto an occupied pane rather than onto an empty one");
+
+        await harness.Service.CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(3);
+    }
+
+    /// <summary>
+    /// Appending to an empty pane yields the first position.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// One is the legacy arithmetic rather than a special case: the legacy loop left its variable at the
+    /// incoming -1 when the pane read returned no rows and then added the step, so -1 + 2 = 1. A pane
+    /// therefore never starts at zero, and zero stays available as a position a caller can name.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WhenAppendingToAnEmptyPane_StoresTheFirstPosition()
+    {
+        Harness harness = Harness.Ready();
+        harness.PlacementsByModuleId[ModuleId].Clear();
+
+        await harness.Service.CreateModuleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(1);
+    }
+
+    /// <summary>
+    /// A named position is stored exactly as submitted, including zero.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Zero is the case worth pinning. It is a legitimate position rather than an absent value, and it is
+    /// also what a naive "treat anything without a real value as append" rule would have swallowed, so the
+    /// resolver has to distinguish the one submitted number that means append from every other one.
+    /// </remarks>
+    /// <param name="submitted">The position the caller names.</param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    public async Task CreateModule_WhenNamingAPosition_StoresItUnchanged(int submitted)
+    {
+        Harness harness = Harness.Ready();
+        CreateModuleRequest request = ValidCreateRequest();
+        request.ModuleOrder = submitted;
+
+        await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
+
+        harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(submitted);
+    }
+
+    /// <summary>
+    /// Appending onto every page appends to each page's own pane rather than reusing one position.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy resolver was keyed on the page AND the pane
+    /// (<c>GetTabModuleOrder(TabId, PaneName)</c>), so appending to one pane says nothing about where the
+    /// bottom of another page's pane is. The seeded world makes the distinction visible without any
+    /// arrangement: the addressed page already holds a module at the first position and the second page
+    /// holds none, so the two placements must land at different positions. Copying one computed position
+    /// across both pages would make them equal and this fact would fail.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WhenAppendingEverywhere_AppendsToEachPagesOwnPane()
+    {
+        Harness harness = Harness.Ready();
+        CreateModuleRequest request = ValidCreateRequest();
+        request.AllTabs = true;
+
+        await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
+
+        IReadOnlyList<TabModule> placements = harness.AddedModules.Single().TabModules.ToList();
+
+        placements.Single(placement => placement.TabId == TabId).ModuleOrder.Should().Be(3);
+        placements.Single(placement => placement.TabId == SecondTabId).ModuleOrder.Should().Be(1);
     }
 
     /// <summary>
@@ -1183,8 +1584,8 @@ public class ModuleServiceTests
     /// rather than patches and zero is a real value rather than an absent one.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, and an earlier revision of this test asserted the
-    /// opposite. The legacy save read the cache-time box and stored a parsed integer when it was non-empty
+    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, which is the opposite of the intuitive
+    /// expectation. The legacy save read the cache-time box and stored a parsed integer when it was non-empty
     /// and LITERALLY ZERO when it was empty, so a blank field disabled caching rather than preserving the
     /// stored lifetime. CacheTime is consequently a non-nullable integer with no "unspecified" state to
     /// exempt: treating zero as unset would silently enable caching on a module the caller asked not to
@@ -1204,6 +1605,31 @@ public class ModuleServiceTests
         await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
 
         placement.CacheTime.Should().Be(0);
+    }
+
+    /// <summary>
+    /// An update carrying a negative cache lifetime stores it exactly as submitted, matching the creation
+    /// path and the legacy screen.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The update counterpart of the creation assertion, present because the clamp that was removed existed
+    /// on BOTH projections and a fix applied to one of them would leave the two paths disagreeing about the
+    /// same column.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_StoresANegativeCacheTimeVerbatim()
+    {
+        Harness harness = Harness.Ready();
+        TabModule placement = harness.LookupModule!.TabModules.Single();
+        placement.CacheTime = 900;
+
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.CacheTime = -30;
+
+        await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        placement.CacheTime.Should().Be(-30);
     }
 
     /// <summary>
@@ -1243,6 +1669,135 @@ public class ModuleServiceTests
         outcome.Reason!.Message.Should().Be("placed on 1 further page(s).");
         harness.AddedPlacements.Should().ContainSingle().Which.TabId.Should().Be(SecondTabId);
         harness.InvalidatedTabIds.Should().BeEquivalentTo(new[] { TabId, SecondTabId });
+    }
+
+    /// <summary>
+    /// An update that appends resolves against the placement's own pane and never stores the instruction.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The update contract initialises the position to the append instruction just as the create contract
+    /// does, which under full-replacement semantics means an update that says nothing about position MOVES
+    /// the module to the bottom of its pane. That is the documented contract; what must not happen is the
+    /// instruction being written as though it were a position.
+    /// </para>
+    /// <para>
+    /// The module being moved is the only one in its pane here, so the answer is the first position. That
+    /// is the LEGACY answer and not an accident of ordering: the legacy update wrote the row carrying -1
+    /// and only then called the resolver, whose pane read selected from the placement table and therefore
+    /// included the row it had just written. With nothing else in the pane the greatest position it could
+    /// see was that -1, and -1 + 2 = 1. Resolving before the write reaches the same number by seeding the
+    /// running maximum with the same sentinel, so a module moved to the bottom of a pane it already has to
+    /// itself stays where it is rather than drifting upward by the step on every save.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenAppending_ResolvesAgainstThePlacementsOwnPane()
+    {
+        Harness harness = Harness.Ready();
+        UpdateModuleRequest request = ValidUpdateRequest();
+
+        request.ModuleOrder.Should().Be(-1, "an update that omits the position asks to append");
+
+        Result<ModuleDetailDto?> outcome = await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.PlacementsById[TabModuleId]!.ModuleOrder.Should().Be(1);
+    }
+
+    /// <summary>
+    /// An update that appends steps past the other modules sharing the pane.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the case that distinguishes a resolver from a constant. With a neighbour occupying the pane
+    /// at a higher position, the bottom of the pane is past that neighbour rather than at the first
+    /// position, and the module moves. An implementation that always answered one - which the single-module
+    /// fact above cannot tell apart from a correct one - fails here.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenAppendingBelowANeighbour_StepsPastIt()
+    {
+        const int neighbourModuleId = 12;
+        const int neighbourTabModuleId = 99;
+        const int neighbourPosition = 6;
+
+        Harness harness = Harness.Ready();
+        harness.PlacementsByModuleId[neighbourModuleId] =
+        [
+            new TabModule
+            {
+                TabModuleId = neighbourTabModuleId,
+                TabId = TabId,
+                ModuleId = neighbourModuleId,
+                PaneName = DefaultPaneName,
+                ModuleOrder = neighbourPosition,
+                CacheTime = 0,
+                Visibility = ModuleVisibility.Maximized,
+                DisplayTitle = true,
+            },
+        ];
+
+        await harness.Service
+            .UpdateModuleAsync(PortalId, ModuleId, ValidUpdateRequest(), CancellationToken.None);
+
+        harness.PlacementsById[TabModuleId]!.ModuleOrder.Should().Be(neighbourPosition + 2);
+    }
+
+    /// <summary>
+    /// An update that both appends and asks for every page appends on each page's own pane.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the path on which the legacy application was itself inconsistent. Its copy-to-another-page
+    /// routine passed the append instruction to the insert under the comment "Add a copy of the module to
+    /// the bottom of the Pane for the new Tab" and then, unlike the add and update paths, never called the
+    /// resolver - so the instruction stayed in the row. The stated intent is honoured here and the
+    /// omission is not reproduced, which is why the new placement carries the first position of an empty
+    /// pane rather than either the instruction or the addressed page's position.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenAppendingEverywhere_AppendsToEachPagesOwnPane()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupModule!.AllTabs = false;
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.AllTabs = true;
+
+        await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        TabModule added = harness.AddedPlacements.Should().ContainSingle().Which;
+        added.TabId.Should().Be(SecondTabId);
+        added.ModuleOrder.Should().Be(
+            1,
+            "the second page's content pane is empty, so the bottom of it is the first position - not the "
+            + "position computed for the addressed page, and certainly not the instruction");
+    }
+
+    /// <summary>
+    /// An update that names a position copies that position onto every new placement.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Stated beside the appending case so the two rules are visible together. When the caller names a
+    /// position there is nothing to resolve and the template's position is what copying a template means,
+    /// so this fact pins that the append handling did not quietly change the named-position behaviour.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_WhenNamingAPositionEverywhere_CopiesThatPosition()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupModule!.AllTabs = false;
+        UpdateModuleRequest request = ValidUpdateRequest();
+        request.AllTabs = true;
+        request.ModuleOrder = 8;
+
+        await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
+
+        harness.PlacementsById[TabModuleId]!.ModuleOrder.Should().Be(8);
+        harness.AddedPlacements.Should().ContainSingle().Which.ModuleOrder.Should().Be(8);
     }
 
     /// <summary>
@@ -1694,19 +2249,111 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Storing settings requires both maps, even when one of them is to be left empty.
+    /// Storing settings requires both maps, even when one of them is to be left empty, and an absent map
+    /// is REFUSED rather than thrown on.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This test previously asserted an argument-null throw, and the assertion was changed because the
+    /// behaviour it pinned was the defect. Both members are non-nullable reference types carrying an
+    /// initialiser on the request contract, which makes null look unreachable - but an initialiser only
+    /// runs when the deserialiser does not assign, and a body carrying an explicit null assigns over it.
+    /// Throwing therefore turned a syntactically valid request body into a server fault. The refusal is
+    /// asserted rather than merely the absence of a throw, so a future change that silently accepted an
+    /// absent map and wrote nothing would still fail here.
+    /// </remarks>
     [Fact]
-    public async Task UpdateModuleSettings_RequiresBothMaps()
+    public async Task UpdateModuleSettings_RefusesAnAbsentMap()
     {
         Harness harness = Harness.Ready();
         var empty = new Dictionary<string, string>();
 
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => harness.Service.UpdateModuleSettingsAsync(PortalId, ModuleId, null, null!, empty, CancellationToken.None));
-        await Assert.ThrowsAsync<ArgumentNullException>(
-            () => harness.Service.UpdateModuleSettingsAsync(PortalId, ModuleId, null, empty, null!, CancellationToken.None));
+        Result missingModuleMap = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId, ModuleId, null, null!, empty, CancellationToken.None);
+
+        Result missingPlacementMap = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId, ModuleId, null, empty, null!, CancellationToken.None);
+
+        missingModuleMap.IsSuccess.Should().BeFalse("an absent module settings map cannot be stored");
+        missingModuleMap.Error!.Code.Should().Be("module.setting_invalid");
+
+        missingPlacementMap.IsSuccess.Should().BeFalse("an absent placement settings map cannot be stored");
+        missingPlacementMap.Error!.Code.Should().Be("module.setting_invalid");
+    }
+
+    /// <summary>
+    /// A settings submission carrying more entries than either scope permits is refused, and nothing is
+    /// written.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The per-entry bounds on a setting's name and value were already enforced, but nothing bounded the
+    /// NUMBER of entries, and the two limits multiply: a body well inside the request size limit could
+    /// carry tens of thousands of short settings, each becoming a tracked entity and a row in one
+    /// transaction. The count is asserted one past the bound rather than at some arbitrary large number,
+    /// so the test pins the boundary itself.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModuleSettings_RefusesMoreEntriesThanAScopePermits()
+    {
+        const int perScopeMaximum = 250;
+        Harness harness = Harness.Ready();
+
+        var oversized = new Dictionary<string, string>();
+        for (int index = 0; index <= perScopeMaximum; index++)
+        {
+            oversized[FormattableString.Invariant($"setting{index}")] = "value";
+        }
+
+        Result outcome = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId,
+            ModuleId,
+            null,
+            oversized,
+            new Dictionary<string, string>(),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse("a scope carrying more than the permitted entries is refused");
+        outcome.Error!.Code.Should().Be("module.setting_invalid");
+    }
+
+    /// <summary>
+    /// A settings submission whose two scopes are individually permissible but jointly excessive is
+    /// refused.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the case the per-scope bound alone does not catch, and it is the one that matters for the
+    /// size of the single transaction the service opens. Both maps below sit inside the per-scope bound of
+    /// 250 and exceed the aggregate bound of 400 between them, so a pass here would mean the aggregate
+    /// rule had been lost.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModuleSettings_RefusesMoreEntriesThanTheTwoScopesPermitTogether()
+    {
+        Harness harness = Harness.Ready();
+
+        static Dictionary<string, string> Build(string prefix, int count)
+        {
+            var map = new Dictionary<string, string>();
+            for (int index = 0; index < count; index++)
+            {
+                map[FormattableString.Invariant($"{prefix}{index}")] = "value";
+            }
+
+            return map;
+        }
+
+        Result outcome = await harness.Service.UpdateModuleSettingsAsync(
+            PortalId,
+            ModuleId,
+            null,
+            Build("module", 220),
+            Build("placement", 220),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse("the two scopes together exceed the aggregate bound");
+        outcome.Error!.Code.Should().Be("module.setting_invalid");
     }
 
     /// <summary>
@@ -1749,8 +2396,8 @@ public class ModuleServiceTests
     // table's baseline column was nvarchar(256) (01.00.00 line 353), but 01.00.08 lines 6248-6286
     // rebuild the table with SettingValue nvarchar(2000) NOT NULL (line 6256) and nothing narrows it
     // again; the terminal AddModuleSetting and UpdateModuleSetting procedures declare
-    // @SettingValue nvarchar(2000) (01.00.08 line 6295, 02.00.00 lines 4147 and 4171). An earlier
-    // revision of this row expected 256 and therefore pinned a bound that refused values the legacy
+    // @SettingValue nvarchar(2000) (01.00.08 line 6295, 02.00.00 lines 4147 and 4171). Expecting 256
+    // here would pin a bound that refuses values the legacy
     // application accepted, which Minimal Change Clause item 3 forbids.
     [InlineData("module", "long-value", "The value of the module setting \"editor\" exceeds 2000 characters.")]
     [InlineData("placement", "long-value", "The value of the placement setting \"editor\" exceeds 2000 characters.")]
@@ -2103,6 +2750,128 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// A definition the portal may instantiate is returned by its own identifier.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Restores the legacy per-definition read that <c>ModuleDefinitionController</c> offered. The legacy
+    /// member answered from the whole installation; this one answers within a portal, which is the
+    /// deliberate narrowing recorded on the contract.
+    /// </remarks>
+    [Fact]
+    public async Task GetModuleDefinition_ReturnsADefinitionThePortalMayInstantiate()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<ModuleDefinitionDto?> outcome = await harness.Service
+            .GetModuleDefinitionAsync(PortalId, ModuleDefinitionId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.ModuleDefId.Should().Be(ModuleDefinitionId);
+        outcome.Value.FriendlyName.Should().Be(FriendlyName);
+    }
+
+    /// <summary>
+    /// A definition identifier that names nothing is reported as absent rather than as a failure.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A successful outcome carrying no value is how this solution says "asked, and it is not there", which
+    /// the shared translator answers as 404. It is a different answer from a failed outcome and the two are
+    /// never collapsed (AAP Rule T7).
+    /// </remarks>
+    [Fact]
+    public async Task GetModuleDefinition_ReportsAnUnknownDefinitionAsAbsent()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<ModuleDefinitionDto?> outcome = await harness.Service
+            .GetModuleDefinitionAsync(PortalId, 987654, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue("an unknown identifier is absence, not a failure");
+        outcome.Value.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A definition the portal is not entitled to instantiate is reported as absent, not refused.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the load-bearing property of answering these reads by narrowing the portal's catalogue
+    /// rather than by reading the definition table directly by key. The catalogue read is portal-scoped and
+    /// so applies the entitlement rule; a direct read by key would apply nothing at all, and
+    /// re-implementing the rule beside it would create a second copy that would eventually disagree with
+    /// the first.
+    /// </para>
+    /// <para>
+    /// Reporting ABSENCE rather than refusal is also deliberate: a caller must not be able to tell "no such
+    /// definition" from "not yours", because the difference between those two answers is itself a fact
+    /// about another tenant's installation.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetModuleDefinition_ReportsADefinitionOutsideTheEntitlementAsAbsent()
+    {
+        Harness harness = Harness.Ready();
+
+        // The portal-scoped catalogue read is what applies the entitlement rule, so a definition the portal
+        // is not entitled to simply does not appear in what that read returns.
+        harness.DefinitionCatalogue.Clear();
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> catalogue = await harness.Service
+            .ListModuleDefinitionsAsync(PortalId, CancellationToken.None);
+        catalogue.Value.Should().BeEmpty("the portal-scoped read did not offer it");
+
+        Result<ModuleDefinitionDto?> outcome = await harness.Service
+            .GetModuleDefinitionAsync(PortalId, ModuleDefinitionId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull(
+            "a definition the portal cannot instantiate is indistinguishable from one that does not exist");
+    }
+
+    /// <summary>
+    /// The definitions of one package are returned, and only that package's.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ReturnsOnlyThatPackagesDefinitions()
+    {
+        Harness harness = Harness.Ready();
+        harness.DefinitionCatalogue.Clear();
+        harness.DefinitionCatalogue.AddRange(
+        [
+            Definition(1, "First"),
+            Definition(2, "Second"),
+        ]);
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
+            .ListDesktopModuleDefinitionsAsync(PortalId, DesktopModuleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Select(row => row.ModuleDefId).Should().Equal(new[] { 1, 2 });
+        outcome.Value.Should().OnlyContain(row => row.DesktopModuleId == DesktopModuleId);
+    }
+
+    /// <summary>
+    /// A package identifier that names nothing yields an empty sequence rather than a failure.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ReportsAnUnknownPackageAsEmpty()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
+            .ListDesktopModuleDefinitionsAsync(PortalId, 987654, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeEmpty("a catalogue read answers with a sequence, never with an absence");
+    }
+
+    /// <summary>
     /// Exporting content requires a request.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -2320,6 +3089,68 @@ public class ModuleServiceTests
         outcome.Reason!.Code.Should().Be(NotFoundCode);
         outcome.Reason!.Message.Should()
             .Be($"Module {ModuleId} does not exist in portal {PortalId}.");
+    }
+
+    /// <summary>
+    /// A caller holding no edit grant on the target module is refused, and the module keeps its content.
+    /// </summary>
+    /// <remarks>
+    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR IMPORT. As with creation, the target arrives in the request
+    /// body and the only check performed was tenant ownership, so any authenticated caller could overwrite any
+    /// tenant's module content.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RefusesACallerWithoutTheEditGrantOnTheModule()
+    {
+        Harness harness = Harness.Ready();
+        harness.GrantEdit(granted: false);
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(EditForbiddenCode);
+        outcome.Reason!.Message.Should()
+            .Be($"The caller may not import content into module {ModuleId} in portal {PortalId}.");
+        harness.BusinessControllers.Verify(
+            factory => factory.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// The grant is asked for on the MODULE THE REQUEST NAMES and for the EDIT key - the same key the update and
+    /// delete endpoints are gated on, because an import replaces the module's stored content.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_AsksForTheEditGrantOnTheNamedModule()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            CancellationToken.None);
+
+        harness.Permissions.Verify(
+            permissions => permissions.HasModulePermissionAsync(
+                PortalId,
+                It.IsAny<int?>(),
+                ModuleId,
+                PermissionKey.EDIT,
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>
@@ -2704,6 +3535,13 @@ public class ModuleServiceTests
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
             BusinessControllers = new Mock<IModuleBusinessControllerFactory>(MockBehavior.Loose);
 
+            // The permission evaluator answers "granted" by default, so every existing fact continues to
+            // exercise the behaviour it was written for rather than the new authorisation guard. The facts
+            // that exercise the guard itself override this, which is also what makes them read as being
+            // about authorisation.
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
+            GrantEdit(granted: true);
+
             Service = new ModuleService(
                 Modules.Object,
                 Definitions.Object,
@@ -2712,8 +3550,36 @@ public class ModuleServiceTests
                 UnitOfWork.Object,
                 Cache.Object,
                 CurrentUser.Object,
+                Permissions.Object,
                 BusinessControllers.Object,
                 Caching);
+        }
+
+        /// <summary>
+        /// Sets the answer the permission evaluator gives for both the page and the module edit questions.
+        /// </summary>
+        /// <param name="granted">Whether the caller is to be reported as holding the edit grant.</param>
+        public void GrantEdit(bool granted)
+        {
+            Permissions
+                .Setup(permissions => permissions.HasTabPermissionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(granted));
+
+            Permissions
+                .Setup(permissions => permissions.HasModulePermissionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(granted));
         }
 
         public ModuleService Service { get; }
@@ -2733,6 +3599,8 @@ public class ModuleServiceTests
         public Mock<ICurrentUser> CurrentUser { get; }
 
         public Mock<IModuleBusinessControllerFactory> BusinessControllers { get; }
+
+        public Mock<IPermissionService> Permissions { get; }
 
         public CachingOptions Caching { get; }
 
@@ -2842,6 +3710,23 @@ public class ModuleServiceTests
                     harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
                         ? (IReadOnlyList<TabModule>)found
                         : Array.Empty<TabModule>());
+            // The append instruction is resolved by reading the pane it is being appended to, so that read
+            // is served from the same placement world every other placement stub serves rather than from a
+            // separate seam. Keeping it consistent is what lets a fact seed a pane and then assert the
+            // position the production path computes for it. The ordering mirrors the repository's, whose own
+            // ORDER BY mirrors the terminal legacy procedure's.
+            harness.Modules
+                .Setup(m => m.GetTabModuleOrderAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, string paneName, CancellationToken _) =>
+                    (IReadOnlyList<TabModule>)harness.PlacementsByModuleId.Values
+                        .SelectMany(placements => placements)
+                        .Where(placement => placement.TabId == tabId && placement.PaneName == paneName)
+                        .OrderBy(placement => placement.ModuleOrder)
+                        .ThenBy(placement => placement.TabModuleId)
+                        .ToList());
             harness.Modules
                 .Setup(m => m.GetModuleSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int moduleId, CancellationToken _) =>

@@ -7,15 +7,15 @@
     layer wants it; a dependency this layer cannot express is a signal about the
     boundary, not a gap in the manifest.
 
-    An earlier revision added Microsoft.Extensions.Options 8.0.2 so a validator
-    could take IOptions<PasswordPolicyOptions>. Every technical claim in that
-    justification was true - Options really is absent from the Microsoft.NETCore.App
+    Microsoft.Extensions.Options must NOT be added here so that a validator can take
+    IOptions<PasswordPolicyOptions>. Every technical claim such an addition rests on
+    is true - Options really is absent from the Microsoft.NETCore.App
     reference pack, FluentValidation.DependencyInjectionExtensions really does not
     supply it transitively, and the generic really does fail to compile without it -
-    and none of that made the package approved. The correct resolution was to change
-    the consumer rather than the manifest, so the one validator that reached for
-    IOptions<T> now takes the bound PasswordPolicyOptions instance directly, exactly
-    as its sibling ChangePasswordRequestValidator already did. That is the
+    and none of that would make the package approved. The correct resolution is to
+    change the consumer rather than the manifest: every validator that needs the
+    policy takes the bound PasswordPolicyOptions instance directly, which is what both
+    CreateUserRequestValidator and ChangePasswordRequestValidator do. That is the
     boundary abstraction this layer is meant to use: PasswordPolicyOptions is
     declared here and BOUND BY THE API LAYER, where the web framework supplies the
     options machinery, and the composition root projects the bound instance as a

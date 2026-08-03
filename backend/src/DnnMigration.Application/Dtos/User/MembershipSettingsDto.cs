@@ -2,7 +2,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// Typed, wire-facing projection of the membership settings that govern one portal's user
-/// administration experience. Served by <c>GET /api/v1/settings/membership</c> and accepted by the
+/// administration experience. Served by <c>GET /api/v1/portals/{portalId}/membership-settings</c> and accepted by the
 /// corresponding update.
 /// </summary>
 /// <remarks>
@@ -87,6 +87,19 @@ public sealed class MembershipSettingsDto
     /// </remarks>
     public const string DefaultEmailValidationExpression =
         @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b";
+
+    /// <summary>
+    /// The value applied to <see cref="SecurityRequireValidProfileAtLogin"/> when the tenant stores no
+    /// <c>Security_RequireValidProfileAtLogin</c> setting, and when the tenant has no settings source at
+    /// all (<c>UserModuleBase.vb:L175-L177</c>).
+    /// </summary>
+    /// <remarks>
+    /// Named for the same reason as <see cref="DefaultEmailValidationExpression"/>. This particular
+    /// default is load-bearing beyond the settings screen: the sign-in profile-completeness gate reads it
+    /// for a tenant whose settings source is absent, so a measured default that existed only as a property
+    /// initialiser could not be reached from there and would have had to be repeated.
+    /// </remarks>
+    public const bool DefaultRequireValidProfileAtLogin = true;
 
     /// <summary>
     /// Whether the users grid shows the first-name column. Legacy key <c>Column_FirstName</c>,
@@ -290,7 +303,7 @@ public sealed class MembershipSettingsDto
     /// default <see langword="true"/> (<c>UserModuleBase.vb:L175-L177</c>), legacy label
     /// "Require a valid Profile for Login:".
     /// </summary>
-    public bool SecurityRequireValidProfileAtLogin { get; set; } = true;
+    public bool SecurityRequireValidProfileAtLogin { get; set; } = DefaultRequireValidProfileAtLogin;
 
     /// <summary>
     /// How users are presented for selection in the role-management screen, as a discriminator:

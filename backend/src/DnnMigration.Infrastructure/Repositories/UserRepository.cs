@@ -1,6 +1,7 @@
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -51,6 +52,12 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// </remarks>
 internal sealed class UserRepository : IUserRepository
 {
+    /// <summary>
+    /// Property ordered by when a caller names none, reproducing the column the legacy member grid
+    /// presented first at <c>Website/admin/Users/users.ascx</c>.
+    /// </summary>
+    private const string DefaultSortProperty = "DisplayName";
+
     private readonly DnnDbContext _context;
     private readonly MembershipStore _membership;
 
@@ -81,9 +88,12 @@ internal sealed class UserRepository : IUserRepository
     /// detect.
     /// </para>
     /// <para>
-    /// The ordering is fixed here rather than left to the caller, because skip-and-take over an unordered
-    /// query has no defined row assignment. It leads on the display name, which is the column the legacy
-    /// grid presented, and ends on the primary key so the order is total.
+    /// The ordering is applied here rather than by the caller, because skip-and-take over an unordered
+    /// query has no defined row assignment - and, more importantly, because paging is applied by the
+    /// database: a caller that re-ordered the returned page would only be re-ordering the rows that one
+    /// arbitrary page happened to contain. When no field is named it leads on the display name, which is
+    /// the column the legacy grid presented, and every ordering ends on the primary key so the order is
+    /// total.
     /// </para>
     /// </remarks>
     public async Task<PagedResult<User>> ListAsync(
@@ -98,6 +108,8 @@ internal sealed class UserRepository : IUserRepository
         bool? isApproved,
         bool includeUnauthorised,
         bool includeSuperUsers,
+        string? sortBy = null,
+        bool descending = false,
         CancellationToken cancellationToken = default)
     {
         IQueryable<User> root;
@@ -148,10 +160,7 @@ internal sealed class UserRepository : IUserRepository
 
         filtered = ApplyProfileFilter(filtered, profilePropertyDefinitionId, profilePropertyValuePrefix);
 
-        filtered = filtered
-            .OrderBy(u => u.DisplayName)
-            .ThenBy(u => u.Username)
-            .ThenBy(u => u.UserId);
+        filtered = ApplyOrder(filtered, sortBy, descending);
 
         List<User> rows;
         int totalCount;
@@ -166,7 +175,7 @@ internal sealed class UserRepository : IUserRepository
         totalCount = await filtered.CountAsync(cancellationToken).ConfigureAwait(false);
 
         rows = await filtered
-            .Skip(pageIndex * pageSize)
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
             .Take(pageSize)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -486,18 +495,25 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    public async Task<bool> RecordSuccessfulLoginAsync(int userId, DateTime utcNow, CancellationToken cancellationToken = default)
+    public async Task<MembershipWriteOutcome> RecordSuccessfulLoginAsync(
+        int userId,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default)
     {
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        return userName is not null
-            && await _membership
+        // The store is addressed by account NAME, so an account row that cannot be resolved to one means there
+        // is nothing to write against - reported as an absent record rather than as an unreachable store,
+        // because the store was never consulted and its availability is not what failed.
+        return userName is null
+            ? MembershipWriteOutcome.NoRecord
+            : await _membership
                 .RecordSuccessfulLoginAsync(userName, utcNow, cancellationToken)
                 .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public async Task<bool> RecordFailedLoginAsync(
+    public async Task<MembershipWriteOutcome> RecordFailedLoginAsync(
         int userId,
         int lockoutThreshold,
         TimeSpan attemptWindow,
@@ -506,8 +522,12 @@ internal sealed class UserRepository : IUserRepository
     {
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        return userName is not null
-            && await _membership
+        // As above: an unresolvable name is an absent record, never an unreachable store. Collapsing the two
+        // would make a deleted account look like a failed security control, and the caller escalates the
+        // latter.
+        return userName is null
+            ? MembershipWriteOutcome.NoRecord
+            : await _membership
                 .RecordFailedLoginAsync(userName, lockoutThreshold, attemptWindow, utcNow, cancellationToken)
                 .ConfigureAwait(false);
     }
@@ -537,6 +557,72 @@ internal sealed class UserRepository : IUserRepository
 
         return userName is not null
             && await _membership.DeleteAsync(userName, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Applies a deterministic ordering to a member listing.
+    /// </summary>
+    /// <param name="query">The listing so far.</param>
+    /// <param name="sortBy">The sortable property the caller named, or <see langword="null"/>.</param>
+    /// <param name="descending">Whether the named property is applied in descending order.</param>
+    /// <returns>The ordered listing.</returns>
+    /// <remarks>
+    /// An ordering is applied unconditionally, including when the caller names nothing and when the
+    /// caller names something this repository does not recognise, because skip-and-take over an
+    /// unordered relational query has no defined row assignment. Every ordering ends on the primary key
+    /// so that rows sharing a sort value still have a stable relative order.
+    /// </remarks>
+    // MIGRATION: the arms below are exactly the seven names the boundary admits for this collection,
+    // declared as Users in Application/Validation/SortableFields.cs and enforced by the sealed
+    // UserPagedRequestValidator. The correspondence is deliberate and has to be maintained in both
+    // directions: a name the boundary admits must have an arm here, or the listing accepts a field it
+    // then ignores; and an arm here without a permitted name is unreachable, which misleads the next
+    // reader about what the collection offers.
+    //
+    // Three plausible-looking names are deliberately NOT permitted and therefore have no arm:
+    // CreatedDate, LastLoginDate and IsApproved. Each is a real, projected member of
+    // UserListItemDto, so their exclusion looks like an oversight and is not. They cannot be ordered by
+    // the database at all, for two distinct reasons. The first two have no column on dbo.Users in this
+    // model - UserConfiguration ignores them - and the third lives in the external aspnet_Membership
+    // store rather than on the entity, so all three are filled by PopulateAsync AFTER Skip and Take
+    // have run. Ordering by any of them could therefore only ever re-order the rows one arbitrary page
+    // happened to contain, which is exactly the silently-ignored sort this method was changed to
+    // eliminate. Offering them would require moving the values into the query, not adding an arm here.
+    //
+    // The default arm reproduces the legacy grid's own order. Website/admin/Users/users.ascx presented
+    // the member list led by the display name, so an unsorted request answers as the legacy screen did.
+    private static IQueryable<User> ApplyOrder(IQueryable<User> query, string? sortBy, bool descending)
+    {
+        string property = string.IsNullOrWhiteSpace(sortBy) ? DefaultSortProperty : sortBy.Trim();
+
+        return property.ToUpperInvariant() switch
+        {
+            "USERID" => descending
+                ? query.OrderByDescending(u => u.UserId)
+                : query.OrderBy(u => u.UserId),
+            "USERNAME" => descending
+                ? query.OrderByDescending(u => u.Username).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.Username).ThenBy(u => u.UserId),
+            "FIRSTNAME" => descending
+                ? query.OrderByDescending(u => u.FirstName).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.FirstName).ThenBy(u => u.UserId),
+            "LASTNAME" => descending
+                ? query.OrderByDescending(u => u.LastName).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.LastName).ThenBy(u => u.UserId),
+            "EMAIL" => descending
+                ? query.OrderByDescending(u => u.Email).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.Email).ThenBy(u => u.UserId),
+            "ISSUPERUSER" => descending
+                ? query.OrderByDescending(u => u.IsSuperUser).ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.IsSuperUser).ThenBy(u => u.UserId),
+            _ => descending
+                ? query.OrderByDescending(u => u.DisplayName)
+                    .ThenByDescending(u => u.Username)
+                    .ThenByDescending(u => u.UserId)
+                : query.OrderBy(u => u.DisplayName)
+                    .ThenBy(u => u.Username)
+                    .ThenBy(u => u.UserId),
+        };
     }
 
     /// <summary>Applies the optional profile-property filter to a listing.</summary>

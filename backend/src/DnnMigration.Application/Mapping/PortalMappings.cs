@@ -353,13 +353,16 @@ public static class PortalMappings
     /// preserved by the caller reading the setting, and nothing here sanitises a stored value.
     /// </para>
     /// <para>
-    /// MIGRATION: this is the ONE member in the file that is not a pure function of its arguments,
-    /// because it generates the portal handle. That is deliberate and is the lesser of two evils. The
-    /// handle column is NOT NULL with a newly generated default, and the all-zero handle is precisely
-    /// the legacy sentinel for an absent one, so leaving the member at its type default would write a
-    /// sentinel into a column that can never legitimately hold it. Generating it here writes a real
-    /// handle instead. No other member below varies between calls: nothing reads a clock, a counter or
-    /// any ambient state.
+    /// MIGRATION: EVERY MEMBER OF THIS FILE, INCLUDING THIS ONE, IS A PURE FUNCTION OF ITS ARGUMENTS.
+    /// The portal handle is deliberately NOT generated here. An earlier revision called
+    /// <c>Guid.NewGuid()</c> for it, which made this the one mapper whose output varied between two
+    /// identical calls and therefore the one mapper a test could not assert on completely. Generation is
+    /// left to the store, which is where the schema already puts it: the column carries
+    /// <c>DF_Portals_GUID DEFAULT (newid())</c> (<c>01.00.05:L1404</c>, re-asserted at
+    /// <c>03.01.01:L1133</c>), and the entity configuration mirrors that default, so an aggregate whose
+    /// handle is left at its type default has a real handle generated for it during the insert rather
+    /// than the all-zero sentinel. Nothing here reads a clock, a counter, a random source or any other
+    /// ambient state.
     /// </para>
     /// </remarks>
     public static Portal ToNewPortal(
@@ -382,13 +385,24 @@ public static class PortalMappings
             KeyWords = request.KeyWords,
             Currency = currency,
             ExpiryDate = expiryDate,
-            HostFee = ClampFee(hostFee),
-            HostSpace = ClampQuota(hostSpace),
-            PageQuota = ClampQuota(pageQuota),
-            UserQuota = ClampQuota(userQuota),
+
+            // MIGRATION: the hosting charge and the three allowances are carried through EXACTLY as
+            // supplied, with no floor and no coercion of any kind. The legacy creation path is
+            // unambiguous about this: PortalController.vb:L326-L375 reads each of these from an
+            // installation-wide host setting and hands the parsed value straight to the insert at L369
+            // without comparing it to anything. An earlier revision of this mapper floored all four at
+            // zero, borrowing the IIf guards at PortalController.vb:L395 and L398 - but those guards
+            // construct a RoleInfo, not a portal, and they clamp a role's service and trial FEES while
+            // a portal template creates its roles. Applying a role rule to a portal column changed which
+            // values an installation could store, in a mapper that is required to be mechanical, so the
+            // floors are removed. The role-fee floor itself is unaffected and stays where the legacy put
+            // it, on the role path.
+            HostFee = hostFee,
+            HostSpace = hostSpace,
+            PageQuota = pageQuota,
+            UserQuota = userQuota,
             SiteLogHistory = siteLogHistory,
             HomeDirectory = homeDirectory,
-            PortalGuid = Guid.NewGuid(),
             UserRegistration = UserRegistrationMode.NoRegistration,
             BannerAdvertising = BannerAdvertisingMode.None,
             DefaultLanguage = DefaultLanguageCode,
@@ -403,8 +417,12 @@ public static class PortalMappings
     /// <param name="request">The submitted values.</param>
     /// <remarks>
     /// <para>
-    /// The portal's own identifier is never taken from the request: the route segment is
-    /// authoritative, so a caller cannot retarget the write at another tenant by editing the body.
+    /// The portal's own identifier is never taken from the request. The request does carry one - it is
+    /// argument 1 of the replaced signature and the first member of the contract - but this member does
+    /// not read it and never assigns it: the route segment the service was given is authoritative, and
+    /// the registered request validator has already refused any body that disagrees with it. A caller
+    /// therefore cannot retarget the write at another tenant, and the aggregate's key cannot be altered
+    /// by an update at all.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy save path compiled with strictness disabled and relied on coercions that
@@ -428,6 +446,19 @@ public static class PortalMappings
     /// caller was entitled to submit it.
     /// </para>
     /// <para>
+    /// MIGRATION: NO FLOOR IS APPLIED TO THE CHARGE OR TO ANY ALLOWANCE. The legacy save path compared
+    /// them to nothing: <c>SiteSettings.ascx.vb:L705-L751</c> parses each box into a local and
+    /// <c>L772-L780</c> passes it straight through, and <c>sitesettings.ascx</c> declares no
+    /// <c>GreaterThanEqual</c> validator on any of the four - measurably unlike
+    /// <c>editroles.ascx:L94-L96</c> and <c>:L126-L128</c>, which do bound a role's fees. An earlier
+    /// revision floored all four here by reusing the role-fee guard from
+    /// <c>PortalController.vb:L395,L398</c>, but that guard clamps a <c>RoleInfo</c> while a portal
+    /// template creates its roles; it is not a portal rule. Reusing it changed which values an
+    /// installation could store, inside a mapper that must stay mechanical, so it is removed. Submitted
+    /// values reach the columns exactly as bound, and a negative submission is stored as the legacy
+    /// stored it.
+    /// </para>
+    /// <para>
     /// MIGRATION: the payment-gateway credential travels in ONE DIRECTION ONLY. It is written here and
     /// read nowhere: neither response contract declares it, so no projection can echo it back. It is
     /// also assigned unconditionally, which preserves a legacy behaviour worth stating plainly - the
@@ -449,10 +480,10 @@ public static class PortalMappings
         portal.BannerAdvertising = request.BannerAdvertising;
         portal.Currency = request.Currency;
         portal.AdministratorId = request.AdministratorId;
-        portal.HostFee = ClampFee(request.HostFee ?? 0m);
-        portal.HostSpace = ClampQuota(request.HostSpace ?? 0);
-        portal.PageQuota = ClampQuota(request.PageQuota ?? 0);
-        portal.UserQuota = ClampQuota(request.UserQuota ?? 0);
+        portal.HostFee = request.HostFee ?? 0m;
+        portal.HostSpace = request.HostSpace ?? 0;
+        portal.PageQuota = request.PageQuota ?? 0;
+        portal.UserQuota = request.UserQuota ?? 0;
         portal.PaymentProcessor = request.PaymentProcessor;
         portal.ProcessorUserId = request.ProcessorUserId;
 
@@ -477,45 +508,41 @@ public static class PortalMappings
     }
 
     /// <summary>
-    /// Clamps a monetary charge so that a negative submission is stored as zero.
+    /// Clamps a ROLE's monetary fee so that a negative submission is stored as zero.
     /// </summary>
-    /// <param name="fee">The submitted charge.</param>
-    /// <returns>The charge, never below zero.</returns>
+    /// <param name="fee">The submitted fee.</param>
+    /// <returns>The fee, never below zero.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: reproduces the two clamps inside the role-creation step of portal creation at
     /// <c>Library/Components/Portal/PortalController.vb</c> lines 395 and 398, each of which read
     /// <c>CType(IIf(fee &lt; 0, 0, fee), Single)</c>. The legacy conditional was a function and so
     /// evaluated both arms, whereas the C# conditional operator short-circuits; both arms there are
-    /// side-effect-free literals, so this substitution changes no observable behaviour. The clamp is
-    /// reused for the hosting charge because that column is the same kind of value and the legacy
-    /// screen offered no validator that would have refused a negative entry. That reuse is a defensive
-    /// floor the legacy save path did not apply, which is why it is named, published and tested rather
-    /// than buried in an assignment.
+    /// side-effect-free literals, so this substitution changes no observable behaviour.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE CLAMP APPLIES TO A ROLE FEE AND TO NOTHING ELSE. The clamped operand at both
+    /// legacy lines is a <c>RoleInfo</c>, so the only faithful consumers are the role paths -
+    /// <c>RoleMappings</c>, which applies it to a role's service and trial fees, and the stock-role
+    /// construction inside portal creation. It is deliberately NOT applied to a portal's hosting charge
+    /// or to any portal allowance: the legacy portal save path compared none of them to anything, and
+    /// an earlier revision that reused this floor for them altered which values an installation could
+    /// store. The member stays here, beside the portal mappings, only because it is where the legacy
+    /// lines it reproduces live; it is a role rule, and the summary says so.
+    /// </para>
     /// </remarks>
     public static decimal ClampFee(decimal fee) => fee < 0m ? 0m : fee;
 
-    /// <summary>
-    /// Floors a quota or allowance so that a negative submission is stored as zero.
-    /// </summary>
-    /// <param name="quota">The submitted quota or allowance.</param>
-    /// <returns>The quota, never below zero.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: the counterpart of <see cref="ClampFee"/> for the three integer allowances - the
-    /// disc-space allowance and the page and member quotas. It is written as a conditional rather than
-    /// as a maximum of two values so that it reads as the legacy conditional it descends from, and so
-    /// that a reader can see at a glance that the floor is applied to an ALLOWANCE and never to a key.
-    /// Zero is the documented meaning of "no limit" for all three columns, so flooring a negative
-    /// submission is a coercion into the column's own domain rather than a business rule about quotas.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this member exists so that the distinction between a quota and an identifier is
-    /// explicit in the source. A floor of this shape is correct for an allowance and would be a defect
-    /// on a portal key, where both zero and minus one name real rows; no key in this file passes
-    /// through here or through any other floor, guard or comparison.
-    /// </para>
-    /// </remarks>
-    public static int ClampQuota(int quota) => quota < 0 ? 0 : quota;
+    // MIGRATION: THERE IS NO QUOTA FLOOR, and its absence is recorded here so that a later reader does
+    //   not restore one as an oversight. An earlier revision published a ClampQuota member alongside
+    //   ClampFee and applied it to the disc-space allowance and the page and member quotas. No legacy
+    //   line authorises it: the only clamps in the legacy portal lifecycle are the two role-fee guards
+    //   that ClampFee reproduces, the portal creation path passes its host-setting allowances to the
+    //   insert untouched (PortalController.vb:L369), and the save path passes the submitted ones
+    //   untouched (SiteSettings.ascx.vb:L772-L780) over markup that declares no lower-bound validator on
+    //   any of them. The member was therefore a rule this migration invented, applied by a mapper the
+    //   plan requires to be mechanical, and it is removed rather than documented. Allowances now reach
+    //   their columns exactly as submitted.
 
     /// <summary>
     /// The default culture code a new portal carries, matching the column default the 02.02.00

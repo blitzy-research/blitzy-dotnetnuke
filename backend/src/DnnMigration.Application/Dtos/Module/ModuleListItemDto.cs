@@ -3,7 +3,7 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// One row of the module listing returned by <c>GET /api/v1/modules</c>: a single module instance as
+/// One row of the module listing returned by <c>GET /api/v1/portals/{portalId}/modules</c>: a single module instance as
 /// it is placed on a page, reduced to the facts an administration grid displays. Carries no paging
 /// metadata of its own - it is one row and nothing more - and no navigation property, tracked state
 /// or behaviour, so no domain entity is exposed through it in either direction.

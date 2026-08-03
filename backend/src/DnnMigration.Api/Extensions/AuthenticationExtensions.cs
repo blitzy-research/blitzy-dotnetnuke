@@ -1,9 +1,12 @@
 using System.Text;
 using DnnMigration.Api.Authorization;
+using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Enums;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
@@ -175,7 +178,21 @@ public static class AuthenticationExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        // The one place the two membership questions - "is this a host account" and "does this caller
+        // administer the portal the route names" - are answered, shared by all three membership handlers so
+        // that none of them can reach a different answer than the others. Scoped, because its repository
+        // dependencies are scoped and its answers are only meaningful for one request.
+        services.AddScoped<PortalAdministrationEvaluator>();
+
+        // Three distinct questions, three handlers, ONE registration each. Tenant administration; then
+        // installation-wide authority, which is a different question and is decided by its own handler for
+        // the reasons set out on HostAdministratorRequirement rather than by folding the super-user test into
+        // the tenant handler; then "may this caller act on the account the route addresses", which the
+        // self-service half of the user resource depends on and which neither of the other two can express.
+        // Registering any of them twice would run its handler twice per request for no additional decision.
         services.AddScoped<IAuthorizationHandler, PortalAdministratorAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, HostAdministratorAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, AccountOwnerAuthorizationHandler>();
 
         // Both handlers are required, not alternatives. Every requirement a policy declares must have a
         // handler registered for it, and a requirement with no handler never succeeds - the framework
@@ -183,6 +200,14 @@ public static class AuthenticationExtensions
         // endpoint whose caller genuinely holds the permission. The four permission policies below declare
         // PermissionRequirement, so the handler for it is registered here alongside the tenant one.
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+
+        // Gives the middleware's own refusals the RFC 7807 body they otherwise omit. Registered here
+        // rather than beside the controller services because it is a property of the authorisation stage
+        // and would be meaningless without it, and registered by TryAddSingleton's stricter cousin - a
+        // plain replacement - because the framework registers its own default and exactly one handler may
+        // win. A singleton is correct: it holds no per-request state and both of its dependencies are
+        // themselves singletons.
+        services.AddSingleton<IAuthorizationMiddlewareResultHandler, ProblemDetailsAuthorizationResultHandler>();
 
         services.AddAuthorization(options =>
         {
@@ -192,10 +217,58 @@ public static class AuthenticationExtensions
                 policy.AddRequirements(PortalAdministratorRequirement.Instance);
             });
 
-            AddPermissionPolicy(options, PolicyNames.ModuleView, PermissionKey.VIEW, PermissionScope.Module);
-            AddPermissionPolicy(options, PolicyNames.ModuleEdit, PermissionKey.EDIT, PermissionScope.Module);
-            AddPermissionPolicy(options, PolicyNames.TabView, PermissionKey.VIEW, PermissionScope.Tab);
-            AddPermissionPolicy(options, PolicyNames.TabEdit, PermissionKey.EDIT, PermissionScope.Tab);
+            // For the operations that name no portal anywhere in their route. Kept separate from the policy
+            // above rather than expressed as an extra arm of it, because the two answer different questions
+            // and a single policy would have to guess which one an action meant from the shape of its route.
+            options.AddPolicy(PolicyNames.HostAdministrator, policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.AddRequirements(HostAdministratorRequirement.Instance);
+            });
+
+            // The account family. Two policies over one requirement type, differing in the single bit that
+            // decides whether the portal's administrator is admitted alongside the account holder.
+            options.AddPolicy(PolicyNames.AccountOwner, policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.AddRequirements(AccountOwnerRequirement.OwnerOnly);
+            });
+
+            options.AddPolicy(PolicyNames.AccountOwnerOrPortalAdministrator, policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.AddRequirements(AccountOwnerRequirement.OwnerOrPortalAdministrator);
+            });
+
+            // The two VIEW policies deliberately do NOT require an authenticated caller; the two EDIT
+            // policies do. See AddPermissionPolicy for the measured reason.
+            AddPermissionPolicy(
+                options,
+                PolicyNames.ModuleView,
+                PermissionKey.VIEW,
+                PermissionScope.Module,
+                requireAuthenticatedUser: false);
+
+            AddPermissionPolicy(
+                options,
+                PolicyNames.ModuleEdit,
+                PermissionKey.EDIT,
+                PermissionScope.Module,
+                requireAuthenticatedUser: true);
+
+            AddPermissionPolicy(
+                options,
+                PolicyNames.TabView,
+                PermissionKey.VIEW,
+                PermissionScope.Tab,
+                requireAuthenticatedUser: false);
+
+            AddPermissionPolicy(
+                options,
+                PolicyNames.TabEdit,
+                PermissionKey.EDIT,
+                PermissionScope.Tab,
+                requireAuthenticatedUser: true);
 
             options.FallbackPolicy = new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
@@ -206,21 +279,84 @@ public static class AuthenticationExtensions
     }
 
     /// <summary>
+    /// The claim carrying the installation-wide super-user flag, as the token service mints it.
+    /// </summary>
+    /// <remarks>
+    /// Taken from the shared claim vocabulary declared beside <c>ITokenService</c> rather than spelled as a
+    /// literal, so that a rename cannot leave this registration matching a claim nothing writes - which
+    /// would present as every host account being denied rather than as a build failure.
+    /// </remarks>
+    private const string SuperUserClaimType = DnnClaimTypes.SuperUser;
+
+    /// <summary>
+    /// The claim values this registration accepts as an affirmative super-user flag.
+    /// </summary>
+    /// <remarks>
+    /// The token service writes the lower-case spelling. The capitalised spelling is accepted as well
+    /// because a boolean claim carried by a token minted elsewhere may be serialised either way, and
+    /// refusing one of them would deny a legitimate host account for a reason no message would explain.
+    /// Nothing else is accepted: an absent, blank or otherwise-spelled value denies.
+    /// </remarks>
+    private static readonly string[] TrueClaimValues = ["true", "True"];
+
+    /// <summary>
     /// Declares one permission policy.
     /// </summary>
     /// <param name="options">The authorisation options being built.</param>
     /// <param name="policyName">The policy name from <see cref="PolicyNames"/>.</param>
     /// <param name="permission">The permission key the policy claims.</param>
     /// <param name="scope">The kind of item the key is claimed against.</param>
+    /// <param name="requireAuthenticatedUser">
+    /// Whether the policy additionally demands an authenticated caller. Must be <see langword="false"/> for
+    /// a policy claiming the view key and <see langword="true"/> for one claiming the edit key.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>Why authentication is not demanded for the view key.</b> Requirements inside one policy are ANDed,
+    /// so adding <c>RequireAuthenticatedUser</c> to a permission policy makes an anonymous caller fail the
+    /// policy before the permission handler is ever consulted. That silently deletes two grants the migrated
+    /// data really holds and the evaluator really implements: role identifier -1 is the "All Users"
+    /// pseudo-role, whose grants reach everybody, and -3 is "Unauthenticated Users", whose grants reach
+    /// exactly the callers with no account at all. A grant to -3 that can never be evaluated is not a grant;
+    /// it is a row that looks like one. <c>PermissionAuthorizationHandler</c> passes a null caller
+    /// identifier straight through, and <c>PermissionService</c> resolves both pseudo-roles for it, so the
+    /// anonymous case is answered correctly the moment the handler is allowed to answer it.
+    /// </para>
+    /// <para>
+    /// <b>Why authentication IS demanded for the edit key.</b> Nothing in the legacy data grants edit to the
+    /// unauthenticated pseudo-role, and an anonymous mutation has no account to attribute the change to, so
+    /// requiring an identity is both faithful and necessary. The distinction is passed in rather than derived
+    /// from the key inside this method so that a future policy cannot acquire the wrong default by omission.
+    /// </para>
+    /// <para>
+    /// <b>The fallback policy is unaffected.</b> It applies only to endpoints that declare no authorisation
+    /// metadata of their own, so an action carrying one of these policies is never additionally subjected to
+    /// it. What an action must NOT do is carry a bare <c>[Authorize]</c> alongside a view policy - class
+    /// level counts - because that reintroduces exactly the conjunction this parameter exists to remove.
+    /// </para>
+    /// </remarks>
     private static void AddPermissionPolicy(
         AuthorizationOptions options,
         string policyName,
         PermissionKey permission,
-        PermissionScope scope)
+        PermissionScope scope,
+        bool requireAuthenticatedUser)
     {
         options.AddPolicy(policyName, policy =>
         {
-            policy.RequireAuthenticatedUser();
+            if (requireAuthenticatedUser)
+            {
+                policy.RequireAuthenticatedUser();
+            }
+            else
+            {
+                // A policy must name at least one authentication scheme or requirement to be buildable, and
+                // an anonymous-capable policy names no requirement of its own beyond the permission one. The
+                // permission requirement below satisfies that, so nothing further is needed here; the branch
+                // is stated explicitly so the asymmetry is visible rather than implied by an absence.
+                policy.AuthenticationSchemes.Clear();
+            }
+
             policy.AddRequirements(new PermissionRequirement(permission, scope));
         });
     }
@@ -524,10 +660,18 @@ public static class AuthenticationExtensions
         }
 
         /// <summary>
-        /// Checks the refresh-token lifetime against its declared bounds.
+        /// Checks the sliding per-token refresh lifetime against its declared bounds.
         /// </summary>
         /// <param name="days">The configured lifetime in days.</param>
         /// <param name="failures">Collects one message per broken rule.</param>
+        /// <remarks>
+        /// The SLIDING lifetime only. The absolute family ceiling has bounds of its own and they are
+        /// enforced by <see cref="JwtOptions.Validate"/>, whose failures this validator already aggregates
+        /// at the top of <c>Validate</c> - checking it here as well would report one misconfiguration
+        /// twice. The ceiling is the more consequential of the two and must not be assumed covered by this
+        /// method: rotation refreshes the sliding expiry at every exchange, so a caller that keeps
+        /// exchanging never reaches the value checked here.
+        /// </remarks>
         private static void ValidateRefreshLifetime(int days, List<string> failures)
         {
             if (days is >= JwtOptions.MinimumRefreshTokenExpirationDays

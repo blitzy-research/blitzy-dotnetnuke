@@ -486,6 +486,104 @@ public sealed class DnnDbContextTests
         await RemoveRoleAsync(roleId);
     }
 
+    /// <summary>
+    /// A stored frequency character the enumeration does not declare reads back as the documented fallback,
+    /// never as an undefined enumeration value.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <param name="stored">The character to plant in both frequency columns.</param>
+    /// <remarks>
+    /// <para>
+    /// The rows this describes are not hypothetical. The shipped upgrade scripts seed the frequency
+    /// vocabulary table with codes outside the six the application understands - <c>'4'</c> at
+    /// <c>01.00.00.SqlDataProvider</c> L7192 and <c>'0'</c> at L7194 - and the one constraint that ever
+    /// policed the columns, <c>FK_Roles_CodeFrequency</c>, is dropped for good at
+    /// <c>03.00.01.SqlDataProvider</c> L1297 with no recreate and no check constraint in its place. The
+    /// trial column was never covered by it at all. An installation in the field can therefore hold any
+    /// character here.
+    /// </para>
+    /// <para>
+    /// The consequence of casting such a character blindly is worse than a wrong value, which is why this
+    /// is asserted through the real model rather than over the conversion in isolation. An undefined
+    /// enumeration value materialises without complaint and travels intact to the wire converter, which
+    /// refuses to write a code it does not recognise - so one out-of-vocabulary character in one row turns
+    /// a successful read of an entire result set into a server fault. Resolving to the fallback degrades
+    /// one field instead, and that is what the legacy application did in effect: it compared the raw
+    /// character against the codes it knew and treated anything else as no recurrence.
+    /// </para>
+    /// <para>
+    /// The lower-case case is included deliberately. SQL Server's default collation is case-insensitive, so
+    /// a legacy installation could hold <c>'m'</c> and the dropped constraint would have accepted it - yet
+    /// the legacy application compared with binary semantics and never read it as a month. Resolving it
+    /// here would change behaviour rather than preserve it.
+    /// </para>
+    /// <para>
+    /// BOTH columns are planted and both are asserted, and that pairing is the point rather than
+    /// thoroughness for its own sake. The two columns are the same store type over the same vocabulary, so a
+    /// guard added to one and not the other compiles, passes any single-column test, and fails only in the
+    /// field - on the trial column first, since that is the one no constraint ever policed. Asserting the
+    /// pair is what makes them unable to drift apart.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("4")]
+    [InlineData("0")]
+    [InlineData("m")]
+    [InlineData("Z")]
+    public async Task Role_WithAnUnrecognisedStoredFrequency_ReadsAsTheFallback(string stored)
+    {
+        string suffix = Suffix();
+        int roleId;
+
+        using (IServiceScope writing = _fixture.Services.CreateScope())
+        {
+            IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+            IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            Role role = new()
+            {
+                PortalId = _fixture.Seed.PortalId,
+                RoleName = FormattableString.Invariant($"Legacy Code Role {suffix}"),
+                BillingFrequency = Domain.Enums.BillingFrequency.Month,
+                TrialFrequency = Domain.Enums.BillingFrequency.Week,
+                IsPublic = false,
+                AutoAssignment = false,
+            };
+
+            await roles.AddAsync(role);
+            await unitOfWork.SaveChangesAsync();
+
+            roleId = role.RoleId;
+        }
+
+        // Planted with a direct statement rather than through the model, because the model cannot express
+        // it - which is the point. Only a legacy row can carry this, so only a legacy row can prove the
+        // read handles it.
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Roles] SET [BillingFrequency] = @stored, [TrialFrequency] = @stored "
+            + "WHERE [RoleID] = @roleId",
+            new Dictionary<string, object?> { ["stored"] = stored, ["roleId"] = roleId });
+
+        using (IServiceScope reading = _fixture.Services.CreateScope())
+        {
+            IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+
+            reread.Should().NotBeNull();
+
+            reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+            reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+
+            Enum.IsDefined(reread.BillingFrequency!.Value).Should().BeTrue(
+                "an undefined enumeration value reaches the wire and fails there, taking the whole "
+                + "response with it, so it must not be materialised in the first place");
+            Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeTrue();
+        }
+
+        await RemoveRoleAsync(roleId);
+    }
+
     /// <summary>Every persistence abstraction resolves from the composed host inside a request scope.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>

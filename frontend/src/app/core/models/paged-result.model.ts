@@ -7,32 +7,46 @@
  * import in this application is relative, and a contract this low in the dependency
  * graph should not need one at all.
  *
- * ## The wire shape is flat
+ * ## The paging facts are NESTED under `meta`
  *
- * A collection endpoint serialises the domain paging envelope directly, so the body
- * carries its paging facts as siblings of `items` rather than nested under a
- * metadata member:
+ * A collection endpoint serialises the server's boundary envelope, which carries the
+ * rows on `items` and every paging fact on a single `meta` member:
  *
  * ```json
  * {
  *   "items": [ { "portalName": "Baseline Portal" } ],
- *   "totalCount": 1,
- *   "pageIndex": 0,
- *   "pageSize": 10,
- *   "isUnpaged": false,
- *   "totalPages": 1,
- *   "hasPreviousPage": false,
- *   "hasNextPage": false
+ *   "meta": {
+ *     "totalCount": 1,
+ *     "pageIndex": 0,
+ *     "pageSize": 10,
+ *     "totalPages": 1
+ *   }
  * }
  * ```
  *
- * That shape was read off a running server rather than inferred: the controllers
- * declare `ActionResult<PagedResult<T>>` and produce exactly the eight members
- * above. {@link PagedResult} therefore mirrors it member for member. Reading a
- * paging fact through an intermediate metadata member would yield `undefined` at
- * run time while still compiling, which no type checker and no assertion on a
- * successful response code would catch — so the flat shape is a load-bearing part
- * of this contract, not a formatting preference.
+ * {@link PagedResult} mirrors that arrangement, and {@link ApiMeta} mirrors the four
+ * members of the metadata companion. **There is exactly one paged wire shape and
+ * exactly one declaration of it here.** Two competing shapes — one nested, one with
+ * the paging facts as siblings of `items` — would be indistinguishable to a type
+ * checker and to an assertion on a successful response code, because reading a
+ * member the body does not carry yields `undefined` at run time while compiling
+ * perfectly. The nesting is therefore a load-bearing part of this contract, not a
+ * formatting preference, and a consumer reads a coordinate through
+ * {@link PagedResult.meta} and never off the envelope itself.
+ *
+ * The envelope carries the two members above and nothing else. No paging fact is
+ * repeated at the top level, because two copies of one fact on a single response
+ * give a pager two sources of truth and no way to choose between them when they
+ * disagree.
+ *
+ * MIGRATION: the server draws a deliberate line between the paging envelope an
+ * application service returns and the contract a controller publishes, and only the
+ * latter reaches this file. That is what lets the internal envelope change without
+ * breaking a client, and it is why the internal envelope's three derived navigation
+ * members — an unpaged marker and a previous-page and next-page flag — appear
+ * nowhere in this module. A consumer needing "is there a further page" compares
+ * {@link ApiMeta.pageIndex} against `totalPages - 1`; nothing here recomputes a fact
+ * the server already published.
  *
  * ## Identifiers inside a page may be zero or negative
  *
@@ -85,10 +99,14 @@
  * did the same at `Website/admin/Portal/Portals.ascx.vb` L142. Pattern composition
  * now belongs behind the repository interfaces, so neither this contract, nor the
  * shared search input, nor the query-string helper may decorate the value.
- * Consequently server-side matching is STARTS-WITH rather than contains, and
- * placeholder text must not promise otherwise.
  *
- * MIGRATION: {@link PagedResult.totalCount} travels with the records rather than
+ * Server-side matching is NOT one uniform semantic, and must not be described as one.
+ * The general-purpose {@link PagedRequest.query} filter is a SUBSTRING match - the
+ * portal name, and a user's username, display name and email are each matched with
+ * `Contains` - while only the explicitly named username, email and profile-value
+ * filters are PREFIX matches. Placeholder text must therefore promise neither.
+ *
+ * MIGRATION: {@link ApiMeta.totalCount} travels with the records rather than
  * arriving separately, and is a 32-bit integer rather than a wider type because
  * every legacy declaration of it is `Integer`. The legacy membership surface could
  * not answer "which page, and how many altogether?" in one call: its paged readers
@@ -100,7 +118,7 @@
  * size against the total.
  *
  * MIGRATION: The shared pagination component accepts a ONE-BASED `page` input while
- * this contract carries a ZERO-BASED {@link PagedResult.pageIndex}. That is an
+ * this contract carries a ZERO-BASED {@link ApiMeta.pageIndex}. That is an
  * explicit, deliberate mapping performed in the feature stores, not a defect and not
  * an inconsistency to be tidied away: a human-facing pager that began at page zero
  * would be wrong, and a wire index that began at one would contradict the data
@@ -202,9 +220,10 @@ export interface PagedRequest {
    * filter applies.
    *
    * No wildcard, escape or pattern syntax belongs here — see the MIGRATION note at
-   * the head of this module. Matching is STARTS-WITH. The server bounds the length
-   * at {@link QUERY_MAX_LENGTH} characters; blank text and omission mean the same
-   * thing.
+   * the head of this module. Matching for THIS member is a SUBSTRING match, applied
+   * case-insensitively after the server trims the value; the prefix-matching filters are
+   * the separately named ones. The server bounds the length at
+   * {@link QUERY_MAX_LENGTH} characters; blank text and omission mean the same thing.
    */
   readonly query?: string;
 }
@@ -213,13 +232,12 @@ export interface PagedRequest {
  * One page of results together with the paging facts that describe where that page
  * sits within the whole match set.
  *
- * Mirrors the flat body a collection endpoint returns, member for member — see the
- * shape documented at the head of this module. Every member is present on every
- * response: the server omits only null members, and each of the seven numbers and
- * flags below is a value type that is always written. An empty page is a legitimate
- * answer rather than an error, so a consumer distinguishes "past the end of the set"
- * from "nothing matched at all" by consulting {@link PagedResult.totalCount}, never
- * by finding a member missing.
+ * Mirrors the body a collection endpoint returns, member for member — see the shape
+ * documented at the head of this module. Both members are present on every response:
+ * the server omits only null members, and neither of these is ever null. An empty
+ * page is a legitimate answer rather than an error, so a consumer distinguishes "past
+ * the end of the set" from "nothing matched at all" by consulting
+ * {@link ApiMeta.totalCount}, never by finding a member missing.
  *
  * Every member is `readonly`: a response has already happened, and a consumer that
  * could rewrite one would be describing something the server never said.
@@ -242,79 +260,25 @@ export interface PagedResult<T> {
   readonly items: readonly T[];
 
   /**
-   * The total no of records that satisfy the criteria.
+   * The paging facts locating this page within the whole match set: the total across
+   * every page, the zero-based page index, the page size the server applied and the
+   * page count derived from them.
    *
-   * Counted across ALL pages, and therefore not the length of
-   * {@link PagedResult.items}. The two coincide only when the whole match set fits
-   * on the page in hand. This is the value a pager divides, and the value an
-   * empty-state check consults: no records on the fourth page of three means "past
-   * the end", whereas a total of zero means "no matches at all", and those deserve
-   * different wording.
+   * The paging facts live here and ONLY here — they are never repeated as members of
+   * this envelope. Reusing the shared metadata companion also means a collection
+   * response describes its page exactly as the rest of the contract does.
    */
-  readonly totalCount: number;
-
-  /**
-   * The page of records returned.
-   *
-   * Zero-based: 0 is the first page, 1 the second. An unpaged envelope reports 0.
-   * This is the same base {@link PagedRequest.pageIndex} sends, so a client may echo
-   * the index it sent into the index it reads back without arithmetic.
-   */
-  readonly pageIndex: number;
-
-  /**
-   * The size of the page the server actually applied, which can differ from the size
-   * the caller asked for once the request has been validated.
-   *
-   * For an unpaged response this reports the total rather than zero, so that a
-   * consumer dividing by it stays consistent with {@link PagedResult.totalPages}.
-   * Use {@link PagedResult.isUnpaged} to recognise that case rather than comparing
-   * this against a number.
-   */
-  readonly pageSize: number;
-
-  /**
-   * Whether this envelope carries an unpaged, all-records set rather than one page of
-   * a larger set.
-   *
-   * The named flag exists so that no consumer has to infer the unpaged case from a
-   * coordinate value.
-   */
-  readonly isUnpaged: boolean;
-
-  /**
-   * The number of pages the full match set spans: 0 when there are no records, and
-   * otherwise the total divided by the page size, rounded upward.
-   *
-   * SERVER-COMPUTED. Read it; never recompute it from
-   * {@link PagedResult.totalCount} and {@link PagedResult.pageSize}. The server
-   * guards the division — an unpaged set is answered before any division occurs, and
-   * the quotient-plus-remainder form is used because adding the page size to the
-   * total first would overflow for a total near the largest representable integer.
-   * Recomputing here would reintroduce both hazards, and a locally derived value that
-   * disagreed with the server's would give a pager two sources of truth and no way to
-   * choose between them.
-   */
-  readonly totalPages: number;
-
-  /** Whether a page precedes this one. */
-  readonly hasPreviousPage: boolean;
-
-  /**
-   * Whether a further page follows this one.
-   *
-   * Server-derived from {@link PagedResult.totalPages}, so it stays correct for an
-   * unpaged set and for an empty one.
-   */
-  readonly hasNextPage: boolean;
+  readonly meta: ApiMeta;
 }
 
 /**
  * Metadata describing a successful response, rather than the payload it carries.
  *
- * The companion to {@link ApiResponse}. A collection response populates every
- * member; a single-item response omits the metadata altogether, because a scalar
- * payload has no page to describe.
+ * The paging companion carried on {@link PagedResult.meta} by every collection
+ * response, and the optional companion to {@link ApiResponse}. A collection response
+ * populates every member; a payload with no page to describe omits the metadata
+ * altogether, because a scalar genuinely has no total, page index or page size and
+ * reporting zeroes for them would be indistinguishable from a real, empty first page.
  *
  * The member set is confined to the three facts the legacy pager consumed plus the
  * one value derived from them. The Web Forms account screen handed its pager exactly
@@ -332,31 +296,43 @@ export interface PagedResult<T> {
  * `X-Correlation-Id` header, written by the server's correlation middleware and read
  * by the matching client interceptor; repeating it in the body would create a second
  * source of truth that no consumer reads.
- *
- * ## Not currently returned by any endpoint
- *
- * Verified against the running server: no controller returns this envelope, and
- * `meta` is never a key on any response body. Every collection endpoint serialises
- * the flat {@link PagedResult} instead. This declaration exists because the server
- * declares the contract and this module is the only place on the client that can
- * host it, so an endpoint that adopts the envelope later has a type waiting rather
- * than provoking one to be invented ad hoc. Type a response as
- * {@link PagedResult} unless you have confirmed the endpoint in hand actually
- * returns the envelope.
  */
 export interface ApiMeta {
   /**
    * The total no of records that satisfy the criteria, counted across every page and
    * not only the page returned.
+   *
+   * Therefore NOT the length of {@link PagedResult.items}: the two coincide only when
+   * the whole match set fits on the page in hand. This is the value a pager divides,
+   * and the value an empty-state check consults — no records on the fourth page of
+   * three means "past the end", whereas a total of zero means "no matches at all",
+   * and those deserve different wording.
    */
   readonly totalCount: number;
 
-  /** The page of records returned, counted from zero. */
+  /**
+   * The page of records returned, counted from zero.
+   *
+   * Zero-based: 0 is the first page, 1 the second. An unpaged envelope reports 0.
+   * This is the same base {@link PagedRequest.pageIndex} sends, so a client may echo
+   * the index it sent into the index it reads back without arithmetic.
+   */
   readonly pageIndex: number;
 
   /**
    * The size of the page that produced the payload: the size the server actually
-   * applied, which can differ from the size a caller asked for.
+   * applied, which can differ from the size a caller asked for once the request has
+   * been validated.
+   *
+   * An UNPAGED response reports the total here rather than zero. That is the server's
+   * own reshaping and not a client convention: its internal envelope signals "unpaged"
+   * with a page size of zero, but a zero on the wire would drive
+   * {@link ApiMeta.totalPages} to zero for a response that plainly contains records,
+   * so the boundary reports the truthful shape of what was sent — one page holding
+   * everything — and every derived value stays self-consistent for a consumer that
+   * divides. An unpaged, zero-record answer reports zero for both, which is correct.
+   * {@link unpagedResult} produces the same coordinates for a locally lifted array, so
+   * a component cannot tell a seeded value from a received one.
    */
   readonly pageSize: number;
 
@@ -364,8 +340,13 @@ export interface ApiMeta {
    * The number of pages the total divides into at the current page size, or zero when
    * there is nothing to page.
    *
-   * Server-derived, like {@link PagedResult.totalPages}, and read rather than
-   * recomputed for the same reasons.
+   * SERVER-COMPUTED. Read it; never recompute it from {@link ApiMeta.totalCount} and
+   * {@link ApiMeta.pageSize}. The server guards the division twice — a page size of
+   * zero is answered before any division occurs, and the quotient-plus-remainder form
+   * is used because adding the page size to the total first would overflow for a total
+   * near the largest representable integer. Recomputing here would reintroduce both
+   * hazards, and a locally derived value that disagreed with the server's would give a
+   * pager two sources of truth and no way to choose between them.
    */
   readonly totalPages: number;
 }
@@ -379,8 +360,16 @@ export interface ApiMeta {
  * remove, so failure never travels in this shape — `problem-details.model.ts` is the
  * only wire error contract.
  *
- * Subject to the same caveat as {@link ApiMeta}: no endpoint returns this envelope at
- * present.
+ * ## Not currently returned by any endpoint
+ *
+ * Verified against the running server: a single-item endpoint serialises its data
+ * transfer contract directly rather than wrapping it, so `data` is never a key on a
+ * response body. {@link ApiMeta} is a different matter — it IS on the wire, nested
+ * under {@link PagedResult.meta} on every collection response. This declaration
+ * exists because the server declares the envelope and this module is the only place
+ * on the client that can host it, so an endpoint that adopts it later has a type
+ * waiting rather than provoking one to be invented ad hoc. Do not type a response as
+ * this envelope unless you have confirmed the endpoint in hand actually returns it.
  *
  * @typeParam T The transported payload contract. Always a data transfer contract and
  * never a persisted entity. Deliberately unconstrained, so a single item, a
@@ -407,7 +396,8 @@ export interface ApiResponse<T> {
  * deletion that reports only that it happened.
  *
  * The payload-free companion to {@link ApiResponse}, declared beside it so the two
- * arities of one contract are read together. The two are deliberately separate
+ * arities of one contract are read together, and subject to the same caveat: no endpoint
+ * returns this envelope at present. The two are deliberately separate
  * rather than related by inheritance: a payload-bearing envelope assigned to a
  * payload-free declared type would lose its payload silently.
  */
@@ -418,6 +408,69 @@ export interface EmptyApiResponse {
    * total to report but no records to return with it.
    */
   readonly meta?: ApiMeta;
+}
+
+/**
+ * The wire contract of every PAGED endpoint, named as the response rather than as the
+ * result.
+ *
+ * This is what `GET /api/v1/portals`, the account, role, module and role-membership
+ * listings actually return, and it is the SAME shape as {@link PagedResult} rather than
+ * a second one. There is deliberately ONE definition behind both names: two structurally
+ * identical envelopes would let a change be made to one and missed on the other, and the
+ * weaker of the two would then define what a consumer actually accepts. The alias exists
+ * because "response" reads correctly at a service boundary and "result" reads correctly
+ * in a component, and neither reading is worth a duplicate contract.
+ *
+ * @typeParam T The row contract carried on the page. Always a data transfer contract and
+ * never a persisted entity.
+ */
+export type PagedResponse<T> = PagedResult<T>;
+
+/**
+ * Normalises a paged response into a complete envelope, deriving the page count when the
+ * body did not carry one.
+ *
+ * The paging coordinates belong to the response rather than to the records, and every
+ * coordinate a consumer reads is one the server sent — with one exception, stated here so
+ * that no consumer recomputes it privately. `totalPages` is DERIVED from the total and the
+ * page size when the body omits it, using the same arithmetic the server uses, so that a
+ * component never divides by a page size of zero and never has to decide for itself what
+ * an omitted page count means.
+ *
+ * Nothing else is invented. The navigation flags an earlier revision computed here —
+ * whether a previous or a next page exists — are not members of this contract: they are
+ * decided by whoever renders the pager, from the same two coordinates, and publishing them
+ * as if the server had sent them would put a client-side derivation on the wire contract.
+ *
+ * An absent or partial metadata object is tolerated rather than faulted, and reported as an
+ * empty first page: a paged endpoint always sends metadata, so a body without it is a
+ * contract failure the error interceptor surfaces, and a model that threw here would turn
+ * that into an unhandled exception inside a component.
+ *
+ * @param response The response body as received.
+ * @returns The same page, with every coordinate present.
+ */
+export function toPagedResult<T>(response: PagedResponse<T>): PagedResult<T> {
+  const items = response?.items ?? [];
+  const totalCount = response?.meta?.totalCount ?? 0;
+  const pageIndex = response?.meta?.pageIndex ?? 0;
+  const pageSize = response?.meta?.pageSize ?? 0;
+  const totalPages =
+    response?.meta?.totalPages ??
+    (pageSize > 0 && totalCount > 0
+      ? Math.floor(totalCount / pageSize) + (totalCount % pageSize > 0 ? 1 : 0)
+      : 0);
+
+  return {
+    items,
+    meta: {
+      totalCount,
+      pageIndex,
+      pageSize,
+      totalPages,
+    },
+  };
 }
 
 /**
@@ -460,9 +513,10 @@ export const QUERY_MAX_LENGTH = 256;
  *
  * For the local placeholder a store needs before its first response arrives, or for
  * a list operation that legitimately matched nothing and applied no paging. The
- * coordinates mirror what the server produces for its own empty envelope, so a
- * component cannot tell a seeded value from a received one and needs no separate
- * branch for the un-loaded state.
+ * coordinates match the shape a server response carries when nothing was matched and no
+ * paging applied, so a component cannot tell a seeded value from a received one and needs
+ * no separate branch for the un-loaded state. This is a CLIENT-SIDE seed: it is built here
+ * and never received, because the response envelopes above are unadopted.
  *
  * For a paged operation whose requested page matched nothing, prefer the envelope the
  * server actually returned: it reports the coordinates that were requested, which is
@@ -474,13 +528,12 @@ export const QUERY_MAX_LENGTH = 256;
 export function emptyPagedResult<T>(): PagedResult<T> {
   return {
     items: [],
-    totalCount: 0,
-    pageIndex: 0,
-    pageSize: 0,
-    isUnpaged: true,
-    totalPages: 0,
-    hasPreviousPage: false,
-    hasNextPage: false,
+    meta: {
+      totalCount: 0,
+      pageIndex: 0,
+      pageSize: 0,
+      totalPages: 0,
+    },
   };
 }
 
@@ -503,11 +556,12 @@ export function emptyPagedResult<T>(): PagedResult<T> {
  * a caller that keeps hold of the array it supplied cannot afterwards change what
  * this envelope reports.
  *
- * The page count is stated as one for a non-empty set and zero for an empty one,
- * which is what the server reports for an unpaged envelope. That is not a client-side
- * recomputation of a server value — there is no server value here — and it is
- * deliberately not a division, because the unpaged page size of zero is exactly the
- * case a division cannot handle.
+ * The coordinates it emits are exactly the ones the server publishes for an unpaged
+ * answer, member for member, which is the whole point of the factory: the page size
+ * is the total, because one page held everything, and the page count is one for a
+ * non-empty set and zero for an empty one. That is not a client-side recomputation of
+ * a server value — there is no server value here — and the page count is deliberately
+ * not a division, because it is derived from a set that was never windowed.
  *
  * @typeParam T The row contract carried.
  * @param items Every matching record.
@@ -518,13 +572,12 @@ export function unpagedResult<T>(items: readonly T[]): PagedResult<T> {
 
   return {
     items: snapshot,
-    totalCount: snapshot.length,
-    pageIndex: 0,
-    pageSize: snapshot.length,
-    isUnpaged: true,
-    totalPages: snapshot.length > 0 ? 1 : 0,
-    hasPreviousPage: false,
-    hasNextPage: false,
+    meta: {
+      totalCount: snapshot.length,
+      pageIndex: 0,
+      pageSize: snapshot.length,
+      totalPages: snapshot.length > 0 ? 1 : 0,
+    },
   };
 }
 
@@ -532,15 +585,16 @@ export function unpagedResult<T>(items: readonly T[]): PagedResult<T> {
  * WHICH COLLECTIONS ARE PAGED, AND WHICH ARE NOT
  *
  * Not every collection endpoint returns a PagedResult. Several return a BARE JSON
- * ARRAY, and typing one of those as PagedResult<T> would leave every paging member
+ * ARRAY, and typing one of those as PagedResult<T> would leave items empty and meta
  * undefined at run time while compiling perfectly. The division below was confirmed
  * endpoint by endpoint against a running server rather than assumed:
  *
- *   PAGED, returning the PagedResult envelope
+ *   PAGED, returning the { items, meta } envelope
  *     - portals
  *     - users        (nested beneath a portal)
  *     - roles        (nested beneath a portal)
  *     - modules      (nested beneath a portal)
+ *     - the accounts holding one role (nested beneath that role)
  *
  *   UNPAGED, returning a bare array - declare these as `readonly T[]`
  *     - role groups
@@ -565,4 +619,3 @@ export function unpagedResult<T>(items: readonly T[]): PagedResult<T> {
  * needs to render paged and unpaged collections through one contract. Do not use it
  * to reshape a response that already arrived paged.
  */
-

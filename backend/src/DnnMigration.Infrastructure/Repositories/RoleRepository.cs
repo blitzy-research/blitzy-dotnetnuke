@@ -294,19 +294,26 @@ internal sealed class RoleRepository : IRoleRepository
     /// </remarks>
     public async Task<IReadOnlyList<UserRole>> GetUserRolesByUsernameAsync(
         int portalId,
-        string username,
+        string? username,
         string? roleName,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(username);
-
-        string wantedUser = username.Trim().ToLowerInvariant();
-
+        // The account is included as well as the role because the terminal statement projects the
+        // account's display name beside the assignment columns, so a caller projecting an assignment
+        // always needs it and would otherwise read once per row.
         IQueryable<UserRole> query = _context.UserRoles
             .Include(a => a.Role)
-            .Where(a =>
-                a.User!.Username.ToLower() == wantedUser
-                && a.Role!.PortalId == portalId);
+            .Include(a => a.User)
+            .Where(a => a.Role!.PortalId == portalId);
+
+        if (username is not null)
+        {
+            // A null login name narrows nothing - the terminal body's IF @UserName Is Null branch - while
+            // an empty string is a representable name and narrows to it, so the test is for null and
+            // never for emptiness.
+            string wantedUser = username.Trim().ToLowerInvariant();
+            query = query.Where(a => a.User!.Username.ToLower() == wantedUser);
+        }
 
         if (roleName is not null)
         {
@@ -322,20 +329,32 @@ internal sealed class RoleRepository : IRoleRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Both bounds are passed through <see cref="NormalizeLegacyDateMarker"/> before the row is
+    /// staged, which reproduces the legacy write behaviour exactly - see that method's own remarks.
+    /// </remarks>
     public Task AddUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userRole);
         cancellationToken.ThrowIfCancellationRequested();
+
+        NormalizeAssignmentBounds(userRole);
 
         _context.UserRoles.Add(userRole);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Both bounds are passed through <see cref="NormalizeLegacyDateMarker"/> before the row is
+    /// staged, which reproduces the legacy write behaviour exactly - see that method's own remarks.
+    /// </remarks>
     public Task UpdateUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userRole);
         cancellationToken.ThrowIfCancellationRequested();
+
+        NormalizeAssignmentBounds(userRole);
 
         _context.UserRoles.Update(userRole);
         return Task.CompletedTask;
@@ -385,4 +404,60 @@ internal sealed class RoleRepository : IRoleRepository
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Replaces the legacy absent-date marker with <see langword="null"/> on both bounds of an
+    /// assignment about to be staged.
+    /// </summary>
+    /// <param name="userRole">The assignment being staged.</param>
+    private static void NormalizeAssignmentBounds(UserRole userRole)
+    {
+        userRole.EffectiveDate = NormalizeLegacyDateMarker(userRole.EffectiveDate);
+        userRole.ExpiryDate = NormalizeLegacyDateMarker(userRole.ExpiryDate);
+    }
+
+    /// <summary>
+    /// Returns <see langword="null"/> when the supplied bound is the legacy absent-date marker, and
+    /// the bound itself otherwise.
+    /// </summary>
+    /// <param name="bound">A membership bound as the caller supplied it.</param>
+    /// <returns>The value to store.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS IS <c>Null.GetNull</c>, AT THE SAME BOUNDARY AND FOR THE SAME REASON. The
+    /// legacy absent-date marker is <c>Null.NullDate</c>, which is <c>Date.MinValue</c>
+    /// (<c>Null.vb</c> lines 66-70), and the legacy data-access layer converted it to <c>DBNull</c>
+    /// on the way to the database - <c>Null.GetNull</c> (<c>Null.vb</c> lines 183-186) substitutes
+    /// <c>DBNull</c> when the DATE PART equals <c>NullDate.Date</c>, carrying the source comment
+    /// "this avoids subtle time differences". Both members that wrote these two columns wrapped both
+    /// values in it on every call: <c>AddUserRole(PortalId, UserId, RoleId, GetNull(EffectiveDate),
+    /// GetNull(ExpiryDate))</c> and <c>UpdateUserRole(UserRoleId, GetNull(EffectiveDate),
+    /// GetNull(ExpiryDate))</c>, membership <c>DataProvider/SqlDataProvider.vb</c> lines 280-286. The
+    /// two repository members that stand in for those two legacy members therefore do the same thing,
+    /// which is what keeps the stored shape identical under Rule T5 and keeps the sentinel out of the
+    /// Domain under Rule T7.
+    /// </para>
+    /// <para>
+    /// The comparison is on the date part alone, matching <c>Null.GetNull</c> rather than improving on
+    /// it. A caller that carried the marker forward from a legacy object may well have a non-zero time
+    /// component attached to it, and an exact-equality test would let such a value through.
+    /// </para>
+    /// <para>
+    /// This is not merely a compatibility nicety. <c>dbo.UserRoles.EffectiveDate</c> and
+    /// <c>ExpiryDate</c> are both SQL Server <c>datetime</c>, whose range begins at 1753-01-01, so
+    /// 0001-01-01 is unstorable and an attempt to write it is refused by the database outright. Absent
+    /// this normalisation a caller passing the marker would receive a range failure from the store
+    /// rather than the "no bound" the legacy application recorded.
+    /// </para>
+    /// <para>
+    /// It is done here, in an explicit method on the write path, rather than as a mapping value
+    /// converter. EF Core does not invoke a value converter for a null model value and a converter
+    /// cannot introduce one, so expressing "this value becomes SQL NULL" as a converter would require
+    /// a null-converting converter - a construct EF Core documents as unsupported for most uses. The
+    /// entity configuration records that no conversion is attached and points here instead, so the two
+    /// files cannot drift into disagreeing about where the normalisation lives.
+    /// </para>
+    /// </remarks>
+    private static DateTime? NormalizeLegacyDateMarker(DateTime? bound) =>
+        bound is DateTime value && value.Date == DateTime.MinValue.Date ? null : bound;
 }

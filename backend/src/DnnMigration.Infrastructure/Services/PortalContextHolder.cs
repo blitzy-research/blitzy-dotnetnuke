@@ -46,6 +46,28 @@ namespace DnnMigration.Infrastructure.Services;
 /// </remarks>
 internal sealed class PortalContextHolder : IPortalContextHolder
 {
+    /// <summary>
+    /// Longest address that could ever match, being the width of <c>dbo.PortalAlias.HTTPAlias</c>.
+    /// </summary>
+    /// <remarks>
+    /// Pinned to the column, not chosen: <c>nvarchar(200)</c> at
+    /// <c>PortalAliasConfiguration.HasMaxLength(200)</c>, so a longer candidate could never have been
+    /// stored and generating it would put an unmatchable value into the query.
+    /// </remarks>
+    private const int MaximumAliasLength = 200;
+
+    /// <summary>
+    /// Most path segments beneath the authority that are considered when building the candidate chain.
+    /// </summary>
+    /// <remarks>
+    /// A bound on work an anonymous caller can ask for. Every candidate becomes an element of one IN list
+    /// sent to the store on every request, so an uncapped chain turns a deliberately long URL into a large
+    /// query. Four is generous: the legacy signup screen composed exactly one segment beneath the authority
+    /// (<c>Signup.ascx.vb</c> L232-L236), so a deeper alias can only arise from a host account typing one
+    /// by hand.
+    /// </remarks>
+    private const int MaximumAliasPathSegments = 4;
+
     private readonly IPortalAliasRepository _aliases;
 
     /// <summary>
@@ -119,24 +141,61 @@ internal sealed class PortalContextHolder : IPortalContextHolder
                 "The request did not carry a host name that identifies a portal.");
         }
 
-        // The repository matches the whole stored value and returns EVERY match rather than choosing one,
-        // which is what makes the ambiguous case visible here. Deciding what nought, one, or more than one
-        // match means is this type's judgement rather than the repository's, because it is a policy
-        // question about serving a call and not a question about stored rows.
-        IReadOnlyList<PortalAlias> candidates = await _aliases
-            .GetAllByHttpAliasAsync(httpAlias, cancellationToken)
+        // THE ADDRESS IS A CHAIN, NOT A SINGLE VALUE, and this is what makes a child portal reachable. The
+        // legacy product let a child portal be addressed by a path segment beneath a shared host - the
+        // signup screen composed exactly "domain/segment" at Signup.ascx.vb:L232-L236 - so the stored alias
+        // may carry path segments and the request-side counterpart, Globals.GetDomainName (L563 onward),
+        // walked the request path building the value it compared. Reproducing that means generating the
+        // candidates most-specific-first and preferring the longest that matches, which is the same
+        // preference the legacy walk expressed by stopping at the first recognised directory.
+        IReadOnlyList<string> chain = BuildAddressChain(httpAlias);
+
+        // One round trip for the whole chain. Asking per candidate would be a query per path segment on
+        // every request, which is why the repository member takes the collection.
+        IReadOnlyList<PortalAlias> matches = await _aliases
+            .GetAllByHttpAliasAsync(chain, cancellationToken)
             .ConfigureAwait(false);
 
-        if (candidates.Count == 0)
+        if (matches.Count == 0)
         {
             return Result.Failure(
                 IPortalContextHolder.NotFoundReasonCode,
                 "The host name in the request does not identify a configured portal.");
         }
 
-        // Two or more. Refused, not resolved: an installation in this state has a data defect an operator
-        // must correct, and serving either candidate would cross a tenant boundary. The legacy resolution
-        // procedure collapsed this case with min(PortalID) instead, which is the defect being removed.
+        // The most specific candidate that matched anything wins. A parent and its child are BOTH expected
+        // to match - "host" and "host/child" are two rows and both are legitimate - so the presence of more
+        // than one match across DIFFERENT candidates is the ordinary case rather than an ambiguity, and
+        // collapsing it would serve the parent's content under the child's address.
+        string? resolvedAddress = null;
+        foreach (string candidate in chain)
+        {
+            if (matches.Any(match => string.Equals(match.HttpAlias, candidate, StringComparison.OrdinalIgnoreCase)))
+            {
+                resolvedAddress = candidate;
+                break;
+            }
+        }
+
+        if (resolvedAddress is null)
+        {
+            // The store answered with rows whose value is in the chain by the repository's comparison but
+            // not by this one. Treated as no match rather than guessing which row was meant, because the two
+            // comparisons disagreeing is a defect and resolving a tenant on a defect is how a request ends
+            // up served by the wrong tenant.
+            return Result.Failure(
+                IPortalContextHolder.NotFoundReasonCode,
+                "The host name in the request does not identify a configured portal.");
+        }
+
+        List<PortalAlias> candidates = matches
+            .Where(match => string.Equals(match.HttpAlias, resolvedAddress, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Two or more rows for THE SAME address. Refused, not resolved: an installation in this state has a
+        // data defect an operator must correct, and serving either candidate would cross a tenant boundary.
+        // The legacy resolution procedure collapsed this case with min(PortalID) instead, which is the
+        // defect being removed.
         if (candidates.Count > 1)
         {
             return Result.Failure(
@@ -248,4 +307,61 @@ internal sealed class PortalContextHolder : IPortalContextHolder
         Result.Failure(
             IPortalContextHolder.IncompleteReasonCode,
             $"The portal identified by this request cannot be used because {detail}.");
+
+    /// <summary>
+    /// Builds the chain of addresses a request could be matched by, most specific first.
+    /// </summary>
+    /// <param name="address">
+    /// The address as the caller supplied it: a host name, optionally followed by the request's path.
+    /// </param>
+    /// <returns>The candidate addresses, longest first, and never empty for a non-blank input.</returns>
+    /// <remarks>
+    /// <para>
+    /// The chain for <c>host/child/api/v1</c> is <c>host/child/api/v1</c>, <c>host/child/api</c>,
+    /// <c>host/child</c>, <c>host</c> - progressively fewer path segments, with the bare authority last.
+    /// Empty segments collapse, so a doubled or trailing slash produces no duplicate candidate and no
+    /// candidate ending in a slash, neither of which the alias column ever holds.
+    /// </para>
+    /// <para>
+    /// TWO BOUNDS, BOTH DELIBERATE. Candidates longer than the alias column CANNOT match, so they are not
+    /// generated: <c>dbo.PortalAlias.HTTPAlias</c> is <c>nvarchar(200)</c> and a longer value could never
+    /// have been stored. And the number of path segments considered is capped, because the chain becomes an
+    /// IN list sent to the store on every request and an uncapped one turns a long URL into a large query -
+    /// a denial-of-service vector reachable by any anonymous caller. The cap is generous relative to what
+    /// the legacy product could produce: its signup screen composed exactly ONE path segment beneath the
+    /// authority (<c>Signup.ascx.vb</c> L232-L236), and a host account typing a deeper value by hand is the
+    /// only way more than one arises.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<string> BuildAddressChain(string address)
+    {
+        string trimmed = address.Trim();
+
+        string[] parts = trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        string authority = parts[0];
+
+        int segments = Math.Min(parts.Length - 1, MaximumAliasPathSegments);
+
+        List<string> chain = new(segments + 1);
+
+        for (int depth = segments; depth >= 1; depth--)
+        {
+            string candidate = string.Join('/', parts.Take(depth + 1));
+
+            if (candidate.Length <= MaximumAliasLength)
+            {
+                chain.Add(candidate);
+            }
+        }
+
+        chain.Add(authority);
+
+        return chain;
+    }
 }

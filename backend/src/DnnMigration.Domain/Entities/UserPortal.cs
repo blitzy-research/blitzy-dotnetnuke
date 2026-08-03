@@ -160,10 +160,10 @@ namespace DnnMigration.Domain.Entities;
 ///   </item>
 /// </list>
 /// <para>
-/// Nothing here decides whether the row has been written. That declaration belongs to the
-/// persistence layer through <see cref="Entity{TId}.MarkIdentityPersisted"/>, for the reason set
-/// out on <see cref="Entity{TId}"/>: this schema seeds real identities at values other codebases
-/// reserve for "not saved yet".
+/// Nothing here decides whether the row has been written. That declaration is made through
+/// <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows the answer, and by
+/// nothing automatically, for the reason set out on <see cref="Entity{TId}"/>: this schema seeds real
+/// identities at values other codebases reserve for "not saved yet".
 /// </para>
 /// </remarks>
 public sealed class UserPortal : Entity<int>
@@ -232,7 +232,8 @@ public sealed class UserPortal : Entity<int>
     /// </para>
     /// <para>
     /// MIGRATION: zero is a real tenant here, not a missing one. <c>dbo.Portals.PortalID</c> is
-    /// declared <c>IDENTITY(-1, 1)</c>, so the first portal is -1 and the second is zero, and -1
+    /// declared <c>IDENTITY(-1, 1)</c>, so -1 is its seed and first generated value while the shipped
+    /// default portal row carries an explicit zero - both are real keys - and -1
     /// is also the value the legacy <c>Null.NullInteger</c> sentinel used for "no value". No code
     /// may read either value as absence, and because this property is part of the key and of a
     /// foreign key at once, the mapping supplies a sentinel outside the range of real identifiers

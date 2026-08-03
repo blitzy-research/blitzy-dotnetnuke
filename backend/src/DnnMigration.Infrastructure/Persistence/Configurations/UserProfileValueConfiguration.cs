@@ -84,12 +84,12 @@ internal sealed class UserProfileValueConfiguration : IEntityTypeConfiguration<U
         builder.ToTable("UserProfile", "dbo");
 
         // MIGRATION: the primary key is declared PRIMARY KEY NONCLUSTERED
-        //   (04.00.04:L1422-1423 = 03.02.03:L1375-1376), and no later script drops it. Clustering is
-        //   physical storage metadata with no surface in the model - there is no Fluent call that
-        //   could carry it - so it is recorded here in comment form rather than expressed in code.
-        //   The constraint NAME is expressed, so the model carries the name the database already has
-        //   instead of one derived by convention.
-        builder.HasKey(v => v.ProfileId).HasName("PK_UserProfile");
+        //   (04.00.04:L1422-1423 = 03.02.03:L1375-1376), and no later script drops it. Both the
+        //   constraint NAME and the CLUSTERING are expressed, so the model carries what the database
+        //   already has instead of what convention would derive: the SQL Server provider defaults a
+        //   primary key to CLUSTERED, and the model snapshot is the artefact every future migration is
+        //   diffed against, so an unstated clustering is an untrue one rather than an absent one.
+        builder.HasKey(v => v.ProfileId).HasName("PK_UserProfile").IsClustered(false);
 
         // 04.00.04:L1413 (= 03.02.03:L1366) - ProfileID int IDENTITY(1,1) NOT NULL. Note the
         // upper-case ID suffix. The seed is recorded so a generated script would continue the
@@ -98,7 +98,10 @@ internal sealed class UserProfileValueConfiguration : IEntityTypeConfiguration<U
         // This identity seeds at 1, which makes it the ordinary case: Portals seeds at -1 and Roles,
         // Tabs and Modules at 0, so for those a default int is a genuine key. That is a property of
         // this table alone and is not licence to read 0 or -1 as absence anywhere else - persisted
-        // state is declared through Entity<TId>.MarkIdentityPersisted, never deduced from a value.
+        // state is declared through Entity<TId>.MarkIdentityPersisted by code that already knows the
+        // row exists, never deduced from a value. Nothing in persistence declares it: materialising a
+        // row through this mapping leaves IdentityIsPersisted false, so two instances of one stored
+        // value compare by object reference.
         builder.Property(v => v.ProfileId)
             .HasColumnName("ProfileID")
             .HasColumnType("int")

@@ -44,7 +44,6 @@ function sessionWith(permissions: readonly string[], isSuperUser = false): AuthS
     refreshToken: 'refresh-1',
     mustChangePassword: false,
     passwordExpiring: false,
-    mustUpdateProfile: false,
     user: userWith(permissions, isSuperUser),
   };
 }

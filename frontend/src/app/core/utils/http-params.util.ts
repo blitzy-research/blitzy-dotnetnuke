@@ -28,8 +28,9 @@
  *     `Return ""`, not `Nothing` — and L76-L80 defines the boolean marker as
  *     `False`. That module is the codebase's null contract, not a vestige.
  *   - `Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider`
- *     L77 seeds the portal identity at MINUS ONE, so the first real portal is
- *     numbered -1 and the second 0. L115, L140 and L221 seed the role, page and
+ *     L77 seeds the portal identity at MINUS ONE, so the seed and first generated value
+ *     is -1, while the shipped default portal row is inserted explicitly with PortalID 0
+ *     (L7125) — both are real keys. L115, L140 and L221 seed the role, page and
  *     module identities at ZERO, and seven further tables seed an item identity at
  *     zero (L44, L265, L278, L291, L302, L322, L336).
  *   - `Website/admin/Security/Roles.ascx.vb` L112 and L114 give the role-group
@@ -47,9 +48,14 @@
  *
  * Every function below therefore decides omission with an explicit
  * `=== undefined` / `=== null` test and NOTHING ELSE, and stringifies what remains
- * explicitly rather than relying on coercion. The server is faithful in the other
- * direction too — it serialises with camel casing and never elides a default value —
- * so the request side has to match it.
+ * explicitly rather than relying on coercion. The response side is close but not
+ * identical, and the difference matters when reading a body: the server serialises with
+ * camel casing and never elides a DEFAULT value — a zero, a minus one, an empty string
+ * and a `false` all reach the wire — but it does elide a NULL one, because it is
+ * configured with a when-writing-null ignore condition. A nullable member that is
+ * absent therefore arrives as a MISSING PROPERTY rather than as `null`, so read absence
+ * from the property not being there. Nothing about that changes the request side, which
+ * omits `null` and `undefined` alike.
  *
  * ---------------------------------------------------------------------------
  * PAGING: ZERO-BASED, OFFSET-ONLY, AND NEVER GIVEN A DEFAULT HERE
@@ -94,17 +100,27 @@
  * forwarded as an omission.
  *
  * ---------------------------------------------------------------------------
- * SEARCH IS A PREFIX MATCH, AND THIS MODULE DOES NOT DECORATE THE TEXT
+ * TWO MATCH SEMANTICS, AND THIS MODULE DOES NOT DECORATE THE TEXT
  * ---------------------------------------------------------------------------
- * The legacy readers matched on a trailing per-cent sign appended AT THE CALL SITE —
+ * Match semantics are the SERVER's, and they differ by parameter. The general-purpose
+ * free-text filters are SUBSTRING (contains) matches: the portal-name filter
+ * (`PortalRepository.cs` L59), the account listing's general query across username,
+ * display name and email (`UserRepository.cs` L131-L134), and the role and module
+ * searches. Only the NAMED filters are PREFIX (starts-with) matches: the username
+ * prefix, the email prefix and the profile-value prefix (`UserRepository.cs` L140,
+ * L146, L574 and L587). Each member below states which of the two applies to it.
+ *
+ * The legacy readers appended a trailing per-cent sign AT THE CALL SITE —
  * `Website/admin/Users/Users.ascx.vb` L269, L271 and L274, and
- * `Website/admin/Portal/Portals.ascx.vb` L142 — so matching is a PREFIX match
- * server-side. Composing that pattern is now the repository's work, behind the
- * repository interfaces. This module therefore transmits the caller's text exactly
- * as supplied: it appends nothing, trims nothing, changes no letter's case and
- * performs no encoding of its own. Decorating the value here would double the
- * pattern the moment a second caller did the same, and would leave the repository
- * unable to tell a character a user typed from one a caller added.
+ * `Website/admin/Portal/Portals.ascx.vb` L142 — so composing a pattern is the
+ * repository's work, behind the repository interfaces, and never this module's. This
+ * module transmits the caller's text exactly as supplied: it appends nothing, trims
+ * nothing, changes no letter's case and performs no encoding of its own. Decorating the
+ * value here would double the pattern the moment a second caller did the same, and
+ * would leave the repository unable to tell a character a user typed from one a caller
+ * added. Note that the server itself DOES trim and lower-case the value it received
+ * before comparing, so matching is case-insensitive and insensitive to surrounding
+ * whitespace without this module altering anything.
  *
  * MIGRATION: the legacy "no search applied" marker was the literal string `"None"`.
  * `Website/admin/Users/Users.ascx.vb` L266 reads `ElseIf SearchText <> "None"`, so
@@ -242,16 +258,16 @@ export const QUERY_PARAM = Object.freeze({
   /** Ordering direction. Bound from `PagedRequest.SortDir`. */
   sortDir: 'sortDir',
 
-  /** Free-text prefix filter. Bound from `PagedRequest.Query`. */
+  /** Free-text SUBSTRING filter. Bound from `PagedRequest.Query`. */
   query: 'query',
 
-  /** Portal-name prefix filter on the portal listing. */
+  /** Portal-name SUBSTRING filter on the portal listing. */
   name: 'name',
 
-  /** Account-name prefix filter on the account listing. */
+  /** Account-name PREFIX filter on the account listing. */
   userName: 'userName',
 
-  /** Address prefix filter on the account listing. */
+  /** Address PREFIX filter on the account listing. */
   email: 'email',
 
   /** Profile property to filter the account listing by. */
@@ -265,6 +281,15 @@ export const QUERY_PARAM = Object.freeze({
 
   /** Role-group filter on the role listing. */
   roleGroupId: 'roleGroupId',
+
+  /**
+   * Grouping scope on the role listing: which roles to consider when no group is named.
+   *
+   * This is the successor to the legacy selector's two NEGATIVE values, which a group
+   * identifier cannot express. It is a name rather than a number precisely so that the
+   * magic integers do not travel.
+   */
+  scope: 'scope',
 
   /** Page filter on the module listing. */
   tabId: 'tabId',
@@ -280,6 +305,9 @@ export const QUERY_PARAM = Object.freeze({
 
   /** Module-definition filter on the permission catalogue. */
   moduleDefinitionId: 'moduleDefinitionId',
+
+  /** Permission-key filter on the permission catalogue. */
+  permissionKey: 'permissionKey',
 
   /** Portal being signed in to, when the request host matches no configured alias. */
   portalId: 'portalId',
@@ -470,9 +498,11 @@ export function setSortParams(params: HttpParams, sort: SortParams): HttpParams 
  * Sets every member of the paging contract: both page coordinates, the ordering, and
  * the free-text filter.
  *
- * The filter text is passed through UNCHANGED — not trimmed, not case-folded and not
- * decorated. Matching is a PREFIX match server-side, and composing that pattern is
- * the repository's work; see the note at the head of this module. An explicitly
+ * The filter text is passed through UNCHANGED by this module — not trimmed, not
+ * case-folded and not decorated. The server applies a SUBSTRING match for this
+ * general-purpose filter, and trims and lower-cases the value before comparing;
+ * composing any pattern is the repository's work. See the note at the head of this
+ * module for the full split. An explicitly
  * supplied empty filter is therefore transmitted as an empty filter rather than being
  * reinterpreted as no filter, because reinterpreting it would be this module deciding
  * a question the server already answers.
@@ -513,17 +543,18 @@ export function pagedRequestParams(request: PagedRequestParams): HttpParams {
  * The filter the portal listing accepts in addition to the paging contract.
  *
  * MIGRATION: the legacy screen had ONE filter box whose text went straight into a
- * prefix match on the portal name (`Website/admin/Portal/Portals.ascx.vb` L142). The
- * endpoint keeps that as a dedicated `name` filter, separate from the paging
+ * trailing-wildcard match on the portal name (`Website/admin/Portal/Portals.ascx.vb`
+ * L142). The endpoint keeps that as a dedicated `name` filter, separate from the paging
  * contract's general-purpose filter, so a caller states which of the two it means
  * instead of relying on the server to guess.
  */
 export interface PortalListFilter {
   /**
-   * Restricts the result to portals whose name BEGINS WITH this text.
+   * Restricts the result to portals whose name CONTAINS this text.
    *
-   * Supplied raw. No per-cent sign is appended here — the repository composes the
-   * pattern.
+   * The server performs a substring match, case-insensitively and after trimming
+   * (`PortalRepository.cs` L58-L59). Supplied raw from here: no per-cent sign is
+   * appended, because the repository composes any pattern it needs.
    */
   readonly name?: string | null;
 }
@@ -533,7 +564,7 @@ export interface PortalListFilter {
  *
  * @param request The page of records to return, the size of the page, the ordering and
  * the paging contract's own filter.
- * @param filter The portal-name prefix filter, or omitted or `null` to list every
+ * @param filter The portal-name substring filter, or omitted or `null` to list every
  * portal. `null` is admitted because a reset filter control yields it and it means the
  * same thing as omission.
  * @returns The parameters to send.
@@ -665,7 +696,33 @@ export interface RoleListFilter {
    * group restriction; do not express that by sending a negative number.
    */
   readonly roleGroupId?: number | null;
+
+  /**
+   * Which roles to consider when `roleGroupId` names no group.
+   *
+   * `'All'` lists every role in the portal whatever its grouping - the legacy
+   * "&lt; All Roles &gt;" choice, and what the API assumes when the member is omitted.
+   * `'Ungrouped'` lists only the roles belonging to no group at all - the legacy
+   * "&lt; Global Roles &gt;" choice, which is the intent no group identifier can express.
+   *
+   * Sending `'Ungrouped'` TOGETHER WITH a `roleGroupId` is a contradiction and the API
+   * refuses it as a bad request rather than preferring one of the two. Sending `'All'`
+   * together with a group identifier is not a contradiction: the identifier still selects
+   * its group.
+   */
+  readonly scope?: RoleGroupScope | null;
 }
+
+/**
+ * The grouping scopes the role listing accepts.
+ *
+ * Spelled exactly as the API's closed enumeration names them, because the value travels as
+ * a name and an unrecognised spelling is refused by model binding before the request runs.
+ * A string union rather than a numeric one for the same reason: the legacy equivalent was a
+ * bare integer whose unrecognised values fell silently into whichever magic band contained
+ * them.
+ */
+export type RoleGroupScope = 'All' | 'Ungrouped';
 
 /**
  * Builds the query parameters for a portal's role listing.
@@ -694,7 +751,9 @@ export function roleListParams(
     return params;
   }
 
-  return setQueryParam(params, QUERY_PARAM.roleGroupId, filter.roleGroupId);
+  const scoped: HttpParams = setQueryParam(params, QUERY_PARAM.roleGroupId, filter.roleGroupId);
+
+  return setQueryParam(scoped, QUERY_PARAM.scope, filter.scope);
 }
 
 /**
@@ -800,12 +859,30 @@ export interface PermissionListFilter {
    * as supplied and is never compared against a sentinel.
    */
   readonly moduleDefinitionId?: number | null;
+
+  /**
+   * Restricts the result to one permission key.
+   *
+   * Spelled exactly as the API's closed key enumeration names it, because the value travels
+   * as a name and an unrecognised spelling is refused by model binding before the request
+   * runs. Combined with `permissionCode` this is the legacy code-and-key lookup.
+   */
+  readonly permissionKey?: PermissionKeyName | null;
 }
+
+/**
+ * The permission keys the catalogue filter accepts.
+ *
+ * The four members are the whole vocabulary the catalogue's key column holds; the same
+ * spellings appear in an access token's permission claims, so one concept never travels two
+ * ways.
+ */
+export type PermissionKeyName = 'VIEW' | 'EDIT' | 'READ' | 'WRITE';
 
 /**
  * Builds the query parameters for the permission catalogue.
  *
- * @param filter The code and module-definition restrictions, or omitted or `null` to
+ * @param filter The code, module-definition and key restrictions, or omitted or `null` to
  * read the whole catalogue.
  * @returns The parameters to send, empty when no restriction was named.
  */
@@ -817,6 +894,7 @@ export function permissionListParams(filter?: PermissionListFilter | null): Http
   return appendQueryParams(new HttpParams(), {
     [QUERY_PARAM.permissionCode]: filter.permissionCode,
     [QUERY_PARAM.moduleDefinitionId]: filter.moduleDefinitionId,
+    [QUERY_PARAM.permissionKey]: filter.permissionKey,
   });
 }
 
@@ -867,14 +945,26 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  * inferred from the plan. A dedicated function above exists for each entry in the
  * first list; the second list is why several of them do not.
  *
+ * Roles, role groups and profile definitions are each reachable at TWO addresses: the
+ * flat one the contract froze - /roles, /roles/{roleId}/users, /role-groups,
+ * /profile-definitions - and a portal-nested one. Both are served by the same action,
+ * so the query contract is identical either way and there is nothing here to choose
+ * between them. They differ only in where the tenant comes from: the flat address acts
+ * on the tenant the request host resolves to, so a client that administers its own
+ * portal should prefer it and send no tenant at all, while the nested address names a
+ * tenant explicitly and is what a host account uses to reach another one. The tenant is
+ * never a query parameter on either form, which is why no function above emits one.
+ *
  *   ACCEPT QUERY PARAMETERS
  *     GET    /portals ................................. paging contract + name
  *     GET    /portals/{portalId}/users ................ paging contract + userName,
  *                                                       email, profilePropertyName,
  *                                                       profilePropertyValue, isApproved
  *     PUT    /portals/{portalId}/users/{userId}/approval ... isApproved (required)
- *     GET    /portals/{portalId}/roles ................ paging contract + roleGroupId
- *     GET    /portals/{portalId}/roles/{roleId}/users .. paging contract only
+ *     GET    /roles and /portals/{portalId}/roles ..... paging contract + roleGroupId,
+ *                                                       scope
+ *     GET    /roles/{roleId}/users and
+ *            /portals/{portalId}/roles/{roleId}/users .. paging contract only
  *     GET    /portals/{portalId}/modules .............. paging contract + tabId,
  *                                                       includeDeleted
  *     GET    /portals/{portalId}/modules/{moduleId} .... tabModuleId
@@ -882,13 +972,21 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  *     GET    /portals/{portalId}/modules/{moduleId}/settings ... tabModuleId
  *     PUT    /portals/{portalId}/modules/{moduleId}/settings ... tabModuleId
  *     GET    /permissions ............................. permissionCode,
- *                                                       moduleDefinitionId
+ *                                                       moduleDefinitionId,
+ *                                                       permissionKey
  *     POST   /auth/login .............................. portalId
  *
  *   ACCEPT NO QUERY PARAMETERS AT ALL - send nothing, or emptyQueryParams()
  *     GET    /module-definitions ...... the tenant is resolved from the request host
- *     GET    /portals/{portalId}/profile-definitions ..... unpaged reference data
- *     GET    /portals/{portalId}/role-groups ............. unpaged reference data
+ *     GET    /module-definitions/{moduleDefinitionId}
+ *     GET    /module-definitions/desktop-modules/{desktopModuleId}
+ *     GET    /permissions/{permissionId}
+ *     GET    /permissions/modules/{moduleId}
+ *     GET    /permissions/tabs/{tabId}
+ *     GET    /profile-definitions and
+ *            /portals/{portalId}/profile-definitions ..... unpaged reference data
+ *     GET    /role-groups and
+ *            /portals/{portalId}/role-groups ............. unpaged reference data
  *     GET    /portals/{portalId}/tabs .................... the page tree, unpaged
  *     GET|PUT /tabs/{tabId}
  *     GET    /portals/{portalId}/aliases
@@ -901,11 +999,17 @@ export function loginParams(selector?: LoginPortalSelector | null): HttpParams {
  * omits two that it does. Nothing was invented to close the gap: a function for an
  * endpoint that does not exist would compile perfectly and fail at run time.
  *
- *   - The module-definition catalogue takes NO desktopModuleId, and there is no
- *     desktop-modules sub-route to take a portalId either. Its single read resolves the
- *     tenant from the request host and accepts nothing.
- *   - The permission catalogue takes permissionCode and moduleDefinitionId ONLY. It
- *     binds no moduleId, no tabId and no permissionKey.
+ *   - The module-definition catalogue no longer has only ONE read. A definition is now
+ *     addressable by its own identifier, and a package's definitions by the package
+ *     identifier, both as ROUTE SEGMENTS rather than as query parameters - so neither
+ *     needs a function here. All three reads resolve the tenant from the request host and
+ *     accept no query parameter of any kind.
+ *   - The permission catalogue binds permissionCode, moduleDefinitionId AND permissionKey.
+ *     The module-scoped and page-scoped catalogue reads exist too, but take their subject
+ *     as a route segment, so they bind no query parameter either. An earlier revision of
+ *     this note recorded that they did not exist at all; they were restored once the
+ *     terminal procedure bodies were measured and found to select catalogue definitions
+ *     rather than grants.
  *   - The profile-definition and role-group listings take the portal as a ROUTE
  *     SEGMENT, not as a parameter.
  *   - The portal listing has a dedicated name filter over and above the paging

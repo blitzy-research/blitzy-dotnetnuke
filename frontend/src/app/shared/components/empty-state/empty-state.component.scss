@@ -38,8 +38,8 @@
   color: var(--color-text-muted);
 
   svg {
-    inline-size: 100%;
-    block-size: 100%;
+    inline-size: var(--size-full);
+    block-size: var(--size-full);
   }
 }
 
@@ -68,7 +68,7 @@
 // page width stays with the page container.
 .empty-state__message {
   margin-block: 0;
-  max-inline-size: 100%;
+  max-inline-size: var(--size-full);
   overflow-wrap: anywhere;
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-normal);

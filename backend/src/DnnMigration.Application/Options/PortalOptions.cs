@@ -169,9 +169,9 @@ public sealed class PortalOptions
     /// and at <c>L1370</c>, the comparison
     /// <c>isAdminTemplate = (TemplateFile = "admin.template")</c>. Those are the only two
     /// executable occurrences in the file; the third, at <c>L971</c>, is a documentation
-    /// comment. An earlier draft of the migration plan cited <c>L1360</c> and <c>L980</c>,
-    /// which are in fact the declarations of <c>ParseTemplate</c> and <c>CreatePortal</c>
-    /// respectively rather than the literal, so the citations here are the corrected ones.
+    /// comment. Do not substitute <c>L1360</c> or <c>L980</c> for those citations: they are the
+    /// declarations of <c>ParseTemplate</c> and <c>CreatePortal</c> respectively, not the sites
+    /// where the literal appears.
     /// </para>
     /// <para>
     /// The value is load-bearing rather than cosmetic. Matching it selects a behavioural

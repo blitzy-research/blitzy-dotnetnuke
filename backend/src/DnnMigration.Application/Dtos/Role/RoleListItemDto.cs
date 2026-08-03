@@ -3,7 +3,8 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Role;
 
 /// <summary>
-/// One row of the security-roles listing served by <c>GET /api/v1/roles</c>.
+/// One row of the security-roles listing served by
+/// <c>GET /api/v1/portals/{portalId}/roles</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,9 +23,11 @@ namespace DnnMigration.Application.Dtos.Role;
 /// </para>
 /// <para>
 /// The type is inert: no validation, no persistence and no serialisation attributes, and the
-/// legacy element-name serialisation attributes are dropped. Field rules belong to a
-/// FluentValidation validator under <c>Application/Validation</c>, and translation to and from
-/// the persisted model belongs to a hand-written role mapper under <c>Application/Mapping/</c>.
+/// legacy element-name serialisation attributes are dropped. It is a RESPONSE shape, so no rule
+/// applies to it in either direction; the write contracts it mirrors are governed by
+/// <c>CreateRoleRequestValidator</c> - the only role validator that exists - and, for every other
+/// role write, by the checks in <c>Application/Services/RoleService.cs</c>. Translation to and from
+/// the persisted model belongs to the hand-written role mapper under <c>Application/Mapping/</c>.
 /// </para>
 /// <para>
 /// Paging is not part of this type: an implementer is obliged to return a sequence of these
@@ -80,8 +83,9 @@ public sealed class RoleListItemDto
     /// Backing column <c>Roles.RoleName nvarchar(50) NOT NULL</c>
     /// (<c>01.00.00.SqlDataProvider</c> L117); legacy member <c>RoleInfo.RoleName</c>
     /// (<c>RoleInfo.vb</c> L110), the first data column at <c>roles.ascx</c> L36 under the header
-    /// "Name". The length ceiling and the mandatory-value rule are reproduced declaratively by the
-    /// validator; this contract asserts neither.
+    /// "Name". The length ceiling and the mandatory-value rule are reproduced on the create path by
+    /// <c>CreateRoleRequestValidator</c> and on every other write path by
+    /// <c>RoleService</c>; this contract asserts neither.
     /// </remarks>
     public string RoleName { get; set; } = string.Empty;
 

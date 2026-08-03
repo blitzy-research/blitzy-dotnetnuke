@@ -208,7 +208,7 @@
 //  to a flat heading here. `transparent` and `0` are permitted literals and need
 //  no token.
 .module-settings__toggle {
-  inline-size: 100%;
+  inline-size: var(--size-full);
   text-align: start;
 
   font-size: var(--font-size-lg);
@@ -369,10 +369,10 @@
 .module-settings__field {
   display: grid;
   gap: var(--space-1);
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
 
   @include mx.respond-above('md') {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto var(--grid-track-fluid);
     gap: var(--space-2) var(--space-4);
     align-items: start;
   }
@@ -384,10 +384,10 @@
 // inside the breakpoint because the wider rule above would otherwise re-establish
 // two tracks on it.
 .module-settings__field--stacked {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
 
   @include mx.respond-above('md') {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: var(--grid-track-fluid);
   }
 }
 

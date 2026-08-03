@@ -138,6 +138,16 @@ public static class ApplicationBuilderExtensions
         // reports the status code the caller actually received.
         app.UseMiddleware<RequestLoggingMiddleware>();
 
+        // Before routing, and only this stage can be. A child portal is addressed by a
+        // path segment beneath a shared host, so the segment that identifies the tenant
+        // sits in front of the path the routes were written against; it has to move
+        // into the path base before routing matches, or every request to a child
+        // portal answers 404 no matter how correctly its tenant resolved. Routing
+        // cannot be un-done afterwards, which is why the named portal-alias stage
+        // below - fixed after authorisation by the mandated order - cannot do this.
+        // Nothing named in that order moves: this is an additional, un-named stage.
+        app.UseMiddleware<TenantPathBaseMiddleware>();
+
         // Routing must precede the four stages below. Cross-origin policy, the rate
         // limiter and authorisation each read metadata from the endpoint that routing
         // selects; placed before routing there is no endpoint yet and each of them

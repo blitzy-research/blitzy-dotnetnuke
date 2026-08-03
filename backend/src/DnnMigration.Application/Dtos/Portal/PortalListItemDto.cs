@@ -24,10 +24,12 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// </para>
 /// <para>
 /// <b>Paging lives on the envelope, never on the row.</b> A page is returned as
-/// <c>PagedResult&lt;PortalListItemDto&gt;</c> inside the application and serialised through the
-/// shared <c>PagedResponse&lt;PortalListItemDto&gt;</c>, whose companion metadata carries the total,
-/// the page index and the page size. None of those is restated here: two copies of one fact on a
-/// single response give a pager two sources of truth and no way to choose between them.
+/// <c>PagedResult&lt;PortalListItemDto&gt;</c>, which is what the controller serialises today: it
+/// carries the rows together with the total, the page index and the page size. The shared
+/// <c>PagedResponse&lt;PortalListItemDto&gt;</c> under <c>Dtos/Common/</c> expresses the same four
+/// facts and is declared for a later convergence, but no controller returns it yet. Either way none
+/// of the paging facts is restated on the row: two copies of one fact on a single response give a
+/// pager two sources of truth and no way to choose between them.
 /// </para>
 /// <para>
 /// <b>The page index is zero-based</b>, so index 0 addresses the first page. That is the shipped data
@@ -89,9 +91,9 @@ public sealed class PortalListItemDto
     /// (<c>01.00.00.SqlDataProvider</c> line 77). Rendered by the legacy grid's first data column,
     /// <c>portals.ascx</c> lines 23 to 29.
     /// </remarks>
-    // MIGRATION: the column's identity seed makes the first real portal's identifier negative and the
-    // second portal's identifier nought. Both are legitimate, addressable tenants: the shipped
-    // "_default" portal is inserted with identifier nought at 01.00.00.SqlDataProvider line 7125. This
+    // MIGRATION: the column's identity seed is negative, so the first identifier the column generates
+    // is minus one, while the shipped "_default" portal row is inserted with an explicit identifier of
+    // nought at 01.00.00.SqlDataProvider line 7125. Both are legitimate, addressable tenants. This
     // is the sharpest sentinel collision in the schema, because the legacy integer absence sentinel
     // (Library/Components/Shared/Null.vb lines 41 to 45) is the very same negative value, and that
     // module's absence test reports any integer equal to it as missing (lines 210 and 211).

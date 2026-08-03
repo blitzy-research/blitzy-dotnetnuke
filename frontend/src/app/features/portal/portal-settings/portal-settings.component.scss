@@ -70,16 +70,25 @@
 @use '../../../../styles/mixins' as mx;
 
 //  MEASURES
-// The token vocabulary declares no width or measure token, and the spacing scale
-// stops at --space-8 (2.5rem), so the two narrow field steps are composed by
-// ADDING tokens rather than by naming a length. Compile-time Sass names, so the
-// same expression is never restated and the emitted CSS is unchanged.
+// The vocabulary carries no CONTROL-width token, and the spacing scale stops at
+// --space-8 (2.5rem), so the two narrow control steps are composed by ADDING tokens
+// rather than by naming a length. Compile-time Sass names, so the same expression is
+// never restated and the emitted CSS is unchanged.
 //
 // Legacy control widths were an artefact of the layout tables: a table cell has no
 // intrinsic sizing, so every control carried an explicit pixel width. In a grid the
 // control track supplies the width and the wide step needs no declaration at all.
-$label-measure: calc(var(--space-8) + var(--space-8) + var(--space-8) + var(--space-6));
-$field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
+//
+// The LABEL column is deliberately NOT one of these. It resolves to
+// `--field-label-inline-size`, whose own provenance is the same measured
+// `width="150"` label cell this screen was ported from. An earlier revision composed
+// the label track from spacing steps here instead, which produced two definitions of
+// one shared measure that had already drifted apart — 9rem locally against the
+// token's 9.375rem — and that is precisely the local exception the shared vocabulary
+// exists to prevent. A second form surface has to agree with the first rather than
+// arrive at its own answer.
+$control-medium: calc(var(--space-8) + var(--space-8) + var(--space-8) + var(--space-6));
+$control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 
 //  ROOT
 :host {
@@ -359,7 +368,7 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   align-items: start;
 
   @include mx.respond-above('md') {
-    grid-template-columns: $label-measure minmax(0, 1fr);
+    grid-template-columns: var(--grid-track-label) var(--grid-track-fluid);
     column-gap: var(--space-4);
   }
 }
@@ -385,11 +394,11 @@ $field-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // The two narrow steps. Applied to the wrapper, so whichever control it holds is
 // capped with it. Everything else fills the track.
 .portal-settings__control--medium {
-  max-inline-size: $label-measure;
+  max-inline-size: $control-medium;
 }
 
 .portal-settings__control--narrow {
-  max-inline-size: $field-narrow;
+  max-inline-size: $control-narrow;
 }
 
 // A grid item whose inline size is `auto` already stretches to its track, which is

@@ -720,6 +720,115 @@ public sealed class RoleRepositoryTests
     }
 
     /// <summary>
+    /// The legacy absent-date marker is replaced by SQL <c>NULL</c> on the way to the store, on both
+    /// bounds and on both write members.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is <c>Null.GetNull</c>, asserted against a real SQL Server rather than against a
+    /// mock. The legacy write path converted the marker on every write - both members that wrote these
+    /// columns wrapped both values, at membership <c>DataProvider/SqlDataProvider.vb</c> L280-L286 - and
+    /// the repository members that stand in for them do the same, which is what keeps the stored shape
+    /// identical under Rule T5 and keeps the sentinel out of the Domain under Rule T7.
+    /// </para>
+    /// <para>
+    /// The test would fail LOUDLY without the normalisation rather than subtly: both columns are
+    /// <c>datetime</c>, whose range begins at 1753-01-01, so the server refuses 0001-01-01 outright and
+    /// the save would throw a range error. That is precisely why the legacy layer converted the value,
+    /// and it is why this belongs in an integration test - an in-memory or mocked store would accept the
+    /// marker happily and prove nothing.
+    /// </para>
+    /// <para>
+    /// The marker carries a time component, because the legacy emptiness test compared DATE PARTS ONLY
+    /// (<c>Null.vb</c> L183-L186, "this avoids subtle time differences") and a value copied out of a
+    /// legacy object may well have one attached. An exact-equality test would let it through.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Assignment_NormalisesTheLegacyAbsentDateMarkerToNull()
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Marker {Suffix()}"));
+        DateTime marker = DateTime.MinValue.AddHours(5);
+
+        try
+        {
+            using (IServiceScope adding = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = adding.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = adding.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await roles.AddUserRoleAsync(new UserRole
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    RoleId = roleId,
+                    EffectiveDate = marker,
+                    ExpiryDate = marker,
+                });
+
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await CountNullBoundsAsync(roleId)).Should().Be(
+                1,
+                "an added assignment whose bounds carry the marker is stored with both columns null");
+
+            using (IServiceScope amending = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = amending.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = amending.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+                assignment.Should().NotBeNull();
+
+                // A real bound first, so the update genuinely has something to overwrite and the null
+                // that follows cannot be mistaken for the value simply never having changed.
+                assignment!.ExpiryDate = new DateTime(2027, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+                await roles.UpdateUserRoleAsync(assignment);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await CountNullBoundsAsync(roleId)).Should().Be(0, "the expiry now holds a real instant");
+
+            using (IServiceScope clearing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = clearing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = clearing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+                assignment.Should().NotBeNull();
+
+                assignment!.ExpiryDate = marker;
+                await roles.UpdateUserRoleAsync(assignment);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await CountNullBoundsAsync(roleId)).Should().Be(
+                1,
+                "and an amendment back to the marker clears the column, exactly as the legacy "
+                + "UpdateUserRole did by wrapping the same value in GetNull");
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            UserRole? stored = await reader.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+            stored.Should().NotBeNull();
+            stored!.EffectiveDate.Should().BeNull("what comes back is absence, not the marker");
+            stored.ExpiryDate.Should().BeNull();
+            stored.GetStatus(DateTime.UtcNow).Should().Be(
+                RoleStatus.Active,
+                "so the Domain classifies it as in force without needing to recognise a sentinel");
+        }
+        finally
+        {
+            await RemoveAssignmentsAsync(roleId);
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
     /// A brand-new role and its first member are saved together by referring to the role through its
     /// navigation rather than through its identifier.
     /// </summary>
@@ -967,6 +1076,29 @@ public sealed class RoleRepositoryTests
         });
 
         await unitOfWork.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Counts the membership rows of a role whose two bounds are both SQL <c>NULL</c>.
+    /// </summary>
+    /// <param name="roleId">The role to count.</param>
+    /// <returns>The number of unbounded membership rows.</returns>
+    private Task<int> CountNullBoundsAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[UserRoles] "
+            + "WHERE [RoleID] = @roleId AND [EffectiveDate] IS NULL AND [ExpiryDate] IS NULL",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Removes every membership row of a role.</summary>
+    /// <param name="roleId">The role to clear.</param>
+    /// <returns>A task that completes once the rows are gone.</returns>
+    private async Task RemoveAssignmentsAsync(int roleId)
+    {
+        _ = await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[UserRoles] WHERE [RoleID] = @roleId",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
     }
 
     /// <summary>Counts the membership rows of a role straight out of the store.</summary>

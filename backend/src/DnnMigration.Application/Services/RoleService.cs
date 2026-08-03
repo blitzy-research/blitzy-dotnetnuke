@@ -1,8 +1,10 @@
+using System.Globalization;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Mapping;
+using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
@@ -64,11 +66,39 @@ public sealed class RoleService : IRoleService
     /// <summary>Reason code reported when the portal has no such role group.</summary>
     private const string RoleGroupNotFoundCode = "role_group.not_found";
 
+    /// <summary>
+    /// Reported when the page coordinates are well formed yet still cannot be honoured, which on this
+    /// service means only one thing: a caller named an ordering this listing does not apply.
+    /// </summary>
+    private const string PagingInvalidCode = "role.paging_invalid";
+
     /// <summary>Reason code reported when a role group name is already used in the portal.</summary>
     private const string RoleGroupNameDuplicateCode = "role_group.name_duplicate";
 
     /// <summary>Reason code reported when a role group still classifies at least one role.</summary>
     private const string RoleGroupInUseCode = "role_group.in_use";
+
+    /// <summary>
+    /// Reason code reported when the two role-listing narrowing arguments contradict each other.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Raised only for the genuinely contradictory pair - one named group together with a request for the
+    /// roles in no group. The contradiction is refused rather than resolved by preferring one argument,
+    /// because a precedence rule would answer with a page the caller never asked for.
+    /// </para>
+    /// <para>
+    /// The <c>_invalid</c> suffix is load-bearing rather than stylistic. The central translator derives a
+    /// status from the token after the last separator, and this condition must answer 400: the request is
+    /// one the caller can correct by dropping either argument, and it conflicts with nothing about the
+    /// stored state. Naming it <c>scope_conflict</c> would have routed it to 409 through that table's
+    /// <c>conflict</c> token, which would tell the caller the installation was in a conflicting state
+    /// when in fact their own two query values disagreed. The suffix also matches its nearest siblings -
+    /// <c>permission.filter_invalid</c> and <c>portal.paging_invalid</c> - which describe the same class
+    /// of unusable filter combination.
+    /// </para>
+    /// </remarks>
+    private const string RoleGroupScopeInvalidCode = "role_group.scope_invalid";
 
     /// <summary>Reason code reported when the portal has no such member.</summary>
     private const string UserNotFoundCode = "user.not_found";
@@ -84,6 +114,28 @@ public sealed class RoleService : IRoleService
     /// deleting it, so that a caller which must report the difference can.
     /// </summary>
     private const string AssignmentExpiredNotRemovedCode = "role_assignment.expired_not_removed";
+
+    /// <summary>Resource kind published on an audit record describing a role.</summary>
+    /// <remarks>
+    /// Spelled as the domain entity's own type name so a reader of the trail can go straight from a record
+    /// to the type that produced it, and so the three kinds this service records cannot drift apart.
+    /// </remarks>
+    private const string RoleResourceType = "Role";
+
+    // MIGRATION: role GROUPS are deliberately not audited, and the omission is measured rather than
+    // arbitrary. The legacy event-log vocabulary declares forty-three members and not one of them names a
+    // role group (EventLogController.vb:L38-L77), so the legacy screens at
+    // Website/admin/Security/EditGroups.ascx.vb wrote no audit record for a group change and there is
+    // nothing to preserve. Minting a name the legacy trail never contained would put an event into the
+    // stream that no existing operator search expects, which is a worse outcome than the silence.
+
+    /// <summary>Resource kind published on an audit record describing a membership.</summary>
+    /// <remarks>
+    /// The identifier carried alongside it is the ROLE's, not the assignment row's: the legacy audit
+    /// entries for this pair were keyed by the role and the account, the assignment row's own surrogate key
+    /// is meaningless to an operator, and on the removal path the row may no longer exist at all.
+    /// </remarks>
+    private const string UserRoleResourceType = "UserRole";
 
     /// <summary>Maximum stored length of a role name, measured from the legacy screen's validator.</summary>
     private const int RoleNameMaximumLength = 50;
@@ -104,6 +156,17 @@ public sealed class RoleService : IRoleService
     private const int DaysPerWeek = 7;
 
     /// <summary>
+    /// Number of months in a year, used to express the yearly billing offset as a month offset.
+    /// </summary>
+    /// <remarks>
+    /// The yearly offset is applied as a month count rather than through the framework's year addition
+    /// so that both calendar frequencies share one range check. Adding twelve months is equivalent to
+    /// adding a year for every date the column can hold, including the twenty-ninth of February, where
+    /// both operations truncate to the twenty-eighth in a common year.
+    /// </remarks>
+    private const int MonthsPerYear = 12;
+
+    /// <summary>
     /// The perpetual expiry the legacy store wrote for a one-off subscription, preserved verbatim
     /// because a legacy consumer reading the same row expects to see exactly this value.
     /// </summary>
@@ -115,6 +178,8 @@ public sealed class RoleService : IRoleService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IClock _clock;
     private readonly ICacheService _cache;
+    private readonly ICurrentUser _currentUser;
+    private readonly IAuditSink _audit;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="RoleService"/> class.
@@ -125,13 +190,28 @@ public sealed class RoleService : IRoleService
     /// <param name="unitOfWork">Commits each write exactly once.</param>
     /// <param name="clock">Supplies the current instant, so the expiry arithmetic is testable.</param>
     /// <param name="cache">Invalidates the portal and member entries a role change affects.</param>
+    /// <param name="currentUser">
+    /// Identifies the operator performing the change, so an audit record can attribute it.
+    /// </param>
+    /// <param name="audit">Receives the business audit record for every committed role change.</param>
+    /// <remarks>
+    /// MIGRATION: the last two collaborators exist to preserve the legacy audit trail. The legacy role
+    /// screens reached the event log through <c>EventLogController.AddLog</c> with the event keys
+    /// <c>ROLE_CREATED</c>, <c>ROLE_UPDATED</c>, <c>ROLE_DELETED</c>, <c>USER_ROLE_CREATED</c> and
+    /// <c>USER_ROLE_DELETED</c> (<c>EventLogController.vb:L57-L61</c>), and every such record carried the
+    /// acting account's identifier and name. The store behind it is out of scope, so the record is
+    /// emitted through <see cref="IAuditSink"/> instead; the acting account still has to come from the
+    /// credential rather than from a request body, which is what <see cref="ICurrentUser"/> supplies.
+    /// </remarks>
     public RoleService(
         IRoleRepository roles,
         IPortalRepository portals,
         IUserRepository users,
         IUnitOfWork unitOfWork,
         IClock clock,
-        ICacheService cache)
+        ICacheService cache,
+        ICurrentUser currentUser,
+        IAuditSink audit)
     {
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
@@ -139,6 +219,50 @@ public sealed class RoleService : IRoleService
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _audit = audit ?? throw new ArgumentNullException(nameof(audit));
+    }
+
+    /// <summary>
+    /// Records one committed role change on the audit trail.
+    /// </summary>
+    /// <param name="eventName">The stable event name, from <see cref="AuditEventNames"/>.</param>
+    /// <param name="portalId">The tenant the change was made within.</param>
+    /// <param name="resourceType">The kind of record changed - <c>Role</c>, <c>RoleGroup</c> or <c>UserRole</c>.</param>
+    /// <param name="resourceId">The identifier of the record changed.</param>
+    /// <param name="subjectUserId">
+    /// The account a membership change was made against, or <see langword="null"/> for a change that
+    /// names no account.
+    /// </param>
+    /// <param name="properties">Short, non-sensitive descriptive facts, or <see langword="null"/> for none.</param>
+    /// <remarks>
+    /// Called only after the change has been committed, so no record can describe a write that was later
+    /// abandoned. The acting account is read from the credential, never from a request.
+    /// </remarks>
+    private void RecordAudit(
+        string eventName,
+        int portalId,
+        string resourceType,
+        int resourceId,
+        int? subjectUserId = null,
+        IReadOnlyDictionary<string, string?>? properties = null)
+    {
+        AuditEvent record = new(eventName)
+        {
+            PortalId = portalId,
+            ActorUserId = _currentUser.UserId,
+            ActorUserName = _currentUser.UserName,
+            SubjectUserId = subjectUserId,
+            ResourceType = resourceType,
+            ResourceId = resourceId.ToString(CultureInfo.InvariantCulture),
+        };
+
+        if (properties is not null)
+        {
+            record = record with { Properties = properties };
+        }
+
+        _audit.Record(record);
     }
 
     /// <inheritdoc />
@@ -146,15 +270,42 @@ public sealed class RoleService : IRoleService
         int portalId,
         PagedRequest request,
         int? roleGroupId,
+        RoleGroupScope scope = RoleGroupScope.All,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // The contradictory pair is refused before any store is touched: asking for one named group and
+        // for the roles belonging to no group at all cannot both be satisfied, and no ordering of the two
+        // arguments is more correct than the other. Pairing an identifier with the DEFAULT scope is not a
+        // contradiction - that is what a caller which has never heard of the scope sends - so only the
+        // explicitly ungrouped combination is refused.
+        if (roleGroupId is not null && scope == RoleGroupScope.Ungrouped)
+        {
+            return Result<PagedResult<RoleListItemDto>>.Failure(
+                RoleGroupScopeInvalidCode,
+                "A role group identifier cannot be combined with a request for the ungrouped roles: "
+                    + "supply the identifier to read that one group, or the ungrouped scope on its own.");
+        }
 
         if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
         {
             return Result<PagedResult<RoleListItemDto>>.Failure(
                 PortalNotFoundCode,
                 $"No portal bears identifier {portalId}.");
+        }
+
+        // MIGRATION: the PER-COLLECTION ordering set is enforced HERE, before anything is read. The
+        // shared request validator applies nothing narrower than the union of every collection's set,
+        // because one PagedRequest contract serves every listing, so on its own it would admit a
+        // portal-only or account-only field name for this listing. Enforcing the narrow set at the point
+        // of dispatch closes that for every caller, not only an HTTP one, and the set is exactly what the
+        // ordering below honours.
+        if (!SortableFields.IsPermittedFor(request.SortBy, SortableFields.Roles))
+        {
+            return Result<PagedResult<RoleListItemDto>>.Failure(
+                PagingInvalidCode,
+                $"Roles cannot be ordered by '{request.SortBy}'.");
         }
 
         if (roleGroupId is int scopedGroupId)
@@ -190,6 +341,17 @@ public sealed class RoleService : IRoleService
             // value selects the filter, never its magnitude.
             matching = matching.Where(candidate => candidate.RoleGroupId == filteredGroupId);
         }
+        else if (scope == RoleGroupScope.Ungrouped)
+        {
+            // MIGRATION: the legacy "< Global Roles >" selection, restored. Roles.RoleGroupID is a
+            // NULLABLE column (03.02.03.SqlDataProvider:L34) and an ungrouped role stores SQL null there,
+            // so the test is for ABSENCE of a group and not for any particular number. The legacy screen
+            // sent -1 for this, which MembershipProviders/DataProvider/SqlDataProvider.vb:L231 converted
+            // to DBNull through Null.GetNull before the terminal statement's
+            // "RoleGroupId IS NULL AND @RoleGroupId IS NULL" arm matched; that sentinel round trip is
+            // gone, and the intent it encoded is now stated directly.
+            matching = matching.Where(candidate => candidate.RoleGroupId is null);
+        }
 
         if (!string.IsNullOrWhiteSpace(request.Query))
         {
@@ -198,16 +360,13 @@ public sealed class RoleService : IRoleService
                 candidate.RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase));
         }
 
-        List<Role> ordered = matching
-            .OrderBy(candidate => candidate.RoleName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(candidate => candidate.RoleId)
-            .ToList();
+        List<Role> ordered = OrderRoles(matching, request).ToList();
 
         int totalCount = ordered.Count;
 
         IReadOnlyList<RoleListItemDto> rows = (request.PageSize == 0
                 ? ordered
-                : ordered.Skip(request.PageIndex * request.PageSize).Take(request.PageSize).ToList())
+                : ordered.Skip(Paging.SkipCount(request.PageIndex, request.PageSize)).Take(request.PageSize).ToList())
             .Select(RoleMappings.ToListItem)
             .ToList();
 
@@ -302,7 +461,11 @@ public sealed class RoleService : IRoleService
                 isApproved: null,
                 includeUnauthorised: true,
                 includeSuperUsers: false,
-                cancellationToken).ConfigureAwait(false);
+                // No sort field: this is an unpaged enrolment sweep, not a listing, so every matching
+                // member is enrolled and the order in which they are enrolled is not observable.
+                sortBy: null,
+                descending: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             foreach (User member in members.Items)
             {
@@ -330,6 +493,20 @@ public sealed class RoleService : IRoleService
                 RoleCreateFailedCode,
                 "The role was created but could not be read back.");
         }
+
+        // MIGRATION: reproduces the legacy ROLE_CREATED audit entry (EventLogController.vb:L59), which the
+        // legacy screen wrote after a successful insert. Recorded after the commit and after the read-back,
+        // so the identifier on the record is the one the database actually assigned.
+        RecordAudit(
+            AuditEventNames.RoleCreated,
+            portalId,
+            RoleResourceType,
+            stored.RoleId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["RoleName"] = stored.RoleName,
+                ["AutoAssignment"] = request.AutoAssignment.ToString(CultureInfo.InvariantCulture),
+            });
 
         RoleDetailDto detail = RoleMappings.ToDetail(stored);
         return Result<RoleDetailDto>.Success(detail);
@@ -407,6 +584,19 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidatePortal(portalId);
 
+        // MIGRATION: reproduces the legacy ROLE_UPDATED audit entry (EventLogController.vb:L60). The name
+        // is recorded even though this path cannot change it, because it is what a reader identifies the
+        // role by; the identifier alone would force a second lookup to interpret the record.
+        RecordAudit(
+            AuditEventNames.RoleUpdated,
+            portalId,
+            RoleResourceType,
+            role.RoleId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["RoleName"] = role.RoleName,
+            });
+
         RoleDetailDto detail = RoleMappings.ToDetail(role);
         return Result<RoleDetailDto>.Success(detail);
     }
@@ -434,6 +624,8 @@ public sealed class RoleService : IRoleService
         // rather than a role-scoped assignment read this contract deliberately does not expose. The
         // permission rows are NOT swept: FK_ModulePermission_Roles_RoleID and
         // FK_TabPermission_Roles_RoleID carry no cascade and are configured NoAction, exactly as before.
+        string removedRoleName = role.RoleName;
+
         await _roles.DeleteAsync(roleId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -441,11 +633,24 @@ public sealed class RoleService : IRoleService
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateTabPermissions(portalId);
 
+        // MIGRATION: reproduces the legacy ROLE_DELETED audit entry (EventLogController.vb:L61). The name is
+        // captured BEFORE the removal, because after the commit the row it came from no longer exists and
+        // the record would be reduced to a bare identifier nothing can resolve.
+        RecordAudit(
+            AuditEventNames.RoleDeleted,
+            portalId,
+            RoleResourceType,
+            roleId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["RoleName"] = removedRoleName,
+            });
+
         return Result.Success();
     }
 
     /// <inheritdoc />
-    public async Task<Result<PagedResult<UserListItemDto>>> ListRoleUsersAsync(
+    public async Task<Result<PagedResult<RoleMembershipDto>>> ListRoleUsersAsync(
         int portalId,
         int roleId,
         PagedRequest request,
@@ -455,49 +660,73 @@ public sealed class RoleService : IRoleService
 
         if (!await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false))
         {
-            return Result<PagedResult<UserListItemDto>>.Failure(
+            return Result<PagedResult<RoleMembershipDto>>.Failure(
                 PortalNotFoundCode,
                 $"No portal bears identifier {portalId}.");
+        }
+
+        // The role-membership set is narrower than the account listing's for the reasons SortableFields
+        // records, and it is enforced here for the same reason the role listing enforces its own.
+        if (!SortableFields.IsPermittedFor(request.SortBy, SortableFields.RoleUsers))
+        {
+            return Result<PagedResult<RoleMembershipDto>>.Failure(
+                PagingInvalidCode,
+                $"Role members cannot be ordered by '{request.SortBy}'.");
         }
 
         Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
         if (role is null)
         {
-            return Result<PagedResult<UserListItemDto>>.Failure(
+            return Result<PagedResult<RoleMembershipDto>>.Failure(
                 RoleNotFoundCode,
                 $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
 
-        // MIGRATION: the accounts in a role are read through IUserRepository, not through the role
-        // contract. The legacy procedure for this question is GetUsersByRolename(PortalID, Rolename),
-        // and it sits in the membership provider's Users section (DataProvider.vb:L85) rather than its
-        // role section - so the account-shaped read belongs to the account repository and the role
-        // contract yields assignment rows only. That also removes the read-per-row this projection used
-        // to perform, because the accounts arrive already composed and already confined to the portal.
-        IReadOnlyList<User> members = await _users
-            .ListByRoleNameAsync(portalId, role.RoleName, cancellationToken)
+        // MIGRATION: this reads the ASSIGNMENT rows, not the accounts, because the two assignment dates
+        // the legacy grid rendered live on the assignment and exist nowhere else. The legacy screen took
+        // the same route: SecurityRoles.ascx.vb:L246 binds GetUserRolesByRoleName when a role is
+        // selected, DNNRoleProvider.vb:L520-L522 defines that as GetUserRoles(portalId, Nothing,
+        // roleName), and the terminal GetUserRolesByUsername statement answers a null login name by
+        // returning every assignment in the portal joined to its account and its role. So one read
+        // composes all three records, exactly as the legacy result set did, and there is no read per row.
+        //
+        // An earlier revision read accounts through IUserRepository.ListByRoleNameAsync instead. That
+        // read cannot carry the dates - an account has no effective or expiry date, the membership does -
+        // which is why the projection it fed had to declare them absent.
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesByUsernameAsync(portalId, username: null, roleName: role.RoleName, cancellationToken)
             .ConfigureAwait(false);
 
-        int totalCount = members.Count;
+        IEnumerable<UserRole> matching = assignments;
 
-        IReadOnlyList<User> pageOfMembers = request.PageSize == 0
-            ? members
-            : members.Skip(request.PageIndex * request.PageSize).Take(request.PageSize).ToList();
-
-        var rows = new List<UserListItemDto>(pageOfMembers.Count);
-        foreach (User member in pageOfMembers)
+        if (!string.IsNullOrWhiteSpace(request.Query))
         {
-            // The legacy grid on this screen bound the identifier, the display name and the two
-            // assignment dates only, so no profile value is read here; the address and telephone
-            // members of the projection stay absent rather than costing a read per row.
-            rows.Add(UserMappings.ToListItem(member, portalId, address: null, telephone: null));
+            // The filter matches the account, because that is the column the legacy screen searched and
+            // the role is already fixed by the route. Both the display name and the login name are
+            // considered: the grid shows the former, while a caller who knows the account knows the
+            // latter, and refusing one of the two would make the same account findable only by luck.
+            string wanted = request.Query.Trim();
+            matching = matching.Where(assignment =>
+                assignment.User is not null
+                    && (assignment.User.DisplayName.Contains(wanted, StringComparison.OrdinalIgnoreCase)
+                        || assignment.User.Username.Contains(wanted, StringComparison.OrdinalIgnoreCase)));
         }
 
-        PagedResult<UserListItemDto> projected = request.PageSize == 0
-            ? PagedResult<UserListItemDto>.Unpaged(rows)
-            : PagedResult<UserListItemDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
+        List<UserRole> ordered = OrderRoleMemberships(matching, request).ToList();
 
-        return Result<PagedResult<UserListItemDto>>.Success(projected);
+        int totalCount = ordered.Count;
+
+        IReadOnlyList<RoleMembershipDto> rows = (request.PageSize == 0
+                ? ordered
+                : ordered.Skip(Paging.SkipCount(request.PageIndex, request.PageSize)).Take(request.PageSize).ToList())
+            .Select(RoleMappings.ToMembership)
+            .ToList();
+
+        PagedResult<RoleMembershipDto> projected = request.PageSize == 0
+            ? PagedResult<RoleMembershipDto>.Unpaged(rows)
+            : PagedResult<RoleMembershipDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
+
+        return Result<PagedResult<RoleMembershipDto>>.Success(projected);
     }
 
     /// <inheritdoc />
@@ -602,6 +831,26 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidateUser(portalId, member.Username);
 
+        // MIGRATION: reproduces the legacy USER_ROLE_CREATED audit entry (EventLogController.vb:L57). The
+        // legacy member was an upsert and raised the same key for both arms, so a renewal is recorded under
+        // it too; the Renewed property is what distinguishes the two without inventing a second event name
+        // the legacy vocabulary does not contain. The two dates are recorded because they are the whole
+        // substance of a renewal, and they are rendered round-trippably so a record can be compared
+        // textually across hosts.
+        RecordAudit(
+            AuditEventNames.UserRoleCreated,
+            portalId,
+            UserRoleResourceType,
+            roleId,
+            subjectUserId: request.UserId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["RoleName"] = role.RoleName,
+                ["Renewed"] = (existing is not null).ToString(CultureInfo.InvariantCulture),
+                ["EffectiveDate"] = effectiveDate?.ToString("O", CultureInfo.InvariantCulture),
+                ["ExpiryDate"] = expiryDate?.ToString("O", CultureInfo.InvariantCulture),
+            });
+
         return Result.Success();
     }
 
@@ -680,6 +929,23 @@ public sealed class RoleService : IRoleService
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         _cache.InvalidateUser(portalId, member.Username);
+
+        // MIGRATION: reproduces the legacy USER_ROLE_DELETED audit entry (EventLogController.vb:L58). It is
+        // raised for BOTH arms, including the expire-rather-than-delete arm, because the legacy code took
+        // that arm inside the same removal member and reported one outcome to its caller; the Expired
+        // property records which arm ran, so the trail can distinguish a withdrawn membership from a
+        // back-dated one without a second event name.
+        RecordAudit(
+            AuditEventNames.UserRoleDeleted,
+            portalId,
+            UserRoleResourceType,
+            roleId,
+            subjectUserId: userId,
+            properties: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["RoleName"] = role.RoleName,
+                ["Expired"] = expireInsteadOfDelete.ToString(CultureInfo.InvariantCulture),
+            });
 
         return expireInsteadOfDelete
             ? Result.Success(new ResultReason(
@@ -888,6 +1154,22 @@ public sealed class RoleService : IRoleService
         int? period = trialGoverns ? role.TrialPeriod : role.BillingPeriod;
         BillingFrequency? frequency = trialGoverns ? role.TrialFrequency : role.BillingFrequency;
 
+        // MIGRATION: a submitted bound carrying the legacy absent-date marker means "no bound", and is
+        // read as one HERE, where the request enters the layer that interprets it. The marker is
+        // Null.NullDate - Date.MinValue - and a caller built against the legacy contract had no other
+        // way to say "unbounded", because the legacy property was a non-nullable VB Date. Under Rule T7
+        // the boundary translates it and nothing below this line carries sentinel knowledge.
+        //
+        // This changes no outcome, which is the point: it makes an existing accident explicit. The
+        // marker is always in the past, so the clamping immediately below already turned a submitted
+        // effective marker into null, and a submitted expiry marker into "now" - which is the same
+        // offset base an absent expiry produces, and which is discarded entirely when the role names no
+        // period. Every branch below therefore reaches the value it reached before. What is gained is
+        // that the reason is now stated rather than inferred, and a future change to the clamping
+        // cannot silently turn the marker back into a real 0001-01-01 bound.
+        requestedEffectiveDate = NormalizeLegacyDateMarker(requestedEffectiveDate);
+        requestedExpiryDate = NormalizeLegacyDateMarker(requestedExpiryDate);
+
         DateTime? effectiveDate = requestedEffectiveDate;
         if (effectiveDate is DateTime submittedEffective && submittedEffective < now)
         {
@@ -911,10 +1193,18 @@ public sealed class RoleService : IRoleService
         {
             BillingFrequency.None => null,
             BillingFrequency.OneTime => PerpetualExpiry,
-            BillingFrequency.Day => offsetBase.AddDays(units),
-            BillingFrequency.Week => offsetBase.AddDays(units * DaysPerWeek),
-            BillingFrequency.Month => offsetBase.AddMonths(units),
-            BillingFrequency.Year => offsetBase.AddYears(units),
+
+            // MIGRATION: every offset goes through the clamping helper rather than calling the date
+            // arithmetic directly. The period is an unbounded stored integer, and the four direct calls
+            // this replaces each failed on a large one: the week case multiplied by seven in unchecked
+            // 32-bit arithmetic and could WRAP to a negative day count, silently moving an expiry into
+            // the past, while the day, month and year cases raised an out-of-range fault that surfaced
+            // as a server error naming no field. The helper reproduces the legacy offsets exactly for
+            // every period an installation can plausibly hold and states what happens beyond that.
+            BillingFrequency.Day => AddOffsetWithinStorableRange(offsetBase, units),
+            BillingFrequency.Week => AddOffsetWithinStorableRange(offsetBase, (long)units * DaysPerWeek),
+            BillingFrequency.Month => AddMonthsWithinStorableRange(offsetBase, units),
+            BillingFrequency.Year => AddMonthsWithinStorableRange(offsetBase, (long)units * MonthsPerYear),
 
             // The legacy selection had no default branch, so an unrecognised or absent frequency left
             // the date exactly as the clamping above had set it.
@@ -922,6 +1212,112 @@ public sealed class RoleService : IRoleService
         };
 
         return (effectiveDate, expiryDate);
+    }
+
+    /// <summary>
+    /// Returns <see langword="null"/> when a submitted membership bound is the legacy absent-date
+    /// marker, and the bound itself otherwise.
+    /// </summary>
+    /// <param name="bound">A bound as the caller submitted it.</param>
+    /// <returns>The bound, with the marker read as absence.</returns>
+    /// <remarks>
+    /// The marker is <c>Null.NullDate</c>, which is <c>Date.MinValue</c> (<c>Null.vb</c> lines 66-70),
+    /// and the comparison is on the date part alone, matching the legacy emptiness tests at
+    /// <c>Null.vb</c> lines 183-186 and 222-224 - both of which compare <c>.Date</c> against
+    /// <c>NullDate.Date</c> and carry the source comment "this avoids subtle time differences". A
+    /// caller that copied the marker out of a legacy object may have a time component attached to it,
+    /// so an exact-equality test would let such a value through.
+    /// <para>
+    /// The Infrastructure write path applies the same rule again, deliberately, and the duplication is
+    /// not an oversight: this one exists so a submitted marker is INTERPRETED as absence by the layer
+    /// that derives the stored dates from the role's terms, while that one exists so no bound reaches
+    /// the store as a value the <c>datetime</c> columns cannot hold, whatever path produced it.
+    /// </para>
+    /// </remarks>
+    private static DateTime? NormalizeLegacyDateMarker(DateTime? bound) =>
+        bound is DateTime value && value.Date == DateTime.MinValue.Date ? null : bound;
+
+    /// <summary>
+    /// Advances an instant by a whole number of days, clamping rather than overflowing when the result
+    /// would fall outside the range the terminal <c>datetime</c> column can hold.
+    /// </summary>
+    /// <param name="offsetBase">The instant the offset runs forward from.</param>
+    /// <param name="days">
+    /// The offset in days, already widened to 64 bits by the caller so that the week multiplication
+    /// cannot wrap.
+    /// </param>
+    /// <returns>
+    /// The advanced instant, or the perpetual-expiry value when the offset runs past the storable
+    /// maximum, or the storable minimum when a negative stored period runs back past it.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Clamping upwards to the perpetual-expiry value rather than to the column's last instant is
+    /// deliberate: that value is already this domain's encoding of "no expiry" and is what the one-time
+    /// frequency yields, so a membership whose term runs beyond the calendar the column can express is
+    /// recorded as the perpetual term it effectively is, in the form a legacy reader recognises.
+    /// </para>
+    /// <para>
+    /// A negative offset is not reachable from a validated request - both period members are refused at
+    /// or below zero - but a period stored before those rules existed can be negative, and this method
+    /// is reached with stored values. It therefore clamps in both directions rather than assuming the
+    /// sign it is given.
+    /// </para>
+    /// </remarks>
+    private static DateTime AddOffsetWithinStorableRange(DateTime offsetBase, long days)
+    {
+        if (days >= 0)
+        {
+            long daysAvailable = (PerpetualExpiry - offsetBase).Days;
+            return days > daysAvailable ? PerpetualExpiry : offsetBase.AddDays(days);
+        }
+
+        long daysBehind = (offsetBase - SqlServerRange.MinimumDateTime).Days;
+        return -days > daysBehind ? SqlServerRange.MinimumDateTime : offsetBase.AddDays(days);
+    }
+
+    /// <summary>
+    /// Advances an instant by a whole number of months, clamping rather than overflowing when the result
+    /// would fall outside the range the terminal <c>datetime</c> column can hold.
+    /// </summary>
+    /// <param name="offsetBase">The instant the offset runs forward from.</param>
+    /// <param name="months">
+    /// The offset in months, already widened to 64 bits by the caller so that the year multiplication
+    /// cannot wrap.
+    /// </param>
+    /// <returns>
+    /// The advanced instant, or the perpetual-expiry value when the offset runs past the storable
+    /// maximum, or the storable minimum when a negative stored period runs back past it.
+    /// </returns>
+    /// <remarks>
+    /// The bound is tested on the calendar rather than by catching the arithmetic's own failure, because
+    /// the framework method refuses a month count beyond a fixed limit before it ever considers the
+    /// resulting date - so a large period fails on the argument rather than on the result, and the two
+    /// need the same answer. Testing the resulting month ordinal gives it to them. The day-of-month
+    /// truncation the framework performs for a shorter target month is left to the framework, so a term
+    /// beginning on the thirty-first still lands where the legacy call put it.
+    /// </remarks>
+    private static DateTime AddMonthsWithinStorableRange(DateTime offsetBase, long months)
+    {
+        // Month ordinals counted from year one, which makes the comparison a single subtraction and
+        // avoids reasoning about calendar carries twice.
+        long ordinalNow = ((long)offsetBase.Year * MonthsPerYear) + offsetBase.Month;
+        long ordinalTarget = ordinalNow + months;
+
+        if (ordinalTarget > ((long)PerpetualExpiry.Year * MonthsPerYear) + PerpetualExpiry.Month)
+        {
+            return PerpetualExpiry;
+        }
+
+        if (ordinalTarget
+            < ((long)SqlServerRange.MinimumDateTime.Year * MonthsPerYear) + SqlServerRange.MinimumDateTime.Month)
+        {
+            return SqlServerRange.MinimumDateTime;
+        }
+
+        // Now provably within range, so the framework call cannot fail: the ordinal fits the storable
+        // calendar, which is narrower than the type's own, and the cast is safe for the same reason.
+        return offsetBase.AddMonths((int)months);
     }
 
     /// <summary>
@@ -1035,4 +1431,123 @@ public sealed class RoleService : IRoleService
             throw new DomainException($"A role group name may not exceed {RoleGroupNameMaximumLength} characters.");
         }
     }
+
+    /// <summary>Orders a portal's roles by the field the caller named.</summary>
+    /// <param name="roles">The narrowed roles, before paging.</param>
+    /// <param name="request">The paging request carrying the ordering preference.</param>
+    /// <returns>The ordered sequence.</returns>
+    /// <remarks>
+    /// <para>
+    /// An ordering is applied unconditionally, and every arm ends on the key, so paging a set that shares
+    /// a sort value still assigns each row to exactly one page. The default arm preserves the order this
+    /// listing has always had - role name, then key - which is also the order the terminal
+    /// <c>GetPortalRoles</c> procedure produced, so a caller who names nothing sees no change.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE ARMS BELOW ARE EXACTLY <c>SortableFields.Roles</c>, and keeping the two identical is
+    /// the point rather than a nicety - an allowlist entry with no arm accepts a name and then silently
+    /// orders by something else. Ordering happens in memory because this listing already materialises the
+    /// portal's whole role set to narrow it: the legacy membership provider exposed no paged, filtered or
+    /// group-scoped role read, so the narrowing is this layer's work and the ordering belongs with it. A
+    /// portal holds tens of roles, so the cost is not measurable.
+    /// </para>
+    /// <para>
+    /// Names are compared case-insensitively and ordinally, matching the allowlist's own comparer, and the
+    /// text arms sort case-insensitively for the same reason the legacy grid did: an operator reading a
+    /// list of names does not expect capitalisation to decide position.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<Role> OrderRoles(IEnumerable<Role> roles, PagedRequest request)
+    {
+        bool descending = request.SortDir == SortDirection.Descending;
+        string field = request.HasSort ? request.SortBy!.Trim().ToUpperInvariant() : string.Empty;
+
+        IOrderedEnumerable<Role> ordered = field switch
+        {
+            "ROLEID" => Order(roles, candidate => candidate.RoleId, descending),
+            "DESCRIPTION" => Order(roles, candidate => candidate.Description ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
+            "SERVICEFEE" => Order(roles, candidate => candidate.ServiceFee, descending),
+            "BILLINGFREQUENCY" => Order(roles, candidate => candidate.BillingFrequency, descending),
+            "BILLINGPERIOD" => Order(roles, candidate => candidate.BillingPeriod, descending),
+            "TRIALFEE" => Order(roles, candidate => candidate.TrialFee, descending),
+            "TRIALFREQUENCY" => Order(roles, candidate => candidate.TrialFrequency, descending),
+            "TRIALPERIOD" => Order(roles, candidate => candidate.TrialPeriod, descending),
+            "ISPUBLIC" => Order(roles, candidate => candidate.IsPublic, descending),
+            "AUTOASSIGNMENT" => Order(roles, candidate => candidate.AutoAssignment, descending),
+            _ => Order(roles, candidate => candidate.RoleName, descending, StringComparer.OrdinalIgnoreCase),
+        };
+
+        return descending
+            ? ordered.ThenByDescending(candidate => candidate.RoleId)
+            : ordered.ThenBy(candidate => candidate.RoleId);
+    }
+
+    /// <summary>Orders a role's memberships by the field the caller named.</summary>
+    /// <param name="memberships">The role's assignment rows, before paging.</param>
+    /// <param name="request">The paging request carrying the ordering preference.</param>
+    /// <returns>The ordered sequence.</returns>
+    /// <remarks>
+    /// The membership counterpart of <see cref="OrderRoles"/>, and the arms are exactly
+    /// <c>SortableFields.RoleUsers</c>. Ordering in memory is what makes the ordering possible at all: the
+    /// rows are assignments composed with their accounts by one repository read, so the account columns the
+    /// vocabulary names are reachable here in a way no ordering clause over <c>dbo.UserRoles</c> alone
+    /// could reach. The default arm preserves this listing's established order - display name, then the
+    /// assignment key, which is what the legacy grid rendered in.
+    /// </remarks>
+    private static IEnumerable<UserRole> OrderRoleMemberships(
+        IEnumerable<UserRole> memberships,
+        PagedRequest request)
+    {
+        bool descending = request.SortDir == SortDirection.Descending;
+        string field = request.HasSort ? request.SortBy!.Trim().ToUpperInvariant() : string.Empty;
+
+        // The sort keys read the composed ACCOUNT, because the vocabulary the allowlist publishes for this
+        // collection names account columns - the legacy grid rendered the account and sorted on what it
+        // rendered. An assignment whose account failed to compose sorts as the empty value rather than
+        // faulting the read, which is the same defensive stance the projection takes.
+        IOrderedEnumerable<UserRole> ordered = field switch
+        {
+            "USERID" => Order(memberships, membership => membership.UserId, descending),
+            "USERNAME" => Order(memberships, membership => Account(membership).Username, descending, StringComparer.OrdinalIgnoreCase),
+            "FIRSTNAME" => Order(memberships, membership => Account(membership).FirstName, descending, StringComparer.OrdinalIgnoreCase),
+            "LASTNAME" => Order(memberships, membership => Account(membership).LastName, descending, StringComparer.OrdinalIgnoreCase),
+            "EMAIL" => Order(memberships, membership => Account(membership).Email ?? string.Empty, descending, StringComparer.OrdinalIgnoreCase),
+            "CREATEDDATE" => Order(memberships, membership => Account(membership).CreatedDate, descending),
+            "LASTLOGINDATE" => Order(memberships, membership => Account(membership).LastLoginDate, descending),
+            "ISAPPROVED" => Order(memberships, membership => Account(membership).IsApproved, descending),
+            "ISSUPERUSER" => Order(memberships, membership => Account(membership).IsSuperUser, descending),
+            _ => Order(memberships, membership => Account(membership).DisplayName, descending, StringComparer.OrdinalIgnoreCase),
+        };
+
+        return descending
+            ? ordered.ThenByDescending(membership => membership.UserRoleId)
+            : ordered.ThenBy(membership => membership.UserRoleId);
+    }
+
+    /// <summary>The account an assignment composes, or an empty account when it composed none.</summary>
+    /// <param name="membership">The assignment row.</param>
+    /// <returns>The composed account, never null.</returns>
+    private static User Account(UserRole membership) => membership.User ?? new User();
+
+    /// <summary>Applies one ordering in the requested direction.</summary>
+    /// <typeparam name="TItem">The item type being ordered.</typeparam>
+    /// <typeparam name="TKey">The sort key type.</typeparam>
+    /// <param name="items">The items to order.</param>
+    /// <param name="key">Selects the sort key.</param>
+    /// <param name="descending">Whether the ordering is descending.</param>
+    /// <param name="comparer">An optional comparer for the key.</param>
+    /// <returns>The ordered sequence, still open for a tie-breaking key.</returns>
+    /// <remarks>
+    /// Exists so that each arm above states its key once instead of stating it twice under a conditional,
+    /// which is where an ascending and a descending arm drift apart. The return type stays
+    /// <see cref="IOrderedEnumerable{TElement}"/> so the caller can append the key that breaks ties.
+    /// </remarks>
+    private static IOrderedEnumerable<TItem> Order<TItem, TKey>(
+        IEnumerable<TItem> items,
+        Func<TItem, TKey> key,
+        bool descending,
+        IComparer<TKey>? comparer = null)
+        => descending
+            ? items.OrderByDescending(key, comparer)
+            : items.OrderBy(key, comparer);
 }

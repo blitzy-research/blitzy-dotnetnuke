@@ -40,14 +40,24 @@ namespace DnnMigration.Application.Validation;
 /// always was.
 /// </para>
 /// <para>
-/// <b>The sortable vocabulary has one owner.</b> The permitted field names are
-/// <see cref="SortableFields"/>, which declares the per-collection sets and the union built from
-/// them. This validator applies the union, because <see cref="PagedRequest"/> is one shared contract
-/// bound by every collection endpoint while FluentValidation resolves one validator per request
-/// type: applying the union is what makes an unrecognised name a rejection at the boundary instead
-/// of text handed to a store. Whether a name is meaningful for the particular collection being read
-/// is the narrower question the per-collection sets answer for the listing that knows which
-/// collection it is.
+/// <b>The sortable vocabulary has one owner, and the narrow set is what binds.</b> The permitted
+/// field names are declared once in <c>SortableFields</c>, which holds a set per collection and the
+/// union built from them. The set THIS instance applies is supplied to its constructor, so each
+/// collection's endpoint is bounded by its own set rather than by the union: naming a portal field
+/// while reading accounts is a field-level rejection instead of a parameter the listing silently
+/// discards. That is a correction. FluentValidation resolves one validator per request TYPE, every
+/// collection endpoint used to bind the one shared <see cref="PagedRequest"/>, and the union was
+/// therefore the only bound anything applied - so the per-collection sets had no consumer and a name
+/// belonging to another collection was accepted and then ignored. Each collection now binds its own
+/// derived request type, which is what gives its set somewhere to be enforced.
+/// </para>
+/// <para>
+/// <b>This type is generic so that one set of rules serves every derived request.</b> The paging,
+/// direction and filter bounds are identical for every collection and are declared once here; only
+/// the sortable set differs, and it arrives as a constructor argument. The non-generic
+/// <see cref="PagedRequestValidator"/> derived from it applies the union to a bare
+/// <see cref="PagedRequest"/> - a shape no registered endpoint binds any longer, but one the
+/// contract still permits - so even an unspecialised request is refused an unrecognised name.
 /// </para>
 /// <para>
 /// Rules are declarative and stateless. Nothing here performs a lookup, reaches a store or takes a
@@ -88,7 +98,8 @@ namespace DnnMigration.Application.Validation;
 // available to it, as DnnMigration.Application.csproj records against a verified CS0234 and CS0246,
 // and the constructor is parameterless by design. A constant read by every consumer is the next best
 // thing to a configured one, and strictly better than a literal repeated at each site.
-public class PagedRequestValidator : AbstractValidator<PagedRequest>
+public class PagedRequestValidator<TRequest> : AbstractValidator<TRequest>
+    where TRequest : PagedRequest
 {
     /// <summary>
     /// The largest page size a caller may ask for.
@@ -156,6 +167,19 @@ public class PagedRequestValidator : AbstractValidator<PagedRequest>
         FormattableString.Invariant($"The page size may not exceed {MaximumPageSize}.");
 
     /// <summary>
+    /// Reported when the addressed page lies so far into the sequence that the number of records to skip
+    /// past it cannot be represented.
+    /// </summary>
+    /// <remarks>
+    /// It names both fields because neither is wrong on its own: the offset is their product, so a caller
+    /// can correct either one. It gives the bound rather than an adjective, so the correction is arithmetic
+    /// rather than guesswork.
+    /// </remarks>
+    private static readonly string PageOffsetUnrepresentableMessage =
+        FormattableString.Invariant($"The page index multiplied by the page size may not exceed {int.MaxValue}.")
+        + " That is the furthest position a paged read can address.";
+
+    /// <summary>
     /// Message reported when a caller supplies a filter longer than
     /// <see cref="QueryMaximumLength"/>.
     /// </summary>
@@ -179,20 +203,35 @@ public class PagedRequestValidator : AbstractValidator<PagedRequest>
     /// already know and reflects caller-supplied text back into a response body.
     /// </para>
     /// </remarks>
-    private static readonly string SortFieldUnknownMessage = BuildSortFieldUnknownMessage();
+    private readonly IReadOnlySet<string> _sortableFields;
+
+    private readonly string _sortFieldUnknownMessage;
 
     /// <summary>
-    /// Initialises a new instance of the <see cref="PagedRequestValidator"/> class and declares the
-    /// bounds that apply to every collection endpoint.
+    /// Initialises a new instance of the <see cref="PagedRequestValidator{TRequest}"/> class and
+    /// declares the bounds that apply to every collection endpoint.
     /// </summary>
+    /// <param name="sortableFields">
+    /// The closed set of field names this endpoint's collection can be ordered by, taken from
+    /// <c>SortableFields</c>. It is a constructor argument rather than a virtual member so that the
+    /// rule below is declared once and cannot be reached before a derived constructor has run.
+    /// </param>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="sortableFields"/> is <see langword="null"/>.
+    /// </exception>
     /// <remarks>
-    /// Parameterless by design. Every rule declared here asks a question about the shape of the
-    /// request and none asks a question about state, so there is nothing to inject and nothing to
-    /// configure. Page indexing is zero-based throughout, mirroring both
+    /// The ONE argument is the sortable set. Every rule declared here asks a question about the shape
+    /// of the request and none asks a question about state, so nothing else is injected and nothing
+    /// else is configurable. Page indexing is zero-based throughout, mirroring both
     /// <see cref="PagedRequest"/> and the <c>PagedResult&lt;T&gt;</c> envelope the caller reads back.
     /// </remarks>
-    public PagedRequestValidator()
+    protected PagedRequestValidator(IReadOnlySet<string> sortableFields)
     {
+        ArgumentNullException.ThrowIfNull(sortableFields);
+
+        _sortableFields = sortableFields;
+        _sortFieldUnknownMessage = BuildSortFieldUnknownMessage(sortableFields);
+
         // Zero-based, so 0 is the first page and the smallest legal value. A negative index is
         // rejected rather than reinterpreted, which is what stops the legacy absence sentinel of
         // minus one arriving disguised as a page address. The asymmetry is deliberate and must not
@@ -215,6 +254,28 @@ public class PagedRequestValidator : AbstractValidator<PagedRequest>
             .WithMessage(PageSizeTooSmallMessage)
             .LessThanOrEqualTo(MaximumPageSize)
             .WithMessage(PageSizeTooLargeMessage);
+
+        // THE PRODUCT IS BOUNDED, NOT ONLY THE TWO FACTORS. Each field alone can be within its own bound
+        // while their product is not: with the largest permitted page size, any index above roughly
+        // twenty-one million overflows the signed 32-bit offset a paged read skips by. Unchecked, that
+        // multiplication wrapped to a NEGATIVE offset, which the query provider refuses deep inside the
+        // read - so a request a caller could correct arrived as an unhandled server fault with no field
+        // named. Refusing it here is what makes it a 400 that says which fields to change.
+        //
+        // The rule is declared on the request rather than on either field because the fault is the
+        // relationship between them, and FluentValidation reports it against the whole request accordingly.
+        // The arithmetic widens to 64 bits BEFORE multiplying, so the test itself cannot overflow - writing
+        // it as "PageIndex > int.MaxValue / PageSize" would avoid overflow too but would silently truncate
+        // the division and admit a band of offsets just past the bound.
+        //
+        // The clamp in the domain's paging helper is the second half of this defence and not a substitute
+        // for it: the helper keeps a read total for any caller that reaches a repository without passing
+        // through request validation, while this rule is what tells an actual caller what to fix.
+        RuleFor(request => request)
+            .Must(request => (long)request.PageIndex * request.PageSize <= int.MaxValue)
+            .When(request => request.PageIndex > 0 && request.PageSize > 0)
+            .WithName(nameof(PagedRequest.PageIndex))
+            .WithMessage(PageOffsetUnrepresentableMessage);
 
         // Model binding will place an undeclared integer into an enum-typed property without
         // complaint, so membership is checked rather than assumed. Only the two declared directions
@@ -250,19 +311,34 @@ public class PagedRequestValidator : AbstractValidator<PagedRequest>
         // that this boundary and the listings that read the narrower per-collection sets cannot
         // drift apart.
         //
+        // MIGRATION: THIS RULE IS THE OUTER BOUND, NOT THE WHOLE ENFORCEMENT, and it cannot be
+        // narrowed to the collection being read. FluentValidation resolves one validator per request
+        // TYPE, and PagedRequest is the single request type every collection endpoint binds, so the
+        // narrowest vocabulary this rule can possibly apply is the union of every collection's set -
+        // it has no way to learn which collection the caller addressed. Applying the union here is
+        // what turns an entirely unrecognised name into a boundary rejection instead of text handed
+        // to a store. The remaining question - whether a recognised name means anything for THIS
+        // collection - is answered by SortableFields.IsPermittedFor, called by each listing service
+        // against its own set before it dispatches to a repository. Enforcing it there rather than
+        // here also binds callers that never pass through validation at all, such as another service
+        // or a test. Neither half is redundant: without this rule an unknown name reaches a store,
+        // and without the service-side check a role-only name would be accepted for a portal listing
+        // and then silently ordered by that listing's default.
+        //
         // Guarded by the request contract's own absent-versus-blank test rather than by a second
         // interpretation of it, so a caller who expressed no preference is never asked to justify a
         // field they did not name. The predicate independently tolerates absence, which keeps the
         // rule correct if the guard is ever read in isolation.
         RuleFor(request => request.SortBy)
-            .Must(SortableFields.IsPermitted)
-            .WithMessage(SortFieldUnknownMessage)
+            .Must(name => SortableFields.IsPermitted(_sortableFields, name))
+            .WithMessage(_sortFieldUnknownMessage)
             .When(request => request.HasSort);
     }
 
     /// <summary>
     /// Composes the message that names every field a caller may sort by.
     /// </summary>
+    /// <param name="sortableFields">The set this validator applies.</param>
     /// <returns>
     /// A message stating that the supplied field cannot be ordered by, followed by the accepted
     /// names in a stable order.
@@ -273,12 +349,35 @@ public class PagedRequestValidator : AbstractValidator<PagedRequest>
     /// culture-sensitive ordering of identifiers is how the Turkish dotless-i class of defect
     /// arises.
     /// </remarks>
-    private static string BuildSortFieldUnknownMessage()
+    private static string BuildSortFieldUnknownMessage(IReadOnlySet<string> sortableFields)
     {
-        IEnumerable<string> accepted = SortableFields.All.OrderBy(name => name, StringComparer.Ordinal);
+        IEnumerable<string> accepted = sortableFields.OrderBy(name => name, StringComparer.Ordinal);
 
         return "The sort field is not one that can be ordered by. Accepted fields: "
             + string.Join(", ", accepted)
             + ".";
+    }
+}
+
+/// <summary>
+/// Applies the unspecialised paging bounds, with the UNION of every collection's sortable set, to a
+/// bare <see cref="PagedRequest"/>.
+/// </summary>
+/// <remarks>
+/// No registered endpoint binds a bare <see cref="PagedRequest"/> any longer - each collection binds
+/// its own derived type so that its own narrow set is the one enforced - but the shared contract is
+/// public and a caller of the application layer may still pass one, so it keeps a validator. Applying
+/// the union here is the correct outer bound for a request that has not said which collection it
+/// addresses: it still guarantees that what reaches an ordering clause is a constant this assembly
+/// declared, while leaving the narrower question to the derived validators.
+/// </remarks>
+public class PagedRequestValidator : PagedRequestValidator<PagedRequest>
+{
+    /// <summary>
+    /// Initialises a new instance of the <see cref="PagedRequestValidator"/> class.
+    /// </summary>
+    public PagedRequestValidator()
+        : base(SortableFields.All)
+    {
     }
 }

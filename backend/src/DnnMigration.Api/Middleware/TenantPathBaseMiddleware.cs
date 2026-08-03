@@ -1,0 +1,172 @@
+using DnnMigration.Domain.Abstractions.Services;
+using DnnMigration.Domain.Common;
+using Microsoft.AspNetCore.Http;
+
+namespace DnnMigration.Api.Middleware;
+
+/// <summary>
+/// Resolves the tenant a request belongs to before routing runs, and when that tenant is addressed by a path
+/// segment beneath a shared host, moves the segment out of the routable path and into the path base.
+/// </summary>
+/// <remarks>
+/// <para>
+/// WHY THIS STAGE EXISTS. The legacy product let a child portal be addressed by a path segment beneath a
+/// shared host name: the signup screen composed and stored exactly <c>domain/segment</c>
+/// (<c>Website/admin/Portal/Signup.ascx.vb:L232-L236</c>), and every request beneath that segment belonged to
+/// the child. Reaching the same tenant here needs two things that no single later stage can supply. The
+/// tenant must be resolved from the host AND the path, because the host alone does not distinguish a parent
+/// from its children. And the segment that identified the tenant must then be taken OUT of the path that
+/// routing matches, because <c>/child/api/v1/portals</c> matches no route while <c>/api/v1/portals</c>
+/// matches the intended one. Without the second half the first is useless: the tenant would resolve
+/// correctly and every request beneath it would still answer 404.
+/// </para>
+/// <para>
+/// WHY BEFORE ROUTING, AND WHY THAT IS NOT A REORDERING. The mandated pipeline order names ten elements and
+/// fixes their order RELATIVE TO ONE ANOTHER (AAP 0.5.1.4): exception handler, correlation identifier,
+/// request logging, routing, cross-origin policy, authentication, authorisation, portal-alias resolution,
+/// controllers, health checks. Every one of those keeps its position: nothing is moved, and in particular the
+/// named portal-alias-resolution stage still runs after authorisation exactly where it did. This stage is a
+/// new, un-named component, and it MUST precede routing because a path base cannot be established after the
+/// path has already been matched. Placing it here is therefore additive rather than a re-ordering of the
+/// mandated sequence.
+/// </para>
+/// <para>
+/// WHY IT DOES NOT DUPLICATE THE LATER RESOLUTION. Resolution is memoised for the lifetime of the request, so
+/// this stage performs the work once and the later stages - the named resolution middleware and the
+/// portal-administration authorisation handler - observe the identical outcome without resolving again. All
+/// three ask for it through the same address helper, so no two of them can disagree about which tenant the
+/// request belongs to. What this stage deliberately does NOT do is refuse a request or report a failure: an
+/// unresolved tenant is left exactly as the later stage would leave it, with the reason logged there and the
+/// refusal owned by the endpoints that need a tenant. Reporting the same condition twice, in two places, is
+/// how two components come to disagree about it.
+/// </para>
+/// <para>
+/// WHY THE PATH BASE AND NOT A REWRITE. Assigning the path base preserves the original address for anything
+/// that needs to generate a link back to the caller: URL generation prepends the path base, so a
+/// <c>Location</c> header produced downstream still names the child's address rather than the parent's.
+/// Rewriting the path and discarding the prefix would route correctly and then hand out links that reach the
+/// wrong tenant, which is a worse defect than the one being fixed because it is invisible until a caller
+/// follows one.
+/// </para>
+/// <para>
+/// THE EXEMPTIONS MATCH THE LATER STAGE'S EXACTLY, and that is a requirement rather than a convenience. The
+/// container health probe answers before any portal exists in the database, and the interactive API
+/// description describes the API rather than serving a tenant's data. If this stage resolved a tenant for a
+/// path the later stage exempts, the memoised outcome would make the exemption there meaningless - the work
+/// would already have been done - so the two lists are kept identical and read from one place.
+/// </para>
+/// </remarks>
+internal sealed class TenantPathBaseMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<TenantPathBaseMiddleware> _logger;
+
+    /// <summary>
+    /// Initialises the middleware.
+    /// </summary>
+    /// <param name="next">The next component in the pipeline.</param>
+    /// <param name="logger">Records a rebased request, for the operator diagnosing a child portal.</param>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when either argument is <see langword="null"/>.
+    /// </exception>
+    public TenantPathBaseMiddleware(RequestDelegate next, ILogger<TenantPathBaseMiddleware> logger)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _next = next;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Resolves the tenant and rebases the request when the tenant is addressed beneath a path segment.
+    /// </summary>
+    /// <param name="context">The current request.</param>
+    /// <param name="portalContext">Resolves and holds the tenant for this request.</param>
+    /// <returns>A task that completes when the request has been handled.</returns>
+    /// <remarks>
+    /// The tenant holder is taken per invocation rather than through the constructor because this middleware
+    /// is one long-lived instance while the holder is scoped to a single request; capturing a scoped service
+    /// in a longer-lived one would serve the first request's tenant to every request after it.
+    /// </remarks>
+    public async Task InvokeAsync(HttpContext context, IPortalContextHolder portalContext)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(portalContext);
+
+        if (PortalAliasResolutionMiddleware.IsExemptPath(context.Request.Path))
+        {
+            await _next(context).ConfigureAwait(false);
+            return;
+        }
+
+        string address = TenantAddress.Of(context);
+
+        // The outcome is deliberately not inspected. Every reason a tenant fails to resolve is reported by
+        // the named resolution stage, which runs later and observes this same memoised result; reporting it
+        // here as well would duplicate the log entry and split ownership of a single decision across two
+        // components.
+        _ = await portalContext.EnsureResolvedAsync(address, context.RequestAborted).ConfigureAwait(false);
+
+        if (!portalContext.IsResolved)
+        {
+            await _next(context).ConfigureAwait(false);
+            return;
+        }
+
+        PathString tenantPath = TenantAddress.PathPortionOf(portalContext.Current.PortalAlias);
+
+        // A bare-host alias is the ordinary case and needs nothing done: the routable path is already the
+        // one the routes were written against.
+        if (!tenantPath.HasValue)
+        {
+            await _next(context).ConfigureAwait(false);
+            return;
+        }
+
+        // Matched as whole segments rather than as a string prefix, so an alias of "host/child" cannot
+        // rebase a request for "/childish/api/v1/..." - a substring match here would strip four characters
+        // out of the middle of an unrelated path and route the remainder somewhere nobody asked for. This
+        // is the same class of defect as the legacy substring alias resolution, and it is refused for the
+        // same reason.
+        if (!context.Request.Path.StartsWithSegments(tenantPath, StringComparison.OrdinalIgnoreCase, out PathString remainder))
+        {
+            // The tenant resolved from an address that included this path, so the path must begin with the
+            // alias's own segments. Reaching here means the two comparisons disagree, which is a defect
+            // rather than a routine outcome, so it is recorded and the request continues UNCHANGED - a
+            // guessed rebase is how a request ends up served by the wrong tenant.
+            _logger.LogError(
+                "The resolved portal alias carries the path {TenantPath}, which the request path does not begin with. The request was left unrebased.",
+                tenantPath.Value);
+
+            await _next(context).ConfigureAwait(false);
+            return;
+        }
+
+        PathString originalPathBase = context.Request.PathBase;
+        PathString originalPath = context.Request.Path;
+
+        context.Request.PathBase = originalPathBase.Add(tenantPath);
+        context.Request.Path = remainder;
+
+        _logger.LogDebug(
+            "Request rebased for portal {PortalId} beneath {TenantPath}; the routable path is {RoutablePath}.",
+            portalContext.Current.PortalId,
+            tenantPath.Value,
+            remainder.HasValue ? remainder.Value : "/");
+
+        try
+        {
+            await _next(context).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Restored on the way out, including when the pipeline threw. The request object outlives this
+            // stage - the logging and correlation stages wrapped around it still read the path after control
+            // returns - and leaving it rebased would make every entry they write describe a path the caller
+            // never sent.
+            context.Request.PathBase = originalPathBase;
+            context.Request.Path = originalPath;
+        }
+    }
+}

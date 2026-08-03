@@ -13,10 +13,20 @@ namespace DnnMigration.Domain.Abstractions.Services;
 // mechanism is reproduced and why no key material, and no pointer to it, appears here.
 //
 // MIGRATION: a one-way digest cannot check a credential stored under the legacy reversible
-// scheme, so existing rows migrate lazily: the stored value is re-hashed on the first
-// successful legacy sign-in, and an administrative reset is the fallback for an account that
-// never signs in again. NeedsRehash is the hook that makes that path possible, which is why it
-// belongs on this contract rather than inside an implementation.
+// scheme, and THERE IS NO LAZY UPGRADE THAT WORKS AROUND THAT. An earlier revision of this note
+// said existing rows migrate on the first successful legacy sign-in with a reset as the
+// fallback; that description was false, because a successful sign-in against a legacy stored
+// value is the very thing this contract cannot perform - it declares no legacy verifier and no
+// implementation of it holds one. An administrative reset is therefore the ONLY path by which a
+// pre-existing credential becomes usable, and it is a deliberate functional reduction rather
+// than a fallback.
+//
+// MIGRATION: NeedsRehash exists for the upgrade that IS supported, which is a different
+// operation entirely: raising the cost of a value this scheme itself produced, once the current
+// work factor exceeds the one recorded inside it. It is consulted only after a password has
+// already been verified successfully, so the plaintext needed to re-hash is in hand. It is not,
+// and never was, a legacy-credential detector. It belongs on this contract because the
+// algorithm, the pre-hash pairing and the current cost are this abstraction's knowledge.
 //
 // MIGRATION: the measured legacy password policy is preserved exactly and is NOT tightened.
 // It lives in the Application layer as bound options and declarative request validators, never
@@ -86,10 +96,53 @@ public interface IPasswordHasher
     /// </summary>
     /// <param name="passwordHash">The stored representation to examine.</param>
     /// <returns>
-    /// <see langword="true"/> when the value was produced by the legacy reversible scheme or when
-    /// the current implementation would now generate a stronger one; otherwise
-    /// <see langword="false"/>. Pair this with a successful <see cref="Verify(string, string)"/> to
-    /// upgrade a credential in place, as described in the migration notes on this file.
+    /// <see langword="true"/> when the current implementation would now generate a stronger
+    /// representation than the one supplied - in practice, when this scheme's cost has been raised
+    /// since the value was written; otherwise <see langword="false"/>. Pair this with a successful
+    /// <see cref="Verify(string, string)"/> to upgrade a credential in place, as described in the
+    /// migration notes on this file.
     /// </returns>
+    /// <remarks>
+    /// It does <b>not</b> report that a value was produced by the legacy reversible scheme, and an
+    /// implementation must not attempt to: a legacy value cannot be verified here at all, so a
+    /// <see langword="true"/> answer about one would promise an upgrade that could never be
+    /// performed. Legacy values are dealt with by administrative reset, never by this member.
+    /// </remarks>
     bool NeedsRehash(string passwordHash);
+
+    /// <summary>
+    /// A stored-representation-shaped value that no credential will ever match, produced at the same cost
+    /// as a real one, for equalising the work an authentication attempt performs when there is no stored
+    /// representation to compare against.
+    /// </summary>
+    /// <value>
+    /// A well-formed representation of a credential the implementation generated and discarded. Passing it
+    /// to <see cref="Verify(string, string)"/> performs exactly the work a genuine comparison performs and
+    /// returns <see langword="false"/>.
+    /// </value>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS BELONGS ON THIS ABSTRACTION RATHER THAN AT THE CALL SITE. Producing a value of the right
+    /// shape needs the algorithm, the pre-hash pairing and the CURRENT work factor - all three of which are
+    /// this abstraction's own knowledge, and only the third of which is obvious. A caller that fabricated a
+    /// constant would pin the cost of a decoy to whatever the factor was on the day it was written, so the
+    /// decoy would grow cheaper than a real comparison every time the factor was raised, and the very
+    /// difference it exists to remove would reappear silently.
+    /// </para>
+    /// <para>
+    /// WHY IT EXISTS AT ALL. An authentication path that returns early when it finds no account, no tenant
+    /// or no credential record answers measurably faster than one that reaches a deliberately expensive
+    /// comparison. Uniform wording on the refusal does not close that: the response TIME distinguishes the
+    /// cases, which lets an unauthenticated caller enumerate accounts. Verifying against this value on
+    /// every structurally valid attempt makes the expensive step unconditional, so the outcome no longer
+    /// correlates with how long the answer took.
+    /// </para>
+    /// <para>
+    /// It is a decoy and never a credential: nothing stores it, nothing returns it to a caller, and the
+    /// input it was generated from is not retained by the implementation, so no credential exists that
+    /// matches it. It is deliberately a property rather than a method, because it must be computed once and
+    /// reused - computing it per attempt would double the cost of every sign-in.
+    /// </para>
+    /// </remarks>
+    string UnmatchableHash { get; }
 }

@@ -59,8 +59,15 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 // RoleController.vb:L506 initialises an effective date to that marker and :L531 clears a past one
 // back to it, so "unbounded" reached the legacy object as a magic value rather than as absence.
 // The two properties are DateTime? and NO value conversion is installed in either direction: a
-// null stays a null and is never written as, or read from, Date.MinValue. Two consequences of the
-// identity seeds have to be stated rather than assumed. dbo.Roles.RoleID is declared
+// null stays a null and is never read from Date.MinValue. Where the marker is DISCARDED on the way
+// out is RoleRepository.AddUserRoleAsync and UpdateUserRoleAsync, whose shared
+// NormalizeLegacyDateMarker reproduces Null.GetNull at the same boundary the legacy DAL applied it
+// (membership DataProvider/SqlDataProvider.vb:L280-L286). It is deliberately NOT expressed as a
+// converter here: EF Core does not invoke a value converter for a null model value and a converter
+// cannot introduce one, so "this value becomes SQL NULL" is not something a converter can say
+// without the null-converting construct EF Core documents as unsupported for most uses. The two
+// files are cross-referenced so neither can drift into believing the other holds the rule.
+// Two consequences of the identity seeds have to be stated rather than assumed. dbo.Roles.RoleID is declared
 // IDENTITY(0, 1) at 01.00.00:L115, so zero is the FIRST REAL ROLE and never means "no role";
 // dbo.Users.UserID is IDENTITY(1, 1) at 01.00.00:L98, so zero is never a real account. Neither
 // key column ever carries the legacy Null.NullInteger marker of -1.
@@ -178,6 +185,9 @@ internal sealed class UserRoleConfiguration : IEntityTypeConfiguration<UserRole>
         // even though RoleController.vb carried absence as exactly that marker. A null here means
         // the membership never lapses, which is what the terminal GetRolesByUser predicate tests
         // for when it admits a row whose ExpiryDate is null or is at or after the current instant.
+        // The marker is dropped on the write path instead, by RoleRepository - see the header note.
+        // Nothing is needed on the read path: this column is datetime, whose range begins at
+        // 1753-01-01, so it cannot hold 0001-01-01 in the first place.
         builder.Property(x => x.ExpiryDate)
             .HasColumnName("ExpiryDate")
             .HasColumnType("datetime");
@@ -209,7 +219,8 @@ internal sealed class UserRoleConfiguration : IEntityTypeConfiguration<UserRole>
         //
         // Legacy datetime and nullable, with the same Rule T7 treatment as ExpiryDate above and no
         // sentinel conversion: a null means the membership counts immediately, matching the
-        // inclusive effective-date half of the terminal GetRolesByUser predicate.
+        // inclusive effective-date half of the terminal GetRolesByUser predicate. The marker is
+        // dropped on the write path by RoleRepository, exactly as for ExpiryDate.
         builder.Property(x => x.EffectiveDate)
             .HasColumnName("EffectiveDate")
             .HasColumnType("datetime");

@@ -17,7 +17,9 @@
 // the export site, the handler commented "ignore errors" around the import site, and the handler
 // wrapping the queued import in the event-message processor. A swallowed export writes an incomplete
 // portal template and a swallowed import loses content, so each now surfaces as a failed outcome
-// carrying a stable code and the underlying explanation for the caller to log.
+// carrying a stable code and a fixed message, while the module's own explanation is written to the log
+// with the full exception. Not swallowing the failure and not disclosing its text are two separate
+// obligations, and the split below satisfies both rather than trading one for the other.
 //
 // MIGRATION: The deferred post-restart path is omitted. Legacy import tested whether the stored
 // capability bitmask still held the "not yet determined" marker of -1 (ModuleController.vb:L422) and,
@@ -49,9 +51,11 @@
 // subsystem. No hosted background-service registration is added here, and this layer starts no
 // recurring work of its own.
 
+using System.Text;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Common;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace DnnMigration.Infrastructure.Services;
 
@@ -70,22 +74,30 @@ namespace DnnMigration.Infrastructure.Services;
 /// built - inside the layer that owns registration.
 /// </para>
 /// <para>
-/// <strong>Closed set, current scope, no cached instance.</strong> The only way into
-/// <see cref="ModuleBusinessControllerRegistry"/> is a registration written in code, so a database
-/// change alone can never cause code to run; a name the set does not hold resolves to nothing. Each
-/// member resolves its controller through <see cref="IServiceScopeFactory"/> for the duration of that
-/// call and releases it on the way back, because a business controller may legitimately depend on
-/// scoped services. The registration is shared; the instance never is. Storing a resolved controller in
-/// a field would pin whichever scope happened to be active first and then serve it to every later
-/// caller, corrupting data across tenants and requests, and no compiler catches that.
+/// <strong>Closed set, current scope, no cached instance.</strong> The only way a controller becomes
+/// reachable is a keyed registration written in code, so a database change alone can never cause code to
+/// run; a name no registration covers resolves to nothing. Each member resolves its controller from the
+/// CURRENT scope's provider, once per call, so a controller that depends on scoped services - most
+/// importantly on the request's database context - is given the same ones the caller is using. Storing a
+/// resolved controller in a field would pin whichever scope happened to be active first and then serve it
+/// to every later caller, corrupting data across tenants and requests, and no compiler catches that;
+/// nothing here holds one beyond the call that resolved it.
 /// </para>
 /// <para>
 /// <strong>Absence is never failure.</strong> An unsupplied name, a name the set does not hold, and a
 /// registered controller that does not implement the lifecycle contract a member needs are all
 /// successful outcomes carrying an advisory reason. A failed outcome means the controller was genuinely
-/// asked and its own code threw; the message preserves the underlying explanation, as the contract
-/// requires, so the caller can log something actionable, and it never repeats the supplied name or the
-/// payload.
+/// asked and its own code threw.
+/// </para>
+/// <para>
+/// <strong>A module's own explanation is logged, never returned.</strong> The reason on a failed outcome
+/// carries a stable code and a fixed message naming the operation that failed, and nothing else - not the
+/// exception text, not the supplied name, not the payload, not a stack trace. The exception itself is
+/// written to the log in full, at error severity, inside the request's correlation scope, so the
+/// actionable detail is preserved for whoever operates the system rather than for whoever called it. This
+/// is a security boundary rather than a stylistic choice: a business controller is third-party code, the
+/// fault classification below admits anything it raises, and a failed outcome from this type reaches the
+/// HTTP client verbatim as the problem-details explanation.
 /// </para>
 /// <para>
 /// <strong>What this type deliberately does not do.</strong> It never reads or writes a module, never
@@ -135,34 +147,117 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
     /// <summary>Failure code for a controller whose own migration threw.</summary>
     private const string UpgradeFailedCode = "module.upgrade_failed";
 
-    /// <summary>Message substituted when a module's exception carries no explanation of its own.</summary>
-    private const string UnexplainedFaultMessage =
-        "The module's business controller failed without supplying an explanation.";
+    /// <summary>Names the capability probe in a log record and selects its caller-safe detail.</summary>
+    private const string CapabilityProbeOperation = "capability probe";
 
-    private readonly ModuleBusinessControllerRegistry _registry;
-    private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>Names the content export in a log record and selects its caller-safe detail.</summary>
+    private const string ExportOperation = "content export";
+
+    /// <summary>Names the content import in a log record and selects its caller-safe detail.</summary>
+    private const string ImportOperation = "content import";
+
+    /// <summary>Names the content migration in a log record and selects its caller-safe detail.</summary>
+    private const string UpgradeOperation = "content migration";
+
+    /// <summary>
+    /// The fixed detail a caller is told when a controller could not be brought into existence.
+    /// </summary>
+    /// <remarks>
+    /// M-09: each of these four is a COMPLETE sentence written by this application, containing nothing a
+    /// module supplied. Each says what failed, and that the explanation has been recorded, so an operator
+    /// knows where to look without the caller being shown anything a third-party component wrote.
+    /// </remarks>
+    private const string CapabilityProbeFailedDetail =
+        "The module's business controller could not be brought into existence, so its capabilities could "
+        + "not be determined. The underlying fault has been recorded.";
+
+    /// <summary>The fixed detail a caller is told when a controller's own export threw.</summary>
+    private const string ExportFailedDetail =
+        "The module's business controller failed while serialising its content. The underlying fault has "
+        + "been recorded.";
+
+    /// <summary>The fixed detail a caller is told when a controller's own import threw.</summary>
+    private const string ImportFailedDetail =
+        "The module's business controller failed while restoring its content. The underlying fault has "
+        + "been recorded.";
+
+    /// <summary>The fixed detail a caller is told when a controller's own migration threw.</summary>
+    private const string UpgradeFailedDetail =
+        "The module's business controller failed while migrating its content. The underlying fault has "
+        + "been recorded.";
+
+    /// <summary>
+    /// Largest number of links followed when describing an exception chain for the log.
+    /// </summary>
+    /// <remarks>
+    /// A bound rather than a preference: a cyclic or deeply nested chain would otherwise let one module
+    /// fault write an unbounded log entry, which is a denial-of-service vector against the log itself.
+    /// </remarks>
+    private const int MaximumDescribedChainDepth = 8;
+
+    private readonly IServiceProvider _provider;
+    private readonly ILogger<ModuleBusinessControllerFactory> _logger;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="ModuleBusinessControllerFactory"/> class.
     /// </summary>
-    /// <param name="registry">
-    /// The closed registration set, immutable once built. It is the only source of a controller in this
-    /// type; there is no secondary path and no fallback that could turn an unrecognised name into
-    /// something executable.
+    /// <param name="provider">
+    /// The CURRENT scope's service provider. This type is registered scoped, so the provider injected here
+    /// is the one belonging to the request being served, and a controller resolved from it shares that
+    /// request's unit of work.
     /// </param>
-    /// <param name="scopeFactory">
-    /// Supplies one scope per call so that a controller depending on scoped services is built correctly.
-    /// Requested as a factory rather than as a service provider because this type is registered as a
-    /// singleton by this layer's dependency-injection module, and a singleton that held a provider would
-    /// hold the root one.
+    /// <param name="logger">
+    /// Records a module fault privately. It is what allows the reason returned to the caller to be a fixed
+    /// sentence while the underlying explanation still reaches an operator.
     /// </param>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// M-08: an earlier revision took a hand-built registry object and an <c>IServiceScopeFactory</c>,
+    /// creating a NESTED SCOPE for every call. Both are replaced. The registry is gone because .NET 8's
+    /// keyed service registration is the platform primitive for "resolve the service filed under this
+    /// name", so a hand-rolled name-to-type dictionary is exactly the workaround Rule T8 says to delete
+    /// rather than translate. The scope factory is gone because a nested scope was actively wrong: a
+    /// controller resolved inside one would receive a DIFFERENT database context from the request that
+    /// invoked it, so content it wrote would commit - or fail to commit - independently of the caller's
+    /// unit of work. Taking the current scope's provider is what makes the lifecycle operation part of the
+    /// caller's transaction, which is what the legacy in-request execution did.
+    /// </para>
+    /// <para>
+    /// Injecting <c>IServiceProvider</c> is service location, and that is the point: this type exists
+    /// precisely to resolve a service selected by a stored NAME, which no constructor signature can
+    /// express. What matters is that the name selects among registrations fixed in code before the first
+    /// request - a name no registration covers resolves to nothing at all - so a database row still cannot
+    /// cause arbitrary code to run.
+    /// </para>
+    /// </remarks>
     public ModuleBusinessControllerFactory(
-        ModuleBusinessControllerRegistry registry,
-        IServiceScopeFactory scopeFactory)
+        IServiceProvider provider,
+        ILogger<ModuleBusinessControllerFactory> logger)
     {
-        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+        _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    /// <summary>
+    /// Normalises a stored controller name into the key its registration is filed under.
+    /// </summary>
+    /// <param name="businessControllerClass">The name as stored in the column, possibly blank.</param>
+    /// <returns>The lookup key, or <see langword="null"/> when the module declares no controller.</returns>
+    /// <remarks>
+    /// Trimmed and lowered with the invariant culture. Keyed resolution compares keys with ordinary
+    /// equality, which for a string is case-SENSITIVE, whereas the legacy lookup matched the column
+    /// case-insensitively - the value was hand-entered in module manifests. Normalising both the
+    /// registration key and the lookup key through this one method restores that behaviour without
+    /// admitting the partial or fuzzy matching that would let one module's behaviour answer for
+    /// another's. The invariant culture is used because a controller name is a .NET type name rather than
+    /// localised text, so no culture-specific casing rule should apply to it.
+    /// </remarks>
+    internal static string? RegistrationKey(string? businessControllerClass)
+    {
+        return string.IsNullOrWhiteSpace(businessControllerClass)
+            ? null
+            : businessControllerClass.Trim().ToLowerInvariant();
     }
 
     /// <inheritdoc />
@@ -182,30 +277,28 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        Type? controllerType = _registry.Find(businessControllerClass);
-
-        if (controllerType is null)
-        {
-            return Task.FromResult(Absent<int?>(businessControllerClass));
-        }
-
         try
         {
-            using IServiceScope scope = _scopeFactory.CreateScope();
+            object? controller = Resolve(businessControllerClass);
+
+            if (controller is null)
+            {
+                return Task.FromResult(Absent<int?>(businessControllerClass));
+            }
 
             int features = 0;
 
-            if (Narrow<IModuleContentPortability>(scope, controllerType) is not null)
+            if (controller is IModuleContentPortability)
             {
                 features |= PortableFeatureBit;
             }
 
-            if (Narrow<IModuleSearchContribution>(scope, controllerType) is not null)
+            if (controller is IModuleSearchContribution)
             {
                 features |= SearchableFeatureBit;
             }
 
-            if (Narrow<IModuleContentUpgrade>(scope, controllerType) is not null)
+            if (controller is IModuleContentUpgrade)
             {
                 features |= UpgradeableFeatureBit;
             }
@@ -218,7 +311,9 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         }
         catch (Exception error) when (IsModuleFault(error))
         {
-            return Task.FromResult(Result<int?>.Failure(CapabilityProbeFailedCode, Describe(error)));
+            return Task.FromResult(Result<int?>.Failure(
+                CapabilityProbeFailedCode,
+                Describe(CapabilityProbeOperation, businessControllerClass, error)));
         }
     }
 
@@ -236,18 +331,16 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        Type? controllerType = _registry.Find(businessControllerClass);
-
-        if (controllerType is null)
-        {
-            return Absent<string?>(businessControllerClass);
-        }
-
         try
         {
-            using IServiceScope scope = _scopeFactory.CreateScope();
+            object? controller = Resolve(businessControllerClass);
 
-            IModuleContentPortability? portable = Narrow<IModuleContentPortability>(scope, controllerType);
+            if (controller is null)
+            {
+                return Absent<string?>(businessControllerClass);
+            }
+
+            IModuleContentPortability? portable = controller as IModuleContentPortability;
 
             if (portable is null)
             {
@@ -269,7 +362,9 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         }
         catch (Exception error) when (IsModuleFault(error))
         {
-            return Result<string?>.Failure(ExportFailedCode, Describe(error));
+            return Result<string?>.Failure(
+                ExportFailedCode,
+                Describe(ExportOperation, businessControllerClass, error));
         }
     }
 
@@ -290,25 +385,26 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        Type? controllerType = _registry.Find(businessControllerClass);
-
-        if (controllerType is null)
-        {
-            return Result.Success(AbsenceReason(businessControllerClass));
-        }
-
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return Result.Success(new ResultReason(
-                ContentNotSuppliedCode,
-                "No content was supplied, so nothing was restored."));
-        }
-
         try
         {
-            using IServiceScope scope = _scopeFactory.CreateScope();
+            object? controller = Resolve(businessControllerClass);
 
-            IModuleContentPortability? portable = Narrow<IModuleContentPortability>(scope, controllerType);
+            // Controller absence is screened before the content guard, preserving the order the two
+            // answers were originally reported in: a module that declares no controller, or names one
+            // this installation does not carry, is told that first even when its content is also blank.
+            if (controller is null)
+            {
+                return Result.Success(AbsenceReason(businessControllerClass));
+            }
+
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return Result.Success(new ResultReason(
+                    ContentNotSuppliedCode,
+                    "No content was supplied, so nothing was restored."));
+            }
+
+            IModuleContentPortability? portable = controller as IModuleContentPortability;
 
             if (portable is null)
             {
@@ -327,7 +423,9 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         {
             // A failure here means content was lost, so it is reported rather than absorbed: the caller
             // is expected to log it and to treat the surrounding operation as incomplete.
-            return Result.Failure(ImportFailedCode, Describe(error));
+            return Result.Failure(
+                ImportFailedCode,
+                Describe(ImportOperation, businessControllerClass, error));
         }
     }
 
@@ -348,18 +446,16 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        Type? controllerType = _registry.Find(businessControllerClass);
-
-        if (controllerType is null)
-        {
-            return Absent<string?>(businessControllerClass);
-        }
-
         try
         {
-            using IServiceScope scope = _scopeFactory.CreateScope();
+            object? controller = Resolve(businessControllerClass);
 
-            IModuleContentUpgrade? upgradeable = Narrow<IModuleContentUpgrade>(scope, controllerType);
+            if (controller is null)
+            {
+                return Absent<string?>(businessControllerClass);
+            }
+
+            IModuleContentUpgrade? upgradeable = controller as IModuleContentUpgrade;
 
             if (upgradeable is null)
             {
@@ -381,32 +477,55 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         }
         catch (Exception error) when (IsModuleFault(error))
         {
-            return Result<string?>.Failure(UpgradeFailedCode, Describe(error));
+            return Result<string?>.Failure(
+                UpgradeFailedCode,
+                Describe(UpgradeOperation, businessControllerClass, error));
         }
     }
 
     /// <summary>
-    /// Resolves the registered controller from one scope and narrows it to a single lifecycle contract.
+    /// Resolves the controller a stored name selects, from the current scope.
     /// </summary>
-    /// <typeparam name="TContract">The lifecycle contract the calling member needs.</typeparam>
-    /// <param name="scope">The scope created for the current call.</param>
-    /// <param name="controllerType">The registered service type held by the closed set.</param>
+    /// <param name="businessControllerClass">
+    /// The name as stored in the DesktopModules.BusinessControllerClass column. A blank value means the
+    /// module declares no business controller.
+    /// </param>
     /// <returns>
-    /// The narrowed controller, or <see langword="null"/> when the registered controller does not
-    /// implement <typeparamref name="TContract"/> - an expected absence rather than a fault.
+    /// The controller, or <see langword="null"/> when the name is blank or no registration is filed under
+    /// it. Both are expected answers, which is why absence is a value rather than an exception.
     /// </returns>
     /// <remarks>
-    /// The registered entry carries the service type the container knows, so the container is asked for
-    /// exactly that service and the answer is narrowed once to a contract known at compile time. The
-    /// supplied name is never treated as a type name, never converted into one and never used to
-    /// construct anything; it only selects an entry that a deployment already put in place. A resolution
-    /// failure is left to propagate, so the calling member can report it under its own documented
-    /// failure code rather than pretending the controller was absent.
+    /// <para>
+    /// M-08: this is the whole of what the hand-built registry used to do, expressed with the platform
+    /// primitive for it. Keyed resolution consults registrations fixed in code before the first request, so
+    /// the closed-set guarantee is unchanged: the supplied name is never treated as a type name, never
+    /// converted into one and never used to construct anything - it only selects a registration a
+    /// deployment already put in place, and a name none covers yields nothing at all.
+    /// </para>
+    /// <para>
+    /// Resolved ONCE per call and narrowed by type test at each use, rather than resolved once per
+    /// contract. That is not merely tidier: a controller registered scoped must yield the SAME instance to
+    /// all three capability tests within one call, and three separate resolutions of three different
+    /// contract types could not guarantee it.
+    /// </para>
+    /// <para>
+    /// The non-generic keyed lookup is used deliberately. The registered service type is not known here -
+    /// only the name is - so the request is for the object filed under that key, which the extension method
+    /// in this layer's dependency-injection module registers as a factory over the concrete registration.
+    /// A resolution failure inside that factory is left to propagate OUT OF THIS METHOD rather than being
+    /// converted into absence here, so the calling member can report it under its own documented failure
+    /// code instead of pretending the controller was absent. Every caller therefore invokes this from
+    /// inside its own guarded region: constructing a controller runs the module's own constructor and its
+    /// dependency graph, which is third-party code exactly as its lifecycle members are, so a fault raised
+    /// there is reported the same way - the member's failure code with a fixed, caller-safe detail - and
+    /// never escapes this layer as an exception.
+    /// </para>
     /// </remarks>
-    private static TContract? Narrow<TContract>(IServiceScope scope, Type controllerType)
-        where TContract : class
+    private object? Resolve(string? businessControllerClass)
     {
-        return scope.ServiceProvider.GetRequiredService(controllerType) as TContract;
+        string? key = RegistrationKey(businessControllerClass);
+
+        return key is null ? null : _provider.GetKeyedService<object>(key);
     }
 
     /// <summary>Builds the successful "nothing was done" outcome for a value-returning member.</summary>
@@ -453,209 +572,201 @@ internal sealed class ModuleBusinessControllerFactory : IModuleBusinessControlle
         return error is not (OperationCanceledException or StackOverflowException or OutOfMemoryException);
     }
 
-    /// <summary>Produces the failure message for a module fault.</summary>
-    /// <param name="error">The exception raised by the module's own code.</param>
-    /// <returns>The module's explanation, or a stand-in when it supplied none.</returns>
-    /// <remarks>
-    /// The contract requires the underlying explanation to survive so the caller can log something
-    /// actionable, and a reason refuses a blank message, so an exception that carries none is given a
-    /// fixed stand-in. Nothing else is added: not the supplied name, not the payload, not a stack trace.
-    /// </remarks>
-    private static string Describe(Exception error)
-    {
-        return string.IsNullOrWhiteSpace(error.Message) ? UnexplainedFaultMessage : error.Message;
-    }
-}
-
-// The remaining types in this file exist because this layer's dependency-injection module already
-// consumes them - it registers the set and constructs an entry - and because the migration plan
-// allocated no separate home for a module lifecycle contract. They are kept deliberately minimal: three
-// contracts a module author implements, one entry and the immutable set itself. Nothing here is a
-// registration helper; the single way to add an entry stays the extension method in this layer's
-// dependency-injection module, which is a code change by construction.
-
-/// <summary>
-/// Implemented by a module's business controller that can serialise and restore its own content.
-/// </summary>
-/// <remarks>
-/// MIGRATION: replaces the legacy IPortable contract, which the legacy code discovered by producing an
-/// untyped reference and applying a run-time type test to it - at ModuleController.vb:L231 for export
-/// and ModuleController.vb:L431 for import. Here the contract is a compile-time fact about a registered
-/// type, so a module that cannot export says so by not implementing this interface rather than by
-/// failing a cast. Both operations are asynchronous and take a cancellation token, because a module's
-/// content operation is I/O bound and a caller must be able to abandon it.
-/// </remarks>
-internal interface IModuleContentPortability
-{
-    /// <summary>Serialises the content held by one module instance.</summary>
-    /// <param name="moduleId">
-    /// The module instance whose content is wanted, passed through verbatim: the module key is seeded at
-    /// 0, so 0 identifies a real module and must never be read as absent.
-    /// </param>
-    /// <param name="cancellationToken">Token that cancels the operation.</param>
-    /// <returns>
-    /// The serialised payload, or an empty string when the module holds nothing worth exporting. An
-    /// empty result is an answer rather than a failure.
-    /// </returns>
-    Task<string> ExportAsync(int moduleId, CancellationToken cancellationToken = default);
-
-    /// <summary>Restores previously serialised content into one module instance.</summary>
-    /// <param name="moduleId">The module instance to restore into, passed through verbatim.</param>
-    /// <param name="content">The payload to restore, exactly as a previous export produced it.</param>
-    /// <param name="version">
-    /// The version stamp recorded alongside the payload, so the module can interpret a payload written by
-    /// an older release of itself.
-    /// </param>
-    /// <param name="userId">
-    /// The principal on whose behalf the content is restored, which the module records as the author of
-    /// whatever it creates. Passed through verbatim.
-    /// </param>
-    /// <param name="cancellationToken">Token that cancels the operation.</param>
-    /// <returns>A task that completes once the content has been restored.</returns>
-    Task ImportAsync(
-        int moduleId,
-        string content,
-        string? version,
-        int userId,
-        CancellationToken cancellationToken = default);
-}
-
-/// <summary>
-/// Implemented by a module's business controller that can contribute items to a search index.
-/// </summary>
-/// <remarks>
-/// MIGRATION: a marker with no operations, and deliberately so. The legacy searchable contract accepted a
-/// legacy module entity and returned a pre-generics collection type, both of which this migration
-/// eliminates, and search execution is deferred in its entirety, so no searchable operation is exposed
-/// or invoked anywhere. The capability bit is still reported, because the legacy probe wrote all three
-/// bits in one assignment and omitting one would silently change the number a caller persists.
-/// Implementing this interface therefore declares the capability for that stored value and promises
-/// nothing that is called today.
-/// </remarks>
-internal interface IModuleSearchContribution
-{
-}
-
-/// <summary>
-/// Implemented by a module's business controller that can migrate its stored content between versions.
-/// </summary>
-/// <remarks>
-/// MIGRATION: replaces the legacy IUpgradeable contract, which the legacy code discovered by run-time
-/// type test in the module event-message processor at :L52 before looping the applicable versions.
-/// </remarks>
-internal interface IModuleContentUpgrade
-{
-    /// <summary>Migrates the module's stored content to one named version.</summary>
-    /// <param name="version">
-    /// The single version to migrate to. A caller reproduces the legacy sequence by invoking this once
-    /// per applicable version, in the order it chooses.
-    /// </param>
-    /// <param name="cancellationToken">Token that cancels the operation.</param>
-    /// <returns>
-    /// The module's own account of what it did, which the caller records. An empty string means the
-    /// migration succeeded with nothing to say.
-    /// </returns>
-    Task<string> UpgradeAsync(string version, CancellationToken cancellationToken = default);
-}
-
-/// <summary>
-/// One entry in the closed business-controller set.
-/// </summary>
-/// <param name="BusinessControllerClass">
-/// The name this controller answers to, matched case-insensitively against the value stored in the
-/// DesktopModules.BusinessControllerClass column - free text of at most 200 characters, and nullable,
-/// which is why a blank value has to mean "this module declares no controller".
-/// </param>
-/// <param name="ControllerType">
-/// The registered service type. It must also be registered with the container, because a controller is
-/// resolved from the current scope rather than constructed here.
-/// </param>
-internal sealed record ModuleBusinessControllerRegistration(string BusinessControllerClass, Type ControllerType);
-
-/// <summary>
-/// The closed set of business controllers this installation recognises, keyed by the value stored in the
-/// DesktopModules.BusinessControllerClass column.
-/// </summary>
-/// <remarks>
-/// <para>
-/// MIGRATION: this is what replaces late binding from a stored name. Five legacy sites turned a database
-/// column into an instruction to bring an arbitrary type into existence, so a row an administrator could
-/// edit decided which code ran in the server process. Nothing here searches for code, and a name is
-/// never converted into a type: the set is fixed in code before the first request is served, and a name
-/// it does not hold resolves to nothing at all.
-/// </para>
-/// <para>
-/// The set holds entries, never instances - see the remarks on
-/// <see cref="ModuleBusinessControllerFactory"/> for why that distinction matters. It is immutable once
-/// built and therefore safe to share for the lifetime of the application. Names are matched with
-/// <see cref="StringComparer.OrdinalIgnoreCase"/> and trimmed, which preserves the case-insensitive
-/// matching the legacy lookup performed on a column that module manifests hand-entered, without
-/// admitting the partial or fuzzy matching that would let one module's behaviour answer for another's.
-/// </para>
-/// <para>
-/// An empty set is the expected state of this installation rather than a gap: every bundled module falls
-/// outside this migration's scope, and most modules declare no business controller in any case, so "no
-/// registration covers this name" is the ordinary answer and is reported as a success carrying an
-/// advisory reason.
-/// </para>
-/// </remarks>
-internal sealed class ModuleBusinessControllerRegistry
-{
-    private readonly Dictionary<string, Type> _controllers;
-
     /// <summary>
-    /// Initialises a new instance of the <see cref="ModuleBusinessControllerRegistry"/> class.
+    /// Records a module fault privately and returns the fixed detail the caller may be told.
     /// </summary>
-    /// <param name="provider">
-    /// The container, read exactly once here to gather every entry a deployment registered. It is not
-    /// retained, so this type cannot resolve anything afterwards; all that survives construction is an
-    /// immutable snapshot of names and service types.
-    /// </param>
-    /// <exception cref="ArgumentNullException"><paramref name="provider"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">An entry carries a blank name.</exception>
+    /// <param name="operation">Which lifecycle operation was being performed, for the log record.</param>
+    /// <param name="businessControllerClass">The controller name, for the log record only.</param>
+    /// <param name="error">The exception raised by the module's own code.</param>
+    /// <returns>The fixed, caller-safe detail for the failure reason.</returns>
     /// <remarks>
-    /// A later entry for the same name replaces an earlier one, which is what lets a host override a
-    /// bundled registration without having to remove it first.
+    /// <para>
+    /// M-09: an earlier revision returned <c>error.Message</c> as the reason's message, on the stated
+    /// grounds that the contract requires the underlying explanation to survive so the caller can log
+    /// something actionable. The requirement is real; the means was wrong. A reason's message does not stay
+    /// inside the process: the API edge publishes it as the <c>detail</c> member of the problem document,
+    /// so the text became part of an HTTP response. A module is THIRD-PARTY code and its exception message
+    /// is entirely outside this application's control - it can legitimately contain a connection string, a
+    /// file-system path, a SQL fragment, an account name or a stack-derived type name, and none of that
+    /// belongs in a response to a caller who asked only for an export.
+    /// </para>
+    /// <para>
+    /// The explanation still survives, in the place it is actually useful: it is logged here, at error
+    /// level, with the operation and the controller name attached as structured fields, and the exception
+    /// chain described by <see cref="DescribeForDiagnostics(Exception)"/> - its type names and stack
+    /// traces, and none of its messages. What crosses the boundary to the caller is one of four fixed
+    /// sentences chosen by the failure code, which tells the caller what failed and that the detail is
+    /// recorded, without quoting anything a module wrote.
+    /// </para>
+    /// <para>
+    /// The exception object is not handed to the logger, and that is a SECOND disclosure decision rather
+    /// than a stylistic one: the logging framework formats an exception it is given, which would reinstate
+    /// the very messages the paragraph above removes - this time into the log sink instead of the
+    /// response. The API edge's own unhandled-fault diagnostics apply the same rule by the same means.
+    /// </para>
+    /// <para>
+    /// The controller NAME is logged although it is not returned. It came from the installation's own
+    /// registration set rather than from the request, so it discloses nothing about the caller, and
+    /// without it a log entry cannot say which module failed.
+    /// </para>
     /// </remarks>
-    public ModuleBusinessControllerRegistry(IServiceProvider provider)
+    private string Describe(string operation, string? businessControllerClass, Exception error)
     {
-        ArgumentNullException.ThrowIfNull(provider);
+        // THE EXCEPTION OBJECT IS DELIBERATELY NOT HANDED TO THE LOGGER, and that is a second disclosure
+        // decision beyond the one above. Passing it would reinstate the module's own message through the
+        // logging framework's formatting, so the diagnosis is built by
+        // DescribeForDiagnostics(Exception) - type chain and stack traces, no messages - and passed as a
+        // structured property. This is the same treatment, by the same means, that the API edge applies
+        // to an unhandled fault.
+        _logger.LogError(
+            "Module business controller {BusinessControllerClass} failed during {ModuleOperation}: {Failure}",
+            businessControllerClass,
+            operation,
+            DescribeForDiagnostics(error));
 
-        _controllers = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (ModuleBusinessControllerRegistration entry in
-            provider.GetServices<ModuleBusinessControllerRegistration>())
+        return operation switch
         {
-            if (string.IsNullOrWhiteSpace(entry.BusinessControllerClass))
+            CapabilityProbeOperation => CapabilityProbeFailedDetail,
+            ExportOperation => ExportFailedDetail,
+            ImportOperation => ImportFailedDetail,
+            UpgradeOperation => UpgradeFailedDetail,
+
+            // Unreachable: every call site passes one of the four constants above. Naming the case
+            // explicitly is better than returning a detail that describes the wrong operation.
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(operation),
+                operation,
+                "The lifecycle operation has no caller-safe failure detail."),
+        };
+    }
+
+    /// <summary>Describes an exception chain for the log without quoting any of its messages.</summary>
+    /// <param name="error">The exception to describe.</param>
+    /// <returns>The type chain and stack traces, bounded in depth.</returns>
+    /// <remarks>
+    /// Mirrors the API edge's redacting description rather than sharing it, because that member is private
+    /// to a type in a layer this one does not reference and hoisting it into a shared helper would put a
+    /// diagnostics utility on a layer boundary for the sake of two callers. The rule it implements is the
+    /// one that matters and is restated where it is applied: type names and stack traces are admitted,
+    /// messages are not.
+    /// </remarks>
+    private static string DescribeForDiagnostics(Exception error)
+    {
+        StringBuilder description = new();
+        Exception? current = error;
+        int depth = 0;
+
+        while (current is not null && depth < MaximumDescribedChainDepth)
+        {
+            if (depth > 0)
             {
-                throw new ArgumentException(
-                    "A business-controller entry must carry a non-blank name, because the name is what a "
-                    + "stored DesktopModules.BusinessControllerClass value is matched against.",
-                    nameof(provider));
+                description.Append(" ---> ");
             }
 
-            _controllers[entry.BusinessControllerClass.Trim()] = entry.ControllerType;
+            // FullName is null only for a generic parameter type, which an exception cannot be; the
+            // fallback keeps the description from ever carrying an empty position.
+            description.Append(current.GetType().FullName ?? current.GetType().Name);
+
+            string? stack = current.StackTrace;
+
+            if (!string.IsNullOrWhiteSpace(stack))
+            {
+                description.Append(' ').Append(stack);
+            }
+
+            current = current.InnerException;
+            depth++;
         }
+
+        if (current is not null)
+        {
+            description.Append(" ---> (chain truncated)");
+        }
+
+        return description.ToString();
     }
 
-    /// <summary>Finds the registered service type for one stored controller name.</summary>
-    /// <param name="businessControllerClass">
-    /// The name as stored in the DesktopModules.BusinessControllerClass column. A blank value means the
-    /// module declares no business controller.
-    /// </param>
-    /// <returns>
-    /// The registered service type, or <see langword="null"/> when the name is blank or the closed set
-    /// does not hold it. Both are expected answers, which is why absence is a value rather than an
-    /// exception.
-    /// </returns>
-    public Type? Find(string? businessControllerClass)
+    /// <summary>
+    /// Implemented by a module's business controller that can serialise and restore its own content.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: replaces the legacy IPortable contract, which the legacy code discovered by producing an
+    /// untyped reference and applying a run-time type test to it - at ModuleController.vb:L231 for export
+    /// and ModuleController.vb:L431 for import. Here the contract is a compile-time fact about a registered
+    /// type, so a module that cannot export says so by not implementing this interface rather than by
+    /// failing a cast. Both operations are asynchronous and take a cancellation token, because a module's
+    /// content operation is I/O bound and a caller must be able to abandon it.
+    /// </remarks>
+    internal interface IModuleContentPortability
     {
-        if (string.IsNullOrWhiteSpace(businessControllerClass))
-        {
-            return null;
-        }
+        /// <summary>Serialises the content held by one module instance.</summary>
+        /// <param name="moduleId">
+        /// The module instance whose content is wanted, passed through verbatim: the module key is seeded at
+        /// 0, so 0 identifies a real module and must never be read as absent.
+        /// </param>
+        /// <param name="cancellationToken">Token that cancels the operation.</param>
+        /// <returns>
+        /// The serialised payload, or an empty string when the module holds nothing worth exporting. An
+        /// empty result is an answer rather than a failure.
+        /// </returns>
+        Task<string> ExportAsync(int moduleId, CancellationToken cancellationToken = default);
 
-        return _controllers.GetValueOrDefault(businessControllerClass.Trim());
+        /// <summary>Restores previously serialised content into one module instance.</summary>
+        /// <param name="moduleId">The module instance to restore into, passed through verbatim.</param>
+        /// <param name="content">The payload to restore, exactly as a previous export produced it.</param>
+        /// <param name="version">
+        /// The version stamp recorded alongside the payload, so the module can interpret a payload written by
+        /// an older release of itself.
+        /// </param>
+        /// <param name="userId">
+        /// The principal on whose behalf the content is restored, which the module records as the author of
+        /// whatever it creates. Passed through verbatim.
+        /// </param>
+        /// <param name="cancellationToken">Token that cancels the operation.</param>
+        /// <returns>A task that completes once the content has been restored.</returns>
+        Task ImportAsync(
+            int moduleId,
+            string content,
+            string? version,
+            int userId,
+            CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>
+    /// Implemented by a module's business controller that can contribute items to a search index.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: a marker with no operations, and deliberately so. The legacy searchable contract accepted a
+    /// legacy module entity and returned a pre-generics collection type, both of which this migration
+    /// eliminates, and search execution is deferred in its entirety, so no searchable operation is exposed
+    /// or invoked anywhere. The capability bit is still reported, because the legacy probe wrote all three
+    /// bits in one assignment and omitting one would silently change the number a caller persists.
+    /// Implementing this interface therefore declares the capability for that stored value and promises
+    /// nothing that is called today.
+    /// </remarks>
+    internal interface IModuleSearchContribution
+    {
+    }
+
+    /// <summary>
+    /// Implemented by a module's business controller that can migrate its stored content between versions.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: replaces the legacy IUpgradeable contract, which the legacy code discovered by run-time
+    /// type test in the module event-message processor at :L52 before looping the applicable versions.
+    /// </remarks>
+    internal interface IModuleContentUpgrade
+    {
+        /// <summary>Migrates the module's stored content to one named version.</summary>
+        /// <param name="version">
+        /// The single version to migrate to. A caller reproduces the legacy sequence by invoking this once
+        /// per applicable version, in the order it chooses.
+        /// </param>
+        /// <param name="cancellationToken">Token that cancels the operation.</param>
+        /// <returns>
+        /// The module's own account of what it did, which the caller records. An empty string means the
+        /// migration succeeded with nothing to say.
+        /// </returns>
+        Task<string> UpgradeAsync(string version, CancellationToken cancellationToken = default);
     }
 }
-

@@ -31,7 +31,6 @@ function sessionExpiringAt(expiresAtUtc: string, accessToken = 'access-1'): Auth
     refreshToken: 'refresh-1',
     mustChangePassword: false,
     passwordExpiring: false,
-    mustUpdateProfile: false,
     user: USER,
   };
 }
@@ -202,7 +201,6 @@ describe('TokenStorageService', () => {
         refreshToken: 'refresh-9',
         mustChangePassword: true,
         passwordExpiring: true,
-        mustUpdateProfile: true,
         user: USER,
       };
 
@@ -216,14 +214,18 @@ describe('TokenStorageService', () => {
       // Carried through so a reload does not lose a prompt the caller has not acted on.
       expect(session.mustChangePassword).toBeTrue();
       expect(session.passwordExpiring).toBeTrue();
-      expect(session.mustUpdateProfile).toBeTrue();
 
       // The server publishes one expiry representation and no bearer-scheme member, so
-      // neither a relative lifetime nor a refresh-token expiry can reach stored state.
+      // neither a relative lifetime nor a refresh-token expiry can reach stored state. The
+      // profile-completeness advisory is absent for a DIFFERENT reason, now that the server
+      // has a producer for it: nothing in this application consumes that advisory, so keeping
+      // it would put a signal into stored state that no screen can act on. See the note on
+      // LoginResponse in auth.model.ts.
       const keys = Object.keys(session);
       expect(keys).not.toContain('expiresIn');
       expect(keys).not.toContain('tokenType');
       expect(keys).not.toContain('refreshTokenExpiresAtUtc');
+      expect(keys).not.toContain('mustUpdateProfile');
     });
 
     it('carries a cleared advisory through as false rather than dropping it', () => {
@@ -235,7 +237,6 @@ describe('TokenStorageService', () => {
         refreshToken: 'refresh-10',
         mustChangePassword: false,
         passwordExpiring: false,
-        mustUpdateProfile: false,
         user: USER,
       };
 
@@ -244,10 +245,8 @@ describe('TokenStorageService', () => {
 
       expect(keys).toContain('mustChangePassword');
       expect(keys).toContain('passwordExpiring');
-      expect(keys).toContain('mustUpdateProfile');
       expect(session.mustChangePassword).toBeFalse();
       expect(session.passwordExpiring).toBeFalse();
-      expect(session.mustUpdateProfile).toBeFalse();
     });
   });
 });

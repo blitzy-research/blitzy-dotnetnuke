@@ -1,8 +1,12 @@
+using System.Globalization;
 using System.Reflection;
 using Asp.Versioning;
 using Asp.Versioning.ApiExplorer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ApiExplorer;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -255,6 +259,13 @@ public static class SwaggerExtensions
             // operation by AuthorizationOperationFilter, which reads the same [AllowAnonymous]
             // the runtime reads.
             options.OperationFilter<AuthorizationOperationFilter>();
+
+            // Restores the media type a response declares for itself. The explorer discards it, because
+            // it describes a response with the media types declared for the whole ACTION and then keeps
+            // only those an output formatter can write - which is the wrong authority for a body written
+            // as a content result. See the filter for why an action-level produces attribute is not the
+            // fix: it corrects the description at the cost of answering 406 to every refusal.
+            options.OperationFilter<DeclaredResponseContentTypeOperationFilter>();
 
             // Reflects the solution-wide nullable annotations into the schema's own
             // nullability flags. This is a schema-shape concern only; it changes no
@@ -710,6 +721,114 @@ public static class SwaggerExtensions
                            .OfType<Microsoft.AspNetCore.Authorization.IAllowAnonymous>()
                            .Any()
                        ?? false);
+        }
+    }
+
+    /// <summary>
+    /// Publishes each response under the media type its own declaration names, where one is named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WITHOUT THIS FILTER A PER-RESPONSE MEDIA TYPE IS SILENTLY DISCARDED, and the document says the
+    /// opposite of what the endpoint does. The explorer builds a response's format list from the media
+    /// types declared for the ACTION - which here is the controller-level JSON declaration - and then
+    /// intersects that list with the media types the registered output formatters can write. Only the
+    /// JSON formatter is registered, so any other media type is dropped twice over. The module export
+    /// action declares its success as XML and writes a content result carrying that media type directly;
+    /// a content result is written verbatim and never passes through a formatter at all, so the formatter
+    /// set is simply the wrong authority for what that response contains. The published document
+    /// nonetheless advertised JSON, which is a contract a client cannot rely on.
+    /// </para>
+    /// <para>
+    /// THE ALTERNATIVE FIX IS A TRAP AND IS DELIBERATELY NOT TAKEN. Placing a produces attribute on the
+    /// action would correct the document, because that is the declaration the explorer reads - but it also
+    /// rewrites the permitted media types of every object result the action returns, and a problem document
+    /// IS an object result. With no XML formatter registered, every refusal from that one action would be
+    /// negotiated to a media type nothing can write and would answer 406 with an empty body instead of the
+    /// problem document it advertises. This filter therefore changes the DESCRIPTION only: run-time content
+    /// negotiation is left exactly as it was, so the action's failures stay identical to every other
+    /// action's.
+    /// </para>
+    /// <para>
+    /// The declared media types are read through the explorer's own metadata interface rather than from the
+    /// attribute's collection property, which is not public. Only the per-response declaration is consulted;
+    /// the action-wide produces declaration is a different attribute type and is intentionally ignored here,
+    /// because re-applying it would put back the value this filter exists to correct. A response that names
+    /// no media type of its own, and a response with no body at all, are both left untouched.
+    /// </para>
+    /// </remarks>
+    private sealed class DeclaredResponseContentTypeOperationFilter : IOperationFilter
+    {
+        /// <summary>
+        /// Re-keys the body of any response whose declaration names its own media types.
+        /// </summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="operation"/> or <paramref name="context"/> is <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentNullException.ThrowIfNull(context);
+
+            foreach (ProducesResponseTypeAttribute declaration in Declarations(context))
+            {
+                MediaTypeCollection declared = new();
+
+                ((IApiResponseMetadataProvider)declaration).SetContentTypes(declared);
+
+                if (declared.Count == 0)
+                {
+                    continue;
+                }
+
+                string status = declaration.StatusCode.ToString(CultureInfo.InvariantCulture);
+
+                if (!operation.Responses.TryGetValue(status, out OpenApiResponse? response)
+                    || response.Content.Count == 0)
+                {
+                    continue;
+                }
+
+                // The schema the generator already resolved is carried across unchanged. Only the key it
+                // sits under changes, because the declared type of the payload is not in question here -
+                // the media type it is served as is.
+                OpenApiMediaType body = response.Content.Values.First();
+
+                response.Content.Clear();
+
+                foreach (string mediaType in declared)
+                {
+                    response.Content[mediaType] = body;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Yields the per-response declarations attached to the described operation.
+        /// </summary>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <returns>Every per-response declaration in scope for the operation.</returns>
+        /// <remarks>
+        /// Endpoint metadata is preferred for the same reason the authorisation filter prefers it: it is
+        /// the merged view the framework resolves, so a declaration inherited from the controller is
+        /// already present. The method's own attributes are the fall-back for a document generated outside
+        /// a running endpoint graph.
+        /// </remarks>
+        private static IEnumerable<ProducesResponseTypeAttribute> Declarations(OperationFilterContext context)
+        {
+            IList<object>? metadata = context.ApiDescription.ActionDescriptor.EndpointMetadata;
+
+            if (metadata is not null)
+            {
+                return metadata.OfType<ProducesResponseTypeAttribute>();
+            }
+
+            return context.MethodInfo?
+                       .GetCustomAttributes(inherit: true)
+                       .OfType<ProducesResponseTypeAttribute>()
+                   ?? [];
         }
     }
 }

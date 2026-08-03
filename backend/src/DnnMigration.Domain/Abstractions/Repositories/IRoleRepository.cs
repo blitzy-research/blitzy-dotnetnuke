@@ -5,7 +5,8 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 // MIGRATION: the core SQL provider (DataProvider.vb, 269 members) contains ZERO Role members and
 // SqlDataProvider.vb invokes zero role procedures. The authoritative source is the separate
 // membership provider stack, Library/Providers/MembershipProviders/DataProvider/DataProvider.vb
-// L90-L115 (22 role procedures), which AspNetMembershipProvider.vb:L59 delegates to through its own
+// L91-L115 - 21 members across its three role regions, eight under 'Roles, six under 'RoleGroups and
+// seven under 'User Roles - which AspNetMembershipProvider.vb:L59 delegates to through its own
 // reflection singleton.
 //
 // MIGRATION: legacy AddRole (14 positional arguments, membership DataProvider.vb:L95) and UpdateRole
@@ -208,11 +209,11 @@ public interface IRoleRepository
     /// separate existence member is provided, because that is the same query with the row discarded.
     /// </para>
     /// </remarks>
+    /// <param name="portalId">The portal to search within.</param>
     /// <param name="roleName">
     /// The name to match. An empty name is a legally representable legacy value rather than a request
     /// for "any name", and it is never treated as absent.
     /// </param>
-    /// <param name="portalId">The portal to search within.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
     /// <returns>The role, or <see langword="null"/> when that portal has no role of that name.</returns>
     Task<Role?> GetByNameAsync(int portalId, string roleName, CancellationToken cancellationToken = default);
@@ -472,31 +473,56 @@ public interface IRoleRepository
     Task<IReadOnlyList<UserRole>> GetUserRolesAsync(int portalId, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns the role assignments held by the account with one login name, optionally narrowed to a
-    /// single named role.
+    /// Returns role assignments within one portal, narrowed by account login name, by role name, by
+    /// both, or by neither.
     /// </summary>
     /// <remarks>
-    /// Realises membership <c>DataProvider.vb:L111 GetUserRolesByUsername(PortalID, Username,
-    /// Rolename)</c> and keeps its argument order. The legacy procedure accepted a null role name to
-    /// mean "every role this account holds", and that is why the role name is the one nullable
-    /// argument on this contract: a null narrows nothing, whereas an empty string is a legally
-    /// representable legacy role name and therefore narrows to it. The distinction is preserved
-    /// deliberately, because the legacy no-string marker was the empty string and conflating the two
-    /// would silently change which rows come back.
     /// <para>
-    /// The lookup is by login name rather than by key because the legacy member was, and because its
-    /// callers held a name; the portal is still required, since a login name is unique only within a
-    /// portal.
+    /// Realises membership <c>DataProvider.vb:L111 GetUserRolesByUsername(PortalID, Username,
+    /// Rolename)</c> and keeps its argument order.
+    /// </para>
+    /// <para>
+    /// BOTH name arguments are nullable, and that is measured from the terminal procedure rather than
+    /// inferred from the member's name. Its body opens with <c>IF @UserName Is Null</c> and, in that
+    /// branch, selects every assignment in the portal filtered by
+    /// <c>(R.Rolename = @Rolename or @RoleName is NULL)</c> alone; the else-branch nests the mirror-image
+    /// test on the role name. So one procedure serves both directions of the same relation, and the
+    /// legacy code reached the role-keyed direction through it: <c>DNNRoleProvider.vb:L520-L522</c>
+    /// defines <c>GetUserRolesByRoleName(portalId, roleName)</c> as
+    /// <c>GetUserRoles(portalId, Nothing, roleName)</c>, and the provider at
+    /// <c>MembershipProviders/DataProvider/SqlDataProvider.vb:L277</c> passes both names through
+    /// <c>GetNull</c>. Declaring the login name non-nullable here would therefore have hidden a
+    /// direction the legacy application used, which is the direction the role-membership screen needs -
+    /// <c>SecurityRoles.ascx.vb</c> binds its grid through <c>GetUserRolesByRoleName</c> at L246 when a
+    /// role is selected and through the account-keyed member at L253 when an account is.
+    /// </para>
+    /// <para>
+    /// A null narrows nothing, whereas an empty string is a legally representable legacy name and
+    /// therefore narrows to it. That distinction is preserved deliberately for both arguments, because
+    /// conflating them would silently change which rows come back.
+    /// </para>
+    /// <para>
+    /// The lookup is by name rather than by key because the legacy member was, and because its callers
+    /// held names; the portal is always required, since a login name is unique only within a portal.
+    /// </para>
+    /// <para>
+    /// The account behind each assignment is materialised along with the role, because the terminal
+    /// statement projects <c>U.DisplayName As FullName</c> beside the assignment columns - the account
+    /// is part of the answer to this question, not a separate one, and composing it here avoids a read
+    /// per row at the caller.
     /// </para>
     /// </remarks>
     /// <param name="portalId">The portal to confine the answer to.</param>
-    /// <param name="username">The login name of the account whose assignments are wanted.</param>
+    /// <param name="username">
+    /// The login name of the account whose assignments are wanted, or <see langword="null"/> for the
+    /// assignments of every account in the portal.
+    /// </param>
     /// <param name="roleName">
-    /// The single role to narrow to, or <see langword="null"/> for every role the account holds.
+    /// The single role to narrow to, or <see langword="null"/> for every role.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
     /// <returns>The matching assignments; an empty list when there are none.</returns>
-    Task<IReadOnlyList<UserRole>> GetUserRolesByUsernameAsync(int portalId, string username, string? roleName, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<UserRole>> GetUserRolesByUsernameAsync(int portalId, string? username, string? roleName, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stages a new role assignment for insertion.

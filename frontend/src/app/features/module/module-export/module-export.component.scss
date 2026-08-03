@@ -1,65 +1,14 @@
-// =============================================================================
-//  ⚠ COMPANION FILES NOT YET AUTHORED — THIS STYLESHEET IS UNCOMPILED
+// Component stylesheet for the module export screen, served by the route
+// /portals/:portalId/modules/:moduleId/export.
 //
-//  This file is one third of a component. The other two thirds, and the
-//  specification that would exercise them, do not exist:
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the component's own
+// content attribute, so a class name that drifts does not error - it silently matches nothing and the
+// screen renders unstyled. The template must therefore emit exactly this vocabulary:
 //
-//      module-export.component.ts      ABSENT
-//      module-export.component.html    ABSENT
-//      module-export.component.spec.ts ABSENT
-//
-//  The screen this styles is the route /modules/:moduleId/export.
-//
-//  WHAT THAT MEANS IN PRACTICE. A component stylesheet reaches a bundle only
-//  through some component's `styleUrl`, and a search of every `.ts` file in
-//  `src/` finds ZERO references to this one. So it is not compiled by
-//  `ng build`, not compiled by `ng test`, contributes nothing to any chunk, and
-//  is not measured against the `anyComponentStyle` budget that `angular.json`
-//  caps at 8 kB as an ERROR. It is inert rather than broken: it cannot fail a
-//  gate and cannot affect the rendered application. No gate VERIFIES it either,
-//  which is a real gap, so it was compiled directly against the workspace's own
-//  Sass implementation to close it: the file compiles clean, its `@use` of the
-//  shared mixin module resolves, and it emits 320 bytes of CSS — comfortably
-//  inside the 8 kB per-component ceiling it will be measured against once a
-//  companion exists. That check was performed by hand and does not re-run.
-//
-//  ⚠ DO NOT DELETE IT, AND DO NOT TREAT IT AS DEAD CODE. It carries the
-//  measured legacy-parity decisions for this screen, and re-deriving those from
-//  the legacy source is the expensive half of the work. It is retained
-//  deliberately as the visual contract the companion component must satisfy.
-//
-//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
-//  encapsulation with the component's own content attribute, so a class name
-//  that drifts does not error — it silently matches nothing and the screen
-//  renders unstyled. The template must therefore emit exactly this vocabulary:
-//
-//      .module-export
-//      .module-export__form
-//      .module-export__actions
-//
-//  BLOCKING DEPENDENCIES. The companion cannot be authored until these exist;
-//  each was checked against the workspace rather than assumed:
-//
-//      core/models/module.model.ts                       present, but it declares only
-//                                                        ModuleSettings, UpdateModuleRequest and
-//                                                        the visibility / alignment code sets —
-//                                                        there is no Module wire contract yet
-//      core/services/module.service.ts                   ABSENT   must call POST /api/v1/modules/{id}/export
-//      core/config/api-endpoints.ts                      present, but it carries only `apiUrl` and
-//                                                        the authentication route templates — the
-//                                                        export route template is not declared there
-//      shared/components/form-field                      present  every labelled control on this screen
-//      shared/components/page-header                     present
-//      features/module/module.routes.ts                  ABSENT   and deliberately so: this workspace
-//                                                        declares its lazy leaves directly in
-//                                                        app.routes.ts rather than per feature
-//
-//  Writing the component before its service — and before the Module wire contract
-//  that service would return — would mean inventing that contract, and a screen
-//  built against an invented contract is harder to correct later than one not yet
-//  built. That is why this is recorded as a blocking dependency list rather than
-//  worked around with a local interface.
-// =============================================================================
+//     .module-export
+//     .module-export__form
+//     .module-export__actions
+
 @use '../../../../styles/mixins' as mx;
 
 // The host needs a box-generating display regardless, because a custom element defaults to inline and

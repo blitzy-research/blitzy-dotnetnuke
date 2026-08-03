@@ -107,6 +107,30 @@ public sealed class PortalService : IPortalService
     private const string LastRemainingCode = "portal.last_remaining";
 
     /// <summary>
+    /// Reason code reported when a child portal was requested but the parent authority its address
+    /// would be composed beneath could not be established.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="CreationFailedCode"/> because nothing was attempted: the request cannot
+    /// be interpreted, which is the caller's to correct, whereas a failed creation is the installation's.
+    /// </remarks>
+    private const string ParentAliasUnresolvedCode = "portal.parent_alias_unresolved";
+
+    /// <summary>Resource type recorded on every tenant-lifecycle audit event.</summary>
+    private const string PortalResourceType = "Portal";
+
+    /// <summary>
+    /// The character that separates a child portal's segment from its parent's authority.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy composition was <c>GetDomainName(Request) &amp; "/" &amp; ChildPath</c>
+    /// (<c>Signup.ascx.vb:L232-L233</c>), and the same character is what the legacy screen scanned back
+    /// from in order to isolate the final segment for character validation (<c>InStrRev(..., "/")</c> at
+    /// L211). Named once so the composition and the validator's own scan cannot disagree.
+    /// </remarks>
+    private const char AliasPathSeparator = '/';
+
+    /// <summary>
     /// Legacy cache key shape for a single portal, preserved verbatim from
     /// <c>DataCache.PortalCacheKey</c> (L47).
     /// </summary>
@@ -160,9 +184,51 @@ public sealed class PortalService : IPortalService
     /// <summary>Description of the stock subscribers role, preserved verbatim (L1396).</summary>
     private const string SubscribersRoleDescription = "A public role for portal subscriptions";
 
+    /// <summary>Reason code reported when the requested page coordinates are unusable.</summary>
+    /// <summary>
+    /// The editor type recorded on a default profile property definition, meaning "not resolved".
+    /// </summary>
+    /// <remarks>
+    /// Zero rather than an arbitrary number. The legacy helper took this value from the <c>Lists</c> table,
+    /// whose subsystem is out of scope, and that table is <c>IDENTITY (1, 1)</c>
+    /// (<c>03.00.01.SqlDataProvider:L842</c>) - so zero is guaranteed not to name a real editor type and
+    /// identifies exactly the rows whose type was never resolved.
+    /// </remarks>
+    private const int UnresolvedProfileDataType = 0;
+
+    /// <summary>
+    /// The character bound the legacy default profile definitions carried for a free-text property.
+    /// </summary>
+    /// <remarks>
+    /// Transcribed from <c>ProfileController.AddDefaultDefinitions</c>, which passed 50 for every property
+    /// rendered by a text box and 0 for the six rendered by a chooser.
+    /// </remarks>
+    private const int DefaultProfilePropertyLength = 50;
+
+    /// <summary>The name of the page every new tenant is created with.</summary>
+    /// <remarks>
+    /// The name the stock portal template gave its first page, and the name the integration seed uses, so a
+    /// created tenant and a seeded one are recognisably the same shape.
+    /// </remarks>
+    private const string HomePageName = "Home";
+
+    /// <summary>
+    /// The role identifier the schema reserves for "every user, signed in or not".
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this is a RESERVED identifier rather than a row in the Roles table, which is why it is a
+    /// constant here and not a lookup. The legacy permission grids expressed an unrestricted grant with it,
+    /// and <c>Roles.RoleID</c> is <c>IDENTITY (0, 1)</c>, so a negative value cannot collide with a real
+    /// role. It is used for exactly one grant - the home page's view permission - so that a brand-new tenant
+    /// is reachable before any account has been enrolled in it.
+    /// </remarks>
+    private const int AllUsersRoleId = -1;
+
     private readonly IPortalRepository _portals;
     private readonly IPortalAliasRepository _aliases;
     private readonly ITabRepository _tabs;
+    private readonly IUserProfileRepository _profiles;
+    private readonly IPermissionRepository _permissions;
     private readonly IUserRepository _users;
     private readonly IRoleRepository _roles;
     private readonly IUnitOfWork _unitOfWork;
@@ -171,6 +237,8 @@ public sealed class PortalService : IPortalService
     private readonly IClock _clock;
     private readonly ICacheService _cache;
     private readonly ICurrentUser _currentUser;
+    private readonly IAuditSink _audit;
+    private readonly IPortalContextHolder _portalContext;
     private readonly CachingOptions _caching;
 
     /// <summary>
@@ -178,6 +246,13 @@ public sealed class PortalService : IPortalService
     /// </summary>
     /// <param name="portals">Portal repository.</param>
     /// <param name="aliases">Portal alias repository.</param>
+    /// <param name="profiles">
+    /// Stages the profile property definitions a new tenant begins with, reproducing the legacy
+    /// creation sequence's default definition set.
+    /// </param>
+    /// <param name="permissions">
+    /// Resolves the permission catalogue entries the new tenant's home page is granted against.
+    /// </param>
     /// <param name="tabs">Page repository, consulted for the page tally and the host root page.</param>
     /// <param name="users">Account repository, used for the administrator account and its credential.</param>
     /// <param name="roles">Role repository, used for the stock roles and their assignments.</param>
@@ -190,6 +265,17 @@ public sealed class PortalService : IPortalService
     /// Identifies the caller, which the update path needs in order to enforce the host-only rule the
     /// legacy settings screen applied to the hosting and quota fields.
     /// </param>
+    /// <param name="audit">
+    /// Records the tenant lifecycle under the legacy event names. Package-neutral by construction, which
+    /// is what allows a trail to be kept from a project that can name no logging package.
+    /// </param>
+    /// <param name="portalContext">
+    /// The tenant the current request resolved to, where there is one. Read for ONE purpose: composing a
+    /// child tenant's alias from the authority the operator is addressing, which is what the legacy
+    /// signup screen took from the request. Taken as the HOLDER rather than as the resolved context
+    /// because a child tenant can be created from a request that resolved to no tenant at all, and the
+    /// resolved abstraction's container factory throws in that case.
+    /// </param>
     /// <param name="caching">
     /// Bound caching configuration, taken as a plain settings object because the application layer
     /// deliberately depends on no options package.
@@ -198,6 +284,8 @@ public sealed class PortalService : IPortalService
         IPortalRepository portals,
         IPortalAliasRepository aliases,
         ITabRepository tabs,
+        IUserProfileRepository profiles,
+        IPermissionRepository permissions,
         IUserRepository users,
         IRoleRepository roles,
         IUnitOfWork unitOfWork,
@@ -206,11 +294,15 @@ public sealed class PortalService : IPortalService
         IClock clock,
         ICacheService cache,
         ICurrentUser currentUser,
+        IAuditSink audit,
+        IPortalContextHolder portalContext,
         CachingOptions caching)
     {
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
         _aliases = aliases ?? throw new ArgumentNullException(nameof(aliases));
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
+        _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _users = users ?? throw new ArgumentNullException(nameof(users));
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
@@ -219,7 +311,41 @@ public sealed class PortalService : IPortalService
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _audit = audit ?? throw new ArgumentNullException(nameof(audit));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
+    }
+
+    /// <summary>
+    /// Records one committed tenant-lifecycle change on the audit trail.
+    /// </summary>
+    /// <param name="record">
+    /// The event to record, already carrying its tenant facts. The acting account is stamped here rather
+    /// than by the caller, so that no call site can name an actor of its own choosing.
+    /// </param>
+    /// <remarks>
+    /// Called only AFTER the change has been committed, so no record can describe a write that was later
+    /// rolled back. The actor is read from the credential through <see cref="ICurrentUser"/> and only when
+    /// the caller is authenticated: an unauthenticated path leaves the actor absent rather than fabricating
+    /// one, which is honest about a signup that carries no credential.
+    /// <para>
+    /// MIGRATION: the legacy entries named the acting account explicitly - <c>PortalController.vb:L1146</c>
+    /// attached the administrator's own name among the fourteen properties - so keeping the actor is
+    /// faithful rather than an addition.
+    /// </para>
+    /// </remarks>
+    private void RecordAudit(AuditEvent record)
+    {
+        if (_currentUser.IsAuthenticated)
+        {
+            record = record with
+            {
+                ActorUserId = _currentUser.UserId,
+                ActorUserName = _currentUser.UserName,
+            };
+        }
+
+        _audit.Record(record);
     }
 
     /// <inheritdoc />
@@ -239,6 +365,21 @@ public sealed class PortalService : IPortalService
             return Result<PagedResult<PortalListItemDto>>.Failure(
                 PagingInvalidCode,
                 "The requested page coordinates are outside the permitted range.");
+        }
+
+        // MIGRATION: the PER-COLLECTION ordering set is enforced HERE, not only at the API edge. The
+        // shared request validator can apply nothing narrower than the union of every collection's set,
+        // because one PagedRequest contract serves every listing and one validator is resolved for it, so
+        // on its own it would admit a role-only or account-only field name for this listing and this read
+        // would then quietly order by its default instead. Enforcing the narrow set at the point of
+        // dispatch closes that, and it closes it for every caller rather than only for an HTTP one -
+        // including a test or another service that bypasses validation entirely. The set is exactly the
+        // arms PortalRepository's ordering expression honours.
+        if (!SortableFields.IsPermittedFor(request.SortBy, SortableFields.Portals))
+        {
+            return Result<PagedResult<PortalListItemDto>>.Failure(
+                PagingInvalidCode,
+                $"Portals cannot be ordered by '{request.SortBy}'.");
         }
 
         // An explicit name filter takes precedence over the request's generic search term, because the
@@ -280,16 +421,38 @@ public sealed class PortalService : IPortalService
                               .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)
                               .ToList());
 
+        // MIGRATION: the legacy listing read its member and page tallies from correlated sub-selects
+        // inside the portal view, so they were computed per row - but they were computed per row INSIDE
+        // ONE STATEMENT, at no round-trip cost. Reproducing "per row" literally, by asking the
+        // single-portal tally members once per row from here, would turn a page of fifty tenants into a
+        // hundred round trips for figures the store can group in two, and would make the cost of the
+        // listing a function of its page size. The batched members exist for exactly this call site: the
+        // distinct identifiers of the page are resolved in one read each, then joined in memory below.
+        IReadOnlyCollection<int> pagePortalIds = page.Items
+            .Select(portal => portal.PortalId)
+            .Distinct()
+            .ToList();
+
+        IReadOnlyDictionary<int, int> usersByPortal = await _portals
+            .CountUsersForPortalsAsync(pagePortalIds, cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyDictionary<int, int> pagesByPortal = await _portals
+            .CountPagesForPortalsAsync(pagePortalIds, cancellationToken)
+            .ConfigureAwait(false);
+
         var rows = new List<PortalListItemDto>(page.Items.Count);
         foreach (Portal portal in page.Items)
         {
             IReadOnlyList<string> aliases = aliasesByPortal.GetValueOrDefault(portal.PortalId)
                 ?? (IReadOnlyList<string>)Array.Empty<string>();
 
-            // MIGRATION: the legacy listing read its member and page tallies from correlated
-            // sub-selects inside the portal view, so they were computed per row there as well.
-            int users = await _portals.CountUsersAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
-            int pages = await _portals.CountPagesAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
+            // The batched members promise a TOTAL map over the identifiers supplied, so a missing key is
+            // a contract violation rather than an expected state. It is still read defensively as zero:
+            // a tenant with no members and no pages is legitimate, zero is what the legacy grid showed
+            // for it, and failing an entire listing over one absent tally would be a worse answer than
+            // the figure that absence implies.
+            int users = usersByPortal.TryGetValue(portal.PortalId, out int userTally) ? userTally : 0;
+            int pages = pagesByPortal.TryGetValue(portal.PortalId, out int pageTally) ? pageTally : 0;
 
             rows.Add(PortalMappings.ToListItem(portal, aliases, users, pages));
         }
@@ -353,11 +516,36 @@ public sealed class PortalService : IPortalService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        string alias = (request.PortalAlias ?? string.Empty).Trim();
-        if (alias.Length == 0)
+        string submittedAlias = (request.PortalAlias ?? string.Empty).Trim();
+        if (submittedAlias.Length == 0)
         {
             throw new DomainException("A portal alias is required in order to reach the new portal.");
         }
+
+        // MIGRATION: A CHILD PORTAL'S ALIAS IS COMPOSED, NOT STORED AS TYPED, and until now the flag was
+        // accepted and never read - so a caller could ask for a child portal, be told it had one, and find
+        // it unreachable. The legacy screen has two branches, both at Signup.ascx.vb:
+        //
+        //   L187-L197  request came from a PORTAL page: child is forced, the typed value is validated
+        //              against the child charset "a-z0-9-" and is therefore a bare SEGMENT, and
+        //              L232-L233 stores GetDomainName(Request) & "/" & segment.
+        //   L199-L216  request came from a HOST page: child is the operator's choice, the typed value MAY
+        //              already carry path separators, only its final segment is charset-validated
+        //              (Mid(..., InStrRev(..., "/") + 1)), and L235 stores the typed value VERBATIM.
+        //
+        // Both are reproduced. A submitted value that already carries a separator is the host branch and is
+        // stored as typed; one that does not is the portal branch and is composed beneath the authority the
+        // operator is addressing. The authority comes from the tenant this request resolved to, which is the
+        // target's equivalent of GetDomainName(Request) - and a closer one, because it is by construction an
+        // alias that exists rather than a value re-derived from the URL.
+        Result<string> composed = ComposeAlias(request, submittedAlias);
+
+        if (composed.IsFailure)
+        {
+            return Result<PortalDetailDto>.Failure(composed.Reason!);
+        }
+
+        string alias = composed.Value;
 
         // MIGRATION: host names are matched EXACTLY here, where the legacy installation matched them as
         // substrings. The tenant-resolution procedure was created as
@@ -456,6 +644,36 @@ public sealed class PortalService : IPortalService
         // - so the column kept whatever the insert had put there. Defaulting it here would therefore
         // introduce a persisted value the legacy installation never held, which is why the apparent
         // omission is in fact the faithful behaviour.
+
+        // ONE TRANSACTION SPANS THE WHOLE OF THE REST OF THIS MEMBER. Creating a tenant is not a single
+        // write and cannot be made into one: three columns on the tenant row need keys the store assigns
+        // during the first commit, and the administrator's CREDENTIAL lives in the ASP.NET membership
+        // objects, which are mapped alongside rather than owned (Rule T4) and are written by statement
+        // rather than by the change tracker. The sequence is therefore commit, write credential, commit -
+        // and until now the FIRST of those commits was durable on its own, so a failure after it left a
+        // half-built tenant: a portal reachable at its alias whose administrator held no credential and
+        // whose three stamped columns were empty. The only thing standing between that and a consistent
+        // installation was an in-process compensation routine, which could not run if the process was
+        // terminated and was written not to run on cancellation either.
+        //
+        // The transaction subsumes all of it. Both SaveChanges calls and the credential statement enlist in
+        // it - the credential statement because the membership store borrows this unit of work's own
+        // connection and binds the ambient transaction onto its command
+        // (Infrastructure/Persistence/MembershipStore.cs, the shared command helper) - so there is no
+        // cross-store boundary to compensate across. Returning or throwing anywhere below disposes the
+        // scope without committing, and the STORE reverses every one of those writes, including on paths
+        // nobody anticipated. That is why the compensation routine is deleted rather than retained as a
+        // belt-and-braces second mechanism: a second mechanism that can disagree with the first is a
+        // liability, and this one is strictly weaker than what it would sit beside.
+        //
+        // Default isolation, not serialisable. The two collision checks above are guarded by unique
+        // indexes on the alias and account-name columns, so a concurrent creation of the same alias is
+        // refused by the store rather than by the check, and a stricter level would buy nothing while
+        // widening the lock footprint of the installation's busiest write.
+        await using ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false);
+
         Portal portal = PortalMappings.ToNewPortal(
             request,
             defaults.Currency,
@@ -551,17 +769,23 @@ public sealed class PortalService : IPortalService
         }
 
         // The whole tenant graph - portal, alias, three roles, administrator, membership and three
-        // assignments - is committed here in one transaction. Every foreign key inside the graph is
-        // resolved by the object graph itself, so no store-assigned identifier is needed beforehand.
+        // assignments - is committed here. Every foreign key inside the graph is resolved by the object
+        // graph itself, so no store-assigned identifier is needed beforehand.
+        //
+        // THIS COMMIT IS NOT DURABLE ON ITS OWN: it is enclosed by the transaction opened above, which is
+        // committed only once the credential and the three stamped columns have been written too. That
+        // enclosure is the whole of the fix. Two writes are unavoidable here - three columns on the tenant
+        // row need keys the store assigns DURING this commit, and the credential lives in an external
+        // membership store that no entity maps - so the sequence must be commit, write, commit. What was
+        // wrong was that the first commit was durable by itself, leaving an in-process compensation routine
+        // as the only thing between a failure and a half-built tenant: a routine that could not run if the
+        // process was terminated, and that was written not to run on cancellation either. A rolled-back
+        // transaction reverses all of it, including on paths nobody anticipated.
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        // Three portal columns and the credential record cannot be written in the commit above, because
-        // each needs an identifier the database only assigns during it and the portal aggregate carries
-        // no reference navigation for an administrator or a role. The legacy path had the same shape: it
-        // inserted the portal, created the administrator, created the roles, and only then called
-        // UpdatePortalSetup to stamp the identifiers. Any failure here is compensated by removing
-        // everything the first commit created, so a half-built tenant is never left behind.
-        try
+        // MIGRATION: the legacy path had this same shape - insert the portal, create the administrator,
+        // create the roles, then call UpdatePortalSetup to stamp the identifiers (PortalController.vb
+        // L1114-L1118) - and had no transaction over any of it.
         {
             // MIGRATION: the administrator's password is HASHED here. The legacy path assigned it in
             // CLEARTEXT - "objAdminUser.Membership.Password = Password" at PortalController.vb:L1005 -
@@ -583,37 +807,46 @@ public sealed class PortalService : IPortalService
 
             if (!credentialCreated)
             {
-                await CompensateFailedCreationAsync(
-                    portal,
-                    portalAlias,
-                    administrator,
-                    new[] { administratorsRole, registeredUsersRole, subscribersRole },
-                    deleteCredential: false,
-                    cancellationToken).ConfigureAwait(false);
-
+                // Returning without committing rolls the transaction back, so the portal, its alias, its
+                // three roles, its administrator, the membership and the three enrolments all disappear.
+                // No compensation routine is called and none exists any more: the store reverses the work,
+                // which is the one mechanism that also covers a terminated process.
+                //
+                // MIGRATION: the credential store is EXTERNAL to this transaction - the aspnet_Membership
+                // objects are installed by the ASP.NET registration tool and are mapped alongside rather
+                // than owned (Rule T4) - so a credential that WAS created and then rolled back around
+                // would leave an orphan. That cannot arise on this path, because this branch is reached
+                // only when the credential was NOT created. The failure path below covers the other case.
                 return Result<PortalDetailDto>.Failure(
                     CreationFailedCode,
                     "The portal administrator's credential could not be created, so the portal was rolled back.");
             }
 
+            // The two DATABASE-BACKED stages of the legacy creation sequence that this service used to
+            // omit. Both are required for the tenant to be usable rather than merely present: without the
+            // definitions no account in it can hold a profile at all, and without a home page it has
+            // nowhere to serve. Staged inside the same transaction as everything else, so a failure in
+            // either rolls the whole tenant back.
+            await CreateDefaultProfileDefinitionsAsync(portal.PortalId, cancellationToken)
+                .ConfigureAwait(false);
+
+            Tab homePage = await CreateHomePageAsync(portal, administratorsRole, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Commits the definitions and the page, so the identifier the store assigns to the page is
+            // readable for the stamp below.
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
             portal.AdministratorId = administrator.UserId;
             portal.AdministratorRoleId = administratorsRole.RoleId;
             portal.RegisteredRoleId = registeredUsersRole.RoleId;
+            portal.HomeTabId = homePage.TabId;
 
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            await CompensateFailedCreationAsync(
-                portal,
-                portalAlias,
-                administrator,
-                new[] { administratorsRole, registeredUsersRole, subscribersRole },
-                deleteCredential: true,
-                CancellationToken.None).ConfigureAwait(false);
 
-            throw;
-        }
+        // Everything staged since the transaction was opened becomes durable here, and nothing before it.
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         // Reproduces DataCache.ClearHostCache(True) at PortalController.vb:L1128, which discarded the
         // installation-wide entries so the new tenant became reachable, plus the portal's own entry.
@@ -656,19 +889,29 @@ public sealed class PortalService : IPortalService
         // ServerPath, ChildPath and IsChildPortal. Note what is absent: the password argument was NOT
         // among them, so the legacy code already declined to record the credential and this migration
         // preserves that rather than newly imposing it.
-        // MIGRATION: this layer cannot emit it. The audit sites become structured log events, but
-        // DnnMigration.Application declares exactly two packages - FluentValidation and its dependency
-        // injection extensions - because AAP 0.6.1 states "Application declares only FluentValidation",
-        // and Microsoft.Extensions.Logging.Abstractions is neither among them nor present in the
-        // reference pack a class library targets. Naming ILogger<T> in this project therefore fails to
-        // compile with CS0234 and CS0246; that was VERIFIED by compiling it, not assumed, exactly as the
-        // project file records for an earlier attempt to import the options package. AAP 0.6.1 assigns
-        // Serilog to the Api layer and AAP 0.9.6 places structured logging in Program.cs and
-        // Api/Middleware/RequestLoggingMiddleware.cs, so the owning layer is above this one. Adding the
-        // package here would breach the frozen inventory and edit a file outside this file's scope; the
-        // correct action is to record the gap, which is what this comment does. The successful outcome
-        // returned below carries the created portal's identifier, which is the value the request-scoped
-        // logging middleware needs in order to record the installation with these property names.
+        // MIGRATION: THIS LAYER NOW EMITS IT, through a package-neutral sink. The obstacle was real and is
+        // recorded so the shape of the solution is understandable rather than arbitrary: the audit sites
+        // become structured log events, but DnnMigration.Application declares exactly two packages -
+        // FluentValidation and its dependency-injection extensions - because AAP 0.6.1 states "Application
+        // declares only FluentValidation", and Microsoft.Extensions.Logging.Abstractions is neither among
+        // them nor present in the reference pack a class library targets. Naming ILogger<T> in this project
+        // therefore fails to compile with CS0234 and CS0246, which was VERIFIED by compiling it rather than
+        // assumed. The resolution is not to import the package but to invert the dependency: IAuditSink is
+        // declared HERE, in terms this project can express, and Infrastructure implements it over ILogger -
+        // which is where AAP 0.6.1 already assigns Serilog. The trail is kept, the package inventory is
+        // untouched, and the layering rule is satisfied rather than worked around.
+        // MIGRATION: of the fourteen legacy properties, the ones that survive are recorded below. Six are
+        // carried verbatim - the portal name, the administrator's first name, last name, user name and email,
+        // and the alias - and IsChildPortal is carried too, because it is now the flag that DETERMINES the
+        // alias rather than a passive note about it. Description and Keywords are carried when present. Four
+        // are NOT carried, and each is absent for the same reason: TemplatePath, TemplateFile, ServerPath and
+        // ChildPath all describe file-system work this migration does not perform, so recording them would
+        // assert something untrue about what happened. The password remains absent, exactly as it was in the
+        // legacy entry - the legacy code already declined to record the credential and that restraint is
+        // preserved rather than newly imposed.
+        // MIGRATION: the legacy entry was typed HOST_ALERT and this one is named PORTAL_CREATED, from the
+        // same EventLogType enum (EventLogController.vb:L38-L77). The legacy typing was the coarser of the
+        // two available choices; the enum's own PORTAL_CREATED member is the accurate one, so it is used.
         // MIGRATION: DEFECT 4, annotated and deliberately NOT fixed. L1140 and L1141 are BYTE-IDENTICAL
         // consecutive statements, both assigning
         // "objEventLogInfo.LogTypeKey = ...EventLogType.HOST_ALERT.ToString". The second assignment is
@@ -681,7 +924,43 @@ public sealed class PortalService : IPortalService
         // missing while the caller was told the installation had succeeded. Reproducing an empty handler
         // would violate the enterprise baseline this migration is held to, so it is not reproduced: this
         // service surfaces failures as a Result or lets them propagate, and never discards one. That is a
-        // documented divergence from the legacy behaviour rather than a silent correction of it.
+        // documented divergence from the legacy behaviour rather than a silent correction of it. The sink
+        // itself is written not to throw, so an audit failure cannot fail an installation either - the
+        // legacy outcome is preserved without the legacy mechanism.
+        Dictionary<string, string?> installation = new(StringComparer.Ordinal)
+        {
+            ["PortalName"] = created.PortalName,
+            ["PortalAlias"] = alias,
+            ["IsChildPortal"] = request.IsChildPortal.ToString(),
+            ["AdministratorUsername"] = administratorUsername,
+            ["AdministratorFirstName"] = request.AdministratorFirstName,
+            ["AdministratorLastName"] = request.AdministratorLastName,
+            ["AdministratorEmail"] = request.AdministratorEmail,
+            ["AdministratorId"] = administrator.UserId.ToString(CultureInfo.InvariantCulture),
+        };
+
+        if (!string.IsNullOrWhiteSpace(request.Description))
+        {
+            installation["Description"] = request.Description;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.KeyWords))
+        {
+            installation["Keywords"] = request.KeyWords;
+        }
+
+        // Recorded after the commit, so no record can describe an installation that was rolled back. The
+        // SUBJECT is the administrator the installation created, which is what makes the record answer
+        // "who can now sign in to this tenant" and not merely "a tenant appeared".
+        RecordAudit(new AuditEvent(AuditEventNames.PortalCreated)
+        {
+            PortalId = portal.PortalId,
+            SubjectUserId = administrator.UserId,
+            ResourceType = PortalResourceType,
+            ResourceId = portal.PortalId.ToString(CultureInfo.InvariantCulture),
+            Properties = installation,
+        });
+
         return Result<PortalDetailDto>.Success(created);
     }
 
@@ -718,6 +997,26 @@ public sealed class PortalService : IPortalService
     /// <inheritdoc />
     public async Task<Result> DeletePortalAsync(int portalId, CancellationToken cancellationToken = default)
     {
+        // THE WHOLE OF THIS OPERATION IS ONE SERIALISABLE TRANSACTION, and the reason is the guard below
+        // rather than the removal itself. The guard counts the installation's tenants, judges the count,
+        // and deletes in a later statement. Under any weaker isolation two callers removing the two
+        // remaining tenants concurrently can BOTH read a count of two, both conclude that one will
+        // remain, and both proceed - leaving an installation with no tenant at all, which is unreachable
+        // and cannot be repaired through this API because every route needs a tenant to resolve against.
+        // Serialisable is what makes the second caller's count wait for the first caller's delete and
+        // then observe one.
+        //
+        // The read of the tenant is inside the transaction as well, deliberately: a tenant removed by a
+        // concurrent caller between that read and the count would otherwise be deleted twice, and the
+        // second attempt would fail at the store rather than reporting the absence this contract names.
+        //
+        // Disposal rolls back, so every failure path below - a refusal, a store rejection, a
+        // cancellation, an exception from anything the removal touches - leaves the installation exactly
+        // as it was without a rollback statement being written for it.
+        await using ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Serializable, cancellationToken)
+            .ConfigureAwait(false);
+
         Portal? portal = await _portals
             .GetByIdAsync(portalId, includeAliases: true, cancellationToken)
             .ConfigureAwait(false);
@@ -775,6 +1074,10 @@ public sealed class PortalService : IPortalService
         // removed by the cascade configured on the portal's relationships: the repository contracts
         // expose no removal member for a page or a module, and expressing the sweep here would require
         // widening abstractions that are deliberately narrow.
+        // Captured BEFORE the removal, because the trail needs them and neither survives it.
+        string removedPortalName = portal.PortalName;
+        int releasedAliasCount = portal.PortalAliases.Count;
+
         foreach (PortalAlias alias in portal.PortalAliases.ToList())
         {
             // Identified by key, as the legacy procedure was. These rows are already loaded, so the
@@ -786,9 +1089,26 @@ public sealed class PortalService : IPortalService
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
         _cache.InvalidateTabs(portalId);
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateHost();
+
+        // Recorded after the commit, so no event can describe a removal that was rolled back. The tenant
+        // NAME is carried because the row is gone by the time anyone reads the trail and an identifier
+        // alone would no longer resolve to anything.
+        RecordAudit(new AuditEvent(AuditEventNames.PortalDeleted)
+        {
+            PortalId = portalId,
+            ResourceType = PortalResourceType,
+            ResourceId = portalId.ToString(CultureInfo.InvariantCulture),
+            Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["PortalName"] = removedPortalName,
+                ["AliasesReleased"] = releasedAliasCount.ToString(CultureInfo.InvariantCulture),
+            },
+        });
 
         return Result.Success();
     }
@@ -858,12 +1178,21 @@ public sealed class PortalService : IPortalService
 
     /// <inheritdoc />
     public async Task<Result<PortalAliasDto?>> GetPortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         CancellationToken cancellationToken = default)
     {
         PortalAlias? alias = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
 
-        return alias is null
+        // The owning portal is verified rather than assumed. PortalAlias.PortalAliasID is a surrogate
+        // declared IDENTITY (1, 1) and is therefore unique across the installation and guessable across
+        // tenants, so a read keyed by it alone discloses every tenant's host bindings to anybody
+        // authorised over any one tenant. An alias belonging to another portal is reported as absent
+        // rather than refused, so this member cannot be used to discover which keys exist elsewhere.
+        // A null scope is installation-wide authority, established by the route's own policy, so the
+        // comparison is applied only when a tenant was named. See the contract for why absence is a
+        // deliberate mode rather than a missing argument.
+        return alias is null || (portalId is int scopedPortalId && alias.PortalId != scopedPortalId)
             ? Result<PortalAliasDto?>.Success(null)
             : Result<PortalAliasDto?>.Success(PortalMappings.ToDto(alias));
     }
@@ -920,6 +1249,7 @@ public sealed class PortalService : IPortalService
 
     /// <inheritdoc />
     public async Task<Result> UpdatePortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         UpdatePortalAliasRequest request,
         CancellationToken cancellationToken = default)
@@ -932,7 +1262,13 @@ public sealed class PortalService : IPortalService
         string httpAlias = NormaliseAlias(request.HttpAlias);
 
         PortalAlias? stored = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
-        if (stored is null)
+
+        // The addressed row must belong to the addressed tenant. This is the most consequential of the
+        // three ownership checks on this contract: an alias is what tenant resolution matches on, so
+        // renaming somebody else's alias re-points their portal's traffic. An alias owned by another
+        // portal is reported as not found, with the same code and wording as one that does not exist,
+        // so the refusal carries no information about the other tenant.
+        if (stored is null || (portalId is int scopedPortalId && stored.PortalId != scopedPortalId))
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
         }
@@ -967,11 +1303,16 @@ public sealed class PortalService : IPortalService
 
     /// <inheritdoc />
     public async Task<Result> DeletePortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         CancellationToken cancellationToken = default)
     {
         PortalAlias? stored = await _aliases.GetByIdAsync(portalAliasId, cancellationToken).ConfigureAwait(false);
-        if (stored is null)
+
+        // Ownership is verified before the removal, for the reason given on the update member above.
+        // Unbinding another tenant's alias would make that tenant unreachable at the host name its
+        // users hold, which is a denial of service reached from a grant over an unrelated portal.
+        if (stored is null || (portalId is int scopedPortalId && stored.PortalId != scopedPortalId))
         {
             return Result.Failure(AliasNotFoundCode, $"No portal alias bears identifier {portalAliasId}.");
         }
@@ -1223,72 +1564,107 @@ public sealed class PortalService : IPortalService
         };
 
     /// <summary>
-    /// Removes everything a failed creation had already committed.
+    /// Resolves the host name a new portal will actually be reachable at.
     /// </summary>
-    /// <param name="portal">The portal to remove.</param>
-    /// <param name="alias">The alias bound to it.</param>
-    /// <param name="administrator">The administrator account created for it.</param>
-    /// <param name="roles">The stock roles created for it.</param>
-    /// <param name="deleteCredential">Whether a credential record may already exist and must be removed.</param>
-    /// <param name="cancellationToken">Token observed while the compensating writes are in flight.</param>
+    /// <param name="request">The submitted creation request, read for <c>IsChildPortal</c>.</param>
+    /// <param name="submittedAlias">The trimmed value the caller submitted.</param>
+    /// <returns>
+    /// A success carrying the alias to store, or a failure carrying
+    /// <see cref="ParentAliasUnresolvedCode"/> when a child portal was asked for from a request that
+    /// resolved to no tenant.
+    /// </returns>
     /// <remarks>
-    /// Compensation is best-effort in the sense that it cannot itself be retried, but it is committed
-    /// in one transaction so it either fully reverses the creation or leaves it untouched for an
-    /// operator to inspect. It deliberately does not swallow its own failure: a compensation that
-    /// cannot run is a genuinely unexpected condition and must surface.
+    /// <para>
+    /// MIGRATION: this member is where the <c>IsChildPortal</c> flag becomes observable. The legacy
+    /// signup screen had two branches, both in <c>Website/admin/Portal/Signup.ascx.vb</c>, and both are
+    /// reproduced:
+    /// </para>
+    /// <para>
+    /// L187-L197 — the request came from a PORTAL page. Child was FORCED rather than chosen, the typed
+    /// value was validated against the child character set (lower-case letters, digits and the hyphen) and
+    /// was therefore a bare SEGMENT, and L232-L233 stored <c>GetDomainName(Request) &amp; "/" &amp;
+    /// segment</c>.
+    /// </para>
+    /// <para>
+    /// L199-L216 — the request came from a HOST page. Child was the operator's CHOICE, the typed value was
+    /// permitted to carry path separators of its own, only its final segment was character-validated
+    /// (<c>Mid(..., InStrRev(..., "/") + 1)</c>), and L235 stored the typed value VERBATIM.
+    /// </para>
+    /// <para>
+    /// The branch is selected the same way the legacy screen's own output distinguished them: a submitted
+    /// value that already carries a separator is a fully-qualified child address and is stored as typed,
+    /// and one that does not is a bare segment and is composed beneath the authority the operator is
+    /// addressing. Selecting on the value rather than on the caller's authority level is deliberate — the
+    /// legacy discriminator was ambient per-request page state, which does not exist here, and the
+    /// authority question is settled by the endpoint's authorisation policy rather than by re-deriving it.
+    /// </para>
+    /// <para>
+    /// The parent authority is the resolved tenant's OWN alias, which is this target's equivalent of
+    /// <c>Globals.GetDomainName(Request)</c> (<c>Library/Components/Shared/Globals.vb:L551</c>, implemented
+    /// at L563). It is a closer equivalent than a value re-derived from the URL, for two reasons. It is by
+    /// construction an alias that EXISTS, so a composed child address is guaranteed to sit beneath a real
+    /// tenant rather than beneath a host name nobody has bound. And it already carries any path portion the
+    /// request was addressed under, because resolution prefers the longest matching prefix — which
+    /// reproduces the legacy member's own behaviour of returning <c>www.domain.com/directory</c> rather
+    /// than the bare host when the request arrived beneath a sub-directory, and so nests exactly as the
+    /// legacy screen nested.
+    /// </para>
+    /// <para>
+    /// A child portal asked for from a request that resolved to NO tenant is refused rather than guessed
+    /// at. The legacy member could always answer, because it read the incoming URL directly; here the
+    /// authority must be a bound alias, and inventing one would create a tenant reachable at an address
+    /// the installation does not serve. That is reported as a failure code so the API edge can render it
+    /// as a bad request rather than as a server fault.
+    /// </para>
+    /// <para>
+    /// Synchronous by construction, and that is a property worth stating rather than an oversight. Tenant
+    /// resolution is performed once per request by the API's own alias-resolution stage and is memoised, so
+    /// by the time a creation reaches this service the answer is already held and reading it costs nothing.
+    /// This member deliberately does NOT resolve on demand: doing so would need the incoming address, which
+    /// only the API layer holds, and reaching for it here would put request state in the application layer
+    /// (Rule T1). No I/O means no <see cref="Task"/>, per the reading of Rule T6 that async is for I/O.
+    /// </para>
     /// </remarks>
-    private async Task CompensateFailedCreationAsync(
-        Portal portal,
-        PortalAlias alias,
-        User administrator,
-        IReadOnlyList<Role> roles,
-        bool deleteCredential,
-        CancellationToken cancellationToken)
+    private Result<string> ComposeAlias(CreatePortalRequest request, string submittedAlias)
     {
-        if (deleteCredential)
+        if (!request.IsChildPortal)
         {
-            await _users.DeleteCredentialAsync(administrator.UserId, cancellationToken).ConfigureAwait(false);
+            // The parent branch. The value is a host authority in its own right and is stored as typed,
+            // which is what the legacy screen did for a non-child portal.
+            return Result<string>.Success(submittedAlias);
         }
 
-        foreach (Role role in roles)
+        if (submittedAlias.Contains(AliasPathSeparator, StringComparison.Ordinal))
         {
-            // The assignment is read before it is withdrawn, so a compensation withdraws only what the
-            // store actually accepted. DeleteUserRoleAsync would itself be a no-op on an absent row, but
-            // issuing it regardless would make a compensation that reverses nothing indistinguishable
-            // from one that reverses three enrolments - and this path exists precisely to be auditable.
-            UserRole? assignment = await _roles
-                .GetUserRoleAsync(portal.PortalId, administrator.UserId, role.RoleId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (assignment is not null)
-            {
-                await _roles
-                    .DeleteUserRoleAsync(assignment.UserId, assignment.RoleId, cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            // The legacy HOST branch (L235): the operator qualified the address themselves, so it is
+            // stored verbatim. The validator has already character-checked its final segment.
+            return Result<string>.Success(submittedAlias);
         }
 
-        UserPortal? membership = await _users
-            .GetMembershipAsync(portal.PortalId, administrator.UserId, cancellationToken)
-            .ConfigureAwait(false);
-        if (membership is not null)
+        // The legacy PORTAL branch (L232-L233): a bare segment is composed beneath the addressed
+        // authority. Resolution is memoised per request, so this does not re-read the store on a request
+        // whose tenant has already been established.
+        if (!_portalContext.IsResolved)
         {
-            _users.RemoveMembership(membership);
+            return Result<string>.Failure(
+                ParentAliasUnresolvedCode,
+                "A child portal is reached beneath its parent's host name, and this request did not "
+                + "resolve to a parent portal. Submit the child's full host name, or address the "
+                + "request to the parent portal it is to be created beneath.");
         }
 
-        foreach (Role role in roles)
+        string parentAuthority = _portalContext.Current.PortalAlias.Trim().Trim(AliasPathSeparator);
+
+        if (parentAuthority.Length == 0)
         {
-            await _roles.DeleteAsync(role.RoleId, cancellationToken).ConfigureAwait(false);
+            return Result<string>.Failure(
+                ParentAliasUnresolvedCode,
+                "The parent portal this request resolved to carries no host name, so a child portal's "
+                + "address cannot be composed beneath it.");
         }
 
-        _users.Remove(administrator);
-        await _aliases.DeleteAsync(alias.PortalAliasId, cancellationToken).ConfigureAwait(false);
-        await _portals.DeleteAsync(portal.PortalId, cancellationToken).ConfigureAwait(false);
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        _cache.InvalidateHost();
-        _cache.InvalidatePortal(portal.PortalId);
+        return Result<string>.Success(
+            string.Concat(parentAuthority, AliasPathSeparator.ToString(), submittedAlias));
     }
 
     /// <summary>
@@ -1301,6 +1677,7 @@ public sealed class PortalService : IPortalService
     /// quota, the member quota, the site-log retention period or the expiry date.
     /// </exception>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy settings screen compared exactly these six submitted values against the
     /// stored portal and refused the whole save when a non-super-user had changed any of them
     /// (<c>Website/admin/Portal/SiteSettings.ascx.vb</c> L760-L770). It is an authorisation rule over
@@ -1308,22 +1685,25 @@ public sealed class PortalService : IPortalService
     /// endpoint and lives here. It is reported by exception rather than by reason code because the
     /// member documents no failure code for it, and the API edge translates the exception into a single
     /// forbidden response.
-    /// </remarks>
-    /// <remarks>
-    /// The four numeric terms are compared against the value the update is actually going to write, not
-    /// against the submitted value alone, and they are compared by calling the very members that write
-    /// it - <see cref="PortalMappings.ClampFee"/> and <see cref="PortalMappings.ClampQuota"/> - rather
-    /// than by restating their arithmetic here. That is deliberate: this rule is only sound while the
-    /// comparison and the write agree, and routing both through one member makes them agree by
-    /// construction instead of by coincidence. A restated copy could drift, and the drift would not
-    /// break a build or a test - it would quietly admit the change this rule exists to refuse.
-    /// This request is a whole-row replacement, so an omitted numeric
-    /// term is not "leave it alone": <see cref="PortalMappings.ApplyUpdate"/> substitutes zero for it,
-    /// because the underlying columns cannot hold null. Testing <c>request.HostFee is decimal</c> and
-    /// letting an omission through would therefore admit the exact change this rule exists to refuse — a
-    /// tenant administrator could waive the hosting charge and lift every quota simply by leaving those
-    /// fields out of the request. Comparing the effective value closes that, and costs a caller who is
-    /// genuinely not changing them nothing, because echoing a value back compares equal.
+    /// </para>
+    /// <para>
+    /// Every term is compared against the value the update is actually going to WRITE, term for term with
+    /// <see cref="PortalMappings.ApplyUpdate"/>, and no arithmetic is applied to either side. That
+    /// agreement is the whole soundness argument: the write applies no floor to the hosting charge or to
+    /// any allowance - the legacy save path applied none either, and the mapper records why - so flooring
+    /// them HERE would compare a coerced submission against a stored value and admit exactly the change
+    /// this rule exists to refuse. A caller submitting a negative charge where the stored charge is zero
+    /// would pass a floored comparison and then have the negative value stored.
+    /// </para>
+    /// <para>
+    /// This request is a whole-row replacement, so an omitted numeric term is not "leave it alone":
+    /// <see cref="PortalMappings.ApplyUpdate"/> substitutes zero for it, because the underlying columns
+    /// cannot hold null. Testing <c>request.HostFee is decimal</c> and letting an omission through would
+    /// therefore admit the same change by another route — a tenant administrator could waive the hosting
+    /// charge and lift every quota simply by leaving those fields out of the request. Comparing the
+    /// effective value closes that, and costs a caller who is genuinely not changing them nothing,
+    /// because echoing a value back compares equal.
+    /// </para>
     /// </remarks>
     private void EnsureHostOnlyFieldsUnchanged(Portal portal, UpdatePortalRequest request)
     {
@@ -1332,10 +1712,10 @@ public sealed class PortalService : IPortalService
             return;
         }
 
-        bool altered = PortalMappings.ClampFee(request.HostFee ?? 0m) != portal.HostFee
-            || PortalMappings.ClampQuota(request.HostSpace ?? 0) != portal.HostSpace
-            || PortalMappings.ClampQuota(request.PageQuota ?? 0) != portal.PageQuota
-            || PortalMappings.ClampQuota(request.UserQuota ?? 0) != portal.UserQuota
+        bool altered = (request.HostFee ?? 0m) != portal.HostFee
+            || (request.HostSpace ?? 0) != portal.HostSpace
+            || (request.PageQuota ?? 0) != portal.PageQuota
+            || (request.UserQuota ?? 0) != portal.UserQuota
             || request.SiteLogHistory != portal.SiteLogHistory
             || request.ExpiryDate != portal.ExpiryDate;
 
@@ -1482,4 +1862,197 @@ public sealed class PortalService : IPortalService
         int PageQuota,
         int UserQuota,
         int? SiteLogHistory);
+
+    /// <summary>
+    /// Installs the nineteen profile property definitions every new tenant begins with.
+    /// </summary>
+    /// <param name="portalId">The tenant the definitions belong to.</param>
+    /// <param name="token">Token observed while the definitions are staged.</param>
+    /// <remarks>
+    /// <para>
+    /// Reproduces <c>ProfileController.AddDefaultDefinitions</c>
+    /// (<c>Library/Components/Users/Profile/ProfileController.vb:L334-L361</c>), which the legacy creation
+    /// sequence reached through <c>CreateProfileDefinitions</c> at <c>PortalController.vb:L300</c>. The four
+    /// categories, the nineteen names and their order are transcribed from that method rather than chosen:
+    /// five under Name, six under Address, five under Contact Info and three under Preferences.
+    /// </para>
+    /// <para>
+    /// The view order is 3, 5, 7 and so on to 39, and that is not an off-by-one. The legacy helper set
+    /// <c>_orderCounter = 1</c> and then incremented it by two BEFORE assigning
+    /// (<c>ProfileController.vb</c> <c>AddDefaultDefinition</c>), so the first definition is 3 rather than 1
+    /// and no definition is even. Renumbering them from 1 would change the order every profile screen renders
+    /// them in, so the sequence is preserved exactly.
+    /// </para>
+    /// <para>
+    /// The length is 50 for the free-text properties and 0 for the six that are rendered by a chooser rather
+    /// than a text box - Region, Country, Biography, TimeZone and PreferredLocale - because a chooser imposes
+    /// no character bound. Again transcribed, not inferred.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the editor type cannot be resolved and is stored as zero. The legacy helper looked each
+    /// type up in the <c>Lists</c> table - <c>types.Item("DataType." + strType)</c> - and used the row's
+    /// <c>EntryID</c>. That table belongs to the list subsystem, which AAP 0.2.2.2 places out of scope, so
+    /// there is no lookup to perform. Zero is the honest value rather than an arbitrary one: <c>Lists</c> is
+    /// declared <c>IDENTITY (1, 1)</c> at <c>03.00.01.SqlDataProvider:L842</c>, so zero cannot collide with
+    /// any real editor type, and the legacy helper itself already had a fallback for an unresolvable type -
+    /// it substituted <c>DataType.Unknown</c>. An installation that adopts the list subsystem later can map
+    /// these nineteen rows without ambiguity, because zero identifies exactly the ones that were never
+    /// resolved.
+    /// </para>
+    /// </remarks>
+    private async Task CreateDefaultProfileDefinitionsAsync(int portalId, CancellationToken token)
+    {
+        // (category, name, whether the property is rendered by a chooser rather than a text box)
+        (string Category, string Name, bool Chooser)[] defaults =
+        [
+            ("Name", "Prefix", false),
+            ("Name", "FirstName", false),
+            ("Name", "MiddleName", false),
+            ("Name", "LastName", false),
+            ("Name", "Suffix", false),
+            ("Address", "Unit", false),
+            ("Address", "Street", false),
+            ("Address", "City", false),
+            ("Address", "Region", true),
+            ("Address", "Country", true),
+            ("Address", "PostalCode", false),
+            ("Contact Info", "Telephone", false),
+            ("Contact Info", "Cell", false),
+            ("Contact Info", "Fax", false),
+            ("Contact Info", "Website", false),
+            ("Contact Info", "IM", false),
+            ("Preferences", "Biography", true),
+            ("Preferences", "TimeZone", true),
+            ("Preferences", "PreferredLocale", true),
+        ];
+
+        int viewOrder = 1;
+
+        foreach ((string category, string name, bool chooser) in defaults)
+        {
+            // Incremented BEFORE it is assigned, exactly as the legacy helper did, which is what makes the
+            // first view order 3 rather than 1.
+            viewOrder += 2;
+
+            await _profiles.AddDefinitionAsync(
+                new ProfilePropertyDefinition
+                {
+                    PortalId = portalId,
+                    PropertyCategory = category,
+                    PropertyName = name,
+                    DataType = UnresolvedProfileDataType,
+                    DefaultValue = string.Empty,
+                    ModuleDefinitionId = null,
+                    IsRequired = false,
+                    IsVisible = true,
+                    Length = chooser ? 0 : DefaultProfilePropertyLength,
+                    ViewOrder = viewOrder,
+                },
+                token).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Creates the new tenant's home page and grants it the permissions the legacy portal template granted.
+    /// </summary>
+    /// <param name="portal">The tenant the page belongs to.</param>
+    /// <param name="administratorsRole">The tenant's administrators role, which receives the edit grant.</param>
+    /// <param name="token">Token observed while the page and its grants are staged.</param>
+    /// <returns>The staged page, whose identifier becomes the tenant's home page once it is committed.</returns>
+    /// <remarks>
+    /// <para>
+    /// A tenant with no page has nowhere to serve, so this is the minimum that makes one usable. The legacy
+    /// sequence obtained its pages by parsing an XML portal template
+    /// (<c>PortalController.vb:L1075</c>), and that whole path is unavailable here: the template lives on
+    /// disc, and the modules it places require the module installer, the skinning subsystem and the
+    /// <c>IPortable</c> contract, all of which AAP 0.2.2 excludes. What survives is the part that is purely
+    /// relational - one page row and its permission grants - which is why the page is created directly rather
+    /// than by reproducing a template parser that has nothing to parse.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the consequence is stated plainly. The tenant receives ONE empty page, not the several
+    /// pages populated with modules that a template would have supplied. That is a reduction from the legacy
+    /// behaviour, and it is the largest one in this sequence; it is bounded by what the excluded subsystems
+    /// own, and an operator can add pages through the page endpoints afterwards.
+    /// </para>
+    /// <para>
+    /// The three grants are those the stock template declared for its home page: view for all users, view for
+    /// administrators and edit for administrators. The all-users grant is expressed by the role identifier
+    /// the schema reserves for it rather than by a role row, which is why it carries no role of this tenant.
+    /// A grant is staged only when its catalogue definition can be found - the catalogue is installed by the
+    /// upgrade scripts, so on a real installation all three resolve, and on a database that lacks them the
+    /// page is still created rather than the whole tenant failing over reference data.
+    /// </para>
+    /// </remarks>
+    private async Task<Tab> CreateHomePageAsync(Portal portal, Role administratorsRole, CancellationToken token)
+    {
+        var homePage = new Tab
+        {
+            PortalId = portal.PortalId,
+            TabName = HomePageName,
+            Title = HomePageName,
+            IsVisible = true,
+            DisableLink = false,
+            TabOrder = 1,
+            Level = 0,
+            ParentId = null,
+            IsDeleted = false,
+        };
+
+        await _tabs.AddAsync(homePage, token).ConfigureAwait(false);
+
+        // The page scope's catalogue definitions. Read once and matched by key, because the two keys this
+        // page needs are declared under the same scope code and one read answers for both.
+        IReadOnlyList<Permission> pageScope = await _permissions
+            .GetByTabIdAsync(homePage.TabId, token)
+            .ConfigureAwait(false);
+
+        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.VIEW, AllUsersRoleId, token)
+            .ConfigureAwait(false);
+        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.VIEW, administratorsRole.RoleId, token)
+            .ConfigureAwait(false);
+        await GrantHomePagePermissionAsync(homePage, pageScope, PermissionKey.EDIT, administratorsRole.RoleId, token)
+            .ConfigureAwait(false);
+
+        return homePage;
+    }
+
+    /// <summary>
+    /// Stages one page permission grant, when the catalogue defines the key it names.
+    /// </summary>
+    /// <param name="homePage">The page receiving the grant.</param>
+    /// <param name="pageScope">The page scope's catalogue definitions.</param>
+    /// <param name="permissionKey">The key to grant.</param>
+    /// <param name="roleId">The role receiving it.</param>
+    /// <param name="token">Token observed while the grant is staged.</param>
+    /// <remarks>
+    /// The page is bound by NAVIGATION rather than by identifier, because the page has no identifier until the
+    /// commit that follows; the object graph resolves the foreign key for both rows in one write. A key the
+    /// catalogue does not define is skipped rather than invented, because a grant referencing a definition
+    /// that does not exist would violate the foreign key and fail the whole tenant creation over reference
+    /// data that the upgrade scripts own.
+    /// </remarks>
+    private async Task GrantHomePagePermissionAsync(
+        Tab homePage,
+        IReadOnlyList<Permission> pageScope,
+        PermissionKey permissionKey,
+        int roleId,
+        CancellationToken token)
+    {
+        Permission? definition = pageScope.FirstOrDefault(entry => entry.PermissionKey == permissionKey);
+        if (definition is null)
+        {
+            return;
+        }
+
+        await _permissions.AddTabPermissionAsync(
+            new TabPermission
+            {
+                Tab = homePage,
+                PermissionId = definition.PermissionId,
+                RoleId = roleId,
+                AllowAccess = true,
+            },
+            token).ConfigureAwait(false);
+    }
 }

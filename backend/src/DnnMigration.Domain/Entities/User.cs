@@ -136,15 +136,17 @@ public sealed class User : Entity<int>
     /// </para>
     /// <para>
     /// The seed is 1, which is worth stating explicitly because it is unusual in this schema:
-    /// <c>dbo.Portals</c> seeds at -1 and <c>dbo.Roles</c>, <c>dbo.Tabs</c> and
-    /// <c>dbo.Modules</c> each seed at 0, so for those aggregates a "default-looking" value is a
-    /// real persisted identity. Users are not affected - 0 is never a persisted
+    /// <c>dbo.Portals</c> seeds at -1 - and its shipped default row was inserted with an explicit
+    /// <c>PortalID</c> of 0, so both values are real portal keys - while <c>dbo.Roles</c>,
+    /// <c>dbo.Tabs</c> and <c>dbo.Modules</c> each seed at 0, so for those aggregates a
+    /// "default-looking" value is a real persisted identity. Users are not affected - 0 is never a persisted
     /// <c>UserID</c> - but no code may rely on that as a general rule, and neither this type nor
     /// its base ever deduces from the value itself whether a row exists. The base takes that
-    /// answer from the layer that holds it: the persistence layer declares it once through
-    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> and it is read back through
-    /// <see cref="Entity{TId}.IdentityIsPersisted"/>, which is also what decides whether two
-    /// instances are compared by <see cref="UserId"/> or by object reference. Whether a row should
+    /// answer from a caller that holds it: <see cref="Entity{TId}.MarkIdentityPersisted"/> declares
+    /// it and <see cref="Entity{TId}.IdentityIsPersisted"/> reads it back, which is also what decides
+    /// whether two instances are compared by <see cref="UserId"/> or by object reference. Nothing
+    /// declares it automatically, so an account materialised from the database compares by object
+    /// reference until some caller declares it. Whether a row should
     /// be inserted or updated remains a question for the persistence layer's change tracker, which
     /// knows more than that flag does.
     /// </para>
@@ -437,24 +439,13 @@ public sealed class User : Entity<int>
     // above, so the boundary between "persisted by this entity" and "composed for this entity"
     // is impossible to misread.
     //
-    // MIGRATION: UserConfiguration MUST call Ignore(...) for every one of the eleven, without
-    // exception. Restated in full so the requirement cannot be met partially:
-    //
-    //     builder.Ignore(u => u.IsApproved);
-    //     builder.Ignore(u => u.CreatedDate);
-    //     builder.Ignore(u => u.IsOnline);
-    //     builder.Ignore(u => u.LastActivityDate);
-    //     builder.Ignore(u => u.LastLockoutDate);
-    //     builder.Ignore(u => u.LastLoginDate);
-    //     builder.Ignore(u => u.LastPasswordChangeDate);
-    //     builder.Ignore(u => u.IsLockedOut);
-    //     builder.Ignore(u => u.PasswordHash);
-    //     builder.Ignore(u => u.PasswordAnswer);
-    //     builder.Ignore(u => u.PasswordQuestion);
-    //
-    // Omitting any single Ignore call makes the object-relational mapper infer a column on
-    // dbo.Users that does not exist, and every query against the table then fails at run time -
-    // a failure the compiler cannot catch, which is why the list is spelled out here.
+    // MIGRATION: the invariant, and it admits no partial satisfaction - UserConfiguration excludes
+    // every property in this section from the model, and the executable list of exclusions lives
+    // there rather than being copied here, where a second copy could disagree with the first.
+    // Adding a property to this section without excluding it there makes the object-relational
+    // mapper infer a column on dbo.Users that does not exist, and every query against the table
+    // then fails at run time - a failure the compiler cannot catch, which is why the boundary is
+    // marked this emphatically on both sides.
     //
     // MIGRATION: UserRepository, and the security services beside it, MUST compose these values
     // explicitly - one deliberate, inspectable step inside a repository or service method,
@@ -693,7 +684,8 @@ public sealed class User : Entity<int>
     /// </para>
     /// <para>
     /// In the target this is the natural place to observe that a stored credential predates the
-    /// migration, which matters for the re-hash path described on <see cref="PasswordHash"/>. It
+    /// migration, which matters because such an account can only be recovered by the administrative
+    /// reset described on <see cref="PasswordHash"/>. It
     /// pairs with <see cref="UpdatePassword"/>, the one credential fact that really is a
     /// <c>dbo.Users</c> column, to drive password-age policy in the Application layer. No policy
     /// is evaluated here.
@@ -768,10 +760,21 @@ public sealed class User : Entity<int>
     /// reversible-encryption path appears anywhere on this type.
     /// </para>
     /// <para>
-    /// Migrating existing credentials. A one-way hash cannot verify a legacy encrypted secret, so
-    /// the value is re-hashed after a successful verification against the legacy scheme, or on an
-    /// administrative reset. That is the only supported path, it is performed by the
-    /// Infrastructure security services, and it is documented in <c>MIGRATION_NOTES.md</c>.
+    /// Migrating existing credentials. A one-way hash cannot verify a legacy encrypted secret, and
+    /// no component in this solution holds a legacy verifier - AAP section 0.7.5.5 forbids building
+    /// one - so <b>an administrative reset is the only path by which a pre-existing credential becomes
+    /// usable</b>. An earlier revision of this paragraph offered "after a successful verification
+    /// against the legacy scheme" as an alternative; that verification cannot occur, so the
+    /// alternative was never real. The reset is performed through the account-administration
+    /// contract, an administrator supplies the replacement, the Infrastructure security services
+    /// write its hash, and the resulting functional reduction is recorded in
+    /// <c>MIGRATION_NOTES.md</c>.
+    /// </para>
+    /// <para>
+    /// What IS performed automatically is a different operation: a value this scheme produced is
+    /// re-hashed at the current cost once that cost has been raised, on a sign-in that has already
+    /// verified it. That upgrades the strength of a working credential; it never rescues a legacy
+    /// one.
     /// </para>
     /// <para>
     /// Password RETRIEVAL is deliberately not carried forward, in any form. There is no member

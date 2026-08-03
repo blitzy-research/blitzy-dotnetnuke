@@ -140,7 +140,8 @@ public interface IPortalAliasRepository
     Task<PortalAlias?> GetByAliasAsync(string httpAlias, int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns every alias across the installation whose stored host name is exactly the supplied value.
+    /// Returns every alias across the installation whose stored host name is exactly one of the supplied
+    /// candidate values.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -159,21 +160,38 @@ public interface IPortalAliasRepository
     /// responsibility, because it is a policy question rather than a persistence one.
     /// </para>
     /// <para>
-    /// Matching is exact and case-insensitive, on the same evidence as <see cref="GetByAliasAsync"/>. An
-    /// implementation is expected to load each matching alias with its owning portal attached, so that
-    /// resolving a tenant costs one round trip rather than one per candidate.
+    /// SEVERAL CANDIDATES ARE ACCEPTED IN ONE CALL, and that is what makes a virtual-path alias resolvable
+    /// without a round trip per candidate. The legacy product let a child portal be addressed by a path
+    /// segment beneath a shared host, so the stored value can be a host name OR a host name followed by one
+    /// or more path segments - <c>Signup.ascx.vb</c> L232-L236 composes exactly that, and the legacy
+    /// request-side counterpart, <c>Globals.GetDomainName</c> L563 onward, walked the request's path
+    /// segments to build the value it matched against this column. A caller resolving a request therefore
+    /// has a CHAIN of possible addresses, longest first, and asking for them one at a time would mean up to
+    /// one query per path segment on every request. This member answers the whole chain at once and leaves
+    /// the caller to prefer the most specific match, which is the same preference the legacy walk expressed
+    /// by stopping at the first recognised directory.
+    /// </para>
+    /// <para>
+    /// Matching is exact and case-insensitive, on the same evidence as <see cref="GetByAliasAsync"/> - never
+    /// a prefix match or a pattern in the store, because the candidate chain is computed by the caller and
+    /// each element is compared whole. An implementation is expected to load each matching alias with its
+    /// owning portal attached, so that resolving a tenant costs one round trip.
     /// </para>
     /// </remarks>
-    /// <param name="httpAlias">
-    /// The host name to match, exactly as supplied by the caller. Untrusted data throughout, and never
-    /// treated as a pattern.
+    /// <param name="httpAliasCandidates">
+    /// The candidate addresses to match, exactly as supplied by the caller. Untrusted data throughout, and
+    /// never treated as patterns. An empty collection matches nothing and must not read the store.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the operation should be abandoned.</param>
     /// <returns>
-    /// Every alias whose host name matches, in a stable order; empty when none matches. More than one
-    /// element signals an ambiguous host name that the caller must refuse rather than resolve.
+    /// Every alias whose host name matches ANY candidate, in a stable order; empty when none matches. Two
+    /// elements matching the SAME candidate signal an ambiguous address the caller must refuse rather than
+    /// resolve; two elements matching DIFFERENT candidates are the ordinary case for a child portal beneath
+    /// a parent, and the caller resolves that by preferring the longer candidate.
     /// </returns>
-    Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(string httpAlias, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(
+        IReadOnlyList<string> httpAliasCandidates,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reports whether any alias already claims the supplied host name, optionally ignoring one alias.

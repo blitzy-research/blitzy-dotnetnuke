@@ -1,4 +1,5 @@
 using DnnMigration.Application.Dtos.Role;
+using DnnMigration.Domain.Common;
 using FluentValidation;
 
 namespace DnnMigration.Application.Validation;
@@ -259,75 +260,40 @@ namespace DnnMigration.Application.Validation;
 // pattern-matching engine, and it accepts every form the legacy picker could have produced.
 public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
 {
-    /// <summary>
-    /// Wording of <c>valRoleName</c>, the screen's only presence check
-    /// (<c>editroles.ascx</c> L31), with its leading markup tag removed.
-    /// </summary>
-    private const string RoleNameRequiredMessage = "You Must Enter a Valid Name";
+    // Every message, every column width and the icon-path predicate this validator applies are
+    // declared once in RoleTermsRules and applied identically by UpdateRoleRequestValidator. They
+    // used to live here as private members, which is precisely how the icon-path containment rule
+    // came to exist on this path and not on the update path - a rule a caller could bypass by
+    // choosing PUT over POST. Moving them changes no rule and no wording; it removes the ability
+    // for the two paths to drift apart again. The provenance annotation for each value travels with
+    // it, so RoleTermsRules is where the measured legacy line references now live.
 
     /// <summary>
-    /// Wording of <c>valServiceFee2</c> (<c>editroles.ascx</c> L95). Message and operator agree.
+    /// Largest billing or trial period a role may declare, in units of its own frequency.
     /// </summary>
-    private const string ServiceFeeNegativeMessage =
-        "Service Fee Must Be Greater Than or Equal to Zero";
+    /// <remarks>
+    /// A net-new bound: the legacy screen declared only that a period be positive, so an unbounded count
+    /// reached the offset arithmetic that derives a membership expiry. That arithmetic is now clamping
+    /// rather than overflowing, so this rule is not what keeps it safe - what it adds is a field-level
+    /// answer naming the period, in place of a silently clamped expiry a caller never asked for. The
+    /// value is generous by four orders of magnitude against any real configuration: ten thousand units
+    /// is ten thousand years at the yearly frequency and twenty-seven years at the daily one.
+    /// </remarks>
+    private const int PeriodMaximum = 10_000;
 
     /// <summary>
-    /// Wording of <c>valBillingPeriod2</c> (<c>editroles.ascx</c> L113), carried across unchanged
-    /// even though the operator it accompanies is strictly greater than zero.
+    /// Reported when a billing or trial period exceeds the largest count a role may declare.
     /// </summary>
-    private const string BillingPeriodNotPositiveMessage =
-        "Billing Period Must Be Greater Than or Equal to Zero";
+    private static readonly string PeriodTooLargeMessage = FormattableString.Invariant(
+        $"A billing or trial period must be no more than {PeriodMaximum} units of its own frequency.");
 
     /// <summary>
-    /// Wording of <c>valTrialFee2</c> (<c>editroles.ascx</c> L127), carried across unchanged even
-    /// though the operator it accompanies admits zero.
+    /// Reported when a fee is a well-formed decimal that the terminal <c>money</c> column cannot hold.
+    /// The wording is net-new: the legacy screen declared no upper bound and therefore had no message to
+    /// reproduce, and the failure it reports was previously a server fault naming no field.
     /// </summary>
-    private const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than Zero";
-
-    /// <summary>
-    /// Wording of <c>valTrialPeriod2</c> (<c>editroles.ascx</c> L145). Message and operator agree.
-    /// </summary>
-    private const string TrialPeriodNotPositiveMessage = "Trial Period Must Be Greater Than Zero";
-
-    /// <summary>
-    /// Reported when a submitted billing frequency is not a member of the domain enumeration.
-    /// </summary>
-    private const string BillingFrequencyInvalidMessage =
-        "Billing Frequency must be one of None, One Time, Day, Week, Month or Year.";
-
-    /// <summary>
-    /// Reported when a submitted trial frequency is not a member of the domain enumeration.
-    /// </summary>
-    private const string TrialFrequencyInvalidMessage =
-        "Trial Frequency must be one of None, One Time, Day, Week, Month or Year.";
-
-    /// <summary>
-    /// Reported when a submitted icon path is rooted or traverses above the portal's own folder.
-    /// </summary>
-    private const string IconFileNotRelativeMessage =
-        "Icon File must be a relative path within the portal's own folder.";
-
-    /// <summary>
-    /// Width of <c>Roles.RoleName nvarchar(50) NOT NULL</c>
-    /// (<c>01.00.00.SqlDataProvider</c> L117).
-    /// </summary>
-    private const int RoleNameMaximumLength = 50;
-
-    /// <summary>
-    /// Width of <c>Roles.Description nvarchar(1000) NULL</c>
-    /// (<c>01.00.00.SqlDataProvider</c> L118).
-    /// </summary>
-    private const int DescriptionMaximumLength = 1000;
-
-    /// <summary>
-    /// Width of <c>Roles.RSVPCode nvarchar(50) NULL</c> (<c>03.02.03.SqlDataProvider</c> L45).
-    /// </summary>
-    private const int RsvpCodeMaximumLength = 50;
-
-    /// <summary>
-    /// Width of <c>Roles.IconFile nvarchar(100) NULL</c> (<c>03.02.03.SqlDataProvider</c> L45).
-    /// </summary>
-    private const int IconFileMaximumLength = 100;
+    private static readonly string AmountUnrepresentableMessage = FormattableString.Invariant($"An amount must fall between {SqlServerRange.MinimumMoney} and {SqlServerRange.MaximumMoney}, ")
+        + FormattableString.Invariant($"which is the range the stored column can hold.");
 
     /// <summary>
     /// Initialises a new instance of the <see cref="CreateRoleRequestValidator"/> class and declares
@@ -348,51 +314,68 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
         // in this validator that is unconditional. The width is the NOT NULL column's own.
         RuleFor(request => request.RoleName)
             .NotEmpty()
-            .WithMessage(RoleNameRequiredMessage)
-            .MaximumLength(RoleNameMaximumLength);
+            .WithMessage(RoleTermsRules.RoleNameRequiredMessage)
+            .MaximumLength(RoleTermsRules.RoleNameMaximumLength);
 
         // No validator was declared on the description, so only the column width is asserted. The
         // rule is inert for an absent value: a length check passes a null.
         RuleFor(request => request.Description)
-            .MaximumLength(DescriptionMaximumLength);
+            .MaximumLength(RoleTermsRules.DescriptionMaximumLength);
 
         // No validator was declared on the invitation code either, and nothing in the schema makes
         // it unique, so a clash is not a conflict and only the width applies.
         RuleFor(request => request.RsvpCode)
-            .MaximumLength(RsvpCodeMaximumLength);
+            .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength);
 
-        // Column width, plus the net-new containment rule annotated above.
+        // Column width, plus the net-new containment rule annotated above. The containment check
+        // itself moved to IconReferenceRules so that the role UPDATE and the page update apply the
+        // very same rule; while it was private to this class those two paths accepted references
+        // this one refused, and the weaker path defined the application's actual behaviour.
         RuleFor(request => request.IconFile)
-            .MaximumLength(IconFileMaximumLength)
-            .Must(BeAContainedRelativePath)
-            .WithMessage(IconFileNotRelativeMessage);
+            .MaximumLength(RoleTermsRules.IconFileMaximumLength)
+            .Must(RoleTermsRules.IsContainedRelativePath)
+            .WithMessage(RoleTermsRules.IconFileNotRelativeMessage);
 
         // valServiceFee2 (L96): GreaterThanEqual against 0. Zero is a real price - a free role -
-        // so the bound admits it and refuses only a negative amount. No upper bound: the terminal
-        // column is money, not the baseline's decimal(5, 2).
+        // so the bound admits it and refuses only a negative amount.
+        //
+        // REPRESENTABILITY, NOT A PRICE CEILING. The terminal column is money, not the baseline's
+        // decimal(5, 2), and the second rule states that column's own limits. It is emphatically not
+        // a business maximum: the legacy screen declared none, and inventing one would refuse a fee
+        // some installation legitimately charges. What it refuses is an amount the column cannot hold
+        // at all, which unbounded reached the provider and surfaced as a server fault naming no field
+        // instead of a field-level answer.
         RuleFor(request => request.ServiceFee)
             .GreaterThanOrEqualTo(0m)
-            .WithMessage(ServiceFeeNegativeMessage)
+            .WithMessage(RoleTermsRules.ServiceFeeNegativeMessage)
+            .Must(SqlServerRange.CanStore)
+            .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.ServiceFee.HasValue);
 
         // valBillingPeriod2 (L114): GreaterThan against 0 - strictly positive - despite the message
         // wording preserved above. A cycle of zero units could never advance an expiry date.
         RuleFor(request => request.BillingPeriod)
             .GreaterThan(0)
-            .WithMessage(BillingPeriodNotPositiveMessage)
+            .WithMessage(RoleTermsRules.BillingPeriodNotPositiveMessage)
+            .LessThanOrEqualTo(PeriodMaximum)
+            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.BillingPeriod.HasValue);
 
         // valTrialFee2 (L128): GreaterThanEqual against 0 - zero admitted - despite the message
         // wording preserved above. A free trial is a real configuration.
         RuleFor(request => request.TrialFee)
             .GreaterThanOrEqualTo(0m)
-            .WithMessage(TrialFeeNegativeMessage)
+            .WithMessage(RoleTermsRules.TrialFeeNegativeMessage)
+            .Must(SqlServerRange.CanStore)
+            .WithMessage(AmountUnrepresentableMessage)
             .When(request => request.TrialFee.HasValue);
 
         // valTrialPeriod2 (L146): GreaterThan against 0. Message and operator agree here.
         RuleFor(request => request.TrialPeriod)
             .GreaterThan(0)
-            .WithMessage(TrialPeriodNotPositiveMessage)
+            .WithMessage(RoleTermsRules.TrialPeriodNotPositiveMessage)
+            .LessThanOrEqualTo(PeriodMaximum)
+            .WithMessage(PeriodTooLargeMessage)
             .When(request => request.TrialPeriod.HasValue);
 
         // Membership of the domain enumeration, which IS the character check because each member
@@ -401,12 +384,12 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
         // rule reads as conditional rather than relying on the enumeration check to tolerate a null.
         RuleFor(request => request.BillingFrequency)
             .IsInEnum()
-            .WithMessage(BillingFrequencyInvalidMessage)
+            .WithMessage(RoleTermsRules.BillingFrequencyInvalidMessage)
             .When(request => request.BillingFrequency.HasValue);
 
         RuleFor(request => request.TrialFrequency)
             .IsInEnum()
-            .WithMessage(TrialFrequencyInvalidMessage)
+            .WithMessage(RoleTermsRules.TrialFrequencyInvalidMessage)
             .When(request => request.TrialFrequency.HasValue);
 
         // No rule on the two flags: a boolean is its own constraint, and false is a legitimate
@@ -414,42 +397,5 @@ public class CreateRoleRequestValidator : AbstractValidator<CreateRoleRequest>
         //
         // No rule on the group reference: zero names a real group and the legacy negative value
         // means "ungrouped", so any bound would refuse one of them.
-    }
-
-    /// <summary>
-    /// Determines whether a submitted icon path stays inside the portal's own folder, accepting an
-    /// absent or empty value.
-    /// </summary>
-    /// <param name="iconFile">The submitted path, which may be <see langword="null"/>.</param>
-    /// <returns>
-    /// <see langword="true"/> when the value is absent, empty, or a relative path that neither
-    /// begins at a root nor traverses upwards; otherwise <see langword="false"/>.
-    /// </returns>
-    /// <remarks>
-    /// Expressed as character tests rather than through the file-system APIs or a pattern-matching
-    /// engine, both so that this layer touches neither and so that the check behaves identically
-    /// whichever platform the API runs on - the legacy application stored Windows-style separators,
-    /// while the migrated API runs on Linux, so both separators must be treated as rooting
-    /// characters regardless of the host.
-    /// </remarks>
-    private static bool BeAContainedRelativePath(string? iconFile)
-    {
-        // An absent or empty icon is the normal case: the legacy screen stored the empty string
-        // when no icon had been picked, so neither form may be refused here.
-        if (string.IsNullOrEmpty(iconFile))
-        {
-            return true;
-        }
-
-        // A parent-directory segment in any position escapes the portal's folder.
-        if (iconFile.Contains("..", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        // A leading separator makes the path absolute on either platform, and a volume or scheme
-        // separator turns it into a drive-qualified path or a URI.
-        return iconFile[0] is not ('/' or '\\')
-            && !iconFile.Contains(':', StringComparison.Ordinal);
     }
 }

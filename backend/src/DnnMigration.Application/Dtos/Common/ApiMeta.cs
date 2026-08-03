@@ -2,11 +2,15 @@ namespace DnnMigration.Application.Dtos.Common;
 
 /// <summary>
 /// Envelope metadata companion to <c>ApiResponse</c>, describing a successful API response rather
-/// than the payload it carries.
+/// than the payload it carries. Declared but NOT YET ADOPTED, along with the envelopes that compose
+/// it.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A collection endpoint populates every member; a single-item endpoint omits the metadata
+/// STATUS: no endpoint emits this type today. It is reached only through <c>ApiResponse</c> and
+/// <c>PagedResponse</c>, neither of which any controller returns; the paged endpoints return the flat
+/// <c>PagedResult&lt;T&gt;</c> instead. The intended contract, once those envelopes are adopted, is
+/// that a collection endpoint populates every member while a single-item endpoint omits the metadata
 /// altogether, because a scalar payload has no page to describe.
 /// </para>
 /// <para>
@@ -56,12 +60,16 @@ public sealed class ApiMeta
 
     /// <summary>
     /// Gets or sets the size of the page that produced the payload: the size the server actually
-    /// applied, which can differ from the size a caller asked for once request validation has
-    /// clamped it.
+    /// applied.
     /// </summary>
     /// <remarks>
-    /// The legacy screen read its page size from the <c>Records_PerPage</c> portal setting and echoed
-    /// that same value back to the pager, which is the behaviour this member preserves.
+    /// This value equals the size the caller asked for. Request validation REJECTS a page size outside
+    /// its permitted range rather than clamping it - <c>PagedRequestValidator</c> requires a size
+    /// greater than zero and no greater than one hundred, and an out-of-range request is refused as a
+    /// validation problem instead of being quietly served at a different size - so the server never
+    /// substitutes a size of its own and this member never disagrees with the request. The legacy
+    /// screen read its page size from the <c>Records_PerPage</c> portal setting and echoed that same
+    /// value back to the pager, which is the echoing behaviour this member preserves.
     /// </remarks>
     public int PageSize { get; set; }
 

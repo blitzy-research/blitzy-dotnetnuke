@@ -30,9 +30,11 @@
   inline-size: var(--space-6);
   block-size: var(--space-6);
 
-  // A half-length is what turns a square into a circle; a radius token would round the corners into a
-  // squircle instead. The token vocabulary carries no value for this.
-  border-radius: 50%;
+  // The fully-rounded token, not one of the three length steps: a length would round the corners into
+  // a squircle, whereas the proportion turns the square into a circle at whatever size a caller gives
+  // it. An earlier revision wrote the proportion inline on the grounds that the vocabulary carried no
+  // value for it; the vocabulary now does, which is the correct resolution of that gap.
+  border-radius: var(--radius-round);
 
   border-width: var(--border-width);
   border-style: var(--border-style);

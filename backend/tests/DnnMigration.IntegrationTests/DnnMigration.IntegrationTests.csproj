@@ -6,9 +6,16 @@
     class here must carry [Trait("Category", "Integration")], because that is
     what the "Category=Integration" test filter selects.
 
-    Test-database strategy: the InMemory and Sqlite providers are the default
-    stores so the suite runs without a container runtime. Testcontainers.MsSql is
-    available for schema-faithful runs but is deliberately not the default.
+    Test-database strategy: every run uses a real SQL Server, either the instance
+    named by DNN_TEST_SQLSERVER or a Testcontainers.MsSql container. No fixture
+    selects the InMemory or Sqlite provider, and none can: TestDatabaseFactory
+    documents three paths under test that a non-relational provider cannot run -
+    ExecuteDeleteAsync, a FromSqlInterpolated query root, and IsAvailableAsync,
+    which returns false unless the provider is SQL Server and the external
+    aspnet_* objects exist. Account creation answering 201 is an acceptance
+    criterion and fails closed without them. The InMemory and Sqlite references
+    below are kept because AAP 0.6.1 approves them, not because anything uses
+    them; treat them as unexercised until a fixture actually opts in.
 
     ANALYZER HAZARD: xunit.analyzers ships transitively with xunit and reports its
     xUnit#### rules as warnings, which the inherited warnings-as-errors policy
@@ -24,25 +31,32 @@
     the existing provider registration before adding its own rather than layering
     one on top.
 
-    THE PACKAGE LIST BELOW IS CLOSED AT TEN AND MUST STAY THERE. It is the set AAP
-    0.6.1 approves for this project, and a package that merely looks necessary is
-    not thereby approved. The SQLite native bundle is the specific trap: nothing
-    named SQLitePCLRaw appears here, and nothing should. Sqlite needs a native
-    e_sqlite3 provider to run at all, but Microsoft.EntityFrameworkCore.Sqlite
-    already declares SQLitePCLRaw.bundle_e_sqlite3 as a direct dependency and
-    therefore supplies both the bundle and its per-platform native asset
-    transitively - verified in this project's own restore graph, where the bundle
-    and the runtime-targeted e_sqlite3 library both resolve without being named
-    here.
+    THE PACKAGE LIST BELOW IS CLOSED AT ELEVEN AND MUST STAY THERE. Ten entries are
+    the set AAP 0.6.1 approves for this project, and a package that merely looks
+    necessary is not thereby approved. The eleventh is a security pin, described
+    next, and it is the only reason the count is not ten.
 
-    An earlier revision pinned that bundle directly, which was worse than merely
-    redundant. A direct PackageReference wins version resolution outright, so the
-    pin silently overrode the version EF Core had selected and moved the native
-    provider off the line the EF Core 8.0.29 band was tested against. Leaving it
-    out keeps the native provider on whatever version EF Core asks for, which is
-    the only version the ORM guarantees against. If a native-load failure ever
-    needs addressing, fix it by aligning the EF Core version rather than by pinning
-    the bundle underneath it.
+    SQLitePCLRaw.bundle_e_sqlite3 is pinned to 2.1.12 to clear CVE-2025-6965
+    (GHSA-2m69-gcr7-jv3q, high), which covers SQLitePCLRaw.lib.e_sqlite3 at every
+    version up to and including 2.1.11. Microsoft.EntityFrameworkCore.Sqlite 8.0.29
+    selects 2.1.6, so the version EF Core asks for is vulnerable and no patched
+    release exists on that line; 2.1.12 is the first unaffected 2.1.x. The bundle is
+    pinned rather than lib.e_sqlite3 alone so that core, provider and lib all move
+    together and the native family cannot skew across versions. This mirrors the
+    Microsoft.Data.SqlClient 5.2.3 hardening pin that AAP 0.6.1 already applies for
+    the same reason. Verified by restoring with NuGetAuditMode=all and
+    NuGetAuditLevel=low, which reports no advisory once the pin is in place.
+
+    The pin's cost is real and is accepted deliberately. A direct PackageReference
+    wins version resolution outright, so this moves the native provider off the line
+    the EF Core 8.0.29 band was tested against - the exact hazard an earlier revision
+    of this file warned about. It is safe here only because nothing opens a SQLite
+    connection: no UseSqlite call exists anywhere in the repository, so the native
+    e_sqlite3 asset is never loaded and a load or behaviour regression has no path to
+    reach a test. If a fixture ever does adopt Sqlite, re-validate this pin against
+    that fixture first, and prefer aligning the EF Core version over deepening the
+    pin. Do not pin any other transitive package on the strength of this precedent;
+    it rests on the provider being provably unexercised.
   -->
 
   <PropertyGroup>
@@ -60,6 +74,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">

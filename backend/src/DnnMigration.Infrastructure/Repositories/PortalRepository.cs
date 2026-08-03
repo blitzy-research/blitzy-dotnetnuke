@@ -72,7 +72,7 @@ internal sealed class PortalRepository : IPortalRepository
         int totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
 
         List<Portal> rows = await query
-            .Skip(pageIndex * pageSize)
+            .Skip(Paging.SkipCount(pageIndex, pageSize))
             .Take(pageSize)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -196,6 +196,104 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<int, int>> CountUsersForPortalsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(portalIds);
+
+        int[] wanted = portalIds.Distinct().ToArray();
+        if (wanted.Length == 0)
+        {
+            return new Dictionary<int, int>();
+        }
+
+        // One grouped read replaces one read per identifier. The predicate is the same one the
+        // single-portal member uses - every UserPortals row counts, authorised or not - so the batched
+        // and unbatched tallies cannot disagree.
+        List<PortalTally> tallies = await _context.UserPortals
+            .Where(m => wanted.Contains(m.PortalId))
+            .GroupBy(m => m.PortalId)
+            .Select(group => new PortalTally { PortalId = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return Densify(wanted, tallies);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<int, int>> CountPagesForPortalsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(portalIds);
+
+        int[] wanted = portalIds.Distinct().ToArray();
+        if (wanted.Length == 0)
+        {
+            return new Dictionary<int, int>();
+        }
+
+        // Tab.PortalId is nullable because a host page belongs to no tenant, so the identifier is
+        // tested for a value before it is matched; a null can never equal a supplied identifier and a
+        // host page is therefore excluded, exactly as the single-portal member excludes it. The
+        // soft-delete predicate is likewise carried over unchanged.
+        List<PortalTally> tallies = await _context.Tabs
+            .Where(t => t.PortalId.HasValue && wanted.Contains(t.PortalId.Value) && !t.IsDeleted)
+            .GroupBy(t => t.PortalId!.Value)
+            .Select(group => new PortalTally { PortalId = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return Densify(wanted, tallies);
+    }
+
+    /// <summary>
+    /// Expands a grouped tally into a total map over the identifiers that were asked for.
+    /// </summary>
+    /// <remarks>
+    /// A grouped read returns no row for an identifier with nothing to count, so the projection is
+    /// sparse. The batched contract promises a TOTAL map, which is what lets a caller index it
+    /// directly instead of remembering that an absent key means zero, so the zeros are filled in
+    /// here rather than at every call site.
+    /// </remarks>
+    /// <param name="wanted">The distinct identifiers the caller asked about.</param>
+    /// <param name="tallies">The rows the grouped read produced, at most one per identifier.</param>
+    /// <returns>One entry per wanted identifier.</returns>
+    private static Dictionary<int, int> Densify(int[] wanted, List<PortalTally> tallies)
+    {
+        var counts = new Dictionary<int, int>(wanted.Length);
+
+        foreach (int portalId in wanted)
+        {
+            counts[portalId] = 0;
+        }
+
+        foreach (PortalTally tally in tallies)
+        {
+            counts[tally.PortalId] = tally.Count;
+        }
+
+        return counts;
+    }
+
+    /// <summary>
+    /// Carries one grouped tally row out of a batched count.
+    /// </summary>
+    /// <remarks>
+    /// A named type rather than an anonymous one because the projection is consumed by a shared
+    /// helper, and an anonymous type cannot be named in that helper's signature.
+    /// </remarks>
+    private sealed class PortalTally
+    {
+        /// <summary>Gets or sets the portal the tally belongs to.</summary>
+        public int PortalId { get; set; }
+
+        /// <summary>Gets or sets the number of rows counted for that portal.</summary>
+        public int Count { get; set; }
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyDictionary<int, string>> GetRoleNamesAsync(int portalId, CancellationToken cancellationToken = default)
     {
         var assignments = await _context.Portals
@@ -313,6 +411,25 @@ internal sealed class PortalRepository : IPortalRepository
     /// or omit rows between requests. Every ordering ends on the primary key so that rows sharing a
     /// sort value still have a stable relative order.
     /// </remarks>
+    // MIGRATION: the arms below are exactly the five names the boundary admits for this collection,
+    // and that correspondence is the point rather than a coincidence. The permitted set is declared in
+    // Application/Validation/SortableFields.cs as Portals, the sealed PortalPagedRequestValidator
+    // validates against that set alone, and every one of its members is a column of the projected list
+    // item - so a name a caller may send is a name this method acts on, and there is no third category
+    // of "accepted but ignored".
+    //
+    // Two earlier arms were removed rather than kept as harmless extras: DESCRIPTION and CURRENCY. Both
+    // named real Portal columns, but neither appeared in the permitted set and neither is projected onto
+    // PortalListItemDto, so the boundary refused the names before the query was ever built and the arms
+    // could not be reached. Leaving unreachable arms in place is not neutral - it invites a later reader
+    // to conclude the collection sorts by a field the contract does not offer, which is precisely the
+    // mismatch this method now exists to prevent. If either field is ever wanted, it must be added to
+    // the projection, to the permitted set and to this switch together.
+    //
+    // The default arm still catches an unrecognised name, and that is defence in depth rather than
+    // tolerance: the boundary refuses such a name with a field error long before this runs, but a caller
+    // reaching the repository from another entry point must still receive a deterministically ordered
+    // page rather than an unordered one.
     private static IQueryable<Portal> ApplyOrder(IQueryable<Portal> query, string? sortBy, bool descending)
     {
         string property = string.IsNullOrWhiteSpace(sortBy) ? DefaultSortProperty : sortBy.Trim();
@@ -325,12 +442,12 @@ internal sealed class PortalRepository : IPortalRepository
             "EXPIRYDATE" => descending
                 ? query.OrderByDescending(p => p.ExpiryDate).ThenByDescending(p => p.PortalId)
                 : query.OrderBy(p => p.ExpiryDate).ThenBy(p => p.PortalId),
-            "DESCRIPTION" => descending
-                ? query.OrderByDescending(p => p.Description).ThenByDescending(p => p.PortalId)
-                : query.OrderBy(p => p.Description).ThenBy(p => p.PortalId),
-            "CURRENCY" => descending
-                ? query.OrderByDescending(p => p.Currency).ThenByDescending(p => p.PortalId)
-                : query.OrderBy(p => p.Currency).ThenBy(p => p.PortalId),
+            "HOSTFEE" => descending
+                ? query.OrderByDescending(p => p.HostFee).ThenByDescending(p => p.PortalId)
+                : query.OrderBy(p => p.HostFee).ThenBy(p => p.PortalId),
+            "HOSTSPACE" => descending
+                ? query.OrderByDescending(p => p.HostSpace).ThenByDescending(p => p.PortalId)
+                : query.OrderBy(p => p.HostSpace).ThenBy(p => p.PortalId),
             _ => descending
                 ? query.OrderByDescending(p => p.PortalName).ThenByDescending(p => p.PortalId)
                 : query.OrderBy(p => p.PortalName).ThenBy(p => p.PortalId),

@@ -71,9 +71,24 @@
       The accessible name arrives by PROJECTION, not by an input. The public surface is
       closed at five inputs and every further affordance is projected, so a feature
       writes its own element carrying the caption attribute and gets a real caption in
-      return. Projecting it is the CONSUMER'S OBLIGATION: this component supplies the
-      element, never the words, because inventing a screen-specific default inside a
-      shared component would put wording in the one place no screen can correct it.
+      return. Projecting it remains the CONSUMER'S OBLIGATION: a screen knows what its
+      grid lists and this component does not, so the words belong to the screen.
+
+      THE FALLBACK IS A FLOOR, NOT A LICENCE. An earlier revision projected with no
+      fallback, on the reasoning that a shared component must not invent a
+      screen-specific default. The reasoning is sound and the conclusion was not: with
+      nothing projected the element still rendered, EMPTY, and an empty caption is worse
+      than no caption at all - the table has no accessible name, and a reader who lands
+      on it is told nothing whatsoever about what it lists. The generic name below is
+      deliberately generic: it names the KIND of thing the reader has reached rather
+      than pretending to know the screen, so it can never be mistaken for real caption
+      prose, and a consumer that projects a caption overrides it completely.
+
+      The mechanism is the framework's own default content for an unmatched projection
+      slot, so there is no input to add - which the closed five-input surface forbids -
+      no content query, and nothing to resolve after render. Angular substitutes the
+      fallback only when no node matches the selector, which is exactly the condition
+      being guarded.
 
       Carried out of the painted output but kept in the accessibility tree, so a reader
       who reaches the table directly still learns what it lists while a screen that
@@ -83,7 +98,7 @@
       remove the caption from the accessibility tree along with the page.
     -->
     <caption class="data-table__caption" data-visually-hidden>
-      <ng-content select="[dataTableCaption]" />
+      <ng-content select="[dataTableCaption]">Data table</ng-content>
     </caption>
 
     <!--
@@ -320,20 +335,30 @@
           The row is a tab stop so selection is reachable from the keyboard.
 
           MIGRATION: the selected state is published PROGRAMMATICALLY, never by colour
-          alone, and it is published TWICE on purpose. The component class settled on the
-          current-item state and its own tests assert it, while the shared table
-          stylesheet keys both the selected tint and the selectable pointer affordance to
-          the selection state instead - and that stylesheet states the reason plainly:
-          keying the tint to an announced attribute makes it impossible to paint a state
-          that is not also announced. Emitting only one would either break the class's
-          contract or leave the shared hook dead and the rows without their pointer. Both
-          are emitted, so both contracts hold and the two can never disagree. The
-          selection state is present on every selectable row and reads true on exactly
-          one; the current-item state is omitted entirely unless the row is selected.
+          alone, and it is published ONCE - as the SELECTION state and nothing else. An
+          earlier revision published it twice, adding the current-item state alongside,
+          and that was wrong on the ARIA semantics: the current-item state marks the
+          reader's current position within a set of related items - the page they are on,
+          the step they have reached - which is a concept this component does not model
+          separately from selection. Publishing both made a screen reader announce one
+          state twice in two different vocabularies, one of which was a claim the
+          component could not substantiate. The selection state is the accurate one, it is
+          the one the shared table stylesheet keys both the selected tint and the
+          selectable pointer affordance to, and keying the tint to an announced attribute
+          is what makes it impossible to paint a state that is not also announced. It is
+          present on every selectable row and reads true on exactly one.
 
           MIGRATION: the legacy selected-row treatment was bold red text with no change
           of surface, while the tinted surface value sat unused on a different selector.
           The tint is the correction; the announcement is the addition.
+
+          BOTH ACTIVATION HANDLERS TAKE THE EVENT, and that is what lets a projected
+          control keep its own behaviour. Every press and key inside a row bubbles here,
+          so the handlers test where the event began and stand aside when it began inside
+          something operable - see the component class. Without it, clicking an
+          inline-editable checkbox in an ordinary template cell also selected the row, and
+          a space bar pressed on that checkbox reached the row handler, which cancelled
+          the default and stopped the checkbox toggling.
         -->
         @for (bodyRow of bodyRows(); track bodyRow.row) {
           <tr
@@ -341,9 +366,8 @@
             tabindex="0"
             [attr.aria-rowindex]="bodyRow.ariaRowIndex"
             [attr.aria-selected]="bodyRow.row === selectedRow()"
-            [attr.aria-current]="bodyRow.row === selectedRow() ? 'true' : null"
             [class.data-table__row--selected]="bodyRow.row === selectedRow()"
-            (click)="activateRow(bodyRow.row)"
+            (click)="activateRowFromPointer(bodyRow.row, $event)"
             (keydown)="activateRowFromKeyboard(bodyRow.row, $event)"
           >
             @for (cell of bodyRow.cells; track cell.key) {
@@ -433,6 +457,17 @@
                     with the wrong casing. Neither survives translation: a boolean is a
                     boolean here, every conversion is explicit, and the coercions the
                     legacy pages relied on are made deliberate rather than inherited.
+
+                    NO CELL-WIDE PROPAGATION BOUNDARY HERE, DELIBERATELY, and this cell is
+                    the reason the row handlers test each event instead. Unlike a commands
+                    cell, an ordinary template cell mixes operable content with row
+                    content: the two legacy inline-editable checkbox cells posted back on
+                    change, yet the rest of such a cell is still material a reader may
+                    click to select the row. Fencing off the whole cell would take row
+                    activation away from most of the grid; the row handlers' per-event test
+                    takes it away only from the control, so the checkbox toggles, the row
+                    is not selected by that press, and clicking the cell's own content
+                    still selects the row.
                   -->
                   <td class="data-table__cell" [attr.data-align]="cell.align">
                     @if (cell.template !== null && cell.context !== null) {

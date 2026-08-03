@@ -164,8 +164,9 @@ public sealed class Role : Entity<int>
     // therefore not merely lose a row, it would lose the row that decides who can administer the
     // tenant. Concretely: never write `RoleId == 0`, `RoleId <= 0` or `RoleId == default`, never add
     // an IsNew or IsTransient member to this type, and never infer one from the key. Whether a role
-    // has been written to the database is DECLARED by the persistence layer through
-    // Entity<int>.MarkIdentityPersisted and read back through IdentityIsPersisted; it is never
+    // has been written to the database is DECLARED through Entity<int>.MarkIdentityPersisted by code
+    // that already knows it - nothing declares it automatically, so a materialised role reports
+    // IdentityIsPersisted as false - and read back through IdentityIsPersisted; it is never
     // deduced. Note that 0 is simultaneously the CLR default of int, which is exactly why no
     // default-int identity heuristic may be applied to this property.
 

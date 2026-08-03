@@ -23,11 +23,15 @@ namespace DnnMigration.Application.Options;
 /// <para>
 /// The one exception to "no behaviour" is <see cref="Validate"/>, which reports this object's own
 /// invariants and reaches nothing outside the base class library. It is declared here rather than
-/// at either consumer because there are TWO consumers -- the Api's start-up options validation and
-/// the Infrastructure cache service -- and an earlier arrangement in which each stated its own rule
-/// let the two disagree: the documentation on the multiplier below described any integer as
-/// legitimate while the cache service rejected everything outside the legacy four. One rule,
-/// declared beside the value it governs and consumed by both, is what prevents that recurring.
+/// at either consumer because there are TWO consumers, and both genuinely call it: the Api's
+/// start-up options validator invokes it and then adds the upper bound, which is the one rule only a
+/// host can decide (<c>Api/Extensions/ServiceCollectionExtensions.cs</c>), and the Infrastructure
+/// cache service invokes it before using the value
+/// (<c>Infrastructure/Services/MemoryCacheService.cs</c>). Were each consumer to restate the rule in
+/// its own words instead, the two would be free to disagree about the same setting - the outcome this
+/// arrangement exists to make impossible. One rule, declared beside the value it governs and called
+/// by every consumer, is the invariant to preserve: a consumer that adds a rule of its own must add
+/// it ALONGSIDE this call, never in place of it.
 /// </para>
 /// <para>
 /// Scope note - legacy cache keys and per-entity base lifetimes are deliberately absent.

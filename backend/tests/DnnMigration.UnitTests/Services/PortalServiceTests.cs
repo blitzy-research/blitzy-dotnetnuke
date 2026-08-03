@@ -48,6 +48,22 @@ public class PortalServiceTests
 
     private const int SecondPortalId = 0;
 
+    /// <summary>
+    /// The product-wide page permission scope code, as the upgrade scripts spell it.
+    /// </summary>
+    /// <remarks>
+    /// Repeated here rather than shared, because the repository that owns it keeps it private and this
+    /// test asserts against the same literal the shipped catalogue rows carry.
+    /// </remarks>
+    private const string TabScopeCode = "SYSTEM_TAB";
+
+    /// <summary>
+    /// A tenant that is neither of the two the fixture builds, used to prove that an alias owned elsewhere
+    /// is refused. Held separately from <see cref="SecondPortalId"/> so a cross-tenant assertion cannot be
+    /// satisfied by a value some other part of the fixture also uses.
+    /// </summary>
+    private const int ForeignPortalId = 12;
+
     private const int PortalAliasId = 4;
 
     private const int AdministratorId = 7;
@@ -118,6 +134,8 @@ public class PortalServiceTests
         var portals = new Mock<IPortalRepository>().Object;
         var aliases = new Mock<IPortalAliasRepository>().Object;
         var tabs = new Mock<ITabRepository>().Object;
+        var profiles = new Mock<IUserProfileRepository>().Object;
+        var permissions = new Mock<IPermissionRepository>().Object;
         var users = new Mock<IUserRepository>().Object;
         var roles = new Mock<IRoleRepository>().Object;
         var unitOfWork = new Mock<IUnitOfWork>().Object;
@@ -126,55 +144,105 @@ public class PortalServiceTests
         var clock = new Mock<IClock>().Object;
         var cache = new Mock<ICacheService>().Object;
         var currentUser = new Mock<ICurrentUser>().Object;
+        var audit = new Mock<IAuditSink>().Object;
+        var portalContext = new Mock<IPortalContextHolder>().Object;
         var caching = new CachingOptions();
 
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new PortalService(null!, aliases, tabs, users, roles, unitOfWork, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                null!, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("aliases", () =>
         {
-            _ = new PortalService(portals, null!, tabs, users, roles, unitOfWork, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, null!, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new PortalService(portals, aliases, null!, users, roles, unitOfWork, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, null!, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, audit, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("profiles", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, null!, permissions, users, roles, unitOfWork, hostSettings, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("permissions", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, null!, users, roles, unitOfWork, hostSettings, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, null!, roles, unitOfWork, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, null!, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, null!, unitOfWork, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, null!, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, null!, hostSettings, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, null!, hostSettings, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("hostSettings", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, null!, hasher, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, null!, hasher, clock,
+                cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, hostSettings, null!, clock, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, null!,
+                clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, hostSettings, hasher, null!, cache, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                null!, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, hostSettings, hasher, clock, null!, currentUser, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, null!, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, hostSettings, hasher, clock, cache, null!, caching);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, null!, audit, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("audit", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, null!, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("portalContext", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, audit, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new PortalService(portals, aliases, tabs, users, roles, unitOfWork, hostSettings, hasher, clock, cache, currentUser, null!);
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                clock, cache, currentUser, audit, portalContext, null!);
         });
     }
 
@@ -269,6 +337,105 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// An ordering that belongs to another collection is refused here, not forwarded and silently
+    /// replaced by this listing's default.
+    /// </summary>
+    /// <param name="foreignField">A field name declared for a different collection.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Every name below passes the shared request validator, because that validator applies the union
+    /// of every collection's sortable set - one validator is resolved for the one shared request type,
+    /// so the union is the narrowest bound it can possibly apply. Without the per-collection check
+    /// inside this service each of these would reach the store as an unrecognised property name and be
+    /// answered by the store's default order, which is a page the caller cannot account for and cannot
+    /// detect. The assertion that nothing was read is the substantive half: a refusal issued after the
+    /// read would still have spent the query.
+    /// </remarks>
+    [Theory]
+    [InlineData("RoleName")]
+    [InlineData("ServiceFee")]
+    [InlineData("AutoAssignment")]
+    [InlineData("DisplayName")]
+    [InlineData("LastLoginDate")]
+    public async Task ListPortals_RefusesAnOrderingThatBelongsToAnotherCollection(string foreignField)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<PortalListItemDto>> outcome = await harness.Service.ListPortalsAsync(
+            new PagedRequest { SortBy = foreignField },
+            null,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PagingInvalidCode);
+        outcome.Reason!.Message.Should().Be($"Portals cannot be ordered by '{foreignField}'.");
+        harness.Portals.Verify(
+            p => p.ListAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Every field this listing's own ordering honours is accepted and reaches the store unchanged, so
+    /// the allowlist is neither narrower nor wider than the ordering behind it.
+    /// </summary>
+    /// <param name="field">A field name declared for the portal listing.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The counterpart of the refusal above, and it is what makes the pair meaningful: a check that only
+    /// refused would be satisfied by refusing everything. Each name here corresponds to exactly one arm
+    /// of the repository's ordering expression - four explicit arms plus the portal name, which is that
+    /// expression's default - so an entry added to the allowlist without an arm to honour it fails one
+    /// of these two tests.
+    /// </remarks>
+    [Theory]
+    [InlineData("PortalId")]
+    [InlineData("PortalName")]
+    [InlineData("ExpiryDate")]
+    [InlineData("HostFee")]
+    [InlineData("HostSpace")]
+    public async Task ListPortals_AcceptsEveryFieldItsOwnOrderingHonours(string field)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<PortalListItemDto>> outcome = await harness.Service.ListPortalsAsync(
+            new PagedRequest { SortBy = field },
+            null,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Portals.Verify(
+            p => p.ListAsync(0, 10, null, field, false, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A field name differing only in case is accepted, because the allowlist and the ordering
+    /// expression both compare names without regard to case.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListPortals_AcceptsAPermittedFieldInAnyCasing()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<PortalListItemDto>> outcome = await harness.Service.ListPortalsAsync(
+            new PagedRequest { SortBy = "hostFEE" },
+            null,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Portals.Verify(
+            p => p.ListAsync(0, 10, null, "hostFEE", false, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
     /// When no explicit filter is supplied the request's own search term is used, so both the query-string
     /// spellings a caller might reach for behave the same.
     /// </summary>
@@ -357,12 +524,82 @@ public class PortalServiceTests
             CancellationToken.None);
 
         outcome.Value.Items.Should().OnlyContain(row => row.Users == 12 && row.Pages == 5);
+    }
+
+    /// <summary>
+    /// I-01: the tallies cost two reads for the whole page rather than two reads per row, and the
+    /// batched reads are asked about exactly the identifiers on the page.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListPortals_ReadsBothTalliesOnceForTheWholePage()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalPage = PagedResult<Portal>.Unpaged([StoredPortal(), SecondPortal()]);
+
+        await harness.Service.ListPortalsAsync(
+            new PagedRequest { PageSize = 0 },
+            null,
+            CancellationToken.None);
+
+        // The per-portal members must not be reached at all from the listing path: reaching them is
+        // precisely the per-row round trip this finding was about, and a test that only counted the
+        // batched calls would pass while both patterns ran side by side.
         harness.Portals.Verify(
             p => p.CountUsersAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
-            Times.Exactly(2));
+            Times.Never());
         harness.Portals.Verify(
             p => p.CountPagesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
-            Times.Exactly(2));
+            Times.Never());
+
+        harness.Portals.Verify(
+            p => p.CountUsersForPortalsAsync(
+                It.Is<IReadOnlyCollection<int>>(ids =>
+                    ids.OrderBy(id => id).SequenceEqual(new[] { PortalId, SecondPortalId }.OrderBy(id => id))),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Portals.Verify(
+            p => p.CountPagesForPortalsAsync(
+                It.Is<IReadOnlyCollection<int>>(ids =>
+                    ids.OrderBy(id => id).SequenceEqual(new[] { PortalId, SecondPortalId }.OrderBy(id => id))),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A tenant the batched tally omits is published with a zero rather than failing the listing.
+    /// </summary>
+    /// <remarks>
+    /// The repository contract promises a total map, but a sparse one must not break the projection: a
+    /// tenant with no members and no pages is a legitimate state, and zero is the figure the legacy grid
+    /// showed for it.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListPortals_TreatsAnAbsentTallyAsZero()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalPage = PagedResult<Portal>.Unpaged([StoredPortal(), SecondPortal()]);
+        harness.Portals
+            .Setup(p => p.CountUsersForPortalsAsync(
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<int, int> { [PortalId] = 7 });
+        harness.Portals
+            .Setup(p => p.CountPagesForPortalsAsync(
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<int, int> { [PortalId] = 4 });
+
+        Result<PagedResult<PortalListItemDto>> outcome = await harness.Service.ListPortalsAsync(
+            new PagedRequest { PageSize = 0 },
+            null,
+            CancellationToken.None);
+
+        outcome.Value.Items.Should().ContainSingle(row => row.PortalId == PortalId)
+            .Which.Should().Match<PortalListItemDto>(row => row.Users == 7 && row.Pages == 4);
+        outcome.Value.Items.Should().ContainSingle(row => row.PortalId == SecondPortalId)
+            .Which.Should().Match<PortalListItemDto>(row => row.Users == 0 && row.Pages == 0);
     }
 
     /// <summary>
@@ -763,12 +1000,19 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A negative configured charge or quota is floored rather than stored, because the columns record an
-    /// amount and an allowance.
+    /// A negative configured charge or quota is stored exactly as configured, because the legacy creation
+    /// path compared none of the four to anything.
     /// </summary>
+    /// <remarks>
+    /// <c>PortalController.vb:L326-L375</c> reads each of these from an installation-wide host setting and
+    /// hands the parsed value to the insert at L369 untouched. The floor an earlier revision applied
+    /// borrowed the ROLE-fee guards at <c>PortalController.vb:L395,L398</c>, which clamp a
+    /// <c>RoleInfo</c> while a portal template creates its roles, so applying it to a portal column
+    /// changed which values an installation could store.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_FloorsNegativeConfiguredTerms()
+    public async Task CreatePortal_StoresNegativeConfiguredTermsVerbatim()
     {
         Harness harness = Harness.Ready();
         harness.HostSettingValues["HostFee"] = "-5";
@@ -779,26 +1023,34 @@ public class PortalServiceTests
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
         Portal created = harness.AddedPortals.Single();
-        created.HostFee.Should().Be(0m);
-        created.HostSpace.Should().Be(0);
-        created.PageQuota.Should().Be(0);
-        created.UserQuota.Should().Be(0);
+        created.HostFee.Should().Be(-5m);
+        created.HostSpace.Should().Be(-5);
+        created.PageQuota.Should().Be(-5);
+        created.UserQuota.Should().Be(-5);
     }
 
     /// <summary>
-    /// The new tenant carries its own handle and the shipped language and offset, so it is addressable and
-    /// renderable before anybody has configured it.
+    /// The new tenant carries the shipped language and offset, so it is addressable and renderable before
+    /// anybody has configured it, and it leaves its handle to the store.
     /// </summary>
+    /// <remarks>
+    /// The handle is deliberately left at its type default here. The <c>GUID</c> column carries
+    /// <c>DF_Portals_GUID DEFAULT (newid())</c> (<c>01.00.05:L1404</c>, re-asserted at
+    /// <c>03.01.01:L1133</c>) and the entity configuration mirrors that default, so the value is issued
+    /// during the insert rather than by the mapper - which is what keeps the mapper a pure function of its
+    /// arguments. A fake store issues nothing, so the assertion here is the type default rather than a
+    /// generated handle.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_IssuesAHandleAndTheShippedDefaults()
+    public async Task CreatePortal_LeavesTheHandleToTheStoreAndCarriesTheShippedDefaults()
     {
         Harness harness = Harness.Ready();
 
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
         Portal created = harness.AddedPortals.Single();
-        created.PortalGuid.Should().NotBe(Guid.Empty);
+        created.PortalGuid.Should().Be(Guid.Empty);
         created.DefaultLanguage.Should().Be(DefaultLanguageCode);
         created.TimeZoneOffset.Should().Be(DefaultTimeZoneOffsetMinutes);
         created.UserRegistration.Should().Be(UserRegistrationMode.NoRegistration);
@@ -927,12 +1179,18 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The tenant's wiring is written in a second commit, once the store has issued the identifiers it
-    /// points at.
+    /// The tenant's wiring is stamped once the store has issued the identifiers it points at, and every
+    /// write of the sequence happens inside the one transaction.
     /// </summary>
+    /// <remarks>
+    /// C-02: the commit count is asserted because the sequence needs more than one - three portal columns
+    /// and the home page identifier reference rows the store numbers as it writes them - but the important
+    /// property is that they are all enclosed by a single transactional scope, which is what makes a
+    /// failure after any of them discard all of them.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_WiresTheTenantInASecondCommit()
+    public async Task CreatePortal_StampsTheWiringInsideOneTransaction()
     {
         Harness harness = Harness.Ready();
 
@@ -942,16 +1200,61 @@ public class PortalServiceTests
         created.AdministratorId.Should().Be(harness.AddedUsers.Single().UserId);
         created.AdministratorRoleId.Should().Be(harness.AddedRoles[0].RoleId);
         created.RegisteredRoleId.Should().Be(harness.AddedRoles[1].RoleId);
-        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(2));
+        created.HomeTabId.Should().Be(harness.AddedTabs.Single().TabId);
+
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(3));
+
+        // One transaction, committed once: the staged rows become visible together or not at all.
+        RecordingTransactionScope provisioning =
+            harness.OpenedTransactions.Should().ContainSingle().Subject;
+        provisioning.Committed.Should().BeTrue();
+        provisioning.RolledBack.Should().BeFalse();
     }
 
     /// <summary>
-    /// A credential the external store refuses withdraws the whole tenant rather than leaving one whose
-    /// administrator cannot sign in, and does not try to delete a credential that was never written.
+    /// Provisioning runs inside one transaction, opened at default isolation and committed exactly once,
+    /// which is what makes the two commits it needs a single atomic outcome.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The isolation is asserted rather than left unexamined. The two collision checks are guarded by unique
+    /// indexes on the alias and account-name columns, so the store refuses a concurrent duplicate whatever
+    /// this level is, and a stricter level would widen the lock footprint of the installation's busiest write
+    /// for nothing. Serialisable is the right level for the DELETE path, where the check is over a COUNT that
+    /// no index can guard, and the two paths are deliberately different.
+    /// </remarks>
     [Fact]
-    public async Task CreatePortal_WithdrawsTheTenantWhenTheCredentialIsRefused()
+    public async Task CreatePortal_CommitsOneTransactionAtDefaultIsolation()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Isolation.Should().Be(TransactionIsolation.Default);
+        scope.Committed.Should().BeTrue();
+        scope.Disposed.Should().BeTrue();
+        scope.RolledBack.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A credential the external store refuses abandons the transaction, so the store reverses the whole
+    /// tenant rather than an in-process routine having to undo it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THIS IS THE ASSERTION THAT CHANGED, and the change is the fix. The earlier contract committed the
+    /// tenant graph durably and then called a compensating routine to delete it row by row - a routine that
+    /// could not run if the process was terminated mid-way, leaving a portal reachable at its alias whose
+    /// administrator held no credential. The transaction subsumes it: nothing was ever made durable, so there
+    /// is nothing to undo, and the assertions below therefore demand that NO compensating write was issued.
+    /// A test that still expected the deletions would be pinning the defect in place.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_AbandonsTheTransactionWhenTheCredentialIsRefused()
     {
         Harness harness = Harness.Ready();
         harness.CredentialCreated = false;
@@ -964,58 +1267,74 @@ public class PortalServiceTests
         outcome.Reason!.Message.Should().Be(
             "The portal administrator's credential could not be created, so the portal was rolled back.");
 
-        harness.RemovedPortals.Should().ContainSingle().Which.Should().BeSameAs(harness.AddedPortals.Single());
-        harness.RemovedAliases.Should().ContainSingle();
-        harness.RemovedRoles.Should().HaveCount(3);
-        harness.RemovedUsers.Should().ContainSingle();
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeFalse();
+        scope.RolledBack.Should().BeTrue();
+
+        // Not one compensating write. The rows are reversed by the store, so issuing deletes as well would
+        // be a second mechanism that can disagree with the first.
+        harness.RemovedPortals.Should().BeEmpty();
+        harness.RemovedAliases.Should().BeEmpty();
+        harness.RemovedRoles.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.RemovedAssignments.Should().BeEmpty();
+        harness.RemovedMemberships.Should().BeEmpty();
         harness.DeletedCredentialUserIds.Should().BeEmpty();
     }
 
     /// <summary>
-    /// The compensation withdraws the enrolments the store had already accepted, so no assignment or
-    /// membership outlives the tenant it belonged to.
+    /// A refused credential emits no audit record, because nothing was installed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreatePortal_WithdrawsTheEnrolmentsTheStoreHadAccepted()
+    public async Task CreatePortal_RecordsNoAuditEventWhenNothingWasInstalled()
     {
         Harness harness = Harness.Ready();
         harness.CredentialCreated = false;
-        harness.ExistingAssignment = new UserRole { UserRoleId = 5, UserId = 0, RoleId = 0 };
-        harness.ExistingMembership = new UserPortal { UserPortalId = 6, UserId = 0, PortalId = PortalId };
 
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
-        harness.RemovedAssignments.Should().HaveCount(3);
-        harness.RemovedMemberships.Should().ContainSingle()
-            .Which.Should().BeSameAs(harness.ExistingMembership);
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>
-    /// An enrolment the store never accepted is not withdrawn, so compensation does not invent rows.
+    /// The enrolments the tenant graph staged are reversed by the transaction rather than withdrawn one at a
+    /// time, so no assignment or membership can outlive the tenant it belonged to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The doubles are told that the store DOES hold an assignment and a membership, which is the state the
+    /// old compensating routine read in order to decide what to withdraw. Under the transaction the service
+    /// never asks: the reversal covers rows it did not have to enumerate, including any it could not have
+    /// known about. That is strictly stronger than the routine it replaces, which withdrew only the three
+    /// enrolments it happened to remember creating.
+    /// </remarks>
     [Fact]
-    public async Task CreatePortal_WithdrawsNoEnrolmentTheStoreNeverAccepted()
+    public async Task CreatePortal_ReversesEnrolmentsWithoutEnumeratingThem()
     {
         Harness harness = Harness.Ready();
         harness.CredentialCreated = false;
-        harness.ExistingAssignment = null;
-        harness.ExistingMembership = null;
 
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
         harness.RemovedAssignments.Should().BeEmpty();
         harness.RemovedMemberships.Should().BeEmpty();
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
     }
 
     /// <summary>
-    /// A credential store that throws withdraws the tenant, deletes the credential it may have written, and
-    /// then lets the fault surface rather than reporting a tidy failure that hides an infrastructure problem.
+    /// A credential store that throws abandons the transaction and lets the fault surface, rather than
+    /// reporting a tidy failure that hides an infrastructure problem.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The fault is deliberately NOT converted into a tidy failure result: an unavailable dependency is an
+    /// infrastructure problem and reporting it as an ordinary refusal would hide it. What changed is only
+    /// what happens on the way out - the transaction rolls back instead of a compensation path deleting
+    /// four kinds of row and a credential it might never have written.
+    /// </remarks>
     [Fact]
-    public async Task CreatePortal_WithdrawsTheTenantAndRethrowsWhenTheCredentialStoreFaults()
+    public async Task CreatePortal_AbandonsTheTransactionAndRethrowsWhenTheCredentialStoreFaults()
     {
         Harness harness = Harness.Ready();
         harness.CredentialFault = new InvalidOperationException("the credential store is unavailable");
@@ -1024,20 +1343,31 @@ public class PortalServiceTests
             () => harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None));
 
         surfaced.Message.Should().Be("the credential store is unavailable");
-        harness.RemovedPortals.Should().ContainSingle();
-        harness.RemovedAliases.Should().ContainSingle();
-        harness.RemovedRoles.Should().HaveCount(3);
-        harness.RemovedUsers.Should().ContainSingle();
-        harness.DeletedCredentialUserIds.Should().Equal(new[] { 0 });
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeFalse();
+        scope.RolledBack.Should().BeTrue();
+
+        harness.RemovedPortals.Should().BeEmpty();
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>
-    /// A cancellation is not treated as a fault to compensate, because the caller withdrew the request
-    /// rather than the store failing.
+    /// A cancellation abandons the transaction exactly as any other failure does.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THIS ASSERTION IS INVERTED FROM THE CONTRACT IT REPLACES, deliberately. The compensating routine was
+    /// guarded by "when the exception is not a cancellation", so a caller who withdrew mid-provisioning left
+    /// a durably committed half-built tenant that nothing would ever clean up - the single worst case the
+    /// compensation existed to prevent, excluded from it by construction. Because the transaction is
+    /// abandoned by disposal rather than by a handler that has to decide whether to run, a cancellation is
+    /// reversed like everything else and no exclusion can be written. The absence of compensating deletes
+    /// below is therefore success, not the old "nothing was cleaned up" outcome that looked identical.
+    /// </remarks>
     [Fact]
-    public async Task CreatePortal_DoesNotCompensateACancellation()
+    public async Task CreatePortal_AbandonsTheTransactionOnCancellation()
     {
         Harness harness = Harness.Ready();
         harness.CredentialFault = new OperationCanceledException();
@@ -1045,8 +1375,13 @@ public class PortalServiceTests
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None));
 
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeFalse();
+        scope.RolledBack.Should().BeTrue();
+
         harness.RemovedPortals.Should().BeEmpty();
         harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>
@@ -1065,6 +1400,315 @@ public class PortalServiceTests
         outcome.IsSuccess.Should().BeTrue();
         harness.HostInvalidations.Should().Be(1);
         harness.InvalidatedPortalIds.Should().Contain(harness.AddedPortals.Single().PortalId);
+    }
+
+    /// <summary>
+    /// C-02: the new tenant receives the nineteen default profile property definitions, under the four
+    /// legacy categories and in the legacy order.
+    /// </summary>
+    /// <remarks>
+    /// The names and the category boundaries are transcribed from
+    /// <c>ProfileController.AddDefaultDefinitions</c> (L334-L361). Asserting the whole sequence rather than
+    /// a count is deliberate: a count passes identically for a correct set and for nineteen wrong names.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_InstallsTheNineteenDefaultProfileDefinitions()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        harness.AddedProfileDefinitions.Select(d => (d.PropertyCategory, d.PropertyName)).Should().Equal(
+        [
+            ("Name", "Prefix"),
+            ("Name", "FirstName"),
+            ("Name", "MiddleName"),
+            ("Name", "LastName"),
+            ("Name", "Suffix"),
+            ("Address", "Unit"),
+            ("Address", "Street"),
+            ("Address", "City"),
+            ("Address", "Region"),
+            ("Address", "Country"),
+            ("Address", "PostalCode"),
+            ("Contact Info", "Telephone"),
+            ("Contact Info", "Cell"),
+            ("Contact Info", "Fax"),
+            ("Contact Info", "Website"),
+            ("Contact Info", "IM"),
+            ("Preferences", "Biography"),
+            ("Preferences", "TimeZone"),
+            ("Preferences", "PreferredLocale"),
+        ]);
+
+        harness.AddedProfileDefinitions.Should().OnlyContain(
+            d => d.PortalId == harness.AddedPortals.Single().PortalId,
+            "every definition belongs to the tenant that was just created");
+    }
+
+    /// <summary>
+    /// C-02: the default definitions carry the legacy view ordering, which starts at three and steps by two.
+    /// </summary>
+    /// <remarks>
+    /// The legacy helper incremented its counter BEFORE assigning it, so the first order is 3 and the
+    /// nineteenth is 39, and no order is even. Renumbering from one would change the order every profile
+    /// screen renders, which is why the exact sequence is pinned rather than merely its monotonicity.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_NumbersTheDefaultProfileDefinitionsFromThreeInStepsOfTwo()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        harness.AddedProfileDefinitions.Select(d => d.ViewOrder).Should().Equal(
+            Enumerable.Range(0, 19).Select(index => 3 + (index * 2)));
+    }
+
+    /// <summary>
+    /// C-02: the definitions carry the legacy field settings, including the zero length the six
+    /// chooser-rendered properties were given and the unresolved editor type.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_GivesTheDefaultProfileDefinitionsTheLegacyFieldSettings()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        harness.AddedProfileDefinitions.Should().OnlyContain(
+            d => !d.IsRequired
+                && d.IsVisible
+                && d.DefaultValue == string.Empty
+                && d.ModuleDefinitionId == null
+                && d.DataType == 0);
+
+        // The chooser-rendered properties impose no character bound, so their length is zero; every
+        // free-text property carries the legacy fifty.
+        string[] chooserRendered = ["Region", "Country", "Biography", "TimeZone", "PreferredLocale"];
+        harness.AddedProfileDefinitions
+            .Where(d => chooserRendered.Contains(d.PropertyName))
+            .Should().HaveCount(5).And.OnlyContain(d => d.Length == 0);
+        harness.AddedProfileDefinitions
+            .Where(d => !chooserRendered.Contains(d.PropertyName))
+            .Should().HaveCount(14).And.OnlyContain(d => d.Length == 50);
+    }
+
+    /// <summary>
+    /// C-02: the new tenant receives a home page, and the portal points at it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_CreatesTheHomePageAndPointsTheTenantAtIt()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        Tab homePage = harness.AddedTabs.Should().ContainSingle().Subject;
+        homePage.TabName.Should().Be("Home");
+        homePage.Title.Should().Be("Home");
+        homePage.PortalId.Should().Be(harness.AddedPortals.Single().PortalId);
+        homePage.IsVisible.Should().BeTrue();
+        homePage.IsDeleted.Should().BeFalse();
+        homePage.ParentId.Should().BeNull("the home page sits at the root of the tenant's navigation");
+        harness.AddedPortals.Single().HomeTabId.Should().Be(homePage.TabId);
+    }
+
+    /// <summary>
+    /// C-02: the home page receives the three grants the legacy portal template declared for it.
+    /// </summary>
+    /// <remarks>
+    /// View for all users, view for administrators and edit for administrators. Each grant is bound to the
+    /// page by NAVIGATION rather than by identifier, because the page has no identifier until the commit
+    /// that follows, so the navigation is asserted too.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_GrantsTheHomePageTheTemplatePermissions()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        Tab homePage = harness.AddedTabs.Single();
+        int administratorsRoleId = harness.AddedRoles[0].RoleId;
+
+        harness.AddedTabPermissions.Should().HaveCount(3);
+        harness.AddedTabPermissions.Should().OnlyContain(
+            grant => grant.AllowAccess && ReferenceEquals(grant.Tab, homePage));
+
+        // Permission 3 is the page scope's view entry and 4 its edit entry in the harness catalogue; the
+        // all-users grant carries the identifier the schema reserves for it rather than a role of this
+        // tenant.
+        harness.AddedTabPermissions.Select(grant => (grant.PermissionId, grant.RoleId)).Should().Equal(
+        [
+            (3, -1),
+            (3, administratorsRoleId),
+            (4, administratorsRoleId),
+        ]);
+    }
+
+    /// <summary>
+    /// C-02: a page permission key the catalogue does not define is skipped, and the tenant is still created.
+    /// </summary>
+    /// <remarks>
+    /// A grant naming a definition that does not exist would violate the foreign key and discard the whole
+    /// tenant over reference data the upgrade scripts own, so the page is created without that grant instead.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_SkipsAHomePageGrantTheCatalogueDoesNotDefine()
+    {
+        Harness harness = Harness.Ready();
+        harness.PageScopeCatalogue =
+        [
+            new Permission
+            {
+                PermissionId = 3,
+                PermissionCode = TabScopeCode,
+                PermissionKey = PermissionKey.VIEW,
+                PermissionName = "View Tab",
+            },
+        ];
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedTabs.Should().ContainSingle();
+        harness.AddedTabPermissions.Should().HaveCount(2, "only the view key resolves");
+        harness.AddedTabPermissions.Should().OnlyContain(grant => grant.PermissionId == 3);
+    }
+
+    /// <summary>
+    /// C-02: every stage of the sequence is staged inside the one transactional scope, so nothing is written
+    /// outside it.
+    /// </summary>
+    /// <remarks>
+    /// The transactional wrapper is asserted to run exactly once, and the two stages the review found missing
+    /// are asserted to have produced their rows, which together pin the property that a tenant is published
+    /// whole or not at all.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_StagesEveryCreationStageInsideOneTransaction()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        RecordingTransactionScope provisioning =
+            harness.OpenedTransactions.Should().ContainSingle().Subject;
+        provisioning.Committed.Should().BeTrue();
+
+        harness.AddedPortals.Should().ContainSingle();
+        harness.AddedAliases.Should().ContainSingle();
+        harness.AddedRoles.Should().HaveCount(3);
+        harness.AddedUsers.Should().ContainSingle();
+        harness.AddedMemberships.Should().ContainSingle();
+        harness.AddedAssignments.Should().HaveCount(3);
+        harness.AddedProfileDefinitions.Should().HaveCount(19);
+        harness.AddedTabs.Should().ContainSingle();
+        harness.AddedTabPermissions.Should().HaveCount(3);
+    }
+
+    /// <summary>
+    /// C-02: a stage that fails inside the transaction stages nothing observable, and no partial tenant is
+    /// published.
+    /// </summary>
+    /// <remarks>
+    /// The refused credential is the failure this arrangement was built for: the abort is raised as an
+    /// exception so that the transaction rolls back rather than committing a tenant nobody can sign in to.
+    /// The definitions and the home page follow the credential in the sequence, so a refusal must leave
+    /// neither behind.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_StagesNoLaterStageWhenAnEarlierOneAborts()
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialCreated = false;
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse();
+        harness.AddedProfileDefinitions.Should().BeEmpty();
+        harness.AddedTabs.Should().BeEmpty();
+        harness.AddedTabPermissions.Should().BeEmpty();
+        harness.AuditEvents.Should().BeEmpty("nothing was installed, so nothing is recorded as installed");
+    }
+
+    /// <summary>
+    /// M-07: a successful provisioning records the tenant-installed fact under the legacy event name.
+    /// </summary>
+    /// <remarks>
+    /// The name is the one <c>Signup.ascx.vb:L312</c> emitted, so an operator's existing queries keep
+    /// matching. The administrator's password is asserted ABSENT: the legacy entry attached fourteen
+    /// properties and the credential was not among them, and that decision is preserved rather than
+    /// reversed.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_RecordsTheTenantInstalledAudit()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
+
+        (string EventName, IReadOnlyDictionary<string, string?> Properties) recorded =
+            harness.AuditEvents.Should().ContainSingle().Subject;
+
+        recorded.EventName.Should().Be("PORTAL_CREATED");
+        recorded.Properties.Should().ContainKey("PortalId");
+        recorded.Properties["PortalName"].Should().Be(PortalName);
+        recorded.Properties["PortalAlias"].Should().Be(HostAlias);
+        recorded.Properties["AdministratorUsername"].Should().Be(AdministratorUsername);
+        recorded.Properties.Values.Should().NotContain(
+            AdministratorPassword,
+            "the legacy entry did not record the credential and neither does this one");
+    }
+
+    /// <summary>
+    /// M-07: a removal records the tenant-removed fact under the legacy event name, carrying the property the
+    /// legacy screens carried.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_RecordsTheTenantRemovedAudit()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 2;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        (string EventName, IReadOnlyDictionary<string, string?> Properties) recorded =
+            harness.AuditEvents.Should().ContainSingle().Subject;
+
+        recorded.EventName.Should().Be("PORTAL_DELETED");
+        recorded.Properties["PortalName"].Should().Be(PortalName);
+        recorded.Properties.Should().ContainKey("PortalId");
+    }
+
+    /// <summary>
+    /// M-07: a refused removal records nothing, because no tenant was removed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_RecordsNoAuditWhenTheRemovalIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 1;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeFalse();
+        harness.AuditEvents.Should().BeEmpty();
     }
 
     /// <summary>
@@ -1445,6 +2089,322 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// Removal runs inside one SERIALISABLE transaction, opened before the tenant is even read and
+    /// committed once, so the last-remaining check and the delete it guards cannot be interleaved with a
+    /// concurrent removal.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The isolation matters here in a way it does not on the create path, and that asymmetry is the point.
+    /// The guard is over a COUNT of the remaining tenants, and no index can make a count-then-delete atomic:
+    /// two concurrent removals could each count two, each conclude one would remain, and between them empty
+    /// the installation - the precise condition the guard exists to prevent. Serialisable is what makes the
+    /// count a decision the second transaction cannot invalidate. The scope is opened before the READ as well
+    /// as before the write, so a tenant another caller has already removed cannot be removed a second time.
+    /// </remarks>
+    [Fact]
+    public async Task DeletePortal_CommitsOneSerialisableTransaction()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Isolation.Should().Be(TransactionIsolation.Serializable);
+        scope.Committed.Should().BeTrue();
+        scope.RolledBack.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A refusal abandons the transaction rather than committing an empty one, on both refusal paths.
+    /// </summary>
+    /// <param name="remaining">The number of tenants the installation holds.</param>
+    /// <param name="known">Whether the tenant being removed exists.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(2, false)]
+    public async Task DeletePortal_AbandonsTheTransactionOnEveryRefusal(int remaining, bool known)
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = remaining;
+        if (!known)
+        {
+            harness.PortalRow = null;
+        }
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeFalse();
+        scope.RolledBack.Should().BeTrue();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A committed removal records the legacy PORTAL_DELETED event, carrying the name the row no longer holds.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The NAME is the load-bearing property. The row is gone by the time anyone reads the trail, so an
+    /// identifier alone would no longer resolve to anything and the record would not answer "which tenant was
+    /// removed". The count of released host names is carried for the same reason.
+    /// </remarks>
+    [Fact]
+    public async Task DeletePortal_RecordsTheLegacyPortalDeletedEvent()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalRow!.PortalAliases.Clear();
+        harness.PortalRow!.PortalAliases.Add(Alias(1, PortalId, "first.example"));
+        harness.PortalRow!.PortalAliases.Add(Alias(2, PortalId, "second.example"));
+        harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+        harness.CurrentUser.SetupGet(caller => caller.UserId).Returns(11);
+        harness.CurrentUser.SetupGet(caller => caller.UserName).Returns("host");
+
+        await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(AuditEventNames.PortalDeleted);
+        record.Outcome.Should().Be(AuditOutcome.Succeeded);
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceType.Should().Be("Portal");
+        record.ResourceId.Should().Be(PortalId.ToString(CultureInfo.InvariantCulture));
+        record.ActorUserId.Should().Be(11);
+        record.ActorUserName.Should().Be("host");
+        record.Properties["PortalName"].Should().Be(PortalName);
+        record.Properties["AliasesReleased"].Should().Be("2");
+    }
+
+    /// <summary>
+    /// A committed provisioning records the legacy PORTAL_CREATED event with the tenant facts that survived
+    /// the migration, and without the credential.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy entry attached fourteen properties (<c>PortalController.vb:L1142-L1155</c>) and the password
+    /// was NOT among them, so the legacy code already declined to record the credential. The assertion below
+    /// pins that: the submitted password must appear nowhere in the record, in any property, under any name.
+    /// The four file-system properties - template path, template file, server path and child path - are absent
+    /// because this migration performs no file-system work and recording them would assert something untrue.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_RecordsTheLegacyPortalCreatedEventWithoutTheCredential()
+    {
+        Harness harness = Harness.Ready();
+        harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+        harness.CurrentUser.SetupGet(caller => caller.UserId).Returns(11);
+        harness.CurrentUser.SetupGet(caller => caller.UserName).Returns("host");
+
+        CreatePortalRequest request = ValidCreateRequest();
+        request.Description = "A measured tenant";
+        request.KeyWords = "measured, tenant";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(AuditEventNames.PortalCreated);
+        record.Outcome.Should().Be(AuditOutcome.Succeeded);
+        record.ResourceType.Should().Be("Portal");
+        record.ActorUserId.Should().Be(11);
+        record.ActorUserName.Should().Be("host");
+        record.SubjectUserId.Should().Be(harness.AddedUsers.Single().UserId);
+        record.Properties["PortalName"].Should().Be(PortalName);
+        record.Properties["PortalAlias"].Should().Be(HostAlias);
+        record.Properties["IsChildPortal"].Should().Be("False");
+        record.Properties["AdministratorUsername"].Should().Be(AdministratorUsername);
+        record.Properties["AdministratorEmail"].Should().Be(AdministratorEmail);
+        record.Properties["Description"].Should().Be("A measured tenant");
+        record.Properties["Keywords"].Should().Be("measured, tenant");
+
+        record.Properties.Should().NotContainKey("TemplateFile");
+        record.Properties.Should().NotContainKey("TemplatePath");
+        record.Properties.Should().NotContainKey("ServerPath");
+        record.Properties.Should().NotContainKey("ChildPath");
+        record.Properties.Values.Should().NotContain(AdministratorPassword);
+    }
+
+    /// <summary>
+    /// A parent portal's host name is stored exactly as submitted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy screen stored a non-child alias verbatim, and the parent character set admits
+    /// the dot, the colon and the separator (<c>Signup.ascx.vb:L203-L214</c>), so a value carrying a port or a
+    /// path is a legitimate parent address and must not be re-composed.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_StoresAParentHostNameVerbatim()
+    {
+        Harness harness = Harness.Ready();
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = false;
+        request.PortalAlias = "parent.example:8080";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAliases.Should().ContainSingle()
+            .Which.HttpAlias.Should().Be("parent.example:8080");
+    }
+
+    /// <summary>
+    /// A child portal's bare segment is composed beneath the authority the request resolved to.
+    /// </summary>
+    /// <param name="parentAlias">The host name the request resolved to.</param>
+    /// <param name="segment">The bare segment the operator submitted.</param>
+    /// <param name="expected">The address that must be stored.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this is <c>Signup.ascx.vb:L232-L233</c> - <c>GetDomainName(Request) &amp; "/" &amp;
+    /// ChildPath</c>. Until this fix the flag was accepted and never read, so a caller could ask for a child
+    /// portal, be told it had one, and find it unreachable: the bare segment was stored as if it were a host
+    /// name and no request could ever match it. The third case pins the nesting behaviour - a parent that is
+    /// itself addressed beneath a path yields a deeper address, which is what the legacy member did when it
+    /// returned <c>www.domain.com/directory</c> rather than the bare host.
+    /// </remarks>
+    [Theory]
+    [InlineData("parent.example", "child", "parent.example/child")]
+    [InlineData("parent.example:8080", "child", "parent.example:8080/child")]
+    [InlineData("parent.example/first", "second", "parent.example/first/second")]
+    [InlineData("parent.example/", "child", "parent.example/child")]
+    public async Task CreatePortal_ComposesAChildAddressBeneathTheResolvedAuthority(
+        string parentAlias,
+        string segment,
+        string expected)
+    {
+        Harness harness = Harness.Ready();
+        harness.ResolvedContext = ResolvedTenant(parentAlias);
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = segment;
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// The composed child address, not the submitted segment, is what the uniqueness check probes and what
+    /// the audit record names.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Checking the segment would be the same defect wearing a different hat: two different parents may each
+    /// legitimately own a child called "sales", so a check against the bare segment would refuse the second as
+    /// a duplicate, while a check that ran before composition would miss a genuine collision between two
+    /// children of the same parent.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_ChecksAndRecordsTheComposedChildAddress()
+    {
+        Harness harness = Harness.Ready();
+        harness.ResolvedContext = ResolvedTenant("parent.example");
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = "sales";
+
+        await harness.Service.CreatePortalAsync(request, CancellationToken.None);
+
+        harness.Aliases.Verify(
+            aliases => aliases.AliasExistsAsync("parent.example/sales", null, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Aliases.Verify(
+            aliases => aliases.AliasExistsAsync("sales", null, It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.Properties["PortalAlias"].Should().Be("parent.example/sales");
+        record.Properties["IsChildPortal"].Should().Be("True");
+    }
+
+    /// <summary>
+    /// A child address the operator has already qualified is stored verbatim rather than composed twice.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy HOST branch (<c>Signup.ascx.vb:L199-L216</c> and L235) permitted the typed value
+    /// to carry path separators of its own and stored it exactly as typed, validating only its final segment.
+    /// Composing beneath the resolved authority as well would produce "parent/other.example/child", an
+    /// address nobody asked for and nothing serves.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_StoresAQualifiedChildAddressVerbatim()
+    {
+        Harness harness = Harness.Ready();
+        harness.ResolvedContext = ResolvedTenant("parent.example");
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = "other.example/child";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be("other.example/child");
+    }
+
+    /// <summary>
+    /// A child portal asked for from a request that resolved to no tenant is refused, and nothing is written.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Refused rather than guessed at. The legacy member could always answer because it read the incoming URL
+    /// directly; here the authority has to be an alias that EXISTS, and inventing one would create a tenant
+    /// reachable at an address the installation does not serve. Reported as a failure code so the API edge
+    /// renders a bad request rather than a server fault, and asserted to leave no transaction open at all,
+    /// because the refusal precedes every write.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_RefusesAChildWhenNoParentAuthorityResolved()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = false;
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = "child";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("portal.parent_alias_unresolved");
+        harness.AddedPortals.Should().BeEmpty();
+        harness.AddedAliases.Should().BeEmpty();
+        harness.OpenedTransactions.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A parent portal is created without consulting the resolved tenant at all, so provisioning the first
+    /// portal of an installation cannot depend on one already existing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreatePortal_CreatesAParentWithNoResolvedTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.ContextResolved = false;
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = false;
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be(HostAlias);
+    }
+
+    /// <summary>
     /// Reading a tenant's settings reports absence for an unknown tenant and the projection otherwise.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1547,7 +2507,7 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
 
         Result<PortalAliasDto?> present = await harness.Service
-            .GetPortalAliasAsync(PortalAliasId, CancellationToken.None);
+            .GetPortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
 
         present.Value!.PortalAliasId.Should().Be(PortalAliasId);
         present.Value!.PortalId.Should().Be(PortalId);
@@ -1556,7 +2516,7 @@ public class PortalServiceTests
         harness.LookupAlias = null;
 
         Result<PortalAliasDto?> absent = await harness.Service
-            .GetPortalAliasAsync(PortalAliasId, CancellationToken.None);
+            .GetPortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
 
         absent.IsSuccess.Should().BeTrue();
         absent.Value.Should().BeNull();
@@ -1685,10 +2645,11 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
 
         await Assert.ThrowsAsync<ArgumentNullException>(
-            () => harness.Service.UpdatePortalAliasAsync(PortalAliasId, null!, CancellationToken.None));
+            () => harness.Service.UpdatePortalAliasAsync(PortalId, PortalAliasId, null!, CancellationToken.None));
 
         DomainException failure = await Assert.ThrowsAsync<DomainException>(
             () => harness.Service.UpdatePortalAliasAsync(
+                PortalId,
                 PortalAliasId,
                 new UpdatePortalAliasRequest { HttpAlias = "  " },
                 CancellationToken.None));
@@ -1710,6 +2671,7 @@ public class PortalServiceTests
         harness.LookupAlias = null;
 
         Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
             PortalAliasId,
             new UpdatePortalAliasRequest { HttpAlias = "new.example" },
             CancellationToken.None);
@@ -1731,6 +2693,7 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
 
         Result permitted = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
             PortalAliasId,
             new UpdatePortalAliasRequest { HttpAlias = HostAlias },
             CancellationToken.None);
@@ -1743,6 +2706,7 @@ public class PortalServiceTests
         harness.AliasTaken = true;
 
         Result refused = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
             PortalAliasId,
             new UpdatePortalAliasRequest { HttpAlias = "taken.example" },
             CancellationToken.None);
@@ -1765,6 +2729,7 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
 
         Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
             PortalAliasId,
             new UpdatePortalAliasRequest { HttpAlias = "  renamed.example  " },
             CancellationToken.None);
@@ -1787,7 +2752,7 @@ public class PortalServiceTests
         harness.LookupAlias = null;
 
         Result outcome = await harness.Service
-            .DeletePortalAliasAsync(PortalAliasId, CancellationToken.None);
+            .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(AliasNotFoundCode);
@@ -1805,13 +2770,75 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
 
         Result outcome = await harness.Service
-            .DeletePortalAliasAsync(PortalAliasId, CancellationToken.None);
+            .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
         harness.RemovedAliases.Should().ContainSingle().Which.Should().BeSameAs(harness.LookupAlias);
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
         harness.HostInvalidations.Should().Be(1);
         harness.InvalidatedPortalIds.Should().Equal(new[] { PortalId });
+    }
+
+    /// <summary>
+    /// An alias owned by another tenant is invisible to a read addressed at this one, and the answer is
+    /// indistinguishable from an alias that does not exist so that the member is not an enumeration oracle.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetPortalAlias_RefusesAnAliasOwnedByAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupAlias = Alias(PortalAliasId, ForeignPortalId, "other.example");
+
+        Result<PortalAliasDto?> outcome = await harness.Service
+            .GetPortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Renaming an alias owned by another tenant is refused, because the alias is what tenant resolution
+    /// matches on and renaming it would re-point that tenant's traffic. Nothing is written and nothing is
+    /// committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortalAlias_RefusesAnAliasOwnedByAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupAlias = Alias(PortalAliasId, ForeignPortalId, "other.example");
+
+        Result outcome = await harness.Service.UpdatePortalAliasAsync(
+            PortalId,
+            PortalAliasId,
+            new UpdatePortalAliasRequest { HttpAlias = "hijacked.example" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(AliasNotFoundCode);
+        harness.LookupAlias!.HttpAlias.Should().Be("other.example");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Unbinding an alias owned by another tenant is refused, because it would make that tenant unreachable
+    /// at the host name its users hold. Nothing is removed and nothing is committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortalAlias_RefusesAnAliasOwnedByAnotherTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupAlias = Alias(PortalAliasId, ForeignPortalId, "other.example");
+
+        Result outcome = await harness.Service
+            .DeletePortalAliasAsync(PortalId, PortalAliasId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(AliasNotFoundCode);
+        harness.RemovedAliases.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     /// <summary>
@@ -1867,6 +2894,79 @@ public class PortalServiceTests
     };
 
     /// <summary>
+    /// Builds the tenant a request has resolved to, which is the authority a child portal's alias is
+    /// composed beneath.
+    /// </summary>
+    /// <param name="httpAlias">The resolved tenant's own host name.</param>
+    /// <returns>A resolved tenant context.</returns>
+    /// <remarks>
+    /// The alias is the only member the composition reads, but the whole contract is answered so the double
+    /// cannot be mistaken for a partially-populated context. It stands in for the legacy
+    /// <c>Globals.GetDomainName(Request)</c> reading that <c>Signup.ascx.vb:L232</c> composed beneath.
+    /// </remarks>
+    private static IPortalContext ResolvedTenant(string httpAlias = HostAlias)
+    {
+        var context = new Mock<IPortalContext>(MockBehavior.Loose);
+        context.SetupGet(tenant => tenant.PortalId).Returns(PortalId);
+        context.SetupGet(tenant => tenant.PortalName).Returns(PortalName);
+        context.SetupGet(tenant => tenant.PortalAlias).Returns(httpAlias);
+        context.SetupGet(tenant => tenant.AdministratorId).Returns(AdministratorId);
+        context.SetupGet(tenant => tenant.AdministratorRoleId).Returns(AdministratorRoleId);
+        context.SetupGet(tenant => tenant.AdministratorRoleName).Returns("Administrators");
+        context.SetupGet(tenant => tenant.RegisteredRoleId).Returns(RegisteredRoleId);
+        context.SetupGet(tenant => tenant.RegisteredRoleName).Returns("Registered Users");
+
+        return context.Object;
+    }
+
+    /// <summary>
+    /// A transaction scope that records whether it was committed and whether it was disposed.
+    /// </summary>
+    /// <remarks>
+    /// The production scope rolls back on disposal without a commit, so a test that asserted only "the
+    /// scope was disposed" would pass for a write that was abandoned. Recording BOTH facts is what lets a
+    /// test distinguish a committed creation from a rolled-back one, which is the whole point of the
+    /// transaction the service now opens.
+    /// </remarks>
+    private sealed class RecordingTransactionScope : ITransactionScope
+    {
+        /// <summary>Initialises a new instance of the <see cref="RecordingTransactionScope"/> class.</summary>
+        /// <param name="isolation">The isolation the service asked for.</param>
+        public RecordingTransactionScope(TransactionIsolation isolation)
+        {
+            Isolation = isolation;
+        }
+
+        /// <summary>The isolation the service asked for.</summary>
+        public TransactionIsolation Isolation { get; }
+
+        /// <summary>Whether the scope was committed.</summary>
+        public bool Committed { get; private set; }
+
+        /// <summary>Whether the scope was disposed.</summary>
+        public bool Disposed { get; private set; }
+
+        /// <summary>Whether the scope was abandoned - disposed without ever being committed.</summary>
+        public bool RolledBack => Disposed && !Committed;
+
+        /// <inheritdoc />
+        public Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            Committed = true;
+
+            return Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>
     /// Builds a provisioning request that passes every check the service performs.
     /// </summary>
     /// <returns>A well-formed provisioning request.</returns>
@@ -1890,6 +2990,10 @@ public class PortalServiceTests
     /// <returns>A well-formed update request.</returns>
     private static UpdatePortalRequest ValidUpdateRequest() => new()
     {
+        // Carried so the request is representative of one that has passed the registered validator, whose
+        // one rule on this member is that it equal the route identifier. The service never reads it - it
+        // addresses the identifier it was given as an argument - so its presence changes no assertion here.
+        PortalId = PortalId,
         PortalName = "Renamed",
         DefaultLanguage = DefaultLanguageCode,
         TimeZoneOffset = DefaultTimeZoneOffsetMinutes,
@@ -1952,10 +3056,28 @@ public class PortalServiceTests
             DeletedCredentialUserIds = [];
             InvalidatedPortalIds = [];
             InvalidatedTabsPortalIds = [];
+            AuditRecords = [];
+            OpenedTransactions = [];
+            ResolvedContext = ResolvedTenant();
+            ContextResolved = true;
+            AddedProfileDefinitions = [];
+            AddedTabs = [];
+            AddedTabPermissions = [];
+
+            // The catalogue the upgrade scripts install for the page scope. Both keys the stock home page
+            // needs are present, because the production database has them and a harness that omitted them
+            // would silently exercise the skip path instead of the grant path.
+            PageScopeCatalogue =
+            [
+                new Permission { PermissionId = 3, PermissionCode = TabScopeCode, PermissionKey = PermissionKey.VIEW, PermissionName = "View Tab" },
+                new Permission { PermissionId = 4, PermissionCode = TabScopeCode, PermissionKey = PermissionKey.EDIT, PermissionName = "Edit Tab" },
+            ];
 
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Aliases = new Mock<IPortalAliasRepository>(MockBehavior.Loose);
             Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
+            Profiles = new Mock<IUserProfileRepository>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
@@ -1964,11 +3086,41 @@ public class PortalServiceTests
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
+            Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+            PortalContext = new Mock<IPortalContextHolder>(MockBehavior.Loose);
+
+            Audit
+                .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
+                .Callback<AuditEvent>(AuditRecords.Add);
+
+            // The tenant this request resolved to. A child portal's alias is composed beneath it, so the
+            // double has to answer both members rather than only the one the composition reads: a holder
+            // that reported itself unresolved while still yielding a context would be a state the
+            // production holder cannot be in, and a test built on it would prove nothing.
+            PortalContext.SetupGet(holder => holder.IsResolved).Returns(() => ContextResolved);
+            PortalContext.SetupGet(holder => holder.Current).Returns(() => ResolvedContext);
+
+            // Every write that spans more than one commit opens a transaction, and a loose mock would
+            // otherwise hand back a null task. Each scope is recorded so a test can assert that the work
+            // was committed rather than merely that it completed - disposal without a commit is how the
+            // production code rolls back, so "committed" and "finished" are genuinely different outcomes.
+            UnitOfWork
+                .Setup(unit => unit.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns<TransactionIsolation, CancellationToken>((isolation, _) =>
+                {
+                    var scope = new RecordingTransactionScope(isolation);
+                    OpenedTransactions.Add(scope);
+                    return Task.FromResult<ITransactionScope>(scope);
+                });
 
             Service = new PortalService(
                 Portals.Object,
                 Aliases.Object,
                 Tabs.Object,
+                Profiles.Object,
+                Permissions.Object,
                 Users.Object,
                 Roles.Object,
                 UnitOfWork.Object,
@@ -1977,6 +3129,8 @@ public class PortalServiceTests
                 Clock.Object,
                 Cache.Object,
                 CurrentUser.Object,
+                Audit.Object,
+                PortalContext.Object,
                 Caching);
         }
 
@@ -1985,6 +3139,10 @@ public class PortalServiceTests
         public Mock<IPortalRepository> Portals { get; }
 
         public Mock<IPortalAliasRepository> Aliases { get; }
+
+        public Mock<IUserProfileRepository> Profiles { get; }
+
+        public Mock<IPermissionRepository> Permissions { get; }
 
         public Mock<ITabRepository> Tabs { get; }
 
@@ -2003,6 +3161,22 @@ public class PortalServiceTests
         public Mock<ICacheService> Cache { get; }
 
         public Mock<ICurrentUser> CurrentUser { get; }
+
+        public Mock<IAuditSink> Audit { get; }
+
+        public Mock<IPortalContextHolder> PortalContext { get; }
+
+        /// <summary>Every audit record the service emitted, in the order it emitted them.</summary>
+        public List<AuditEvent> AuditRecords { get; }
+
+        /// <summary>Every transaction the service opened, in the order it opened them.</summary>
+        public List<RecordingTransactionScope> OpenedTransactions { get; }
+
+        /// <summary>Whether the request resolved to a tenant at all.</summary>
+        public bool ContextResolved { get; set; }
+
+        /// <summary>The tenant the request resolved to, read when a child alias is composed.</summary>
+        public IPortalContext ResolvedContext { get; set; }
 
         public CachingOptions Caching { get; }
 
@@ -2092,6 +3266,36 @@ public class PortalServiceTests
 
         public List<int> InvalidatedTabsPortalIds { get; }
 
+        public List<ProfilePropertyDefinition> AddedProfileDefinitions { get; }
+
+        public List<Tab> AddedTabs { get; }
+
+        public List<TabPermission> AddedTabPermissions { get; }
+
+        /// <summary>
+        /// The recorded events as name-and-property pairs, which is the shape part of this suite reads.
+        /// </summary>
+        /// <remarks>
+        /// A projection over <see cref="AuditRecords"/> rather than a second capture, so there is one audit
+        /// stream and no fact can pass against a record the service did not emit. The tenant identifier the
+        /// structured record carries as a member is folded back into the dictionary under the same name.
+        /// </remarks>
+        public IReadOnlyList<(string EventName, IReadOnlyDictionary<string, string?> Properties)> AuditEvents =>
+            AuditRecords
+                .Select(record =>
+                {
+                    Dictionary<string, string?> properties =
+                        new(record.Properties, StringComparer.Ordinal)
+                        {
+                            ["PortalId"] = record.PortalId?.ToString(CultureInfo.InvariantCulture),
+                        };
+
+                    return (record.EventName, (IReadOnlyDictionary<string, string?>)properties);
+                })
+                .ToList();
+
+        public List<Permission> PageScopeCatalogue { get; set; }
+
         /// <summary>
         /// Builds a harness whose world is consistent: one tenant with one host name and an administrator on
         /// record, an installation holding two tenants, and a credential store that accepts writes.
@@ -2113,9 +3317,51 @@ public class PortalServiceTests
             harness.Portals
                 .Setup(p => p.CountPagesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PageCount);
+
+            // The batched tallies answer the same figures as the per-portal members, so a test that sets
+            // UserCount or PageCount sees the same number whichever member the code under test reaches
+            // for. Both stubs honour the total contract the repository promises: every identifier that
+            // was asked about is present as a key.
+            harness.Portals
+                .Setup(p => p.CountUsersForPortalsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> ids, CancellationToken _) =>
+                    ids.Distinct().ToDictionary(id => id, _ => harness.UserCount));
+            harness.Portals
+                .Setup(p => p.CountPagesForPortalsAsync(
+                    It.IsAny<IReadOnlyCollection<int>>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((IReadOnlyCollection<int> ids, CancellationToken _) =>
+                    ids.Distinct().ToDictionary(id => id, _ => harness.PageCount));
             harness.Portals
                 .Setup(p => p.GetRoleNamesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleNames);
+
+            // The default profile property definitions the new tenant receives are captured so a test can
+            // assert their number, their categories and their view ordering.
+            harness.Profiles
+                .Setup(p => p.AddDefinitionAsync(
+                    It.IsAny<ProfilePropertyDefinition>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback((ProfilePropertyDefinition definition, CancellationToken _) =>
+                    harness.AddedProfileDefinitions.Add(definition))
+                .Returns(Task.CompletedTask);
+
+            // The page scope catalogue is a REAL read in production - GetPermissionsByTabID selects every
+            // entry carrying the page scope code and ignores its page argument - so the stub likewise
+            // ignores the identifier it is handed, which is zero at the point the home page asks.
+            harness.Permissions
+                .Setup(p => p.GetByTabIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.PageScopeCatalogue);
+            harness.Permissions
+                .Setup(p => p.AddTabPermissionAsync(
+                    It.IsAny<TabPermission>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback((TabPermission grant, CancellationToken _) =>
+                    harness.AddedTabPermissions.Add(grant))
+                .Returns(Task.CompletedTask);
+
             harness.Portals
                 .Setup(p => p.ListAsync(
                     It.IsAny<int>(),
@@ -2233,6 +3479,10 @@ public class PortalServiceTests
             harness.Tabs
                 .Setup(t => t.GetHostRootTabIdAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.HostRootTab);
+            harness.Tabs
+                .Setup(t => t.AddAsync(It.IsAny<Tab>(), It.IsAny<CancellationToken>()))
+                .Callback((Tab page, CancellationToken _) => harness.AddedTabs.Add(page))
+                .Returns(Task.CompletedTask);
 
             harness.Users
                 .Setup(u => u.UsernameExistsAsync(

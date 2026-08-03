@@ -442,6 +442,32 @@ describe('http-params.util', () => {
       expect(params.has(QUERY_PARAM.roleGroupId)).toBe(false);
     });
 
+    it('transmits the ungrouped scope, which is the successor to the legacy "global roles" choice', () => {
+      const params = roleListParams({ pageIndex: 0 }, { scope: 'Ungrouped' });
+
+      expect(params.get(QUERY_PARAM.scope)).toBe('Ungrouped');
+      expect(params.has(QUERY_PARAM.roleGroupId)).toBe(false);
+    });
+
+    it('transmits the all scope by name rather than as the legacy magic integer', () => {
+      const params = roleListParams({ pageIndex: 0 }, { scope: 'All' });
+
+      expect(params.get(QUERY_PARAM.scope)).toBe('All');
+      expect(params.toString()).not.toContain('-2');
+    });
+
+    it('omits the scope when it is null or absent', () => {
+      expect(roleListParams({ pageIndex: 0 }, { scope: null }).has(QUERY_PARAM.scope)).toBe(false);
+      expect(roleListParams({ pageIndex: 0 }, { roleGroupId: 3 }).has(QUERY_PARAM.scope)).toBe(false);
+    });
+
+    it('serialises a group identifier and a scope together, which the server adjudicates', () => {
+      const params = roleListParams({ pageIndex: 0 }, { roleGroupId: 3, scope: 'All' });
+
+      expect(params.get(QUERY_PARAM.roleGroupId)).toBe('3');
+      expect(params.get(QUERY_PARAM.scope)).toBe('All');
+    });
+
     it('emits only the paging contract when no filter is supplied, whether omitted or null', () => {
       expect(roleListParams({ pageIndex: 0, pageSize: 10 }).keys().sort()).toEqual([
         'pageIndex',
@@ -499,18 +525,32 @@ describe('http-params.util', () => {
   });
 
   describe('permission catalogue - deliberately unpaged', () => {
-    it('serialises both filters', () => {
-      const params = permissionListParams({ permissionCode: 'SYSTEM_MODULE_DEFINITION', moduleDefinitionId: 5 });
+    it('serialises all three filters', () => {
+      const params = permissionListParams({
+        permissionCode: 'SYSTEM_MODULE_DEFINITION',
+        moduleDefinitionId: 5,
+        permissionKey: 'EDIT',
+      });
 
       expect(params.get(QUERY_PARAM.permissionCode)).toBe('SYSTEM_MODULE_DEFINITION');
       expect(params.get(QUERY_PARAM.moduleDefinitionId)).toBe('5');
+      expect(params.get(QUERY_PARAM.permissionKey)).toBe('EDIT');
+    });
+
+    it('serialises the key filter on its own, which the server answers from the closed key set', () => {
+      const params = permissionListParams({ permissionKey: 'VIEW' });
+
+      expect(params.get(QUERY_PARAM.permissionKey)).toBe('VIEW');
+      expect(params.keys()).toEqual([QUERY_PARAM.permissionKey]);
     });
 
     it('emits nothing at all when no filter is supplied', () => {
       expect(permissionListParams().keys()).toEqual([]);
       expect(permissionListParams(null).keys()).toEqual([]);
       expect(permissionListParams({}).keys()).toEqual([]);
-      expect(permissionListParams({ permissionCode: null, moduleDefinitionId: null }).keys()).toEqual([]);
+      expect(
+        permissionListParams({ permissionCode: null, moduleDefinitionId: null, permissionKey: null }).keys(),
+      ).toEqual([]);
     });
 
     it('never emits a paging coordinate', () => {

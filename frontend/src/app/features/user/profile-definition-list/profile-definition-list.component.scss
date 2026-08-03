@@ -217,11 +217,11 @@
 //
 //  The group stays on ONE line, and the absence of a wrap declaration is the
 //  deliberate expression of that: nowrap is the initial value, so restating it
-//  would add a declaration that changes nothing. An earlier draft did wrap, and
-//  measuring the result in a browser at a narrow viewport is what overturned it.
+//  would add a declaration that changes nothing. Wrapping is the alternative to avoid,
+//  as measuring it in a browser at a narrow viewport shows.
 //  A wrapping flex container reports the width of its widest single item as its
-//  minimum content size, so the table's column algorithm sized the action column
-//  at one button. All four then stacked vertically and every data row grew to
+//  minimum content size, so the table's column algorithm sizes the action column
+//  at one button. All four then stack vertically and every data row grows to
 //  roughly four times its height — against a legacy row of about twenty-four
 //  pixels. That is a far larger divergence from the ported screen than a wider
 //  first column, and it inflates all four rows rather than one.
@@ -412,11 +412,14 @@
 //  first.
 .profile-definitions__form-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-2) var(--space-4);
 
+  // Two equal fluid columns. The repetition count is structural rather than a design
+  // value — it says how many of the same track to lay down — so the track itself is
+  // what resolves to the vocabulary.
   @include mx.respond-above('md') {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(2, var(--grid-track-fluid));
   }
 }
 

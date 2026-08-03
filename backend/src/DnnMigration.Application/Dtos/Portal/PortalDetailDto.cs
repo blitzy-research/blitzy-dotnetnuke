@@ -74,8 +74,9 @@ public sealed class PortalDetailDto
     /// </summary>
     /// <remarks>
     /// <c>Portals.PortalID</c> is <c>[int] IDENTITY (-1, 1) NOT NULL</c>
-    /// (<c>01.00.00.SqlDataProvider</c> line 77), so the first portal is -1 and the second is 0;
-    /// the stock <c>_default</c> portal is 0 (line 7125). Because -1 is simultaneously the legacy
+    /// (<c>01.00.00.SqlDataProvider</c> line 77), so -1 is the seed and the first value the column
+    /// generates, while the shipped <c>_default</c> portal row is inserted with an explicit 0 under
+    /// <c>IDENTITY_INSERT</c> (line 7125). Both are real keys. Because -1 is simultaneously the legacy
     /// encoding for an absent whole number, no value of this member may be read as "no portal".
     /// </remarks>
     public int PortalId { get; set; }

@@ -169,8 +169,9 @@ public sealed class UserProfileValue : Entity<int>
     /// MIGRATION: seeding at 1 makes this the one in-scope identity column with no seed collision -
     /// <c>dbo.Portals</c> seeds at -1 and <c>dbo.Roles</c>, <c>dbo.Tabs</c> and <c>dbo.Modules</c>
     /// at 0, so for those a default <see cref="int"/> is a genuine key. Zero is still not read as
-    /// "not written yet" here either: persisted state is declared by the persistence layer through
-    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> and never deduced from this value.
+    /// "not written yet" here either: persisted state is declared through
+    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows the row exists, by
+    /// nothing automatically, and never deduced from this value.
     /// </para>
     /// </remarks>
     public int ProfileId { get; set; }

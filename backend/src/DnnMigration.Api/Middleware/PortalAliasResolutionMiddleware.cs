@@ -1,6 +1,9 @@
+using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 
 namespace DnnMigration.Api.Middleware;
 
@@ -16,31 +19,62 @@ namespace DnnMigration.Api.Middleware;
 /// ambient per-request item bag and read - or replace - the tenant.
 /// </para>
 /// <para>
-/// RESOLUTION IS ON THE HOST NAME ALONE, exactly as sent, host and port together. That is the shape the
-/// alias column stores, and comparing anything else against it would not match. No scheme is prepended, no
-/// trailing slash is added and no case is imposed - case is the column collation's business, and under the
-/// default case-insensitive collation host names compare case-insensitively as host names should.
+/// RESOLUTION IS ON THE HOST NAME AND THE REQUEST PATH TOGETHER, the host exactly as sent with its port.
+/// That is the shape the alias column stores - a bare host for a parent portal, host-and-path for a child -
+/// and comparing anything else against it would not match. No scheme is prepended, no trailing slash is
+/// added and no case is imposed: case is the column collation's business, and under the default
+/// case-insensitive collation host names compare case-insensitively as host names should. The address is
+/// built by the shared helper alongside this file, so every stage that resolves a tenant asks the same
+/// question of the same value.
 /// </para>
 /// <para>
-/// VIRTUAL-PATH ALIASES ARE NOT RESOLVED, and that is a deliberate limitation rather than an oversight.
-/// The legacy product allowed a child portal to be addressed by a path segment beneath a shared host, so
-/// its alias column could hold a host-and-path value. Supporting that means generating a candidate chain
-/// from the request path and probing it most-specific-first, which is a query per candidate on every
-/// request, and no finding requires it and no validation gate exercises it. A deployment that addresses
-/// each portal by its own host name - the arrangement this resolves - is unaffected. The limitation is
-/// recorded as a behavioural difference rather than absorbed silently.
+/// VIRTUAL-PATH ALIASES ARE RESOLVED, which the legacy product required and an earlier revision of this
+/// component did not do. A child portal was addressed by a path segment beneath a shared host - the signup
+/// screen composed and stored exactly "domain/segment" at Signup.ascx.vb:L232-L236 - so the alias column may
+/// carry path segments and the host alone does not distinguish a parent from its children. The holder builds
+/// a candidate chain from the address, most-specific-first, and prefers the LONGEST candidate that matches,
+/// which is the same preference the legacy request-side walk expressed by stopping at the first recognised
+/// directory. It costs one round trip for the whole chain rather than one per segment. A parent and its child
+/// are both expected to match, so more than one match across DIFFERENT candidates is the ordinary case and
+/// not an ambiguity; two rows for the SAME address still is one, and is still refused.
 /// </para>
 /// <para>
-/// FAILING TO RESOLVE NEVER INVENTS A TENANT, AND NEVER REFUSES THE REQUEST HERE EITHER. There is no default
-/// portal and no anonymous tenant to fall back to: an unknown host, an ambiguous one, or a portal missing
-/// facts a snapshot needs all leave the request with no tenant at all, and the reason is logged for the
-/// operator who must correct it. What must not happen is a blanket refusal from this point, for two reasons.
-/// Every endpoint that needs a tenant already refuses without one - portal-scoped authorisation denies when
-/// no tenant is resolved, and the sign-in endpoint reports exactly which fact it is missing - so refusing
-/// here adds no protection while making the one endpoint that can produce a session unreachable from a host
-/// that has not been configured yet. And a refusal that only an unconfigured host receives is itself a
-/// disclosure: an unauthenticated caller could enumerate which host names this installation serves from the
-/// status code alone, which is the enumeration the refusal body was written to avoid.
+/// THE PATH SEGMENT THAT IDENTIFIED THE TENANT IS REMOVED FROM THE ROUTABLE PATH BEFORE ROUTING RUNS, by the
+/// sibling path-base stage. It has to be: this stage runs after routing, by mandated order, and a child's
+/// request path would otherwise reach routing with the tenant's own segment still on the front and match no
+/// route at all. Resolving the tenant correctly and then answering 404 for every request beneath it would be
+/// no better than not resolving it. The two stages share both the address helper and the exemption list, so
+/// neither can resolve a tenant the other would have exempted.
+/// </para>
+/// <para>
+/// FAILING TO RESOLVE NEVER INVENTS A TENANT, AND NOW REFUSES THE ENDPOINTS THAT DEPEND ON ONE. There is no
+/// default portal and no anonymous tenant to fall back to: an unknown host, an ambiguous one, or a portal
+/// missing facts a snapshot needs all leave the request with no tenant at all, and the reason is logged for
+/// the operator who must correct it. Until this component was corrected it then simply CONTINUED, on every
+/// path, on the stated grounds that portal-scoped authorisation would deny a tenant-less request anyway. That
+/// premise no longer holds and should never have been relied upon: the portal-administrator policy is now
+/// anchored to the portal named in the ROUTE - which is what closed a cross-tenant defect - so it no longer
+/// requires a resolved tenant, and an endpoint whose only possible source of a tenant is the host name would
+/// have run with none.
+/// </para>
+/// <para>
+/// A BLANKET REFUSAL IS STILL WRONG, so the refusal is scoped by how the endpoint names its tenant. A route
+/// carrying a <c>portalId</c> segment names it in the route and is served: refusing those would lock a host
+/// account out of administering any portal from a management host name that is deliberately not an alias, and
+/// would add nothing, because the route portal is proved against authoritative administrator membership rather
+/// than against the host name. An endpoint marked <see cref="TenantOptionalAttribute"/> is served for the
+/// reason its mark states - installation-wide reference data, a tenant named by the caller's token or its own
+/// request, or a bootstrap and repair path that must stay reachable precisely BECAUSE the aliases are wrong.
+/// Everything else is refused, so an endpoint added later that forgets the question fails closed.
+/// </para>
+/// <para>
+/// THE REFUSAL DISCLOSES NOTHING AND LOCKS NOBODY OUT OF SIGNING IN. It is written only where a request has
+/// already passed authorisation - this component is ordered after the authorisation middleware, which
+/// short-circuits an unauthenticated or unauthorised caller before reaching here - so an anonymous caller
+/// cannot use the status code to enumerate which host names the installation serves; it receives its 401
+/// either way. The sign-in endpoint carries the tenant-optional mark and stays reachable from a host that has
+/// not been configured yet, which is what lets an operator obtain a session and repair the configuration. The
+/// body names neither the host nor which of the three resolution failures occurred.
 /// </para>
 /// <para>
 /// TWO CLASSES OF PATH ARE EXEMPT, and the exemptions are as load-bearing as the resolution. The container
@@ -72,6 +106,25 @@ internal sealed class PortalAliasResolutionMiddleware
         "/swagger",
         "/openapi",
     ];
+
+    /// <summary>
+    /// Route value naming the tenant. Spelled identically to the value the authorisation handlers read, so
+    /// one route segment name governs both the policy and this refusal.
+    /// </summary>
+    private const string PortalRouteValueKey = "portalId";
+
+    /// <summary>
+    /// Failure code carried as the problem type. Shared verbatim with the module-definitions endpoint, which
+    /// refuses the same condition, so the two are one behaviour rather than two spellings of it.
+    /// </summary>
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
+    /// <summary>Wording reported to the caller. Names no host and no resolution failure.</summary>
+    private const string TenantUnresolvedDetail =
+        "This request could not be associated with a portal.";
+
+    /// <summary>The media type an RFC 7807 payload is served as.</summary>
+    private const string ProblemContentType = "application/problem+json";
 
     private readonly RequestDelegate _next;
     private readonly ILogger<PortalAliasResolutionMiddleware> _logger;
@@ -107,43 +160,155 @@ internal sealed class PortalAliasResolutionMiddleware
     /// </remarks>
     /// <param name="context">The current request.</param>
     /// <param name="portalContext">Resolves and holds the tenant for this request.</param>
+    /// <param name="problemDetailsFactory">
+    /// Builds the refusal payload, so the body is this API's own vocabulary with its trace identifier rather
+    /// than a second spelling declared here.
+    /// </param>
     /// <returns>A task that completes when the request has been handled.</returns>
-    public async Task InvokeAsync(HttpContext context, IPortalContextHolder portalContext)
+    public async Task InvokeAsync(
+        HttpContext context,
+        IPortalContextHolder portalContext,
+        ProblemDetailsFactory problemDetailsFactory)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(portalContext);
+        ArgumentNullException.ThrowIfNull(problemDetailsFactory);
 
-        if (IsExempt(context.Request.Path))
+        if (IsExemptPath(context.Request.Path))
         {
             await _next(context).ConfigureAwait(false);
             return;
         }
 
-        string host = context.Request.Host.Value ?? string.Empty;
+        // The address comes from the shared helper, which reads the host together with the request's full
+        // path so that a child portal addressed beneath a path segment resolves. Resolution is memoised, so
+        // on a request the path-base stage has already resolved this call observes that outcome rather than
+        // reading the store again - and because both stages ask through the same helper, neither can be
+        // handed an address the other would not have produced.
+        string address = TenantAddress.Of(context);
 
         Result outcome = await portalContext
-            .EnsureResolvedAsync(host, context.RequestAborted)
+            .EnsureResolvedAsync(address, context.RequestAborted)
             .ConfigureAwait(false);
 
         if (!outcome.IsSuccess)
         {
-            LogUnresolved(host, outcome);
+            LogUnresolved(address, outcome);
+
+            if (RequiresResolvedTenant(context))
+            {
+                await WriteTenantUnresolvedAsync(context, problemDetailsFactory).ConfigureAwait(false);
+                return;
+            }
         }
 
         await _next(context).ConfigureAwait(false);
     }
 
     /// <summary>
+    /// Determines whether the matched endpoint can only obtain its tenant from the host name, and therefore
+    /// must not be served when the host name resolved to none.
+    /// </summary>
+    /// <param name="context">The current request.</param>
+    /// <returns><see langword="true"/> when the request must be refused.</returns>
+    /// <remarks>
+    /// <para>
+    /// NO MATCHED ENDPOINT MEANS NO REFUSAL. A request that matched no route is a 404 and that answer belongs
+    /// to routing; refusing it here would replace a truthful "no such address" with a misleading one, and
+    /// would tell a caller probing for addresses that the host is unconfigured.
+    /// </para>
+    /// <para>
+    /// A <c>portalId</c> ROUTE VALUE IS INTRINSIC PROOF. The route value is set by route matching alone - it
+    /// cannot be supplied through the query string or a header - so its presence means the tenant arrives by a
+    /// means other than the host name. It is not trusted as an authorisation decision: the portal-administrator
+    /// policy verifies administration of that exact portal against stored role membership, and every service
+    /// verifies that the record it acts on belongs to it.
+    /// </para>
+    /// </remarks>
+    private static bool RequiresResolvedTenant(HttpContext context)
+    {
+        Endpoint? endpoint = context.GetEndpoint();
+        if (endpoint is null)
+        {
+            return false;
+        }
+
+        if (context.Request.RouteValues.ContainsKey(PortalRouteValueKey))
+        {
+            return false;
+        }
+
+        return endpoint.Metadata.GetMetadata<TenantOptionalAttribute>() is null;
+    }
+
+    /// <summary>
+    /// Refuses a tenant-dependent request with the shared RFC 7807 vocabulary.
+    /// </summary>
+    /// <param name="context">The current request.</param>
+    /// <param name="problemDetailsFactory">Builds the payload.</param>
+    /// <returns>A task that completes when the refusal has been written.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE STATUS IS 403, NOT 400 AND NOT 404. The request is well formed, so it is not a bad request; the
+    /// address exists, so it is not absent. What is missing is the caller's entitlement to a tenant on this
+    /// host, which is a refusal to serve - and it is the same status, code and wording the module-definitions
+    /// endpoint already answered with for exactly this condition, so a client sees one behaviour rather than
+    /// two.
+    /// </para>
+    /// <para>
+    /// NEITHER THE HOST NAME NOR THE REASON REACHES THE CALLER. The host name is attacker-supplied text and
+    /// echoing it is a reflection vector; distinguishing an unknown host from an ambiguous one or from a
+    /// misconfigured portal would let a caller probe the installation's alias table. The operator who needs
+    /// all three reads them from the log entry written immediately before this.
+    /// </para>
+    /// <para>
+    /// The response is guarded on <c>HasStarted</c> because a component ordered earlier may already have begun
+    /// writing; overwriting a started response throws, which would turn a refusal into a server fault.
+    /// </para>
+    /// </remarks>
+    private static async Task WriteTenantUnresolvedAsync(
+        HttpContext context,
+        ProblemDetailsFactory problemDetailsFactory)
+    {
+        if (context.Response.HasStarted)
+        {
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+
+        ProblemDetails problem = problemDetailsFactory.CreateProblemDetails(
+            context,
+            statusCode: StatusCodes.Status403Forbidden,
+            detail: TenantUnresolvedDetail,
+            type: ApiResults.BuildProblemType(TenantUnresolvedCode));
+
+        context.Response.ContentType = ProblemContentType;
+
+        await context.Response
+            .WriteAsJsonAsync(problem, problem.GetType(), options: null, contentType: ProblemContentType)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Determines whether a path is served without a resolved tenant.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Matched as a path segment prefix rather than a substring, so a tenant-scoped path that merely
     /// contains an exempt word cannot exempt itself. Case-insensitive, because a URL path's case is the
     /// caller's choice and an exemption that could be evaded by changing case would not be one.
+    /// </para>
+    /// <para>
+    /// Visible to the sibling path-base stage, which MUST apply the identical list. Resolution is memoised
+    /// per request, so a stage that resolved a tenant for a path this list exempts would make the exemption
+    /// here meaningless - the work would already have been done. One list, read from one place, removes that
+    /// possibility rather than relying on two copies staying equal.
+    /// </para>
     /// </remarks>
     /// <param name="path">The request path.</param>
     /// <returns><see langword="true"/> when the path is exempt.</returns>
-    private static bool IsExempt(PathString path)
+    internal static bool IsExemptPath(PathString path)
     {
         foreach (string prefix in ExemptPathPrefixes)
         {
@@ -175,9 +340,13 @@ internal sealed class PortalAliasResolutionMiddleware
     /// who needs the distinction reads it here.
     /// </para>
     /// </remarks>
-    /// <param name="host">The host name that failed to resolve, for the log only.</param>
+    /// <param name="address">
+    /// The host name and path that failed to resolve, for the log only. The path is included because a child
+    /// portal is identified by it, so an operator diagnosing an unreachable child needs to see the whole
+    /// address that was probed rather than only its host.
+    /// </param>
     /// <param name="outcome">The failed resolution outcome.</param>
-    private void LogUnresolved(string host, Result outcome)
+    private void LogUnresolved(string address, Result outcome)
     {
         string reasonCode = outcome.Reason?.Code ?? "PORTAL_ALIAS_UNRESOLVED";
 
@@ -194,7 +363,7 @@ internal sealed class PortalAliasResolutionMiddleware
             _logger.LogWarning(
                 "The host name {RequestHost} does not identify a configured portal, so this request " +
                 "continues with no tenant. Reason code {ReasonCode}.",
-                host,
+                address,
                 reasonCode);
 
             return;
@@ -205,7 +374,7 @@ internal sealed class PortalAliasResolutionMiddleware
             "no tenant. Reason code {ReasonCode}. Detail: {ReasonMessage}. This is an installation " +
             "configuration defect and every request to this host will be unable to reach tenant-scoped " +
             "endpoints until it is corrected.",
-            host,
+            address,
             reasonCode,
             outcome.Reason?.Message ?? "none reported");
     }

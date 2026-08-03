@@ -163,9 +163,10 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("ModuleId")
                         .HasName("PK_Modules");
 
-                    b.HasIndex("ModuleDefinitionId");
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("ModuleId"), false);
 
-                    b.HasIndex("PortalId");
+                    b.HasIndex("ModuleDefinitionId")
+                        .HasDatabaseName("IX_Modules");
 
                     b.ToTable("Modules", "dbo");
                 });
@@ -180,8 +181,8 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ModuleControlId"));
 
                     b.Property<string>("ControlKey")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
                         .HasColumnName("ControlKey");
 
                     b.Property<string>("ControlSrc")
@@ -227,8 +228,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ModuleDefinitionId", "ControlKey", "ControlSrc")
                         .IsUnique()
-                        .HasDatabaseName("IX_ModuleControls")
-                        .HasFilter("[ModuleDefID] IS NOT NULL AND [ControlKey] IS NOT NULL AND [ControlSrc] IS NOT NULL");
+                        .HasDatabaseName("IX_ModuleControls");
 
                     b.ToTable("ModuleControls", "dbo");
                 });
@@ -261,7 +261,10 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("ModuleDefinitionId")
                         .HasName("PK_ModuleDefinitions");
 
-                    b.HasIndex("DesktopModuleId");
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("ModuleDefinitionId"), false);
+
+                    b.HasIndex("DesktopModuleId")
+                        .HasDatabaseName("IX_ModuleDefinitions_1");
 
                     b.HasIndex("FriendlyName")
                         .IsUnique()
@@ -302,16 +305,21 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("ModulePermissionId")
                         .HasName("PK_ModulePermission");
 
-                    b.HasIndex("PermissionId");
+                    b.HasIndex("ModuleId")
+                        .HasDatabaseName("IX_ModulePermission_Modules");
 
-                    b.HasIndex("RoleId");
+                    b.HasIndex("PermissionId")
+                        .HasDatabaseName("IX_ModulePermission_Permission");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("RoleId")
+                        .HasDatabaseName("IX_ModulePermission_Roles");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_ModulePermission_Users");
 
                     b.HasIndex("ModuleId", "PermissionId", "RoleId", "UserId")
                         .IsUnique()
-                        .HasDatabaseName("IX_ModulePermission")
-                        .HasFilter("[RoleID] IS NOT NULL AND [UserID] IS NOT NULL");
+                        .HasDatabaseName("IX_ModulePermission");
 
                     b.ToTable("ModulePermission", "dbo");
                 });
@@ -361,9 +369,9 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("PermissionKey")
                         .IsRequired()
-                        .HasMaxLength(20)
+                        .HasMaxLength(50)
                         .IsUnicode(false)
-                        .HasColumnType("varchar(20)")
+                        .HasColumnType("varchar(50)")
                         .HasColumnName("PermissionKey");
 
                     b.Property<string>("PermissionName")
@@ -375,8 +383,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasKey("PermissionId")
                         .HasName("PK_Permission");
-
-                    b.HasIndex("ModuleDefinitionId");
 
                     b.HasIndex("PermissionCode", "ModuleDefinitionId", "PermissionKey")
                         .IsUnique()
@@ -427,8 +433,8 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.Property<string>("DefaultLanguage")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(6)
-                        .HasColumnType("nvarchar(6)")
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)")
                         .HasDefaultValue("en-US")
                         .HasColumnName("DefaultLanguage");
 
@@ -459,10 +465,9 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("HomeTabId");
 
-                    b.Property<string>("HostFee")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("nvarchar(10)")
+                    b.Property<decimal>("HostFee")
+                        .HasColumnType("money")
+                        .HasDefaultValue(0m)
                         .HasColumnName("HostFee");
 
                     b.Property<int>("HostSpace")
@@ -497,8 +502,10 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnName("PaymentProcessor");
 
                     b.Property<Guid>("PortalGuid")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier")
-                        .HasColumnName("GUID");
+                        .HasColumnName("GUID")
+                        .HasDefaultValueSql("newid()");
 
                     b.Property<string>("PortalName")
                         .IsRequired()
@@ -530,6 +537,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("TimeZoneOffset")
                         .HasColumnType("int")
+                        .HasDefaultValue(-8)
                         .HasColumnName("TimezoneOffset");
 
                     b.Property<int>("UserQuota")
@@ -551,6 +559,8 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("PortalId")
                         .HasName("PK_Portals");
 
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("PortalId"), false);
+
                     b.ToTable("Portals", "dbo");
                 });
 
@@ -564,7 +574,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("PortalAliasId"));
 
                     b.Property<string>("HttpAlias")
-                        .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("HTTPAlias");
@@ -579,8 +588,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasIndex("HttpAlias")
                         .IsUnique()
                         .HasDatabaseName("IX_PortalAlias");
-
-                    b.HasIndex("PortalId");
 
                     b.ToTable("PortalAlias", "dbo");
                 });
@@ -604,8 +611,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasKey("PortalDesktopModuleId")
                         .HasName("PK_PortalDesktopModules");
-
-                    b.HasIndex("DesktopModuleId");
 
                     b.HasIndex("PortalId", "DesktopModuleId")
                         .IsUnique()
@@ -681,8 +686,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("PropertyDefinitionId")
                         .HasName("PK_ProfilePropertyDefinition");
 
-                    b.HasIndex("ModuleDefinitionId");
-
                     b.HasIndex("PropertyName")
                         .HasDatabaseName("IX_ProfilePropertyDefinition_PropertyName");
 
@@ -712,8 +715,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasMaxLength(1)
                         .IsUnicode(false)
                         .HasColumnType("char(1)")
-                        .HasColumnName("BillingFrequency")
-                        .IsFixedLength();
+                        .HasColumnName("BillingFrequency");
 
                     b.Property<int?>("BillingPeriod")
                         .HasColumnType("int")
@@ -755,7 +757,9 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasColumnName("RSVPCode");
 
                     b.Property<decimal?>("ServiceFee")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("money")
+                        .HasDefaultValue(0m)
                         .HasColumnName("ServiceFee");
 
                     b.Property<decimal?>("TrialFee")
@@ -766,8 +770,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasMaxLength(1)
                         .IsUnicode(false)
                         .HasColumnType("char(1)")
-                        .HasColumnName("TrialFrequency")
-                        .IsFixedLength();
+                        .HasColumnName("TrialFrequency");
 
                     b.Property<int?>("TrialPeriod")
                         .HasColumnType("int")
@@ -776,12 +779,14 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("RoleId")
                         .HasName("PK_Roles");
 
-                    b.HasIndex("RoleGroupId");
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("RoleId"), false);
+
+                    b.HasIndex("BillingFrequency")
+                        .HasDatabaseName("IX_Roles");
 
                     b.HasIndex("PortalId", "RoleName")
                         .IsUnique()
-                        .HasDatabaseName("IX_RoleName")
-                        .HasFilter("[PortalID] IS NOT NULL");
+                        .HasDatabaseName("IX_RoleName");
 
                     b.ToTable("Roles", "dbo");
                 });
@@ -812,6 +817,8 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasKey("RoleGroupId")
                         .HasName("PK_RoleGroups");
+
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("RoleGroupId"), false);
 
                     b.HasIndex("PortalId", "RoleGroupName")
                         .IsUnique()
@@ -868,6 +875,7 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("IsVisible")
                         .HasColumnType("bit")
+                        .HasDefaultValue(true)
                         .HasColumnName("IsVisible");
 
                     b.Property<string>("Keywords")
@@ -937,9 +945,13 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("TabId")
                         .HasName("PK_Tabs");
 
-                    b.HasIndex("ParentId");
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("TabId"), false);
 
-                    b.HasIndex("PortalId");
+                    b.HasIndex("ParentId")
+                        .HasDatabaseName("IX_Tabs_2");
+
+                    b.HasIndex("PortalId")
+                        .HasDatabaseName("IX_Tabs_1");
 
                     b.ToTable("Tabs", "dbo");
                 });
@@ -979,14 +991,17 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("DisplayPrint")
                         .HasColumnType("bit")
+                        .HasDefaultValue(true)
                         .HasColumnName("DisplayPrint");
 
                     b.Property<bool>("DisplaySyndicate")
                         .HasColumnType("bit")
+                        .HasDefaultValue(true)
                         .HasColumnName("DisplaySyndicate");
 
                     b.Property<bool>("DisplayTitle")
                         .HasColumnType("bit")
+                        .HasDefaultValue(true)
                         .HasColumnName("DisplayTitle");
 
                     b.Property<string>("IconFile")
@@ -1018,8 +1033,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.HasKey("TabModuleId")
                         .HasName("PK_TabModules");
-
-                    b.HasIndex("ModuleId");
 
                     b.HasIndex("TabId", "ModuleId")
                         .IsUnique()
@@ -1083,16 +1096,21 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("TabPermissionId")
                         .HasName("PK_TabPermission");
 
-                    b.HasIndex("PermissionId");
+                    b.HasIndex("PermissionId")
+                        .HasDatabaseName("IX_TabPermission_Permission");
 
-                    b.HasIndex("RoleId");
+                    b.HasIndex("RoleId")
+                        .HasDatabaseName("IX_TabPermission_Roles");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("TabId")
+                        .HasDatabaseName("IX_TabPermission_Tabs");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_TabPermission_Users");
 
                     b.HasIndex("TabId", "PermissionId", "RoleId", "UserId")
                         .IsUnique()
-                        .HasDatabaseName("IX_TabPermission")
-                        .HasFilter("[RoleID] IS NOT NULL AND [UserID] IS NOT NULL");
+                        .HasDatabaseName("IX_TabPermission");
 
                     b.ToTable("TabPermission", "dbo");
                 });
@@ -1175,10 +1193,12 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime>("CreatedDate")
                         .HasColumnType("datetime")
-                        .HasColumnName("CreatedDate");
+                        .HasColumnName("CreatedDate")
+                        .HasDefaultValueSql("getdate()");
 
                     b.Property<bool>("IsAuthorised")
                         .HasColumnType("bit")
+                        .HasDefaultValue(true)
                         .HasColumnName("Authorised");
 
                     b.Property<int>("UserPortalId")
@@ -1191,7 +1211,11 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("UserId", "PortalId")
                         .HasName("PK_UserPortals");
 
-                    b.HasIndex("PortalId");
+                    b.HasIndex("PortalId")
+                        .HasDatabaseName("IX_UserPortals");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_UserPortals_1");
 
                     b.ToTable("UserPortals", "dbo");
                 });
@@ -1235,9 +1259,10 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("ProfileId")
                         .HasName("PK_UserProfile");
 
-                    b.HasIndex("PropertyDefinitionId");
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("ProfileId"), false);
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_UserProfile");
 
                     b.ToTable("UserProfile", "dbo");
                 });
@@ -1274,9 +1299,11 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.HasKey("UserRoleId")
                         .HasName("PK_UserRoles");
 
-                    b.HasIndex("RoleId");
+                    b.HasIndex("RoleId")
+                        .HasDatabaseName("IX_UserRoles");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_UserRoles_1");
 
                     b.ToTable("UserRoles", "dbo");
                 });
@@ -1370,17 +1397,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                         .HasConstraintName("FK_ModuleSettings_Modules");
 
                     b.Navigation("Module");
-                });
-
-            modelBuilder.Entity("DnnMigration.Domain.Entities.Permission", b =>
-                {
-                    b.HasOne("DnnMigration.Domain.Entities.ModuleDefinition", "ModuleDefinition")
-                        .WithMany("Permissions")
-                        .HasForeignKey("ModuleDefinitionId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired();
-
-                    b.Navigation("ModuleDefinition");
                 });
 
             modelBuilder.Entity("DnnMigration.Domain.Entities.PortalAlias", b =>
@@ -1637,8 +1653,6 @@ namespace DnnMigration.Infrastructure.Persistence.Migrations
                     b.Navigation("ModuleControls");
 
                     b.Navigation("Modules");
-
-                    b.Navigation("Permissions");
 
                     b.Navigation("ProfilePropertyDefinitions");
                 });

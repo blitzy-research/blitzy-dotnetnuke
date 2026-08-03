@@ -16,17 +16,16 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 /// already exists, and nothing in this assembly creates, alters or removes one.
 /// </para>
 /// <para>
-/// <b>The primary key is a real database constraint.</b> An earlier reading of the upgrade chain
-/// concluded that this table carried none, that only a non-unique index stood over the two columns,
-/// and that the key declared here existed purely to satisfy the modelling requirement. Both halves of
-/// that reading are wrong, and the correction is stated here rather than quietly absorbed. The
+/// <b>The primary key is a real database constraint, and the chain hides it twice over.</b> The
 /// scripts are carriage-return delimited and they interpolate the object qualifier into constraint
 /// names, so <c>PK_{objectQualifier}ModuleSettings</c> is split across a line break at
-/// 02.00.01:L47-48 and a plain search for the resolved name finds nothing at all. Read with the
-/// templates resolved, 02.00.01:L47-52 declares the key over <c>(ModuleID, SettingName)</c>, and the
-/// index that earlier reading wanted configured is in fact the object the chain removed, at
-/// 03.00.03:L312. Only the cumulative terminal state of an append-and-destroy chain means anything,
-/// which is why each citation below names the script that last spoke on the point.
+/// 02.00.01:L47-48 and a plain search for the resolved name finds nothing at all - which invites the
+/// false conclusion that only a non-unique index stands over the two columns and that the key
+/// declared here exists merely to satisfy the modelling requirement. Read with the templates
+/// resolved, 02.00.01:L47-52 declares the key over <c>(ModuleID, SettingName)</c>, and the index is
+/// the object the chain later REMOVED, at 03.00.03:L312. Only the cumulative terminal state of an
+/// append-and-destroy chain means anything, which is why each citation below names the script that
+/// last spoke on the point.
 /// </para>
 /// <para>
 /// The value column is <c>nvarchar(2000)</c>, and 256 is the superseded baseline width.
@@ -142,9 +141,13 @@ internal sealed class ModuleSettingConfiguration : IEntityTypeConfiguration<Modu
             .IsRequired();
 
         // 01.00.08:L6255 - SettingName nvarchar(50) NOT NULL, the second column of the key above. The
-        // column stores the name exactly as written and so preserves case, which makes two names
-        // differing only in case two distinct rows. Whether a lookup folds case is a query-layer
-        // decision and is deliberately not settled here.
+        // column stores the name exactly as written, so the case a caller supplied is what is read
+        // back. Whether two names differing only in case are one row or two is NOT settled here and is
+        // not settled by the schema either: no script in the chain assigns a collation to this column,
+        // so comparison - and therefore key uniqueness - follows the database's own collation, which
+        // on a default SQL Server installation is case-insensitive. Nothing in this model may assume
+        // either answer: the application service reconciles submitted names case-insensitively, which
+        // is the conservative reading and is correct under both collations.
         builder.Property(s => s.SettingName)
             .HasColumnName("SettingName")
             .HasMaxLength(50)

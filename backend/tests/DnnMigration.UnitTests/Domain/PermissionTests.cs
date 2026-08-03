@@ -881,13 +881,13 @@ public class PermissionTests
             "a permission key is a single named action, never a combination of them");
 
         // MIGRATION: the measured literal sites, recorded because they are the evidence for the
-        //   vocabulary and because the count was previously reported wrongly. "EDIT" appears at SIX
-        //   sites - ModuleController.vb line 130, PortalSecurity.vb lines 522, 618, 623 and 628, and
-        //   TabController.vb line 109 - and "VIEW" at FOUR - ModuleController.vb lines 134, 136 and
-        //   1108, and TabController.vb line 110 - for TEN in total. An earlier count of five VIEW sites
-        //   double-counted TabController.vb line 109, which reads "EDIT": that line resolves a page's
-        //   administrator roles while line 110 immediately below it resolves the viewer roles, so the
-        //   two are adjacent and easy to conflate.
+        //   vocabulary. "EDIT" appears at SIX sites - ModuleController.vb line 130, PortalSecurity.vb
+        //   lines 522, 618, 623 and 628, and TabController.vb line 109 - and "VIEW" at FOUR -
+        //   ModuleController.vb lines 134, 136 and 1108, and TabController.vb line 110 - for TEN in
+        //   total. Counting five VIEW sites is the mistake to avoid: it double-counts
+        //   TabController.vb line 109, which reads "EDIT". That line resolves a page's administrator
+        //   roles while line 110 immediately below it resolves the viewer roles, so the two are
+        //   adjacent and easy to conflate.
         //
         // MIGRATION: one apparent eleventh site is a CONFIRMED FALSE POSITIVE and must not be read as a
         //   key. PortalSettings.vb line 504 compares a site setting named "ControlPanelMode" against the

@@ -5,28 +5,29 @@ using DnnMigration.Domain.Common;
 
 // This contract replaces the whole public surface of
 // Library/Components/Security/Roles/RoleController.vb, measured at 892 lines and
-// 42 public members. Fourteen of those 42 were Shared (static) and are reborn here
-// as instance members on an injected abstraction, per AAP 0.4.3. The annotations
+// 42 public members. Twelve of those 42 were Shared (static) - the members between the
+// "Public Shared Methods" region marker at L614 and the end of the file - and are reborn
+// here as instance members on an injected abstraction, per AAP 0.4.3. The annotations
 // below record every place the migrated contract deliberately departs from the
 // legacy behaviour, as AAP Rule T5 requires; each is also carried in
 // MIGRATION_NOTES.md at the repository root.
 //
 // MIGRATION: `Imports Microsoft.VisualBasic` at RoleController.vb:L25 is removed. It
-// MIGRATION: is the ONLY occurrence in the entire in-scope legacy surface, and the
-// MIGRATION: DateAdd(DateInterval.Day, n, d), DateAdd(DateInterval.Month, n, d) and
-// MIGRATION: DateAdd(DateInterval.Year, n, d) calls it supplied become d.AddDays(n),
-// MIGRATION: d.AddDays(n * 7), d.AddMonths(n) and d.AddYears(n) inside
+//            is the ONLY occurrence in the entire in-scope legacy surface, and the
+//            DateAdd(DateInterval.Day, n, d), DateAdd(DateInterval.Month, n, d) and
+//            DateAdd(DateInterval.Year, n, d) calls it supplied become d.AddDays(n),
+//            d.AddDays(n * 7), d.AddMonths(n) and d.AddYears(n) inside
 //            Services/RoleService.cs, selected by the frequency enumeration that the
 //            domain layer owns. No date arithmetic is exposed on this contract, so no
 //            caller above the application layer can perform it (AAP Rule T2).
 //
 // MIGRATION: the frequency code set has SIX measured members, not the four the plan
-// MIGRATION: cites. RoleController.vb:L541-L546 reads: 'N' assigns Null.NullDate, so
-// MIGRATION: never expires; 'O' assigns the far-future sentinel 9999-12-31, so
-// MIGRATION: perpetual; 'D' is DateAdd by day and period; 'W' is DateAdd by day and
-// MIGRATION: period times seven; 'M' is DateAdd by month; 'Y' is DateAdd by year. The
-// MIGRATION: whole table is short-circuited at L537, where a period equal to
-// MIGRATION: Null.NullInteger yields no expiry before the code is even examined. The
+//            cites. RoleController.vb:L541-L546 reads: 'N' assigns Null.NullDate, so
+//            never expires; 'O' assigns the far-future sentinel 9999-12-31, so
+//            perpetual; 'D' is DateAdd by day and period; 'W' is DateAdd by day and
+//            period times seven; 'M' is DateAdd by month; 'Y' is DateAdd by year. The
+//            whole table is short-circuited at L537, where a period equal to
+//            Null.NullInteger yields no expiry before the code is even examined. The
 //            codes are load-bearing single-character data - the columns are declared
 //            char(1) NULL at 01.00.00.SqlDataProvider:L120 and L122 - and are never
 //            renamed. This is REPORTED as a refinement of the plan, not a correction
@@ -39,8 +40,8 @@ using DnnMigration.Domain.Common;
 //            no-trial guard, which is why it may never be treated as an unset marker.
 //
 // MIGRATION: RoleController.vb:L530 and L533 normalise both dates before any offset is
-// MIGRATION: applied, and both rules are preserved. An effective date already in the
-// MIGRATION: past is reset to Null.NullDate - no start gate at all - and an expiry date
+//            applied, and both rules are preserved. An effective date already in the
+//            past is reset to Null.NullDate - no start gate at all - and an expiry date
 //            already in the past is reset to the current instant so that the offset
 //            always runs forward from now rather than from a stale value. The current
 //            instant is read from the clock abstraction the domain layer owns, never
@@ -57,16 +58,19 @@ using DnnMigration.Domain.Common;
 //            a caller could not tell a real removal from a no-op. This surface reports a
 //            distinct failure reason instead. Documented behavioural difference.
 //
-// MIGRATION: nine legacy parameters typed PortalSettings (L647, L677, L695, L714, L741)
-// MIGRATION: or PortalInfo (L764) are removed with the ambient per-request composite they
-//            carried. Every member below takes its portal identifier explicitly; the
-//            immutable, scoped tenant context that the domain layer owns supplies the
-//            remaining per-request facts. No member infers a tenant from ambient state.
+// MIGRATION: seven legacy parameters carried the ambient per-request composite and are
+//            removed with it - five typed PortalSettings on public members (L647, L677,
+//            L695, L714, L741), one typed PortalInfo (L764), and one typed PortalSettings
+//            on the private notification helper at L577. Every member below takes its
+//            portal identifier explicitly; the immutable, scoped tenant context that the
+//            domain layer owns supplies the remaining per-request facts. No member infers
+//            a tenant from ambient state.
 //
-// MIGRATION: twelve legacy members took or returned RoleInfo, RoleGroupInfo,
-// MIGRATION: UserRoleInfo or UserInfo. None of those types, and no domain entity,
-//            appears here: requests and responses are data transfer objects and plain
-//            identifiers, so no entity crosses the boundary in either direction.
+// MIGRATION: fourteen legacy members took or returned RoleInfo, RoleGroupInfo,
+//            UserRoleInfo or UserInfo - L100, L163, L179, L254, L362, L626, L647, L677,
+//            L695, L714, L794, L811, L838 and L849. None of those types, and no domain
+//            entity, appears here: requests and responses are data transfer objects and
+//            plain identifiers, so no entity crosses the boundary in either direction.
 //
 // MIGRATION: the notifyUser flag on the four shared members (L647, L677, L695, L714) sent
 //            an e-mail through a mail subsystem this migration excludes, so no equivalent
@@ -110,47 +114,50 @@ using DnnMigration.Domain.Common;
 //            behaviour across two contracts.
 //
 // MIGRATION: the all-portals role read (L208) is not exposed. Measured, it reaches the
-// MIGRATION: data layer with the portal identifier set to Null.NullInteger, returning
+//            data layer with the portal identifier set to Null.NullInteger, returning
 //            every tenant's roles in a single answer. Tenant isolation is a preservation
 //            requirement of this migration, so every member below demands an explicit
 //            portal identifier and none offers an unscoped variant.
 //
 // MIGRATION: no numeric or date sentinel survives on this surface. Null.NullInteger is
-// MIGRATION: minus one and Null.NullDate is DateTime.MinValue (Null.vb:L41-L45 and
-// MIGRATION: L66-L70), yet Roles.RoleID is IDENTITY(0,1) at
-// MIGRATION: 01.00.00.SqlDataProvider:L115 - so 0 is a real role identifier - and
-// MIGRATION: Portals.PortalID is IDENTITY(-1,1), making minus one simultaneously the
-// MIGRATION: legacy absence marker and the first real portal. RoleGroupID additionally
-// MIGRATION: uses Null.NullInteger to mean "no group", and L224 documents minus one as
-//            "all roles for the portal". Absence is therefore carried by nullable types
-//            alone: an absent role group is a null int, an absent date a null DateTime.
-//            An implementation must never coalesce minus one or 0 to null, and must never
-//            read either value as meaning absent (AAP Rule T7, 0.7.2).
+//            minus one and Null.NullDate is DateTime.MinValue (Null.vb:L41-L45 and
+//            L66-L70), yet Roles.RoleID is IDENTITY(0,1) at
+//            01.00.00.SqlDataProvider:L115 - so 0 is a real role identifier - and
+//            Portals.PortalID is IDENTITY(-1,1), so its seed and first generated value is
+//            minus one, which is simultaneously the legacy absence marker, while the
+//            shipped default portal row was inserted with an explicit PortalID of 0. Both
+//            are real portal keys. RoleGroupID additionally uses Null.NullInteger to mean
+//            "no group", and L224 documents minus one as "all roles for the portal".
+//            Absence is therefore carried by nullable types alone: an absent role group is
+//            a null int, an absent date a null DateTime. An implementation must never
+//            coalesce minus one or 0 to null, and must never read either value as meaning
+//            absent (AAP Rule T7, 0.7.2).
 //
 // MIGRATION: every projection named on this contract is one AAP 0.4.1.1 itemises, and
-// MIGRATION: that constraint is deliberate rather than stylistic. A projection the plan
-// MIGRATION: does not name has no authoring owner in this migration, so naming one here
-// MIGRATION: would leave the backend permanently uncompilable however faithful its shape
+//            that constraint is deliberate rather than stylistic. A projection the plan
+//            does not name has no authoring owner in this migration, so naming one here
+//            would leave the backend permanently uncompilable however faithful its shape
 //            was. Listing a role's members therefore projects the user list item the plan
 //            names, and listing a user's roles projects the role list item, which is the
 //            faithful shape in any case: the legacy assignment record inherits the role
-// MIGRATION: record outright, declaring eight properties of its own over fifteen inherited
-// MIGRATION: (UserRoleInfo.vb:L38-L128 over RoleInfo.vb).
+//            record outright, declaring eight properties of its own over fifteen inherited
+//            (UserRoleInfo.vb:L38-L128 over RoleInfo.vb).
 //
 // MIGRATION: consequently the effective and expiry dates are NOT carried on either
-// MIGRATION: listing, and that is a functional reduction against the legacy grid, which
-// MIGRATION: bound five columns at securityroles.ascx:L68-L84 - user identifier, role
-// MIGRATION: identifier, display name, effective date and expiry date. The two dates
+//            listing, and that is a functional reduction against the legacy grid, which
+//            bound five columns at securityroles.ascx:L68-L84 - user identifier, role
+//            identifier, display name, effective date and expiry date. The two dates
 //            travel on the write path instead, on the assignment request, which is where
-//            AAP 0.5.1.8 requires them. Restoring them to the read path requires the plan
-//            to name an assignment projection; until it does, inventing one here would
+//            AAP 0.5.1.8 requires them. No read projection on this contract exposes a
+//            stored effective or expiry date. Restoring them to the read path requires the
+//            plan to name an assignment projection; until it does, inventing one here would
 //            trade a documented reduction for a broken build.
 //
 // MIGRATION: the single-assignment reader at RoleController.vb:L362 is not surfaced. Its
-// MIGRATION: only measured in-scope consumer is the date-priming routine spanning
-// MIGRATION: SecurityRoles.ascx.vb:L273-L303, which reads an existing assignment purely to
-// MIGRATION: pre-fill two inputs and otherwise projects a proposed expiry from the role's
-// MIGRATION: billing terms with a reduced four-code switch at L295-L301 - a presentation
+//            only measured in-scope consumer is the date-priming routine spanning
+//            SecurityRoles.ascx.vb:L273-L303, which reads an existing assignment purely to
+//            pre-fill two inputs and otherwise projects a proposed expiry from the role's
+//            billing terms with a reduced four-code switch at L295-L301 - a presentation
 //            layer recomputation of arithmetic that AAP Rule T2 places squarely inside the
 //            application layer, and the likely origin of the four-code reading the plan
 //            cites. Exposing the reader would invite that recomputation back above the
@@ -193,8 +200,15 @@ namespace DnnMigration.Application.Abstractions;
 /// <para>
 /// Reading an outcome. An <em>expected</em> failure - a missing role, a duplicate
 /// name, a protected assignment - is returned as a failed result carrying a stable
-/// reason code, never thrown; an unexpected exception is left to surface and is
-/// translated once at the outermost boundary. On a single-item lookup a
+/// reason code. Request-SHAPE failures travel the other channel: the implementation
+/// throws <see cref="DomainException"/> for a blank or over-long name, a negative fee
+/// or period, and an unrecognised frequency code, on the reasoning that a request which
+/// cannot be formed is a caller defect rather than a business outcome. On the HTTP path
+/// those are normally caught first by the boundary validator and surface as a validation
+/// problem response; a caller invoking this contract directly must be prepared for both
+/// channels and must not read "returns a Result" as "does not throw". Either way the
+/// answer is a 400. Any other exception is left to surface and is translated once at the
+/// outermost boundary. On a single-item lookup a
 /// <em>successful</em> result whose value is <see langword="null"/> means the item is
 /// <em>absent</em>, which is a different answer from a failed lookup and must not be
 /// collapsed into one (AAP Rule T7). A successful result may additionally carry an
@@ -205,7 +219,8 @@ namespace DnnMigration.Application.Abstractions;
 /// Reason codes used by this contract, all stable and all lower-case:
 /// <c>portal.not_found</c>, <c>role.not_found</c>, <c>role.name_duplicate</c>,
 /// <c>role.create_failed</c>, <c>role_group.not_found</c>,
-/// <c>role_group.name_duplicate</c>, <c>role_group.in_use</c>, <c>user.not_found</c>,
+/// <c>role_group.name_duplicate</c>, <c>role_group.in_use</c>,
+/// <c>role_group.scope_invalid</c>, <c>user.not_found</c>,
 /// <c>role_assignment.not_found</c>, <c>role_assignment.protected</c> and the
 /// informational <c>role_assignment.expired_not_removed</c>.
 /// </para>
@@ -226,6 +241,92 @@ namespace DnnMigration.Application.Abstractions;
 /// capture one request's state and serve it to every later request.
 /// </para>
 /// </remarks>
+/// <summary>
+/// Selects which roles of a portal a listing considers, where the choice cannot be expressed by a group
+/// identifier alone.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Why this type exists. The legacy grouping filter is THREE-way over a single integer, and two of its
+/// three branches are magic values rather than keys, so a nullable group identifier cannot express it. The
+/// bands were measured rather than inferred, and the whole chain is recorded here because an earlier
+/// revision of this contract lost one of the three branches by trusting a stale legacy comment:
+/// </para>
+/// <list type="bullet">
+///   <item>
+///     <description>
+///     <c>&lt;= -2</c> meant "no group filter - every role in the portal".
+///     <c>Website/admin/Security/Roles.ascx.vb:L72-L76</c> branches on <c>If RoleGroupId &lt; -1</c> and
+///     calls <c>GetPortalRoles(PortalId)</c>, and <c>:L112</c> is the drop-down entry that produces it -
+///     value <c>"-2"</c>, labelled <c>AllRoles</c>, which
+///     <c>Website/App_GlobalResources/SharedResources.resx:L834-L836</c> renders as
+///     "&lt; All Roles &gt;".
+///     </description>
+///   </item>
+///   <item>
+///     <description>
+///     <c>-1</c> meant "only the roles that belong to NO group". <c>:L114</c> is its drop-down entry,
+///     value <c>"-1"</c>, labelled <c>GlobalRoles</c> - "&lt; Global Roles &gt;" at
+///     <c>SharedResources.resx:L837-L839</c> - and <c>EditRoles.ascx.vb:L75</c> spells it identically.
+///     The value reaches the store as SQL <see langword="null"/>, not as minus one:
+///     <c>MembershipProviders/DataProvider/SqlDataProvider.vb:L231</c> wraps the argument in
+///     <c>GetNull</c>, and <c>Null.vb:L155</c> converts an integer equal to the absence sentinel into
+///     <c>DBNull</c>. The terminal procedure body then reads
+///     <c>WHERE (RoleGroupId = @RoleGroupId OR (RoleGroupId IS NULL AND @RoleGroupId IS NULL))</c>, whose
+///     second arm is the one that fires - so the answer is the ungrouped roles.
+///     </description>
+///   </item>
+///   <item>
+///     <description>
+///     <c>&gt;= 0</c> meant that one group, and zero is a real key:
+///     <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1) NOT NULL</c>. That is why no small number can
+///     be borrowed as a marker here and why this concern needs a type of its own.
+///     </description>
+///   </item>
+/// </list>
+/// <para>
+/// MIGRATION: the legacy XML comment at <c>RoleController.vb:L217-L218</c> states "Id of the Role Group
+/// (If -1 all roles for the portal are retrieved)". That comment is WRONG, and it is named here so that a
+/// later reader who finds it is not misled a second time. It is contradicted by the provider chain and
+/// terminal statement above, and independently by the calling screen: if minus one meant "all", the
+/// screen's own <c>&lt; -1</c> branch would be unreachable and the "&lt; Global Roles &gt;" entry would
+/// list every role in the portal rather than the ungrouped ones.
+/// </para>
+/// <para>
+/// Why two members and not three. A specific group is already named by supplying its identifier, so a
+/// third member for that case would say nothing the identifier does not, while adding a second way to
+/// contradict oneself. The two members here are exactly the two branches that no identifier can express.
+/// </para>
+/// <para>
+/// The magic integers themselves do not survive. A caller names the branch it wants, and the enumeration
+/// is closed, so a value outside it is refused by model binding at the boundary rather than silently
+/// falling into a band - which is what a bare integer allowed.
+/// </para>
+/// </remarks>
+public enum RoleGroupScope
+{
+    /// <summary>
+    /// Every role in the portal, whatever its grouping and including the ungrouped ones.
+    /// </summary>
+    /// <remarks>
+    /// The legacy <c>&lt;= -2</c> band, and the default: omitting the scope entirely means this, which
+    /// preserves the behaviour of every existing caller. It is also what the legacy screen forced when the
+    /// portal had no role groups at all - <c>Roles.ascx.vb:L129</c> assigns <c>-2</c> and hides the
+    /// drop-down - so an installation that never adopted role groups sees an unfiltered list.
+    /// </remarks>
+    All = 0,
+
+    /// <summary>
+    /// Only the roles that belong to no role group - the legacy "&lt; Global Roles &gt;" selection.
+    /// </summary>
+    /// <remarks>
+    /// The legacy <c>-1</c> band, which reaches the store as a null-group test rather than as a
+    /// comparison against minus one. This is the branch that had no expression at all before, and
+    /// restoring it is the point of this type.
+    /// </remarks>
+    Ungrouped = 1,
+}
+
 public interface IRoleService
 {
     /// <summary>
@@ -243,24 +344,51 @@ public interface IRoleService
     /// </param>
     /// <param name="roleGroupId">
     /// Identifier of the role group to restrict the listing to, or
-    /// <see langword="null"/> for every role in the portal irrespective of group.
+    /// <see langword="null"/> to leave the choice to <paramref name="scope"/>. Zero
+    /// is a real group key, so absence is expressed by <see langword="null"/> and
+    /// never by a small number.
+    /// </param>
+    /// <param name="scope">
+    /// Which roles to consider when no group identifier is supplied - every role, or
+    /// only the ungrouped ones. See <see cref="RoleGroupScope"/>, which records why
+    /// this cannot be folded into <paramref name="roleGroupId"/>. Defaults to
+    /// <see cref="RoleGroupScope.All"/>, so an existing caller that supplies neither
+    /// argument keeps the behaviour it already had.
     /// </param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
     /// A successful outcome carrying one page of roles, empty when the portal has
     /// none or when the requested page lies past the end of the set; a failed
-    /// outcome carrying <c>portal.not_found</c> when no such portal exists, or
+    /// outcome carrying <c>portal.not_found</c> when no such portal exists,
     /// <c>role_group.not_found</c> when <paramref name="roleGroupId"/> is supplied
-    /// but names no group in that portal.
+    /// but names no group in that portal, or <c>role_group.scope_invalid</c> when
+    /// the two narrowing arguments contradict each other.
     /// </returns>
     /// <remarks>
     /// <para>
     /// Consolidates three measured legacy members: the portal role listing at
     /// RoleController.vb:L146, its synchronisation-flagged twin at L854, and the
-    /// group-filtered listing at L224. The legacy group filter used the integer
-    /// absence sentinel to mean "no filter" - its own documentation at L224 reads
-    /// "If -1 all roles for the portal are retrieved" - which is exactly why the
-    /// filter is a nullable integer here.
+    /// group-filtered listing at L224.
+    /// </para>
+    /// <para>
+    /// The two narrowing arguments are not interchangeable and are not redundant. A
+    /// group identifier names ONE group; the scope chooses between the two answers
+    /// that no identifier can name - every role, or only the roles belonging to no
+    /// group at all. <see cref="RoleGroupScope"/> carries the measured evidence for
+    /// all three legacy branches, including the fact that the legacy XML comment at
+    /// RoleController.vb:L217-L218 misdescribes the middle one.
+    /// </para>
+    /// <para>
+    /// Supplying a group identifier together with
+    /// <see cref="RoleGroupScope.Ungrouped"/> is a contradiction - the caller has
+    /// asked for one group and for the roles in no group in the same breath - and is
+    /// refused with <c>role_group.scope_invalid</c> rather than resolved by a
+    /// precedence rule. Silently preferring one argument would make the answer depend
+    /// on an ordering the caller cannot see, and would return a page the caller did
+    /// not ask for. Supplying an identifier together with the default
+    /// <see cref="RoleGroupScope.All"/> is NOT a conflict: the scope is what a caller
+    /// that never heard of it sends, so treating it as a contradiction would refuse
+    /// every existing group-filtered request.
     /// </para>
     /// <para>
     /// The projected item carries the columns the legacy grid bound, measured in
@@ -270,16 +398,21 @@ public interface IRoleService
     /// functional-parity requirement, not an optional extra.
     /// </para>
     /// <para>
-    /// The page coordinates, the sort field and the filter length are bounded by
-    /// <c>RoleListPagedRequestValidator</c>, whose sortable set is exactly the column set
-    /// measured above. An unrecognised sort field is rejected there rather than forwarded, so
-    /// no caller-supplied field name reaches a store unvetted.
+    /// The page coordinates and the filter length are bounded by the shared
+    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
+    /// collection's sortable set because one request contract serves every listing. The sort field
+    /// is therefore bounded HERE, against <c>SortableFields.Roles</c> - exactly the column set
+    /// measured above, and exactly what this listing's ordering honours. An unrecognised field is
+    /// reported as <c>role.paging_invalid</c> rather than forwarded, so no caller-supplied field
+    /// name reaches a store unvetted and no caller is silently served a default order it did not
+    /// ask for.
     /// </para>
     /// </remarks>
     Task<Result<PagedResult<RoleListItemDto>>> ListRolesAsync(
         int portalId,
         PagedRequest request,
         int? roleGroupId,
+        RoleGroupScope scope = RoleGroupScope.All,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -466,23 +599,26 @@ public interface IRoleService
     /// </para>
     /// <para>
     /// The legacy grid bound five columns, measured at
-    /// <c>Website/admin/Security/securityroles.ascx:L68-L84</c>: the user identifier,
-    /// the role identifier, the display name, the effective date and the expiry date.
-    /// The first three are carried by the projected item; the two assignment dates are
-    /// not, because no projection named by AAP 0.4.1.1 carries them and this contract
-    /// may not invent one. The dates therefore travel on the write path only, on the
-    /// assignment request, which is where AAP 0.5.1.8 requires them. The reduction is
-    /// annotated at the head of this file.
+    /// <c>Website/admin/Security/securityroles.ascx:L71-L86</c>: the account key, the
+    /// account's display name, the role name, the effective date and the expiry date.
+    /// ALL FIVE are carried by the projected item, together with the assignment key and
+    /// the role key that the row's own delete affordance needs
+    /// (<c>DeleteButtonVisible(UserID, RoleID)</c> at <c>:L68</c>).
     /// </para>
     /// <para>
-    /// The page coordinates, the sort field and the filter length are bounded by
-    /// <c>RoleUserListPagedRequestValidator</c>, whose sortable set is deliberately narrower
-    /// than the account listing's. The two assignment dates are excluded from it because the
-    /// projected item does not carry them, for the reason given above, and the role identifier
-    /// is excluded because the route fixes it for every record on the page.
+    /// The page coordinates and the filter length are bounded by the shared
+    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
+    /// collection's sortable set because one request contract serves every listing. The sort field
+    /// is therefore bounded HERE, against <c>SortableFields.RoleUsers</c>, and an unrecognised
+    /// field is reported as <c>role.paging_invalid</c>. That set is wider than the account
+    /// listing's - which is empty - because this listing materialises the membership before paging
+    /// and can therefore order what it holds, whereas the account listing is paged by the database
+    /// under a fixed order. The two assignment dates remain excluded because the projected item
+    /// does not carry them, for the reason given above, and the role identifier is excluded because
+    /// the route fixes it for every record on the page.
     /// </para>
     /// </remarks>
-    Task<Result<PagedResult<UserListItemDto>>> ListRoleUsersAsync(
+    Task<Result<PagedResult<RoleMembershipDto>>> ListRoleUsersAsync(
         int portalId,
         int roleId,
         PagedRequest request,
@@ -552,12 +688,14 @@ public interface IRoleService
     /// </param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome, which the caller answers with 201 because the assignment
-    /// now exists at <c>/api/v1/roles/{roleId}/users/{userId}</c>; or a failed outcome
-    /// carrying <c>portal.not_found</c>, <c>role.not_found</c> or
-    /// <c>user.not_found</c>. No payload is returned: the stored dates are readable
-    /// from the two listing members, and returning a projection here would require a
-    /// type AAP 0.4.1.1 does not name.
+    /// A successful outcome, which <c>RolesController.AssignUserAsync</c> answers with
+    /// <c>204 No Content</c> at <c>POST /api/v1/portals/{portalId}/roles/{roleId}/users</c>;
+    /// or a failed outcome carrying <c>portal.not_found</c>, <c>role.not_found</c> or
+    /// <c>user.not_found</c>. No payload is returned, and no read projection on this
+    /// contract exposes the stored effective or expiry date either - returning one would
+    /// require an assignment projection AAP 0.4.1.1 does not name. A caller that needs to
+    /// know what was stored knows it because it supplied the dates, or must re-submit
+    /// them; that reduction is recorded at the head of this file.
     /// </returns>
     /// <remarks>
     /// <para>

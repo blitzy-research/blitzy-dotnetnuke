@@ -1,4 +1,5 @@
 using DnnMigration.Application.Dtos.Portal;
+using DnnMigration.Domain.Common;
 using FluentValidation;
 
 namespace DnnMigration.Application.Validation;
@@ -42,11 +43,11 @@ namespace DnnMigration.Application.Validation;
 //   validation failure instead of an unhandled provider exception. The outcome class is unchanged;
 //   only the diagnosis improves.
 
-// MIGRATION: 4 of 10 -- NO LOWER BOUND ON THE FEE OR ON ANY QUOTA, and this is the correction of a
-//   real defect that a previous revision of this file carried. That revision declared five
+// MIGRATION: 4 of 10 -- NO LOWER BOUND ON THE FEE OR ON ANY QUOTA, and declaring one would be a real
+//   defect rather than a safeguard. The tempting shape is five
 //   GreaterThanOrEqualTo(0) rules -- on the hosting fee, the disk space, the page quota, the user quota
-//   and the site-log retention -- and described them in its own comments as "a deliberate, documented
-//   strengthening and not a legacy rule". They are removed, for measured reasons:
+//   and the site-log retention -- defended as "a deliberate, documented
+//   strengthening and not a legacy rule". None of the five belongs here, for measured reasons:
 //
 //     valHostFee has NO GreaterThanEqual companion. grep -ni GreaterThanEqual over the whole of
 //       sitesettings.ascx returns nothing at all. The fee carries a type check and nothing else.
@@ -65,13 +66,18 @@ namespace DnnMigration.Application.Validation;
 //   rules as an oversight. Minimal Change Clause item 1 forbids opportunistic optimisation, and a
 //   negative fee is exactly the kind of value the legacy path accepted.
 
-// MIGRATION: 5 of 10 -- NO BOUND TEST ON ANY IDENTIFIER, and for the portal identifier no test is even
-//   possible. UpdatePortalRequest carries no PortalId member: the {id} segment of
-//   PUT /api/v1/portals/{id} is the sole source of the subject and IPortalService.UpdatePortalAsync
-//   receives it as a separate argument, so there is no second copy in the body to disagree with the
-//   route and nothing here to compare. The class of defect is closed by the shape of the contract.
+// MIGRATION: 5 of 10 -- NO BOUND TEST ON ANY IDENTIFIER, AND ONE IDENTITY TEST. UpdatePortalRequest
+//   carries PortalId as the first of its twenty-seven members, matching argument 1 of the replaced
+//   signature, and the ONE rule attached to it is that it must equal the {id} route segment. That rule
+//   is what makes a second copy of the subject key safe: IPortalService.UpdatePortalAsync addresses the
+//   route value and nothing else, so a body value that cannot disagree with the route cannot retarget
+//   the write. The route value is read from the validation context's root data, which
+//   Api/Filters/FluentValidationActionFilter.cs populates from RouteData for every request it validates
+//   under the key "RoutePortalId"; when no route context is present -- a service or unit-test caller
+//   invoking the validator directly -- there is nothing to disagree with and the rule stands down
+//   rather than inventing a comparand.
 //
-//   Had the member existed, a bound test would still be wrong. Portals.PortalID is declared
+//   A BOUND test on that identifier would still be wrong, and none is declared. Portals.PortalID is
 //   [int] IDENTITY (-1, 1) NOT NULL at 01.00.00.SqlDataProvider:L77, so -1 is simultaneously a real
 //   addressable portal and the legacy absent-integer sentinel Null.NullInteger, and the stock _default
 //   portal occupies the very next value, zero, inserted at 01.00.00.SqlDataProvider:L7125. The same
@@ -181,8 +187,8 @@ namespace DnnMigration.Application.Validation;
 /// screen <c>Website/admin/Security/editroles.ascx</c> bounds its own fees explicitly at L94-L96 and
 /// L126-L128. A negative hosting charge or quota is accepted here and coerced by
 /// <c>PortalService</c>, exactly as the legacy path behaved; rejecting it would substitute an HTTP 400
-/// for a clamped save. The reasoning, and the removal of five such rules from an earlier revision, is
-/// recorded in the migration notes above the class.
+/// for a clamped save. The reasoning, and the five candidate rules that are deliberately NOT declared
+/// for this reason, are recorded in the migration notes above the class.
 /// </para>
 /// <para>
 /// <b>No identifier is bound-tested.</b> This request carries no copy of the portal identifier at all,
@@ -266,6 +272,43 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
     private const int DefaultLanguageMaximumLength = 10;
 
     /// <summary>
+    /// Terminal width of <c>Portals.HomeDirectory</c>: <c>varchar(100) NOT NULL</c>, established by the
+    /// <c>ALTER TABLE</c> at <c>03.01.01.SqlDataProvider:L1123</c> and echoed by every stored-procedure
+    /// parameter for the column.
+    /// </summary>
+    /// <remarks>
+    /// Declared locally rather than borrowed from a shared helper so that this contract's only rule on
+    /// the member is a measured schema width owned by this file, in exactly the form the seven widths
+    /// above take. See the migration note beside the rule for why no path-shape rule accompanies it.
+    /// </remarks>
+    private const int HomeDirectoryMaximumLength = 100;
+
+    /// <summary>
+    /// The key under which <c>Api/Filters/FluentValidationActionFilter.cs</c> publishes the
+    /// <c>portalId</c> route value into the validation context's root data.
+    /// </summary>
+    /// <remarks>
+    /// The filter composes the key by prefixing the route parameter name with <c>Route</c> and
+    /// upper-casing its first character, and it parses a numeric value into an <see cref="int"/> before
+    /// storing it. Spelling the key once, here, is what keeps this rule and that filter from drifting
+    /// apart silently: a mis-spelled key would not fail to compile and would present as a validator
+    /// that silently stopped comparing.
+    /// </remarks>
+    private const string RoutePortalIdKey = "RoutePortalId";
+
+    /// <summary>
+    /// Message reported when the identifier in the body does not name the portal the request path
+    /// addresses.
+    /// </summary>
+    /// <remarks>
+    /// Worded as a statement of the contract rather than as a legacy message, because the legacy screen
+    /// had no counterpart: it took the subject from page state and could not disagree with itself. The
+    /// message names both sources so a caller can tell which value to correct.
+    /// </remarks>
+    private const string PortalIdMismatchMessage =
+        "The portal identifier in the body must match the portal identifier in the request path.";
+
+    /// <summary>
     /// Total number of digits permitted in <see cref="UpdatePortalRequest.HostFee"/>, matching the
     /// terminal <c>money</c> column exactly.
     /// </summary>
@@ -293,6 +336,22 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
     /// on the legacy screen is the wording the API returns.
     /// </summary>
     private const string HostFeeInvalidMessage = "Invalid fee, needs to be a currency value!";
+
+    /// <summary>
+    /// Message reported when the hosting fee is a well-formed currency amount that the terminal
+    /// <c>money</c> column still cannot hold. The wording is net-new: the legacy screen had no such
+    /// rule and therefore no message to reproduce, and the failure it reports was previously a server
+    /// fault rather than a validation answer.
+    /// </summary>
+    private static readonly string HostFeeUnrepresentableMessage = FormattableString.Invariant($"Invalid fee, it must fall between {SqlServerRange.MinimumMoney} and ")
+        + FormattableString.Invariant($"{SqlServerRange.MaximumMoney}, which is the range the stored column can hold.");
+
+    /// <summary>
+    /// Message reported when the expiry date falls outside the range the terminal <c>datetime</c>
+    /// column can hold. The wording is net-new for the same reason as the fee message above.
+    /// </summary>
+    private static readonly string ExpiryDateUnrepresentableMessage = FormattableString.Invariant($"The expiry date must fall between {SqlServerRange.MinimumDateTime:yyyy-MM-dd} and ")
+        + FormattableString.Invariant($"{SqlServerRange.MaximumDateTime:yyyy-MM-dd}, which is the range the stored column can hold.");
 
     /// <summary>
     /// Message reported when the portal name is absent or blank. The wording is net-new, because the
@@ -331,6 +390,15 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         // The legacy screen rendered every failing validator at once, so every failing field is
         // reported together instead of one per round trip.
         ClassLevelCascadeMode = CascadeMode.Continue;
+
+        // The identity rule. See migration note 5: the route segment is the subject of the write, and
+        // this rule is what forbids the body from naming a different one. It is expressed with the
+        // context-bearing Must overload because the comparand is not on the request - it is the route
+        // value the action filter published - and it stands down when no route context exists so that a
+        // direct caller is not asked to satisfy a comparison that has no other side.
+        RuleFor(request => request.PortalId)
+            .Must((request, portalId, context) => MatchesRoutePortalId(portalId, context))
+            .WithMessage(PortalIdMismatchMessage);
 
         // The only unconditional presence rule in this file. See migration note 3 above: the markup
         // declared none, and the authority is the NOT NULL column combined with the legacy write-side
@@ -414,40 +482,67 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         //   empty input and a blank fee box was legitimate. Trailing zeros are ignored so that a value
         //   such as 12.5000, which the money column stores exactly, is not rejected for carrying the
         //   scale the column itself defines.
+        // MIGRATION: PrecisionScale alone leaves a NARROW BAND of unstorable values, and the second rule
+        //   closes it. The currency's ceiling is 922,337,203,685,477.5807, which is nineteen digits, so
+        //   a precision of nineteen and a scale of four admit every value the column can hold - but
+        //   they also admit fifteen leading digits of any magnitude, so an amount from
+        //   922,337,203,685,477.5808 up to 999,999,999,999,999.9999 satisfies the digit count and still
+        //   overflows the column. Unbounded, such a value passed every rule here and was refused by the
+        //   provider instead, which surfaces as a server fault naming no field rather than a field-level
+        //   answer. The added rule states the column's own limits and nothing more: it imposes no sign
+        //   constraint and no price ceiling, so the preceding paragraph's reasoning is untouched.
         RuleFor(request => request.HostFee)
             .PrecisionScale(HostFeePrecision, HostFeeScale, ignoreTrailingZeros: true)
                 .WithMessage(HostFeeInvalidMessage)
+            .Must(SqlServerRange.CanStore)
+                .WithMessage(HostFeeUnrepresentableMessage)
             .When(request => request.HostFee.HasValue);
 
-        // MIGRATION: the home directory carries a purely LEXICAL safety rule, and it is a net-new
-        //   addition rather than a reproduction. The legacy update screen declared no validator on
-        //   txtHomeDirectory at all, yet the submitted value was concatenated into a physical path when
-        //   it was next mapped (PortalController.vb:L994), so a rooted or parent-traversing value
-        //   reached the file system unchallenged. Accepting such a value from an HTTP client is a
-        //   path-traversal hazard, and the update path is the greater of the two risks: create derives
-        //   its default from a brand-new identifier, whereas update lets a caller replace an
-        //   established portal's content root outright.
+        // MIGRATION: the home directory carries A WIDTH RULE AND NOTHING ELSE. The width is the
+        //   terminal [varchar] (100) NOT NULL established at 03.01.01.SqlDataProvider:L1123 and echoed
+        //   by every stored-procedure parameter for this column, so it is a measured schema rule of
+        //   exactly the kind every other width rule in this file reproduces, and it is declared the
+        //   same way - as a local constant on this type.
         //
-        // MIGRATION: the rule touches NO file system -- it inspects the string only, so no System.IO
-        //   reach and no existence check enters this layer, and the physical checks remain the
-        //   service's responsibility at the point it maps the value. The width is the terminal
-        //   [varchar] (100) NOT NULL established at 03.01.01.SqlDataProvider:L1123 and echoed by every
-        //   stored-procedure parameter for this column. The predicate and the width live in one
-        //   same-namespace static helper so the create and update paths cannot drift apart; that helper
-        //   is a lexical utility, not a validator base type and not an Include(), so nothing is
-        //   inherited or abstracted.
+        // MIGRATION: a LEXICAL PATH-SHAPE RULE IS DELIBERATELY NOT DECLARED HERE, and its absence is a
+        //   correction rather than an omission. An earlier revision rejected rooted and
+        //   parent-traversing values on this member and described the rule in its own comments as "a
+        //   net-new addition rather than a reproduction". It is removed for two measured reasons. The
+        //   legacy update screen declared no validator on txtHomeDirectory at all, so rejecting a value
+        //   the legacy screen accepted would breach Minimal Change Clause item 4, which requires that
+        //   validation rules match. And the hazard the rule guarded against does not exist in the
+        //   target: the only place the legacy concatenated this column into a physical path was
+        //   PortalController.vb:L994, inside the file-system subsystem that this migration excludes,
+        //   so nothing in the target maps this value onto a file system and the stored column is inert
+        //   text. The creation contract keeps its own shape rule because that endpoint's contract
+        //   declares the home-folder shape as validated; the update contract does not, and the two
+        //   paths are therefore intentionally not symmetric. Should a file-mapping layer ever be added,
+        //   the check belongs at the point of mapping rather than here.
         RuleFor(request => request.HomeDirectory)
-            .MaximumLength(PortalHomeDirectoryRules.MaximumLength)
-            .Must(PortalHomeDirectoryRules.IsSafeRelativeDirectory)
-                .WithMessage(PortalHomeDirectoryRules.InvalidMessage);
+            .MaximumLength(HomeDirectoryMaximumLength);
 
-        // MIGRATION: no rule on the expiry date, the disk space, the page quota, the user quota, the
-        //   site-log retention, the time-zone offset, the administrator reference or the four page
-        //   references. Each omission is measured, and together they are the bulk of this contract:
+        // MIGRATION: the expiry date carries a REPRESENTABILITY bound and no business rule. The CLR date
+        //   type begins in the year one while the stored column begins in 1753, so a value the type
+        //   accepts can still be unstorable; unbounded it passed every rule here and was refused by the
+        //   provider, which surfaces as a server fault naming no field. The bound therefore says only
+        //   what the column can hold. It is emphatically NOT the range rule the note below declines: no
+        //   past-date rejection, no lower bound above the column's own floor, and the upper bound is
+        //   stated at the last representable instant of 9999-12-31 rather than at that day's midnight,
+        //   precisely so the preserved perpetual-expiry value is admitted by the rule rather than
+        //   refused by it. The sentinel minimum date is carried as null and never reaches this rule.
+        RuleFor(request => request.ExpiryDate)
+            .Must(SqlServerRange.CanStore)
+            .WithMessage(ExpiryDateUnrepresentableMessage);
+
+        // MIGRATION: no rule on the disk space, the page quota, the user quota, the site-log retention,
+        //   the time-zone offset, the administrator reference or the four page references. Each omission
+        //   is measured, and together they are the bulk of this contract:
         //
         //     ExpiryDate      valExpiryDate is a date type check that DateTime? already enforces at
-        //                     model binding; see migration note 6. No range rule, no past-date
-        //                     rejection, no GreaterThan(DateTime.MinValue).
+        //                     model binding; see migration note 6. No BUSINESS range rule, no past-date
+        //                     rejection, no GreaterThan(DateTime.MinValue). The storage-range rule
+        //                     applied immediately above is a different kind of bound and is annotated
+        //                     there; it constrains only what the column can physically hold.
         //     HostSpace       txtHostSpace carries NO validator of any kind -- uniquely among the
         //                     numeric fields on the screen -- and the resource file reads "enter 0 for
         //                     unlimited space", so ZERO IS MEANINGFUL and neither a positivity rule nor
@@ -472,5 +567,47 @@ public class UpdatePortalRequestValidator : AbstractValidator<UpdatePortalReques
         //                     a repository this layer must not acquire. A lower bound would be actively
         //                     wrong: Tabs.TabID seeds at zero. The ownership check belongs to
         //                     PortalService.
+    }
+
+    /// <summary>
+    /// Reports whether the submitted portal identifier names the portal the request path addresses.
+    /// </summary>
+    /// <param name="portalId">The identifier carried by the body.</param>
+    /// <param name="context">
+    /// The validation context, whose root data carries the route values published by the API layer.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when the two agree, or when no route identifier is present at all;
+    /// <see langword="false"/> only when both are present and they differ.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Absence of a route identifier is reported as acceptable rather than as a failure, and that
+    /// choice is deliberate in both directions. This validator is resolved by type, so it also runs for
+    /// callers that never went through the API layer - an application service composing a request, a
+    /// unit test exercising the rule set - and those callers have no route for the body to disagree
+    /// with. Refusing them would make the contract untestable in isolation and would report a missing
+    /// comparand as a caller error. It is also safe: the only path on which a mismatch could retarget a
+    /// write is the HTTP path, and on that path the filter always publishes the route value, so the
+    /// comparison is always available exactly where it matters.
+    /// </para>
+    /// <para>
+    /// The stored value is compared as an <see cref="int"/> and never as text, because the publishing
+    /// filter parses a numeric route value before storing it and a text comparison would fail on
+    /// insignificant differences such as a leading plus sign. A stored value of some other type is
+    /// treated as absent rather than coerced.
+    /// </para>
+    /// </remarks>
+    private static bool MatchesRoutePortalId(int portalId, ValidationContext<UpdatePortalRequest> context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!context.RootContextData.TryGetValue(RoutePortalIdKey, out object? routeValue)
+            || routeValue is not int routePortalId)
+        {
+            return true;
+        }
+
+        return portalId == routePortalId;
     }
 }

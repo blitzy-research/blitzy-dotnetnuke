@@ -224,10 +224,10 @@ internal sealed class MemoryCacheService : ICacheService
     /// </summary>
     /// <remarks>
     /// A creation is shared by every caller that missed the same key, so it cannot be bound to any
-    /// one caller's lifetime without letting that caller's withdrawal fail the others. That
-    /// isolation previously left it bound to nothing at all: a factory that never completed left
-    /// its registration in place permanently, and every later caller for that key joined the same
-    /// creation that was never going to finish. This budget is what bounds it instead. It is
+    /// one caller's lifetime without letting that caller's withdrawal fail the others. Absent a
+    /// budget, that isolation would leave it bound to nothing at all: a factory that never completed
+    /// would leave its registration in place permanently, and every later caller for that key would
+    /// join the same creation that was never going to finish. This budget is what bounds it. It is
     /// generous, because the work behind it is a database read that a loaded server may legitimately
     /// take seconds to answer, and it exists to break a stall rather than to enforce a latency
     /// target.
@@ -377,8 +377,8 @@ internal sealed class MemoryCacheService : ICacheService
     /// This index is what makes a category invalidation proportional to the category rather than
     /// to the whole registry. Without it the only way to find one category's keys is to walk every
     /// tracked key and test its prefix, and a single portal invalidation performs three such
-    /// category evictions, so the whole registry was previously walked three times over for one
-    /// administrative change. Maintained under <see cref="_registryGate"/> alongside
+    /// category evictions - so one administrative change would walk the whole registry three times
+    /// over. Maintained under <see cref="_registryGate"/> alongside
     /// <see cref="_trackedKeys"/>, so the two can never disagree about which keys are live. A
     /// category whose last key goes away is dropped rather than retained as an empty set.
     /// </remarks>
@@ -455,16 +455,16 @@ internal sealed class MemoryCacheService : ICacheService
     /// is worse than a refused construction.
     /// </para>
     /// <para>
-    /// MIGRATION: an earlier revision of this method stated its own rule and accepted only the four
-    /// multipliers the legacy <c>PerformanceSettings</c> enumeration declared, while the
-    /// documentation on <see cref="CachingOptions.PerformanceMultiplier"/> described any integer as
-    /// legitimate. The two disagreed, and the documentation was the accurate one: the legacy reader
-    /// cast an arbitrary host-settings integer straight to that enumeration
+    /// MIGRATION: the four multipliers the legacy <c>PerformanceSettings</c> enumeration declared are
+    /// NOT an allow-list, and must never be turned into one here. The legacy reader cast an arbitrary
+    /// host-settings integer straight to that enumeration
     /// (<c>Library/Components/Shared/Globals.vb:L229</c>), and a Visual Basic conversion to an
     /// enumeration is unchecked, so a stored <c>4</c> genuinely produced a multiplier of <c>4</c>.
-    /// Rejecting such a value was therefore a tightening of a configuration the legacy installation
-    /// accepted. The four constants remain declared on this class because they are the values an
-    /// operator will normally choose and callers name them, but they are no longer an allow-list.
+    /// Refusing a value outside the four would therefore tighten a configuration the legacy
+    /// installation accepted, and it would also contradict
+    /// <see cref="CachingOptions.PerformanceMultiplier"/>, which documents any non-negative integer as
+    /// legitimate. The four constants remain declared on this class because they are the values an
+    /// operator will normally choose and callers name them - nothing more.
     /// </para>
     /// </remarks>
     private static int ValidateMultiplier(CachingOptions options)
@@ -1316,9 +1316,9 @@ internal sealed class MemoryCacheService : ICacheService
     /// <remarks>
     /// Reads the category index rather than walking the whole registry, so the work is
     /// proportional to the category being invalidated. This matters because one portal
-    /// invalidation evicts three categories, and each of those previously walked every key this
-    /// service had ever written, including keys belonging to unrelated categories and keys whose
-    /// entries had already expired.
+    /// invalidation evicts three categories: without the index each of those three would walk every
+    /// key this service had ever written, including keys belonging to unrelated categories and keys
+    /// whose entries had already expired.
     /// </remarks>
     private void EvictTrackedCategory(string keyPrefix)
     {

@@ -128,6 +128,38 @@ public interface IPermissionRepository
     /// </remarks>
     Task<Permission?> GetByIdAsync(int permissionId, CancellationToken cancellationToken = default);
 
+    /// <summary>Returns the catalogue entries for a set of keys, in one read.</summary>
+    /// <param name="permissionIds">
+    /// The identifiers to resolve. Every value is meaningful and none is reserved: the catalogue's own
+    /// identity column seeds at 1, but -1 appears as a wildcard argument elsewhere on this contract and
+    /// nothing here reinterprets it - an identifier naming no row is simply absent from the answer.
+    /// Duplicates are tolerated and collapse; an empty set is a legitimate request whose answer is an
+    /// empty list, and no read need be issued for it.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// The entries that exist, ordered by identifier so the sequence is stable between calls. An
+    /// identifier that names no entry is omitted rather than represented by a null element, so the result
+    /// may be shorter than the request and the caller must not index the two against each other.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy provider declared no set-wise catalogue reader - <c>GetPermission</c> (core
+    /// <c>DataProvider.vb</c>:L280) took one identifier - so this member is net-new rather than a port. It
+    /// exists because the alternative is the caller looping <see cref="GetByIdAsync"/>, which issues one
+    /// round trip per distinct permission on a path that resolves a caller's whole permission set. Adding
+    /// the member is the correct fix rather than making the caller cleverer, because the batching belongs
+    /// where the query is composed.
+    /// </para>
+    /// <para>
+    /// The single-identifier reader is deliberately kept alongside it. A caller resolving exactly one
+    /// entry should say so and receive a nullable entity, not a list it has to unwrap.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<Permission>> GetByIdsAsync(
+        IReadOnlyCollection<int> permissionIds,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns the catalogue entries declared by one module definition.</summary>
     /// <param name="moduleDefinitionId">Module definition identifier.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

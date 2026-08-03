@@ -164,6 +164,7 @@ public sealed class PermissionService : IPermissionService
     public async Task<Result<IReadOnlyList<string>>> GetPermissionKeysAsync(
         string? permissionCode = null,
         int? moduleDefinitionId = null,
+        PermissionKey? permissionKey = null,
         CancellationToken cancellationToken = default)
     {
         if (permissionCode is not null && string.IsNullOrWhiteSpace(permissionCode))
@@ -182,7 +183,7 @@ public sealed class PermissionService : IPermissionService
         }
 
         IReadOnlyList<string> catalogueKeys =
-            await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, cancellationToken)
+            await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
                 .ConfigureAwait(false);
 
         // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration, whose member
@@ -278,20 +279,27 @@ public sealed class PermissionService : IPermissionService
 
         if (module is null && tabId is null)
         {
-            IReadOnlyList<string> portalWide = await _evaluator
+            Result<IReadOnlyList<string>> portalWide = await _evaluator
                 .ListEffectivePortalPermissionKeysAsync(portalId, userId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false);
 
-            return Result<IReadOnlyList<string>>.Success(Normalise(portalWide));
+            return Result<IReadOnlyList<string>>.Success(Normalise(portalWide.Value));
         }
 
         var keys = new List<string>();
 
         if (module is not null)
         {
-            IReadOnlyList<string> moduleKeys = await _evaluator
-                .ListEffectiveModulePermissionKeysAsync(module.ModuleId, userId, caller.RoleNames, cancellationToken)
-                .ConfigureAwait(false);
+            // The module's existence was established above, so the evaluator cannot report it absent here;
+            // its verdict is read directly.
+            IReadOnlyList<string> moduleKeys = (await _evaluator
+                    .ListEffectiveModulePermissionKeysAsync(
+                        module.ModuleId,
+                        userId,
+                        caller.RoleNames,
+                        cancellationToken)
+                    .ConfigureAwait(false))
+                .Value;
 
             if (module.InheritViewPermissions == true)
             {
@@ -300,7 +308,16 @@ public sealed class PermissionService : IPermissionService
                 keys.AddRange(moduleKeys.Where(key =>
                     !string.Equals(key, ViewPermissionKey, StringComparison.OrdinalIgnoreCase)));
 
-                if (await InheritedViewGrantedAsync(module, userId, caller.RoleNames, cancellationToken)
+                // When the caller named a page as well as a module it has named a PLACEMENT, and the
+                // inherited view key is then decided from that page alone. Naming both is the precise
+                // question; naming only the module is the collective one. See the contract remarks.
+                if (await InheritedViewGrantedAsync(
+                        module,
+                        tabId,
+                        placementTabModuleId: null,
+                        userId,
+                        caller.RoleNames,
+                        cancellationToken)
                     .ConfigureAwait(false))
                 {
                     keys.Add(ViewPermissionKey);
@@ -314,9 +331,10 @@ public sealed class PermissionService : IPermissionService
 
         if (tabId is int pageId)
         {
-            IReadOnlyList<string> tabKeys = await _evaluator
-                .ListEffectiveTabPermissionKeysAsync(pageId, userId, caller.RoleNames, cancellationToken)
-                .ConfigureAwait(false);
+            IReadOnlyList<string> tabKeys = (await _evaluator
+                    .ListEffectiveTabPermissionKeysAsync(pageId, userId, caller.RoleNames, cancellationToken)
+                    .ConfigureAwait(false))
+                .Value;
 
             keys.AddRange(tabKeys);
         }
@@ -335,6 +353,8 @@ public sealed class PermissionService : IPermissionService
         int? userId,
         int moduleId,
         PermissionKey permissionKey,
+        int? placementTabId = null,
+        int? placementTabModuleId = null,
         CancellationToken cancellationToken = default)
     {
         if (!Enum.IsDefined(permissionKey))
@@ -370,17 +390,23 @@ public sealed class PermissionService : IPermissionService
 
         if (permissionKey == PermissionKey.VIEW && module.InheritViewPermissions == true)
         {
-            bool inherited = await InheritedViewGrantedAsync(module, userId, caller.RoleNames, cancellationToken)
+            bool inherited = await InheritedViewGrantedAsync(
+                    module,
+                    placementTabId,
+                    placementTabModuleId,
+                    userId,
+                    caller.RoleNames,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             return Result<bool>.Success(inherited);
         }
 
-        bool granted = await _evaluator
+        Result<bool> granted = await _evaluator
             .HasModulePermissionAsync(moduleId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result<bool>.Success(granted);
+        return Result<bool>.Success(granted.Value);
     }
 
     /// <inheritdoc />
@@ -424,11 +450,11 @@ public sealed class PermissionService : IPermissionService
             return Result<bool>.Success(true);
         }
 
-        bool granted = await _evaluator
+        Result<bool> granted = await _evaluator
             .HasTabPermissionAsync(tabId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result<bool>.Success(granted);
+        return Result<bool>.Success(granted.Value);
     }
 
     /// <inheritdoc />
@@ -485,10 +511,12 @@ public sealed class PermissionService : IPermissionService
     }
 
     /// <summary>
-    /// Reads the catalogue keys matching an optional scope code and an optional module definition.
+    /// Reads the catalogue keys matching an optional scope code, an optional module definition and an
+    /// optional key.
     /// </summary>
     /// <param name="permissionCode">The scope code filter, or <see langword="null"/> for no restriction.</param>
     /// <param name="moduleDefinitionId">The module definition filter, or <see langword="null"/> for no restriction.</param>
+    /// <param name="permissionKey">The key filter, or <see langword="null"/> for no restriction.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The keys the catalogue reports for that combination, unnormalised.</returns>
     /// <remarks>
@@ -514,6 +542,7 @@ public sealed class PermissionService : IPermissionService
     private async Task<IReadOnlyList<string>> ReadCatalogueKeysAsync(
         string? permissionCode,
         int? moduleDefinitionId,
+        PermissionKey? permissionKey,
         CancellationToken cancellationToken)
     {
         string? wantedCode = permissionCode?.Trim();
@@ -531,14 +560,29 @@ public sealed class PermissionService : IPermissionService
                     wantedCode,
                     StringComparison.OrdinalIgnoreCase));
 
+            if (permissionKey is PermissionKey wantedWithinDefinition)
+            {
+                matching = matching.Where(entry => entry.PermissionKey == wantedWithinDefinition);
+            }
+
             return matching.Select(entry => entry.PermissionKey.ToString()).ToList();
         }
 
         if (wantedCode is not null)
         {
-            var present = new List<string>(AllPermissionKeys.Count);
+            // MIGRATION: naming the code AND the key is GetPermissionByCodeAndKey
+            // (PermissionController.vb:L47) exactly - one store read asking whether that key is declared
+            // within that scope. Without the key the same read is repeated once per candidate key, which is
+            // how the four legacy single-column reads collapse into one member; narrowing the candidate set
+            // to the one key asked about is therefore the same code path with a shorter loop rather than a
+            // second implementation of it.
+            IReadOnlyList<PermissionKey> candidates = permissionKey is PermissionKey wantedKey
+                ? [wantedKey]
+                : AllPermissionKeys;
 
-            foreach (PermissionKey candidate in AllPermissionKeys)
+            var present = new List<string>(candidates.Count);
+
+            foreach (PermissionKey candidate in candidates)
             {
                 IReadOnlyList<Permission> entries = await _permissions
                     .GetByCodeAndKeyAsync(wantedCode, candidate, cancellationToken)
@@ -553,27 +597,84 @@ public sealed class PermissionService : IPermissionService
             return present;
         }
 
+        // With no scope and no definition named there is nothing to read: the unfiltered catalogue of keys
+        // IS the closed enumeration, which is why this branch touches no store. A key filter therefore
+        // narrows the enumeration rather than querying, and answers with that key alone - it is by
+        // definition declared somewhere, or it would not be a member.
+        if (permissionKey is PermissionKey only)
+        {
+            return [only.ToString()];
+        }
+
         return AllPermissionKeys.Select(key => key.ToString()).ToList();
     }
 
     /// <summary>
-    /// Decides whether a module configured to inherit its view permission is viewable by the caller.
+    /// Decides whether a module configured to inherit its view permission is viewable by the caller, at the
+    /// placement the caller addressed or - when none was addressed - at every placement it occupies.
     /// </summary>
     /// <param name="module">The module, with its placements loaded.</param>
+    /// <param name="placementTabId">
+    /// The page the module is being addressed on, or <see langword="null"/> when the caller named none.
+    /// </param>
+    /// <param name="placementTabModuleId">
+    /// The placement being addressed, named by its own key, or <see langword="null"/> when the caller named
+    /// none. Takes precedence over <paramref name="placementTabId"/> because it is the more precise of the
+    /// two; when both are given they must agree.
+    /// </param>
     /// <param name="userId">The caller, or <see langword="null"/> when anonymous.</param>
     /// <param name="roleNames">The role names the caller holds.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
-    /// <returns><see langword="true"/> when at least one page the module sits on grants the view key.</returns>
+    /// <returns>
+    /// When a placement was addressed: whether its page grants the view key, and <see langword="false"/>
+    /// when the module does not occupy that placement or the two forms of address contradict each other. When
+    /// none was addressed: whether EVERY page the module sits on grants the view key, and
+    /// <see langword="false"/> when it sits on none.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy read answered this for one module <em>instance on one page</em>, because the
     /// object it hydrated was a flattened module-and-placement join that always carried a page identifier.
-    /// This contract names only the module, so the answer is taken across every page the module is placed
-    /// on: the module is viewable when at least one of those pages grants the view key. For a module with
-    /// a single placement - the overwhelming common case - that is exactly the legacy answer. A caller that
-    /// needs the page-scoped question answered asks it directly of the page.
+    /// Naming the placement is therefore the faithful behaviour, not an addition to it.
+    /// </para>
+    /// <para>
+    /// THE UNION IS NOT AN ACCEPTABLE ANSWER IN EITHER CASE, and an earlier revision used it in both. It
+    /// granted the view key when ANY page the module sat on granted it, whatever the caller had asked about.
+    /// For a module with a single placement - the common case - that is identical to the legacy answer, which
+    /// is what made the defect easy to miss. For a module placed twice it is strictly wider: place a module on
+    /// a public page and again on a restricted one, and every caller who may see the public placement is
+    /// admitted to the restricted one, because the test never asked which placement was being requested.
+    /// </para>
+    /// <para>
+    /// AN ADDRESSED PLACEMENT IS DECIDED BY THAT PAGE ALONE. A placement the module does not occupy is a
+    /// denial, not a reason to consult the others: falling back would restore the union through the back door,
+    /// and would additionally let a caller discover a module's other placements by observing which page
+    /// identifiers produce an affirmative answer.
+    /// </para>
+    /// <para>
+    /// AN UNADDRESSED QUESTION IS DECIDED BY EVERY PLACEMENT AT ONCE, so it grants only what holds at all of
+    /// them. A caller that names no page is asking about the module irrespective of where it sits, and the
+    /// only answer to that which cannot exceed the per-page answer is the conjunction. It coincides with the
+    /// legacy answer for a singly-placed module, and for a multiply-placed one it is deliberately the
+    /// narrower reading: a caller who is entitled to a particular placement says so, and is then decided by
+    /// that page under the branch above. Choosing the disjunction here instead would leave the escalation
+    /// fully reachable, because every route in this application addresses a module without naming a page.
+    /// </para>
+    /// <para>
+    /// A MODULE THAT SITS ON NO PAGE IS NOT VIEWABLE. The conjunction over an empty set is vacuously true, so
+    /// the empty case is stated rather than left to the loop - a module that inherits its view permission from
+    /// its pages and has no pages inherits nothing, and must not thereby become visible to everyone.
+    /// </para>
+    /// <para>
+    /// The placements are read only when the entity did not arrive with them loaded, and the addressed case
+    /// tests membership against the same collection, so naming a placement costs no extra round trip. Either
+    /// branch stops at the first page that settles the outcome.
+    /// </para>
     /// </remarks>
     private async Task<bool> InheritedViewGrantedAsync(
         Module module,
+        int? placementTabId,
+        int? placementTabModuleId,
         int? userId,
         IReadOnlyCollection<string> roleNames,
         CancellationToken cancellationToken)
@@ -582,9 +683,70 @@ public sealed class PermissionService : IPermissionService
             ? module.TabModules.ToList()
             : await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
+        if (placementTabModuleId is int addressedTabModuleId)
+        {
+            // Addressed by the placement's own key, which is the precise form: a module may be placed on one
+            // page more than once, so the page identifier alone cannot always name a single placement.
+            TabModule? addressed = placements
+                .FirstOrDefault(placement => placement.TabModuleId == addressedTabModuleId);
+
+            if (addressed is null)
+            {
+                return false;
+            }
+
+            // Both forms of address were given and they disagree. Refused rather than resolved in favour of
+            // either, because whichever were chosen would be chosen for its permissions and not for what the
+            // request meant.
+            if (placementTabId is int alsoNamedTabId && alsoNamedTabId != addressed.TabId)
+            {
+                return false;
+            }
+
+            // The evaluator reports an unknown page as a successful negative rather than a failure, so the
+            // value is read directly here as it is in the loop below.
+            Result<bool> addressedPlacementGrant = await _evaluator
+                .HasTabPermissionAsync(
+                    addressed.TabId,
+                    PermissionKey.VIEW,
+                    userId,
+                    roleNames,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return addressedPlacementGrant.Value;
+        }
+
+        if (placementTabId is int addressedTabId)
+        {
+            // Both -1 and 0 are genuine identifiers in this schema, so this is a real comparison rather
+            // than a sentinel test.
+            if (!placements.Any(placement => placement.TabId == addressedTabId))
+            {
+                return false;
+            }
+
+            Result<bool> addressedPageGrant = await _evaluator
+                .HasTabPermissionAsync(
+                    addressedTabId,
+                    PermissionKey.VIEW,
+                    userId,
+                    roleNames,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return addressedPageGrant.Value;
+        }
+
+        // Stated rather than left to the loop below, whose conjunction over an empty set would be true.
+        if (placements.Count == 0)
+        {
+            return false;
+        }
+
         foreach (TabModule placement in placements)
         {
-            bool granted = await _evaluator
+            Result<bool> granted = await _evaluator
                 .HasTabPermissionAsync(
                     placement.TabId,
                     PermissionKey.VIEW,
@@ -593,13 +755,19 @@ public sealed class PermissionService : IPermissionService
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            if (granted)
+            // ONE WITHHOLDING PAGE SETTLES IT, so the rest are not worth a round trip - this loop is the
+            // conjunction the summary above describes, not the union an earlier revision computed. A
+            // placement naming a page that no longer exists withholds, exactly as an ungranted page does, so
+            // the advisory the evaluator attaches to that verdict is not consulted here: both answers are
+            // "not this one". The evaluator reports an unknown page as a successful negative rather than a
+            // failure, so reading the value directly cannot throw.
+            if (!granted.Value)
             {
-                return true;
+                return false;
             }
         }
 
-        return false;
+        return true;
     }
 
     /// <summary>
@@ -690,6 +858,91 @@ public sealed class PermissionService : IPermissionService
             .Distinct(StringComparer.Ordinal)
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToList();
+
+    /// <inheritdoc />
+    public async Task<Result<PermissionDto?>> GetPermissionAsync(
+        int permissionId,
+        CancellationToken cancellationToken = default)
+    {
+        Permission? definition = await _permissions
+            .GetByIdAsync(permissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // No bound test on the identifier, here or anywhere in this solution: an unknown identifier is
+        // reported as absent by the read itself, and a bound would be a second, weaker copy of that answer.
+        return Result<PermissionDto?>.Success(definition is null ? null : ToDto(definition));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<PermissionDto>>> GetModulePermissionDefinitionsAsync(
+        int moduleId,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<Permission> definitions = await _permissions
+            .GetByModuleIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<IReadOnlyList<PermissionDto>>.Success(Project(definitions));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<PermissionDto>>> GetTabPermissionDefinitionsAsync(
+        int tabId,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<Permission> definitions = await _permissions
+            .GetByTabIdAsync(tabId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<IReadOnlyList<PermissionDto>>.Success(Project(definitions));
+    }
+
+    /// <summary>
+    /// Projects catalogue rows into their wire shape, de-duplicated and in a stable order.
+    /// </summary>
+    /// <param name="definitions">The rows read from the store.</param>
+    /// <returns>The projection.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both the ordering and the distinctness are promises this contract makes, so both are asserted here
+    /// rather than inherited from however the store happens to be queried today. The ordering is by
+    /// identifier rather than by name so that it cannot shift when a display name is edited.
+    /// </para>
+    /// <para>
+    /// Distinctness is asserted rather than assumed because the widest of the three reads behind this
+    /// projection is a UNION: the module-scoped read takes the entries of the module's own definition
+    /// together with every entry carrying the product-wide module-definition scope code, and a definition
+    /// that satisfies both arms is one definition, not two. The current store query expresses that union as
+    /// a single predicate over a single table and therefore cannot repeat a row - measured, not assumed -
+    /// so this assertion removes nothing today. It is kept because the promise belongs to the layer that
+    /// publishes it: a caller reading these entries is entitled to one entry per definition whatever shape
+    /// the read behind it later takes.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<PermissionDto> Project(IEnumerable<Permission> definitions)
+        => definitions
+            .GroupBy(definition => definition.PermissionId)
+            .Select(group => group.First())
+            .OrderBy(definition => definition.PermissionId)
+            .Select(ToDto)
+            .ToList();
+
+    /// <summary>Projects one catalogue row into its wire shape.</summary>
+    /// <param name="definition">The row to project.</param>
+    /// <returns>The projection.</returns>
+    /// <remarks>
+    /// The key travels as the enumeration member's NAME, which is both what the column stores and what every
+    /// other permission-shaped value in this API carries - the token's claims and the catalogue listing use
+    /// the same spellings - so one concept never travels two ways.
+    /// </remarks>
+    private static PermissionDto ToDto(Permission definition) => new()
+    {
+        PermissionId = definition.PermissionId,
+        PermissionCode = definition.PermissionCode,
+        ModuleDefId = definition.ModuleDefinitionId,
+        PermissionKey = definition.PermissionKey.ToString(),
+        PermissionName = definition.PermissionName,
+    };
 
     /// <summary>
     /// The outcome of resolving a caller: whether it exists, whether it is a host account, and the role

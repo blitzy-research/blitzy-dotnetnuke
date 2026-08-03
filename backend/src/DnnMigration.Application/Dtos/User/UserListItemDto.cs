@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// One row of the user administration grid, returned by <c>GET /api/v1/users</c> as the element
+/// One row of the user administration grid, returned by <c>GET /api/v1/portals/{portalId}/users</c> as the element
 /// type of the paged response envelope.
 /// </summary>
 /// <remarks>
@@ -39,8 +39,14 @@ namespace DnnMigration.Application.Dtos.User;
 /// where those encodings are translated: absent text surfaces as <see cref="string.Empty"/> so
 /// the legacy observable value is preserved, and an absent timestamp surfaces as
 /// <see langword="null"/> so no client is handed <c>0001-01-01</c> as though it were a real
-/// instant. Serialisation must not be configured to omit nulls or defaults for this type: that
-/// would erase an empty string and a legitimate <see langword="false"/> on any of the four flags.
+/// instant. The host serialises with
+/// <see cref="System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull"/>
+/// (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a property only when its value
+/// is <see langword="null"/>; default values are still written, so an empty string and a
+/// legitimate <see langword="false"/> on any of the four flags always reach the wire. The
+/// consequence for the nullable members is that absence is signalled by the property being
+/// absent from the JSON object rather than by a <c>null</c> literal, and a consumer must read a
+/// missing property as the absent state.
 /// </para>
 /// <para>
 /// SECURITY: no credential material of any kind appears here - no stored credential, digest,
@@ -91,9 +97,11 @@ public sealed class UserListItemDto
     /// </para>
     /// <para>
     /// IDENTIFIER TRAP: <c>Portals.PortalID</c> is declared
-    /// <c>[int] IDENTITY (-1, 1) NOT NULL</c> (<c>01.00.00.SqlDataProvider:L77</c>), so the first
-    /// portal has the identifier -1 and the second 0, while the legacy sentinel for an absent
-    /// integer is also -1 and the legacy null test reports true for it
+    /// <c>[int] IDENTITY (-1, 1) NOT NULL</c> (<c>01.00.00.SqlDataProvider:L77</c>), so the seed
+    /// and first generated value is -1, while the shipped default portal row is inserted
+    /// explicitly with <c>PortalID</c> 0 under <c>IDENTITY_INSERT</c>
+    /// (<c>01.00.00.SqlDataProvider:L7125</c>); both are valid keys. The legacy sentinel for an
+    /// absent integer is also -1 and the legacy null test reports true for it
     /// (<c>Null.vb</c> L41-L45, L207-L236). Both <c>id &lt;= 0</c> and <c>id == -1</c> are
     /// therefore invalid absence tests, here and against any portal, role, tab or module
     /// identifier - the role, tab and module tables are seeded <c>IDENTITY (0, 1)</c>, which
@@ -166,7 +174,10 @@ public sealed class UserListItemDto
     /// key-value store with no matching rows - while an empty string means address properties
     /// exist but compose to nothing, which is the legacy behaviour
     /// (<c>Users.ascx.vb:L353</c> seeded its local with the empty-string sentinel and returned it
-    /// when composition yielded nothing). Serialisation must not omit nulls for this member. The
+    /// when composition yielded nothing). Under the configured
+    /// <c>WhenWritingNull</c> policy the two absences remain distinguishable on the wire, but by
+    /// property presence rather than by value: the property is omitted entirely for the first
+    /// state and emitted as <c>""</c> for the second. The
     /// legacy grid composed it from six separate profile properties
     /// (<c>Users.ascx.vb:L352</c>); composing it in an accessor here is forbidden, because this
     /// type does no work.
@@ -179,7 +190,8 @@ public sealed class UserListItemDto
     /// <remarks>
     /// As with <see cref="Address"/>, <see langword="null"/> means the profile carries no
     /// telephone property for this user and an empty string means the property exists and is
-    /// blank; both states are distinct and both are preserved on the wire.
+    /// blank; both states stay distinct on the wire, the first as an omitted property and the
+    /// second as <c>""</c>, under the host's <c>WhenWritingNull</c> policy.
     /// </remarks>
     public string? Telephone { get; set; }
 

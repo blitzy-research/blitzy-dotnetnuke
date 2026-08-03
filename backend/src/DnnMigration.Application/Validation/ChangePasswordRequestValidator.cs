@@ -50,9 +50,10 @@
 // and trOldPassword is declared runat="server" at Password.ascx:L33 precisely so it can be hidden. One
 // legacy button therefore served two different operations distinguished only by caller privilege.
 //
-// An earlier revision of this file reasoned from that guard to asserting NO presence rule at all for the
-// change flow, deferring it to the application service where privilege is known. The reasoning was sound
-// about the legacy screen and wrong about its consequence: the reset flow asserted nothing either -
+// Reasoning from that guard to asserting NO presence rule at all for the change flow - deferring it to
+// the application service where privilege is known - is sound about the legacy screen and wrong about
+// its consequence, so it must not be done here: under that arrangement the reset flow asserts nothing
+// either -
 // no current credential, and no new credential, because generation was assumed - so an entirely EMPTY
 // request body was a complete, destructive credential reset that satisfied every rule in this file.
 //
@@ -93,10 +94,11 @@
 // The ceiling that IS enforced is 72 ENCODED BYTES, and it is a property of BCrypt rather than a policy
 // rule or a defensive round number. BCrypt derives its key from at most 72 bytes of input and discards
 // everything beyond that WITHOUT REPORTING ANYTHING, so two credentials agreeing on their first 72 bytes
-// produce the same digest and verify interchangeably. An earlier revision of this file bounded the field
-// at 256 CHARACTERS while the infrastructure hasher threw for the same input, so a credential between
-// those two limits passed validation and then failed as an unhandled fault - a 500 for a field-level
-// problem - and a credential the hasher silently truncated passed both. The bound is measured in encoded
+// produce the same digest and verify interchangeably. Bounding the field at 256 CHARACTERS instead
+// would put it out of step with the infrastructure hasher, which throws for the same input: a credential
+// between the two limits would pass validation and then fail as an unhandled fault - a 500 for a
+// field-level problem - and a credential the hasher silently truncated would pass both. The bound is
+// measured in encoded
 // bytes and not in characters because a character outside the ASCII range occupies between two and four
 // of them, so a character count understates the real limit for exactly the callers most likely to exceed
 // it. The identical constant is enforced by the hasher and by the sibling create-user validator, so the
@@ -113,9 +115,9 @@
 // MIGRATION 10 of 18 - NO QUESTION-AND-ANSWER RULE AT ALL, AND NO MEMBER LEFT TO ATTACH ONE TO.
 // requiresQuestionAndAnswer is false at Website/release.config:L241 and the reset flow's legacy guard at
 // L240 is compound - "RequiresQuestionAndAnswer And Not IsAdmin" - so nothing was ever enforced in the
-// observed installation. An earlier revision of this file reproduced that conditionality faithfully,
-// gating an answer rule on the bound policy flag so that it existed but could not fire by default. The
-// recovery pair is now absent from the request entirely, so the rule is removed rather than left
+// observed installation. Reproducing that conditionality faithfully - gating an answer rule on the bound
+// policy flag so that it exists but cannot fire by default - is not the right translation. The
+// recovery pair is absent from the request entirely, so no such rule is declared rather than left
 // unreachable: a rule guarding a field the contract does not accept would assert a requirement that
 // cannot be satisfied and cannot be observed. The four related resource keys do exist in the legacy tree,
 // and their existence was never evidence of enforcement. The bound policy flag is consequently
@@ -132,8 +134,8 @@
 // MIGRATION 12 of 18 - NO CURRENT-PASSWORD VERIFICATION HERE. Whether the supplied current password
 // matches the stored digest is an infrastructure concern reached through the application service. The
 // transition for credentials that predate the migration is an ADMINISTRATIVE RESET and nothing else:
-// an earlier revision of this note described a re-hash on first successful login with reset as a
-// fallback, which is the intent AAP 0.7.5.5 records but whose primary branch no code path in this
+// it must not be described as a re-hash on first successful login with reset as a fallback. That is the
+// intent AAP 0.7.5.5 records, but its primary branch is a path no code in this
 // solution can perform, because nothing verifies a credential held under the legacy reversible scheme
 // and nothing may, per that same section. This file performs no digest work either way, touches no
 // repository and runs no asynchronous rule. Its only dependency is the bound password policy, taken
@@ -303,8 +305,8 @@ public class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRe
         "The new password is the same as the old password.  Please enter a different password";
 
     // MIGRATION: the InvalidPasswordQuestion wording (SharedResources.resx key L957, wording L958) and
-    // the InvalidPasswordAnswer wording (key L954, wording L955) are deliberately NOT declared here. An
-    // earlier revision carried both. The recovery pair is absent from the request, so a message for a
+    // the InvalidPasswordAnswer wording (key L954, wording L955) are deliberately NOT declared here,
+    // and neither may be added. The recovery pair is absent from the request, so a message for a
     // field that cannot be submitted would be unreachable text asserting a rule that does not exist. The
     // two resource entries are cited so that their absence is provably deliberate; the wording itself is
     // not reproduced, not even as a quotation, so that its absence is verifiable by search.
@@ -401,8 +403,8 @@ public class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRe
         int minimumNonAlphanumericCharacters = passwordPolicy.MinRequiredNonAlphanumericCharacters;
         string strengthPattern = passwordPolicy.PasswordStrengthRegularExpression;
 
-        // MIGRATION: PasswordPolicyOptions.RequiresQuestionAndAnswer is deliberately NOT read here. An
-        // earlier revision read it to gate an answer rule on the reset flow. The recovery pair is absent
+        // MIGRATION: PasswordPolicyOptions.RequiresQuestionAndAnswer is deliberately NOT read here, and
+        // must not be read to gate an answer rule on the reset flow. The recovery pair is absent
         // from the request, so there is nothing for the flag to gate, and the flag is unsatisfiable in
         // the target - PasswordPolicyOptions.Validate rejects it at start-up, which is a louder and
         // earlier signal than a rule that silently could not fire.
@@ -594,8 +596,8 @@ public class ChangePasswordRequestValidator : AbstractValidator<ChangePasswordRe
     /// The rules that govern the replacement credential itself - presence, the bound minimum length, the
     /// hasher's encoded-byte ceiling, the confirmation comparison and any configured strength pattern -
     /// are identical for both operations, so they share one condition rather than being written twice.
-    /// Writing them twice is how the two paths would drift apart, and the earlier revision's reset path
-    /// had no credential rules at all.
+    /// Writing them twice is how the two paths drift apart, and the failure mode that produces is a
+    /// reset path carrying no credential rules at all.
     /// </remarks>
     private static bool IsCredentialReplacement(ChangePasswordRequest request) =>
         IsOperation(request, ChangePasswordRequest.OperationChange)

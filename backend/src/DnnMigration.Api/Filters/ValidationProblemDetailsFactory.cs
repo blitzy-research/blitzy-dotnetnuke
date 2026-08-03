@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using FluentValidation;
-using FluentValidation.Results;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -585,95 +583,5 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         {
             problemDetails.Extensions[TraceIdExtensionKey] = traceId;
         }
-    }
-}
-
-/// <summary>
-/// Runs a declarative validator over an inbound request and turns its failures into a problem-details
-/// response.
-/// </summary>
-/// <remarks>
-/// <para>
-/// This lives beside <see cref="ValidationProblemDetailsFactory"/> because it exists solely to feed it, and
-/// because the two together are the whole answer to "how does a rule violation reach the caller".
-/// </para>
-/// <para>
-/// <strong>Why controllers call a validator by hand as well.</strong> The MVC integration package that
-/// would wire FluentValidation into the model-binding pipeline automatically is deprecated and is not
-/// among the dependencies this project takes. Two mechanisms therefore cover declarative validation, and
-/// they are deliberately both present. <c>Filters/FluentValidationActionFilter.cs</c> is registered
-/// globally, so an endpoint whose author forgets to validate still has its declared rules applied - a
-/// per-action opt-in has a silent failure mode, because an unvalidated endpoint looks exactly like one
-/// with no rules. The explicit call below is what an action uses when it needs to name the validator
-/// itself: it makes the step visible at the call site, it distinguishes an absent body from an invalid
-/// one, and it lets an action choose an endpoint-specific validator rather than whichever one the
-/// container resolves for the request type. Running both on a valid request costs one extra pass over
-/// rules that have no side effects; on an invalid request the filter answers first, and both paths
-/// produce the identical problem-details shape because both route through the factory above.
-/// </para>
-/// <para>
-/// <strong>Why failures go through model state.</strong> The failures could be handed to the factory as a
-/// dictionary directly. Routing them through <see cref="ControllerBase.ValidationProblem(ModelStateDictionary)"/>
-/// instead means declarative failures and model-binding failures - a malformed body, a route value that is
-/// not an integer - arrive at the caller in one identical shape, produced by one code path. Two paths would
-/// drift, and the drift would show up as clients that can parse one kind of 400 and not the other.
-/// </para>
-/// </remarks>
-public static class RequestValidation
-{
-    /// <summary>Validates a request, returning the failure response when it is invalid.</summary>
-    /// <typeparam name="TRequest">The request type.</typeparam>
-    /// <param name="controller">The controller handling the request.</param>
-    /// <param name="validator">The validator registered for <typeparamref name="TRequest"/>.</param>
-    /// <param name="request">The bound request, which may be <see langword="null"/> when no body was sent.</param>
-    /// <param name="cancellationToken">Abandons validation when the caller disconnects.</param>
-    /// <returns>
-    /// <see langword="null"/> when the request is valid, so the caller proceeds; otherwise the
-    /// <c>400 Bad Request</c> problem-details response to return unchanged.
-    /// </returns>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="controller"/> or <paramref name="validator"/> is <see langword="null"/>.
-    /// </exception>
-    public static async Task<ActionResult?> ValidateRequestAsync<TRequest>(
-        this ControllerBase controller,
-        IValidator<TRequest> validator,
-        TRequest? request,
-        CancellationToken cancellationToken)
-        where TRequest : class
-    {
-        ArgumentNullException.ThrowIfNull(controller);
-        ArgumentNullException.ThrowIfNull(validator);
-
-        if (request is null)
-        {
-            // An absent body is a validation failure rather than an exception: the caller sent a request this
-            // endpoint cannot act on, and telling them so is more useful than a 500.
-            controller.ModelState.AddModelError(
-                string.Empty,
-                "A request body is required and was not supplied.");
-
-            return controller.ValidationProblem(controller.ModelState);
-        }
-
-        ValidationResult outcome = await validator
-            .ValidateAsync(request, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (outcome.IsValid)
-        {
-            return null;
-        }
-
-        foreach (ValidationFailure failure in outcome.Errors)
-        {
-            // A rule declared against the object rather than a property carries no property name; those
-            // failures are recorded against the empty key, which the factory surfaces as a request-level
-            // error rather than attributing it to a field the caller did not send.
-            controller.ModelState.AddModelError(
-                failure.PropertyName ?? string.Empty,
-                failure.ErrorMessage);
-        }
-
-        return controller.ValidationProblem(controller.ModelState);
     }
 }

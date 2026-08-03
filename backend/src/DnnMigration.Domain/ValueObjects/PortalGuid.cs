@@ -46,12 +46,15 @@
 //    rather than letting it pass unremarked. That treatment is legitimate here
 //    only because fact 2 removes the collision, and it MUST NOT be generalised to
 //    the integer key: [PortalID] is declared
-//    [int] IDENTITY (-1, 1) NOT NULL (01.00.00.SqlDataProvider:L77), so -1 is
-//    simultaneously Null.NullInteger (Null.vb:L41-L45) and a genuine, addressable
-//    row identifier - the first portal allocated is 0 and -1 is a real row.
-//    Treating -1 as "absent" would make host-level records unreachable, which is
-//    why PortalId must accept it while PortalGuid may refuse Guid.Empty. The two
-//    sibling value objects diverge here on purpose.
+//    [int] IDENTITY (-1, 1) NOT NULL (01.00.00.SqlDataProvider:L77), so the seed -
+//    the first value the column generates - is -1, which is simultaneously
+//    Null.NullInteger (Null.vb:L41-L45) and a genuine, addressable row identifier.
+//    The shipped default portal row is a separate matter: it is inserted with an
+//    explicit PortalID of 0 (01.00.00.SqlDataProvider:L7125), so 0 is a real key
+//    too, and neither value may be read as absence. Treating -1 as "absent" would
+//    make host-level records unreachable, which is why PortalId must accept it
+//    while PortalGuid may refuse Guid.Empty. The two sibling value objects diverge
+//    here on purpose.
 //
 // 5. ABSENCE IS EXPRESSED BY PortalGuid?, AND BY NOTHING ELSE. Per Rule T7 the
 //    sentinel survives at the boundary, not in the domain: an optional portal

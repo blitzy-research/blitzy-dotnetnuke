@@ -148,24 +148,26 @@ public sealed class Permission : Entity<int>
     /// use rather than at build time.
     /// </para>
     /// <para>
-    /// MIGRATION: required, and a foreign key in intent only. The upgrade chain declares no
-    /// <c>FOREIGN KEY</c> on this column anywhere - the only constraints naming this table point the
-    /// other way, from the grant tables to <c>Permission.PermissionID</c>
-    /// (<c>02.02.00.SqlDataProvider</c> lines 744, 768 and 777, rebuilt with cascade delete by
-    /// <c>03.00.09.SqlDataProvider</c> lines 482, 488 and 492). The relationship is therefore
-    /// declared in the model rather than discovered from the database, and no delete behaviour may
-    /// be attached to it: the database will not cascade, and a system-level entry - one whose
-    /// <see cref="PermissionCode"/> is <c>SYSTEM_TAB</c>, <c>SYSTEM_MODULE_DEFINITION</c> or
-    /// <c>SYSTEM_FOLDER</c> and which therefore belongs to no particular definition - carries the
-    /// out-of-range value -1 here and has no principal row to cascade from.
+    /// MIGRATION: required, and a foreign key in intent only - which is why NO relationship is modelled
+    /// over it. The upgrade chain declares no <c>FOREIGN KEY</c> on this column anywhere; the only
+    /// constraints naming this table point the other way, from the grant tables to
+    /// <c>Permission.PermissionID</c> (<c>02.02.00.SqlDataProvider</c> lines 744, 768 and 777, rebuilt
+    /// with cascade delete by <c>03.00.09.SqlDataProvider</c> lines 482, 488 and 492). A system-level
+    /// entry - one whose <see cref="PermissionCode"/> is <c>SYSTEM_TAB</c>,
+    /// <c>SYSTEM_MODULE_DEFINITION</c> or <c>SYSTEM_FOLDER</c>, and which therefore belongs to no
+    /// particular definition - carries the value -1 here and has no principal row at all. Because the
+    /// column is <c>NOT NULL</c>, any relationship the object-relational mapper could express over it
+    /// would be a REQUIRED one, asserting a principal those rows do not have; the omission is explained
+    /// in full below the display-name property and mirrored in <c>PermissionConfiguration</c>.
     /// </para>
     /// <para>
     /// MIGRATION: that -1 is <b>real data, not the legacy <c>Null.NullInteger</c> sentinel</b>. Rule T7
     /// keeps sentinels out of the domain, and this is the one place on this entity where the distinction
     /// bites: the column is <c>NOT NULL</c>, so -1 cannot mean "absent" - it means "system level" - and
     /// it must never be converted to a null, mapped to a nullable property, or read as a missing value.
-    /// The practical consequence for callers is that <see cref="ModuleDefinition"/> is not loadable for
-    /// such a row, because there is no definition to load.
+    /// The practical consequence for callers is that no definition can be resolved for such a row,
+    /// because there is no definition to resolve; a caller holding a real identifier resolves it through
+    /// <c>IModuleDefinitionRepository</c> and handles the -1 case explicitly.
     /// </para>
     /// </remarks>
     public int ModuleDefinitionId { get; set; }
@@ -248,24 +250,27 @@ public sealed class Permission : Entity<int>
     /// </remarks>
     public string PermissionName { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Gets or sets the module definition that owns this catalogue entry.
-    /// </summary>
-    /// <value>
-    /// The principal of the required relationship keyed by <see cref="ModuleDefinitionId"/>,
-    /// populated only by a read that includes it.
-    /// </value>
-    /// <remarks>
-    /// MIGRATION: declared non-nullable because the relationship is required - <c>ModuleDefID</c> is
-    /// <c>int NOT NULL</c>, and the object-relational mapper reads the nullability of a navigation as
-    /// the optionality of the relationship, so annotating it as nullable would model an optional one.
-    /// The annotation describes the RELATIONSHIP, not the loading state: a query that does not
-    /// include the definition leaves this property unset, and no caller may treat the annotation as a
-    /// promise that it was loaded. That gap is exactly what CS8618 is centrally suppressed for, and
-    /// it is why the property is not given a placeholder value - fabricating a definition here would
-    /// be a worse lie than an unset reference, and would be indistinguishable from a real one.
-    /// </remarks>
-    public ModuleDefinition ModuleDefinition { get; set; }
+    // MIGRATION: THERE IS DELIBERATELY NO ModuleDefinition NAVIGATION ON THIS ENTITY, and adding one
+    //   would be a defect rather than a convenience. Three facts force the omission and they compound.
+    //   First, no physical foreign key from dbo.Permission to dbo.ModuleDefinitions exists anywhere in
+    //   the eighty-eight-script chain - PermissionConfiguration records the exhaustive proof of that
+    //   absence. Second, the system-level catalogue rows the legacy installer creates carry
+    //   ModuleDefID = -1, which matches no ModuleDefinitions row: the value is REAL DATA identifying a
+    //   product-wide permission, not an absent reference, and it is exactly why the database never
+    //   enforced the reference. Third, and decisively, ModuleDefID is int NOT NULL, so any relationship
+    //   Entity Framework Core could express over it is a REQUIRED one - an optional relationship over a
+    //   non-nullable foreign key is rejected at model validation, and a nullable navigation cannot
+    //   change that. A required relationship asserts every row has a principal, which for the -1 rows is
+    //   false; it also makes the navigation permanently unloadable for them and invites an Include that
+    //   can never succeed.
+    //
+    // MIGRATION: the scalar <see cref="ModuleDefinitionId"/> above is the whole of the association and
+    //   is mapped to the real ModuleDefID column, so nothing about the persisted shape changes. A caller
+    //   that needs the definition behind a real identifier resolves it explicitly through
+    //   IModuleDefinitionRepository, which forces the -1 case to be handled deliberately instead of
+    //   being hidden behind a navigation that silently yields nothing. ModuleDefinition carries no
+    //   inverse collection for the same reason: leaving one in place would let the relationship-discovery
+    //   convention rebuild exactly the required relationship this omission exists to prevent.
 
     /// <summary>
     /// Gets the module-level grants that refer to this catalogue entry.

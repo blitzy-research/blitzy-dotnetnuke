@@ -12,10 +12,14 @@ namespace DnnMigration.Application.Mapping;
 // decryption key sitting in the file, and lines 236-246 register AspNetSqlMembershipProvider with
 // passwordFormat="Encrypted" alongside enablePasswordRetrieval="true". Anyone holding a checkout
 // could therefore recover every stored password. The target replaces that arrangement with
-// one-way BCrypt hashing and does NOT carry password retrieval forward to any endpoint or screen;
-// an existing credential is re-hashed on first successful login, with an administrative reset as
-// the fallback. The key values themselves are deliberately not reproduced here - only the line
-// numbers that hold them - so this file adds no new copy of a secret.
+// one-way BCrypt hashing and does NOT carry password retrieval forward to any endpoint or screen.
+// AN EXISTING CREDENTIAL IS MADE USABLE BY AN ADMINISTRATIVE RESET AND BY NOTHING ELSE - through
+// ChangePasswordRequest with Operation "reset", which is the one flow that writes a replacement
+// hash without first verifying the value being replaced. An earlier revision of this note described
+// a re-hash on first successful login with reset as the fallback, and that path cannot exist,
+// because verifying a legacy value is the step it would have to begin with and no component here can
+// perform it. The key values themselves are deliberately not reproduced here - only the line numbers
+// that hold them - so this file adds no new copy of a secret.
 //
 // The six rules that follow, which every future edit to this file must preserve:
 //

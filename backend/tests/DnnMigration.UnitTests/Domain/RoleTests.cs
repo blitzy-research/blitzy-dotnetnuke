@@ -1341,67 +1341,78 @@ public class RoleTests
     }
 
     /// <summary>
-    /// The legacy empty-date sentinel is still read as "no bound" on both sides of the window.
+    /// An unbounded membership is classified from its nullable bounds alone, with no sentinel
+    /// recognised anywhere in the Domain.
     /// </summary>
     [Fact]
-    public void Assignment_TreatsTheLegacyEmptyDateAsNoBound()
+    public void Assignment_ClassifiesFromNullableBoundsAlone()
     {
-        // MIGRATION: "no bound" is two values rather than one, and this is a read-side compatibility
-        // allowance rather than a representation the domain chooses. Both date columns are nullable,
-        // but the legacy properties could not be, so absence was carried as Null.NullDate - which is
-        // Date.MinValue.
-        //
-        // The value is load-bearing rather than incidental: BOTH dates are passed as Null.NullDate
-        // on the auto-assignment path, at RoleController.vb line 76 and again at
-        // UserController.vb line 177, the latter reached only when Role.AutoAssignment is true. Any
-        // account enrolled automatically therefore has a row whose two bounds are both
-        // Date.MinValue, and reading either as a real bound would classify every such membership as
-        // starting and ending at the dawn of the calendar.
-        //
-        // Under Rule T7 the sentinel is never the normal representation and nothing here ever stores
-        // one; null is how the domain says unbounded. Both are accepted on the way in.
+        // Rule T7: null is how the Domain says "unbounded", and it is the ONLY way it says so. An
+        // earlier revision of GetStatus additionally accepted the legacy Null.NullDate marker
+        // (Date.MinValue) as unbounded, comparing date parts, on the reasoning that a migrated row
+        // must not classify differently from its legacy self. That reasoning does not survive
+        // measurement, which is why the allowance is gone and why this test asserts the narrow
+        // contract instead - see Assignment_TreatsTheLegacyEmptyDateAsARealBound for the other half.
         IClock clock = FixedClock();
 
-        UserRole sentinelBounds = new()
-        {
-            UserRoleId = 1,
-            UserId = 9,
-            RoleId = 0,
-            EffectiveDate = DateTime.MinValue,
-            ExpiryDate = DateTime.MinValue,
-        };
-        UserRole nullBounds = new() { UserRoleId = 2, UserId = 9, RoleId = 0 };
+        UserRole unbounded = new() { UserRoleId = 1, UserId = 9, RoleId = 0 };
 
-        sentinelBounds.EffectiveDate.Should().Be(DateTime.MinValue, "the value is stored verbatim");
-        sentinelBounds.ExpiryDate.Should().Be(DateTime.MinValue);
+        unbounded.EffectiveDate.Should().BeNull();
+        unbounded.ExpiryDate.Should().BeNull();
 
-        sentinelBounds.GetStatus(clock.UtcNow).Should().Be(
+        unbounded.GetStatus(clock.UtcNow).Should().Be(
             RoleStatus.Active,
-            "a membership bounded by the legacy empty date on both sides is in force, exactly as the "
-            + "auto-assignment path intended");
-        nullBounds.GetStatus(clock.UtcNow).Should().Be(
-            RoleStatus.Active,
-            "and the modern representation of the same fact agrees");
+            "a membership with neither bound set is in force, which is what the auto-assignment path "
+            + "records once its two absent bounds have been normalised at the write boundary");
+
+        // Each bound alone, to prove the classification reads them independently rather than as a pair.
+        new UserRole { UserRoleId = 2, UserId = 9, RoleId = 0, EffectiveDate = clock.UtcNow.AddDays(-1) }
+            .GetStatus(clock.UtcNow).Should().Be(RoleStatus.Active);
+        new UserRole { UserRoleId = 3, UserId = 9, RoleId = 0, ExpiryDate = clock.UtcNow.AddDays(1) }
+            .GetStatus(clock.UtcNow).Should().Be(RoleStatus.Active);
     }
 
     /// <summary>
-    /// The empty-date sentinel is recognised by its date part alone, so a stray time of day does not
-    /// turn it into a real bound.
+    /// The legacy empty-date marker is classified as the real bound it literally is, because the
+    /// Domain holds no sentinel knowledge and the boundary removes the marker before it can arrive.
     /// </summary>
-    /// <param name="hours">Hours to add to the sentinel.</param>
+    /// <param name="hours">Hours to add to the marker, so a stray time component is covered too.</param>
     [Theory]
     [InlineData(0)]
     [InlineData(5)]
     [InlineData(23)]
-    public void Assignment_RecognisesTheEmptyDateByItsDatePartAlone(int hours)
+    public void Assignment_TreatsTheLegacyEmptyDateAsARealBound(int hours)
     {
-        // The legacy emptiness tests compare .Date against NullDate.Date - Null.vb lines 183-186 and
-        // 222-224 - carrying the source comment "this avoids subtle time differences". A value that
-        // is the sentinel date with a time component is therefore still empty to the legacy code,
-        // and a hydrated legacy object must not be classified differently from its legacy self.
+        // THIS IS THE POINT OF THE FIX, AND IT IS DELIBERATELY THE OPPOSITE OF WHAT THIS FILE
+        // PREVIOUSLY ASSERTED. The two tests replaced here codified Date.MinValue as a persisted
+        // sentinel that the Domain had to recognise, and justified it by claiming that every
+        // automatically enrolled account holds a row whose two bounds are both Date.MinValue. That
+        // claim is false, and the whole write chain can be read end to end:
+        //
+        //   RoleController.vb:L76  AddUserRole(portal, user, role, Null.NullDate, Null.NullDate)
+        //   RoleController.vb:L306-L307 assigns both markers onto the in-memory UserRoleInfo
+        //   DNNRoleProvider.vb:L418  dataProvider.AddUserRole(..., EffectiveDate, ExpiryDate)
+        //   membership DataProvider/SqlDataProvider.vb:L280  ..., GetNull(EffectiveDate), GetNull(ExpiryDate)
+        //   Null.vb:L183-L186  GetNull substitutes DBNull when the DATE PART equals NullDate.Date
+        //
+        // The marker therefore lived in memory and became SQL NULL at the door; the stored row holds
+        // nulls, not 0001-01-01. UpdateUserRole (same file, L285-L286) wraps both values identically,
+        // so no later write reintroduces it either.
+        //
+        // Independently of that conversion the marker is UNSTORABLE: dbo.UserRoles.EffectiveDate and
+        // ExpiryDate are both SQL Server datetime, whose range begins at 1753-01-01, and the server
+        // refuses 0001-01-01 with an out-of-range error - measured against the provisioned database
+        // rather than assumed. So the Domain branch this test used to protect could never fire for a
+        // value that came from this schema, while it could and did fire for a value that came from a
+        // request - reinterpreting one particular instant as "unbounded" in the very computation the
+        // tenant-administration policy grants on.
+        //
+        // Where absence is now recognised is the boundary, in both directions: RoleService reads a
+        // submitted marker as "no bound", and RoleRepository.AddUserRoleAsync/UpdateUserRoleAsync
+        // reproduce Null.GetNull before staging a row. Both are covered by their own tests.
         IClock clock = FixedClock();
 
-        UserRole assignment = new()
+        UserRole marked = new()
         {
             UserRoleId = 1,
             UserId = 9,
@@ -1410,10 +1421,14 @@ public class RoleTests
             ExpiryDate = DateTime.MinValue.AddHours(hours),
         };
 
-        assignment.GetStatus(clock.UtcNow).Should().Be(
-            RoleStatus.Active,
-            "the sentinel is matched on its date part, so a time of day does not promote it to a "
-            + "real bound - which it would, and the membership would read as long expired");
+        marked.EffectiveDate.Should().Be(
+            DateTime.MinValue.AddHours(hours),
+            "the entity stores what it is given and rewrites nothing");
+
+        marked.GetStatus(clock.UtcNow).Should().Be(
+            RoleStatus.Expired,
+            "an expiry bound of 0001-01-01 is long past, and the Domain says so plainly rather than "
+            + "consulting a sentinel table to decide that this particular instant means 'no bound'");
     }
 
     /// <summary>

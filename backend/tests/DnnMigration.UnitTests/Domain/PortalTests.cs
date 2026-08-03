@@ -261,9 +261,9 @@ public class PortalTests
     }
 
     /// <summary>
-    /// Until the persistence layer declares an identity real, two separately constructed instances are
-    /// two different entities even when their keys agree - and the hash code an instance has already
-    /// answered with never changes afterwards.
+    /// Until an identity is declared real, two separately constructed instances are two different
+    /// entities even when their keys agree - and the hash code an instance has already answered with
+    /// never changes afterwards.
     /// </summary>
     /// <remarks>
     /// These are the two halves of the arrangement that keeps this schema's seed values from being read
@@ -302,7 +302,8 @@ public class PortalTests
     }
 
     /// <summary>
-    /// Persisted state is declared by the persistence layer, never deduced from the key's value.
+    /// Persisted state is declared by a caller that knows the row exists, never deduced from the key's
+    /// value.
     /// </summary>
     /// <remarks>
     /// This is the positive statement of why no <c>IsTransient</c>, <c>IsNew</c> or
@@ -1431,6 +1432,64 @@ public class PortalTests
     }
 
     /// <summary>
+    /// The whole-domain bound is enforced at its exact boundary, independently of the per-label bound and
+    /// of the overall address length.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two hundred and fifty-three is the domain-name-system limit on a fully qualified domain, and it is
+    /// a genuinely separate bound from the two either side of it: every label below is well within
+    /// sixty-three characters, and both addresses are within the two-hundred-and-fifty-six-character
+    /// column width, so neither of those rules can be what decides these two cases. Without this
+    /// assertion the aggregate bound could be deleted outright and every other e-mail test would stay
+    /// green, because the per-label scan is bounded per label and the column check is bounded per address.
+    /// </para>
+    /// <para>
+    /// The construction is deliberate rather than incidental. The address is <c>x@</c> plus the domain, so
+    /// the accepted case measures 255 characters and the refused case measures exactly 256 — the largest
+    /// value the column guard admits. That is what makes the refusal attributable to the domain bound
+    /// alone: one character more anywhere would have been refused by the column width first, and the test
+    /// would then prove nothing about the domain.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this bound replaces nothing in the legacy pattern, which limited the domain only through
+    /// the overall address length and so accepted a domain that could never resolve. It is recorded in
+    /// MIGRATION_NOTES.md alongside the other e-mail tightenings.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EmailAddress_EnforcesTheWholeDomainBoundAtItsBoundary()
+    {
+        // Three maximal labels and a final letters-only label sized to hit each bound exactly:
+        // 63 + 1 + 63 + 1 + 63 + 1 = 192 characters of prefix, leaving 61 for a 253-character domain and
+        // 62 for a 254-character one.
+        string labelPrefix = string.Join(".", Enumerable.Repeat(new string('a', 63), 3)) + ".";
+        string domainAtTheBound = labelPrefix + new string('b', 61);
+        string domainPastTheBound = labelPrefix + new string('b', 62);
+
+        domainAtTheBound.Length.Should().Be(253, "the premise of this test is the exact domain length");
+        domainPastTheBound.Length.Should().Be(254);
+        domainPastTheBound.Split('.').Should().OnlyContain(
+            label => label.Length <= 63,
+            "no label may be what refuses the longer address, or the per-label rule would be doing this "
+            + "bound's work");
+        ("x@" + domainPastTheBound).Length.Should().Be(
+            256,
+            "the longer address must still fit the column, or the length rule would be doing this "
+            + "bound's work");
+
+        EmailAddress.TryCreate("x@" + domainAtTheBound, out EmailAddress? accepted).Should().BeTrue(
+            "two hundred and fifty-three characters is the domain maximum, not one past it");
+        accepted!.Value.Should().Be("x@" + domainAtTheBound);
+
+        EmailAddress.TryCreate("x@" + domainPastTheBound, out EmailAddress? refused).Should().BeFalse();
+        refused.Should().BeNull();
+
+        Action create = () => _ = EmailAddress.Create("x@" + domainPastTheBound);
+        create.Should().Throw<DomainException>().WithMessage("*253 characters*");
+    }
+
+    /// <summary>
     /// A domain label beginning with a hyphen is still accepted, exactly as the legacy pattern accepted
     /// it.
     /// </summary>
@@ -1617,10 +1676,106 @@ public class PortalTests
         Action nullUnpaged = () => _ = PagedResult<Portal>.Unpaged(null!);
 
         nullItems.Should().Throw<ArgumentNullException>();
-        negativeTotal.Should().Throw<ArgumentOutOfRangeException>();
-        negativeIndex.Should().Throw<ArgumentOutOfRangeException>();
-        negativeSize.Should().Throw<ArgumentOutOfRangeException>();
+        negativeTotal.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be("totalCount");
+        negativeIndex.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be("pageIndex");
+        negativeSize.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be("pageSize");
         nullUnpaged.Should().Throw<ArgumentNullException>();
+    }
+
+    /// <summary>
+    /// Three coordinates that individually look sane but contradict one another are rejected as well.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each combination below describes an envelope no real query could have produced, and each would
+    /// otherwise be published as fact to a pager that trusts it — which is worse than throwing, because a
+    /// pager cannot detect that the totals it was handed are impossible. A page size of 0 declares an
+    /// unpaged set and therefore has no page coordinate to address; a page can never hold more records
+    /// than the whole set contains; and a paged read honours the page size it was given.
+    /// </para>
+    /// <para>
+    /// The offending parameter is asserted by name as well, because that name is the only thing telling a
+    /// caller which of the three coordinates it got wrong, and all three failures otherwise arrive as the
+    /// same exception type.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PagedResult_RejectsContradictoryCoordinates()
+    {
+        Portal first = NewPortal(0, "First");
+        Portal second = NewPortal(1, "Second");
+
+        Action unpagedSizeWithAPageAddress = () => _ = PagedResult<Portal>.Create([], 0, 1, 0);
+        Action moreRecordsOnThePageThanInTheSet = () => _ = PagedResult<Portal>.Create([first, second], 1, 0, 10);
+        Action moreRecordsThanThePageSizeDeclares = () => _ = PagedResult<Portal>.Create([first, second], 9, 0, 1);
+
+        unpagedSizeWithAPageAddress.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be(
+                "pageIndex",
+                "a size of zero describes an unpaged set, so the page index is the argument at fault");
+        moreRecordsOnThePageThanInTheSet.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be(
+                "totalCount",
+                "the grand total was understated, not the page");
+        moreRecordsThanThePageSizeDeclares.Should().Throw<ArgumentOutOfRangeException>()
+            .And.ParamName.Should().Be(
+                "items",
+                "the page carries more than one page's worth, so the collection is the argument at fault");
+
+        // The complementary positives, so the three guards are bounds rather than blanket refusals: a
+        // page exactly filled to its declared size is legitimate, and so is a page holding the whole set.
+        PagedResult<Portal>.Create([first, second], 2, 0, 2).Items.Should().HaveCount(2);
+        PagedResult<Portal>.Create([], 0, 0, 0).IsUnpaged.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The envelope snapshots the collection it was given, so a caller that keeps mutating its own list
+    /// cannot change what has already been published.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A read-only interface is not an immutable collection: <c>List&lt;T&gt;</c> satisfies
+    /// <c>IReadOnlyList&lt;T&gt;</c> while remaining fully mutable through the reference its owner still
+    /// holds. Without a private copy, an envelope could report one total and then hand out a different
+    /// number of records — and the guards above, which measure the collection, would have measured
+    /// something other than what was eventually published.
+    /// </para>
+    /// <para>
+    /// Both factory methods are asserted, because they take the copy for different reasons. <c>Create</c>
+    /// copies before its remaining guards run, so the length the guards inspect is the length the finished
+    /// envelope reports. <c>Unpaged</c> derives the total from its copy, so the reported total and the
+    /// published records are guaranteed to agree.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PagedResult_SnapshotsTheSuppliedCollection()
+    {
+        Portal first = NewPortal(0, "First");
+        Portal second = NewPortal(1, "Second");
+
+        List<Portal> pagedSource = [first];
+        PagedResult<Portal> paged = PagedResult<Portal>.Create(pagedSource, 9, 0, 10);
+
+        List<Portal> unpagedSource = [first];
+        PagedResult<Portal> unpaged = PagedResult<Portal>.Unpaged(unpagedSource);
+
+        pagedSource.Add(second);
+        unpagedSource.Add(second);
+        pagedSource.Should().HaveCount(2, "the premise of this test is that the caller's list did change");
+
+        paged.Items.Should().ContainSingle().Which.Should().BeSameAs(
+            first,
+            "the page published one record, so it must still publish exactly that one");
+        paged.TotalCount.Should().Be(9, "and the total it was given is unaffected by the caller's list");
+
+        unpaged.Items.Should().ContainSingle().Which.Should().BeSameAs(first);
+        unpaged.TotalCount.Should().Be(
+            1,
+            "the unpaged total is derived from the copy, so it cannot drift away from the records "
+            + "alongside it");
     }
 
     // ---------------------------------------------------------------------------------------------

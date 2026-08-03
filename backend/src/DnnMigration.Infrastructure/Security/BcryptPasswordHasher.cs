@@ -21,10 +21,10 @@
 // administrative password reset before its owner can sign in, and that is a DELIBERATE FUNCTIONAL
 // REDUCTION recorded in MIGRATION_NOTES.md rather than a gap.
 //
-// An earlier revision of this comment claimed the target upgraded rows lazily, by re-hashing the
-// plaintext an owner supplied on their first successful sign-in against the legacy value. THAT CLAIM
-// WAS FALSE and is removed rather than softened: a first successful sign-in against a legacy value
-// is impossible without a legacy verifier, so the path it described could never run. Implementing
+// This class does NOT upgrade rows lazily, and no comment here or elsewhere may claim that it does -
+// there is no re-hash of the plaintext an owner supplies on a first successful sign-in against a
+// legacy value, because a first successful sign-in against a legacy value is impossible without a
+// legacy verifier and none exists. Implementing
 // one would require reading the legacy reversible material, decrypting it with the key committed at
 // Website/release.config:L91-L92, and re-encrypting on success - a design that reintroduces exactly
 // the reversibility this class exists to remove, and one the AAP's scope does not include.
@@ -55,6 +55,7 @@
 // policy boundary through its bound options and its declarative request validators. Strengthening
 // any of these during the migration would deny access to accounts the legacy installation accepted.
 
+using System.Security.Cryptography;
 using BCrypt.Net;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Validation;
@@ -162,6 +163,30 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// The password policy in force, captured once at construction.
     /// </summary>
     private readonly PasswordPolicyOptions _passwordPolicy;
+
+    /// <summary>
+    /// The decoy representation served by <see cref="UnmatchableHash"/>, computed at most once for the
+    /// lifetime of this instance and only if something asks for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// LAZY, AND THREAD-SAFE BY THE MODE THAT IS CHOSEN. Computing it costs one full hashing operation -
+    /// the same deliberately expensive operation the cost factor governs - so it must be paid once and
+    /// never per attempt. <see cref="LazyThreadSafetyMode.ExecutionAndPublication"/> is named explicitly
+    /// rather than left to the default because this type is registered as a singleton and is therefore
+    /// reached concurrently: the default for this constructor overload is already the safe mode, and stating
+    /// it keeps that guarantee from resting on a default nobody can see at the call site.
+    /// </para>
+    /// <para>
+    /// THE INPUT IS RANDOM AND IS NOT RETAINED. Thirty-two cryptographically random bytes are hashed and the
+    /// bytes are then dropped, so no value exists anywhere - in this process, in configuration, or in the
+    /// source - that verifies against the result. A hard-coded decoy would be the opposite: a constant in a
+    /// public repository, computed at whatever cost factor applied on the day it was written.
+    /// </para>
+    /// </remarks>
+    private readonly Lazy<string> _unmatchableHash = new(
+        CreateUnmatchableHash,
+        LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>
     /// Initialises a new instance of the <see cref="BcryptPasswordHasher"/> class.
@@ -359,16 +384,23 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     /// </summary>
     /// <param name="passwordHash">The stored representation to examine.</param>
     /// <returns>
-    /// <see langword="true"/> when <paramref name="passwordHash"/> should be replaced, either
-    /// because it carries a lower cost than <c>WorkFactor</c> or because this implementation cannot
-    /// parse it at all; otherwise <see langword="false"/>.
+    /// <see langword="true"/> only when <paramref name="passwordHash"/> is a digest this
+    /// implementation produced and carries a lower cost than <c>WorkFactor</c>; otherwise
+    /// <see langword="false"/>, including for any value it cannot parse.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// This member exists to support ONE upgrade: raising the cost of a digest
     /// <see cref="Hash(string)"/> produced. It is not a legacy-credential detector, and a
     /// <see langword="true"/> answer must never be read as an invitation to accept a credential that
     /// <see cref="Verify(string, string)"/> rejected. Legacy credentials are migrated by
     /// administrative reset only, for the reasons set out at the head of this file.
+    /// </para>
+    /// <para>
+    /// An unparseable value therefore answers <see langword="false"/>, which is a CHANGE from an
+    /// earlier revision that answered <see langword="true"/> for one. See the annotation on the
+    /// handlers below for why the earlier answer was the wrong one to give.
+    /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="passwordHash"/> is <see langword="null"/>.
@@ -377,44 +409,100 @@ internal sealed class BcryptPasswordHasher : IPasswordHasher
     {
         ArgumentNullException.ThrowIfNull(passwordHash);
 
-        // MIGRATION: an unparseable stored value answers "yes, replace it" because there is nothing
-        // else it could usefully answer, NOT because such a value can be upgraded in place. It cannot:
-        // a caller reaches here only after Verify has already succeeded, and Verify reports a non-match
-        // for precisely the values that land in these handlers, so an unparseable row can never be
-        // accompanied by an accepted credential. The practical consequence is that this answer is
-        // unreachable for a legacy row, and the only reachable use of this member is the work-factor
-        // upgrade described above.
+        // MIGRATION: AN UNPARSEABLE STORED VALUE ANSWERS "NO", AND THAT IS A DELIBERATE CHANGE. An
+        // earlier revision answered "yes, replace it" and defended the answer on reachability: a caller
+        // arrives here only after Verify has succeeded, Verify rejects exactly the values that land in
+        // these handlers, so no legacy row could be accompanied by an accepted credential and the
+        // answer was unreachable in practice. The reachability argument is correct and is not the
+        // problem. The ANSWER was, for two reasons.
         //
-        // The handled set deliberately mirrors Verify's, so the two members can never disagree about
-        // which stored values this implementation understands. The pinned package funnels every
-        // malformed value here into the first of them, and the remaining four are the types it
-        // documents or was observed to raise on the closely related parse path; catching them keeps
-        // the answer deterministic if an edge case ever reaches a different branch. Nothing wider is
-        // caught, for the reason given in Verify.
+        // First, it made this member say something untrue about a legacy row. "Replace it" promises an
+        // upgrade that cannot be performed: replacing a stored value requires the plaintext, the
+        // plaintext arrives only with a successful verification, and a value held under the legacy
+        // reversible scheme can never be verified here. Depending on nobody ever consulting a public
+        // member outside its one intended pairing is not a property of the code - it is a property of
+        // future authors' discipline - and this contract is declared on a domain abstraction that any
+        // caller may reach.
+        //
+        // Second, and this is what a security review of this file found, that untrue answer was the
+        // same conflation that had spread through eight contracts and comments in prose: that a legacy
+        // credential is upgraded lazily rather than reset administratively. Correcting the prose while
+        // leaving the code asserting the same thing would have left the misleading claim in the one
+        // place a reader trusts most.
+        //
+        // Answering "no" costs nothing operationally. An account whose stored value cannot be parsed
+        // cannot sign in either way - Verify rejects it - so it requires an administrative reset
+        // whatever this member says, and saying "nothing to upgrade" is simply the truthful
+        // description of a value this scheme did not produce.
+        //
+        // The handled set deliberately mirrors Verify's AND now agrees with it on the answer, so the
+        // two members can never disagree about which stored values this implementation understands:
+        // a value this scheme did not produce is neither verifiable nor upgradable. The pinned package
+        // funnels every malformed value here into the first of them, and the remaining four are the
+        // types it documents or was observed to raise on the closely related parse path; catching them
+        // keeps the answer deterministic if an edge case ever reaches a different branch. Nothing wider
+        // is caught, for the reason given in Verify.
         try
         {
             return BCrypt.Net.BCrypt.PasswordNeedsRehash(passwordHash, WorkFactor);
         }
         catch (BCrypt.Net.SaltParseException)
         {
-            return true;
+            return false;
         }
         catch (BCrypt.Net.HashInformationException)
         {
-            return true;
+            return false;
         }
         catch (ArgumentException)
         {
-            return true;
+            return false;
         }
         catch (FormatException)
         {
-            return true;
+            return false;
         }
         catch (IndexOutOfRangeException)
         {
-            return true;
+            return false;
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Served from the lazily computed field above, so the cost is paid once for the lifetime of this
+    /// singleton and every subsequent read is a field access. <see cref="Verify(string, string)"/> treats the
+    /// value exactly as it treats a value read from the database - there is no branch for it and no way to
+    /// ask whether a supplied representation is this one - which is what makes an attempt against it
+    /// indistinguishable, in both cost and code path, from an attempt against a real account.
+    /// </remarks>
+    public string UnmatchableHash => _unmatchableHash.Value;
+
+    /// <summary>
+    /// Produces the decoy representation, at the current work factor, from cryptographically random input
+    /// that is not retained.
+    /// </summary>
+    /// <returns>A well-formed stored representation that no credential matches.</returns>
+    /// <remarks>
+    /// <para>
+    /// The input is Base64 of thirty-two random bytes, which lands comfortably inside the credential length
+    /// bound and inside the range the enhanced pre-hash accepts. It is produced by the cryptographic
+    /// generator rather than a pseudo-random one - not because a decoy needs unpredictability against an
+    /// attacker who never sees it, but because a seeded generator could in principle repeat a value across
+    /// processes, and a decoy that is reproducible is a decoy that could be matched.
+    /// </para>
+    /// <para>
+    /// It goes through the same enhanced entry point and the same work factor as
+    /// <see cref="Hash(string)"/>, deliberately reusing them rather than re-stating them: were the factor or
+    /// the pre-hash algorithm ever changed, the decoy would move with them in the same edit, and a decoy
+    /// whose cost has drifted from a real comparison's cost has stopped serving its only purpose.
+    /// </para>
+    /// </remarks>
+    private static string CreateUnmatchableHash()
+    {
+        string unmatchable = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+        return BCrypt.Net.BCrypt.EnhancedHashPassword(unmatchable, WorkFactor, PreHashAlgorithm);
     }
 
     /// <summary>

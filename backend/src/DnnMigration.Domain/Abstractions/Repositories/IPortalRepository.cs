@@ -324,6 +324,60 @@ public interface IPortalRepository
     Task<int> CountPagesAsync(int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Counts the member accounts of every supplied portal in one read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Answers the same question as <see cref="CountUsersAsync"/> for a whole page of
+    /// portals at once. A listing screen needs one tally per row, and asking the
+    /// single-portal member once per row issues a query per row: a page of fifty portals
+    /// costs fifty round trips for a figure the store can produce in one grouped read.
+    /// This member exists so that the cost of a listing is independent of its page size.
+    /// </para>
+    /// <para>
+    /// The result is TOTAL over the supplied identifiers: every identifier that was asked
+    /// for is present as a key, carrying zero where no membership row exists and where no
+    /// portal bears the identifier. A caller therefore never has to distinguish "absent
+    /// because it has no members" from "absent because the grouped read returned no row
+    /// for it", which is the mistake a grouped projection invites. Duplicate identifiers
+    /// in the request collapse to one entry.
+    /// </para>
+    /// </remarks>
+    /// <param name="portalIds">
+    /// The portal identifiers to tally. An empty collection is answered with an empty
+    /// result and issues no query.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the operation.</param>
+    /// <returns>
+    /// One entry per distinct supplied identifier, mapping it to its member count.
+    /// </returns>
+    Task<IReadOnlyDictionary<int, int>> CountUsersForPortalsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Counts the live pages of every supplied portal in one read.
+    /// </summary>
+    /// <remarks>
+    /// The batched counterpart of <see cref="CountPagesAsync"/>, and it exists for the same
+    /// reason as <see cref="CountUsersForPortalsAsync"/>: a listing needs one tally per row
+    /// and must not pay a round trip per row to obtain it. Soft-deleted pages are excluded
+    /// exactly as the single-portal member excludes them, so the two members cannot
+    /// disagree. The result is TOTAL over the supplied identifiers on the same terms.
+    /// </remarks>
+    /// <param name="portalIds">
+    /// The portal identifiers to tally. An empty collection is answered with an empty
+    /// result and issues no query.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the operation.</param>
+    /// <returns>
+    /// One entry per distinct supplied identifier, mapping it to its live page count.
+    /// </returns>
+    Task<IReadOnlyDictionary<int, int>> CountPagesForPortalsAsync(
+        IReadOnlyCollection<int> portalIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the names of the roles the supplied portal nominates as its administrator
     /// and registered-user roles.
     /// </summary>

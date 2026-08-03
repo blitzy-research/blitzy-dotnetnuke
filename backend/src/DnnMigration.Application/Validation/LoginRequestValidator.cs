@@ -116,8 +116,8 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
         // three parameters agreeing with the measured column width, and none
         // disagreeing, is corroboration rather than assumption.
         //
-        // MIGRATION: an earlier revision of this file bounded the rule at 256 and
-        // cited 03.02.03.SqlDataProvider:L2185 and L2384 with
+        // MIGRATION: do NOT bound this rule at 256 by citing
+        // 03.02.03.SqlDataProvider:L2185 and L2384 with
         // 04.00.04.SqlDataProvider:L2253 and L2451 as widening the column. Those
         // four lines do not touch dbo.Users. Each declares a Username column on a
         // TEMPORARY working table created by the profile and application-transfer

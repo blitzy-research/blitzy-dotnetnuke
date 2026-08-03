@@ -1,7 +1,7 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// Inbound contract for <c>PUT /api/v1/users/{id}</c>, carrying the complete set of fields an
+/// Inbound contract for <c>PUT /api/v1/portals/{portalId}/users/{userId}</c>, carrying the complete set of fields an
 /// administrator may change on an existing DotNetNuke user account.
 /// </summary>
 /// <remarks>
@@ -54,8 +54,8 @@ namespace DnnMigration.Application.Dtos.User;
 /// <para>
 /// Where the schema disagrees with the legacy class, the schema wins -- but the schema means the
 /// CUMULATIVE TERMINAL schema, obtained by replaying all 88 upgrade scripts, and not the baseline
-/// script read on its own. An earlier revision of this remark recorded three disagreements against
-/// the baseline; replaying the chain dissolves two of them and leaves one.
+/// script read on its own. Read against the baseline alone there appear to be three disagreements;
+/// replaying the chain dissolves two of them and leaves one.
 /// <list type="bullet">
 /// <item>
 /// <description>
@@ -125,7 +125,7 @@ namespace DnnMigration.Application.Dtos.User;
 // asymmetric with CreateUserRequest, which does carry Username because the terminal AddUser
 // procedure inserts it. That asymmetry is correct and measured; it is not an oversight to repair.
 //
-// MIGRATION: The user identifier is absent because PUT /api/v1/users/{id} already carries it in
+// MIGRATION: The user identifier is absent because PUT /api/v1/portals/{portalId}/users/{userId} already carries it in
 // the path. Accepting it in the body too would create two sources of truth for one value and
 // invite the mass-assignment defect where they disagree. UsersController reads it from the route
 // and passes it to IUserService as a separate argument.
@@ -153,7 +153,7 @@ namespace DnnMigration.Application.Dtos.User;
 // no hash, no salt, no storage-format discriminator and no recovery question or answer. This
 // mirrors the legacy design rather than trimming it: credential changes had their own screen,
 // Website/admin/Users/Password.ascx, and they get their own request in ChangePasswordRequest,
-// bound to POST /api/v1/users/{id}/password. Folding credential mutation into a general profile
+// bound to POST /api/v1/portals/{portalId}/users/{userId}/password. Folding credential mutation into a general profile
 // update would widen the attack surface for no functional gain. The legacy store was reversible,
 // registered with an encrypted format and retrieval enabled and decrypted by a key committed to
 // source control, and retrieval is deliberately not carried forward to any endpoint or screen.
@@ -179,10 +179,10 @@ namespace DnnMigration.Application.Dtos.User;
 // User.ascx.vb:L267, to decide whether to show the delete button.
 //
 // MIGRATION: Roles are absent. Role membership is managed as its own resource, through POST and
-// DELETE on /api/v1/roles/{id}/users, so that an assignment carries its own effective and expiry
+// DELETE on /api/v1/portals/{portalId}/roles/{roleId}/users/{userId}, so that an assignment carries its own effective and expiry
 // dates. No role shape is declared here either; the role DTO folder owns that contract.
 //
-// MIGRATION: Profile values are absent. They are managed through PUT /api/v1/users/{id}/profile
+// MIGRATION: Profile values are absent. They are managed through PUT /api/v1/portals/{portalId}/users/{userId}/profile
 // with UserProfileDto, and no dependency on that type is taken from here. Note that address and
 // telephone, which the legacy user grid displays alongside these fields, are profile values and
 // not columns on the Users table, which is a second reason they are not editable through this
@@ -245,9 +245,9 @@ public class UpdateUserRequest
     /// table over it (<c>01.00.05:L54</c>, <c>L57</c>); the <c>01.00.06</c> rebuild preserves
     /// <c>NOT NULL</c> (<c>01.00.06:L186</c>, with the same drop and rename at <c>L227</c> and
     /// <c>L230</c>). No <c>ALTER COLUMN</c> touches it afterwards, so the baseline asymmetry with
-    /// <c>FirstName</c> does not survive the chain. An earlier revision of this remark cited the
-    /// baseline alone, described the asymmetry as surviving the whole upgrade chain, and made the
-    /// member optional.
+    /// <c>FirstName</c> does not survive the chain. Citing the
+    /// baseline alone is what produces the opposite reading - that the asymmetry survives the whole
+    /// upgrade chain and the member is optional - and that reading is wrong.
     /// </para>
     /// <para>
     /// There is consequently no disagreement to resolve: <c>UserInfo.vb:L178</c>'s
@@ -293,7 +293,7 @@ public class UpdateUserRequest
     /// procedure. For the validator author: required, maximum length 256, and not unique.
     /// </para>
     /// <para>
-    /// THE WIDTH IS 256, AND AN EARLIER REVISION OF THIS REMARK SAID 100. The
+    /// THE WIDTH IS 256, NOT 100. The
     /// <c>nvarchar(100) NOT NULL</c> column at <c>01.00.00.SqlDataProvider:L107</c> was REMOVED by
     /// the nine-column drop at <c>02.02.01:L50-51</c> and replaced by the nullable
     /// <c>nvarchar(256)</c> one cited above, which nothing later alters; the terminal

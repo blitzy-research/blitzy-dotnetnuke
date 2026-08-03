@@ -137,7 +137,7 @@ textarea {
   // narrow that container becomes, and it is allowed to shrink below its
   // intrinsic width when it is a flex item — without which a long-valued input
   // forces a horizontal scrollbar onto an ancestor.
-  max-inline-size: 100%;
+  max-inline-size: var(--size-full);
   min-inline-size: 0;
 
   // MIGRATION: the border and background state changes are deliberately
@@ -180,7 +180,7 @@ textarea {
 textarea {
   line-height: var(--line-height-base);
 
-  inline-size: 100%;
+  inline-size: var(--size-full);
 
   // Vertical only, so a user can never drag a textarea wider than its container
   // and break the surrounding layout. Height is left to the `rows` attribute,

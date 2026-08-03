@@ -3,7 +3,7 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// The state submitted to <c>POST /api/v1/modules</c> to place a module on a page. A boundary
+/// The state submitted to <c>POST /api/v1/portals/{portalId}/modules</c> to place a module on a page. A boundary
 /// contract and nothing more: no navigation property, no tracked state, no behaviour and no domain
 /// entity, in either direction.
 /// </summary>
@@ -344,10 +344,18 @@ public sealed class CreateModuleRequest
     /// bottom of the pane.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// OMITTING THIS MEMBER APPENDS; SENDING 0 EXPLICITLY MEANS POSITION ZERO. That distinction is
     /// the entire reason for the initialiser, and deserialisation preserves it: an absent property
     /// leaves the initialised value intact, while a present one overwrites it. No validation rule
     /// may reject -1, and the legacy screen had no rule on this field at all.
+    /// </para>
+    /// <para>
+    /// The instruction is consumed by the application service, which resolves it against the target
+    /// pane before anything is written, so -1 never reaches the column. It is a value on this contract
+    /// and an instruction to that service; it is not stored state, and a read of the created module
+    /// reports the position it actually landed at.
+    /// </para>
     /// </remarks>
     // MIGRATION: 5.1 - -1 IS A LOAD-BEARING COMMAND MEANING "APPEND AT THE BOTTOM OF THE PANE", NOT
     //   AN ABSENT VALUE, AND TWO INDEPENDENT PROOFS SAY SO. The legacy create branched on the value

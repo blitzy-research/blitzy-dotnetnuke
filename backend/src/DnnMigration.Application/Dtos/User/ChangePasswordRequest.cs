@@ -1,7 +1,8 @@
 namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
-/// Inbound contract for <c>POST /api/v1/users/{id}/password</c>. Carries every
+/// Inbound contract for
+/// <c>POST /api/v1/portals/{portalId}/users/{userId}/password</c>. Carries every
 /// credential mutation the legacy DotNetNuke password-management screen offered,
 /// and nothing else.
 /// </summary>
@@ -13,7 +14,8 @@ namespace DnnMigration.Application.Dtos.User;
 /// interpolated into an exception message or a validation message. Two obligations
 /// follow for the API layer, and they belong there rather than here: the
 /// request-logging middleware must exclude the body of
-/// <c>POST /api/v1/users/{id}/password</c> from structured logging, because the
+/// <c>POST /api/v1/portals/{portalId}/users/{userId}/password</c> from structured
+/// logging, because the
 /// non-functional requirement is structured logging that excludes sensitive data;
 /// and the rate-limiting configuration must cover this route alongside the
 /// authentication routes, because comparing <c>CurrentPassword</c> against the stored
@@ -42,12 +44,11 @@ namespace DnnMigration.Application.Dtos.User;
 /// all: <c>IUserService</c> records that the legacy question-and-answer member has no
 /// counterpart, that no member declares a question or answer parameter, and that the
 /// pair's only real purpose was to guard credential retrieval - which is dropped
-/// outright, because the store is now one-way. An earlier revision of this type
-/// declared a third operation constant together with an existing-answer member and a
-/// new-question and new-answer pair, so the wire contract published an operation
-/// whose entire effect was to store two strings that nothing would ever store and
-/// nothing could ever check. That is strictly worse than an absent feature, because a
-/// caller receives a success response for work that did not happen. The measured
+/// outright, because the store is now one-way. Declaring a third operation constant
+/// with an existing-answer member and a new-question and new-answer pair would publish
+/// an operation whose entire effect is to store two strings that nothing stores and
+/// nothing can check, which is strictly worse than an absent feature: a caller would
+/// receive a success response for work that did not happen. The measured
 /// legacy behaviour that makes the removal safe rather than merely convenient: the
 /// provider is registered with the pair not required
 /// (<c>Website/release.config</c> L241), the legacy panel was itself gated on that
@@ -62,23 +63,27 @@ namespace DnnMigration.Application.Dtos.User;
 /// THE TWO OPERATIONS ARE SEPARATED BY AUTHORISATION AS WELL AS BY FIELDS, AND THAT
 /// SEPARATION IS THE POINT. A CHANGE is self-service: the caller proves possession of
 /// the account by presenting its current credential, so <see cref="CurrentPassword"/>
-/// is unconditionally required for that operation. A RESET is administrative: the
-/// caller cannot present a credential they do not know, so proof of possession is
-/// replaced by proof of privilege, which the API layer establishes from the caller's
-/// role claims before this request is acted on - and <see cref="CurrentPassword"/>
-/// must therefore be ABSENT on a reset, because a value there would be meaningless
-/// and accepting it would blur the two authorisation models. An earlier revision
-/// required the current credential for neither operation, on the argument that the
-/// legacy change guard was compound and its privilege half was unavailable to a
-/// validator. That argument was sound about the legacy screen and wrong about the
-/// consequence: it left RESET requiring no proof of any kind at all - no current
-/// credential, and no new credential either, since generation was assumed - so an
-/// empty request body was a complete, destructive credential reset. Naming the two
-/// operations separately is what lets the validator demand proof of possession on the
-/// one that can supply it, without deleting the administrative path that cannot. The
-/// legacy administrative change - an administrator editing another account, for whom
-/// the current-credential row was hidden (L150-L152) - maps onto RESET, which is what
-/// it always was.
+/// is unconditionally required for that operation and the application service verifies
+/// it against the stored hash before anything is written. A RESET is administrative:
+/// the caller cannot present a credential they do not know, so proof of possession is
+/// replaced by proof of privilege - and <see cref="CurrentPassword"/> must therefore be
+/// ABSENT on a reset, because a value there would be meaningless and accepting it would
+/// blur the two authorisation models. Where that privilege is enforced, precisely:
+/// <c>UsersController.ChangePasswordAsync</c> evaluates the portal-administrator policy
+/// for a request whose operation is <see cref="OperationReset"/> and answers
+/// <c>403 Forbidden</c> when it is not satisfied, before the body is validated and
+/// before the service is called. It is evaluated there and not by an attribute because
+/// the requirement depends on the submitted operation, which an attribute cannot see;
+/// and not in this layer, because deciding privilege needs the caller's identity and
+/// the resolved tenant. Neither this type nor the validator can enforce it, and neither
+/// claims to. If the two operations were not named separately, the validator could not
+/// demand proof of possession on the one that can supply it without deleting the
+/// administrative path that cannot - and a reset with no proof of any kind, neither a
+/// current credential nor a privilege, would make an empty body a complete, destructive
+/// credential reset. The legacy administrative change - an administrator editing another
+/// account, for whom the current-credential row was hidden (L150-L152) - maps onto
+/// RESET, which is what it always was, and it carries the same administrator
+/// requirement the legacy screen imposed.
 /// </para>
 /// <para>
 /// NULL AND THE EMPTY STRING ARE BOTH MEANINGFUL, AND THEY ARE NOT THE SAME. No
@@ -91,10 +96,13 @@ namespace DnnMigration.Application.Dtos.User;
 /// legacy code could not tell the two apart, and every legacy guard consequently
 /// tests against the empty string - a Web Forms text box never yields <c>null</c>.
 /// Two rules follow. The validator must treat <c>null</c> and <c>""</c> identically
-/// as "not supplied", which is what reproduces legacy behaviour. And serialisation
-/// must not collapse the distinction: never configure this type with a
-/// when-writing-null or when-writing-default ignore condition, and never normalise a
-/// <c>null</c> to <c>""</c> or a <c>""</c> to <c>null</c> on the way in.
+/// as "not supplied", which is what reproduces legacy behaviour. And deserialisation
+/// must not collapse the distinction: never normalise a <c>null</c> to <c>""</c> or a
+/// <c>""</c> to <c>null</c> on the way in, and never give a member an initialiser. The
+/// application-wide <c>WhenWritingNull</c> ignore condition does not touch any of this,
+/// because it governs WRITING only and no instance of this type is ever written to a
+/// response - which is also why it must stay that way: this type is inbound-only, and
+/// echoing one back would publish credential material.
 /// </para>
 /// <para>
 /// WHAT THIS TYPE DELIBERATELY DOES NOT CARRY. The target user identifier arrives
@@ -103,8 +111,9 @@ namespace DnnMigration.Application.Dtos.User;
 /// arrives from the request-scoped portal context, never from the body: the legacy
 /// <c>Users</c> table has no portal column at all (per-portal facts live on
 /// <c>UserPortals</c>), and accepting a caller-supplied portal would be a
-/// multi-tenant isolation defect. Caller privilege arrives from the current-user
-/// abstraction and the caller's role claims, never from the body; the legacy screen
+/// multi-tenant isolation defect. Caller privilege arrives from the portal-administrator
+/// authorisation policy, which resolves the caller's identity against the addressed
+/// portal's administrator-role assignment, never from the body; the legacy screen
 /// derives it from two separate facts, <c>IsAdmin</c> (the caller holds the
 /// administrator role or is a super user) and <c>IsUser</c> (the routed target is the
 /// caller), and a body-supplied privilege flag would be trivially forged. Also
@@ -127,13 +136,16 @@ namespace DnnMigration.Application.Dtos.User;
 /// </para>
 /// <para>
 /// THE IDENTITY-SEED TRAP, WHICH BINDS EVEN THOUGH NO IDENTIFIER APPEARS HERE.
-/// The legacy schema seeds <c>Portals.PortalID</c> with <c>IDENTITY (-1, 1)</c>
-/// (<c>01.00.00.SqlDataProvider</c> L77), so -1 is a real portal identifier, and it
-/// seeds <c>Roles.RoleID</c>, <c>Tabs.TabID</c> and <c>Modules.ModuleID</c> with
-/// <c>IDENTITY (0, 1)</c>, so 0 is a real identifier too - while the legacy sentinel
-/// for a missing integer is -1 (<c>Null.vb</c> L41-L45) and <c>IsNull(-1)</c> is
-/// true. Nothing downstream of this request may therefore treat an identifier of 0 or
-/// -1 as absent; absence is expressed by a nullable type, never by a magic value.
+/// The legacy schema declares <c>Portals.PortalID</c> as <c>IDENTITY (-1, 1)</c>
+/// (<c>01.00.00.SqlDataProvider</c> L77), so the seed - the first value the column
+/// generates - is -1, while the shipped default portal is inserted with an explicit
+/// <c>PortalID</c> of 0. Both are therefore valid keys, and so is every value above
+/// them. <c>Roles.RoleID</c>, <c>Tabs.TabID</c> and <c>Modules.ModuleID</c> are
+/// declared <c>IDENTITY (0, 1)</c>, so 0 is a real identifier there too - while the
+/// legacy sentinel for a missing integer is -1 (<c>Null.vb</c> L41-L45) and
+/// <c>IsNull(-1)</c> is true. Nothing downstream of this request may therefore treat
+/// an identifier of 0 or -1 as absent; absence is expressed by a nullable type, never
+/// by a magic value.
 /// </para>
 /// <para>
 /// THE MEASURED VALIDATION RULES ARE RECORDED HERE AND IMPLEMENTED IN THE VALIDATOR.
@@ -274,20 +286,24 @@ namespace DnnMigration.Application.Dtos.User;
 /// AND. This is recorded for the validator author; there is no logic here to fix.
 /// </para>
 /// <para>
-/// NO SCHEMA LENGTH CEILING IS INHERITED, BUT THE HASHER'S OWN CEILING IS ENFORCED.
-/// The original column was <c>[Password] [nvarchar] (20) NOT NULL</c>
+/// NO SCHEMA LENGTH CEILING IS INHERITED, AND THE ONE CEILING THAT APPLIES IS A WORK
+/// BOUND RATHER THAN AN ALGORITHM LIMIT. The original column was
+/// <c>[Password] [nvarchar] (20) NOT NULL</c>
 /// (<c>01.00.00.SqlDataProvider</c> L106), and the legacy markup repeats that ceiling
 /// as a twenty-character input limit on all seven of its text boxes. A password hash
 /// column supersedes both, so no schema-derived maximum length applies to any member
-/// of this type and none is declared. One bound does apply, and it is a property of
-/// the credential hasher rather than of the schema or of the policy: BCrypt derives
-/// its key from at most 72 encoded bytes and discards the remainder without reporting
-/// anything, so two credentials agreeing on their first 72 bytes verify
-/// interchangeably. The validator rejects a longer credential in ENCODED BYTES rather
-/// than in characters, because a character outside the ASCII range occupies between
-/// two and four of them; the infrastructure hasher enforces the identical constant, so
-/// the boundary and the primitive cannot disagree. It is more than three times the
-/// legacy input ceiling, so it can reject nothing the legacy screen accepted.
+/// of this type and none is declared. The single applicable bound is
+/// <c>CredentialBounds.MaximumByteLength</c>, 256 UTF-8 bytes, shared by every
+/// credential entry point and by the infrastructure hasher so the boundary and the
+/// primitive cannot disagree. It is NOT BCrypt's 72-byte significance limit: the
+/// hasher uses the enhanced hash and verify pair with a SHA-384 pre-hash, so the whole
+/// of the input contributes to the digest and two credentials agreeing on their first
+/// 72 bytes do not verify interchangeably. What 256 bytes bounds is the work an
+/// unauthenticated caller can ask the server to do, and the bound is measured in
+/// ENCODED BYTES rather than characters because a character outside the ASCII range
+/// occupies between two and four of them - which is also the unit the hashing
+/// primitive itself consumes. At more than twelve times the legacy input ceiling it
+/// can reject nothing the legacy screen accepted.
 /// </para>
 /// <para>
 /// THE PASSWORD STORE CHANGES, AND SO DOES WHAT A RESET RETURNS. The legacy store is
@@ -295,108 +311,37 @@ namespace DnnMigration.Application.Dtos.User;
 /// format and password retrieval enabled, and the key that decrypts every stored
 /// password is committed to the legacy configuration file in the clear. The target
 /// replaces that with one-way password hashing, and THE TRANSITION FOR EXISTING
-/// CREDENTIALS IS AN ADMINISTRATIVE RESET, AND NOTHING ELSE. An earlier revision of
-/// this paragraph said the transition was a re-hash on the first successful login
-/// with reset as a fallback; that is the intent recorded in AAP section 0.7.5.5, and
-/// its primary branch cannot execute, because no component in this solution verifies
-/// a credential held under the legacy reversible scheme and that same section forbids
-/// building one. Retrieval is NOT carried forward: the legacy entry point
-/// <c>UserController.GetPassword</c> (L433) has no target equivalent, by design, and
-/// no member of this folder asks for a password back. Reset IS carried forward,
-/// because the same configuration enables password reset, and the reset flow this
-/// type serves is therefore the ONLY migration path for a pre-existing account
-/// rather than a fallback from one - which makes this request shape load-bearing for
-/// the migration rather than incidental to it. Do not conflate the two flags. One
-/// measured caveat: the legacy
+/// CREDENTIALS IS AN ADMINISTRATIVE RESET, AND NOTHING ELSE. A re-hash on the first
+/// successful sign-in - the intent recorded in AAP section 0.7.5.5 - cannot execute
+/// here: no component in this solution verifies a credential held under the legacy
+/// reversible scheme, and that same section forbids building one, so there is no
+/// verification from which a lazy upgrade could follow. Retrieval is NOT carried
+/// forward either: the legacy entry point <c>UserController.GetPassword</c> (L433) has
+/// no target equivalent, by design, and no member of this folder asks for a password
+/// back. Reset IS carried forward, because the same configuration enables password
+/// reset, and the reset flow this type serves is therefore the SOLE migration path for
+/// a pre-existing account rather than a fallback from one - which makes this request
+/// shape load-bearing for the migration rather than incidental to it. Do not conflate
+/// the two flags. One measured caveat: the legacy
 /// <c>UserController.ResetPassword</c> (L906) is structurally identical to the
 /// retrieval method - both assign to the user's password member and return it as a
 /// string (L915) - so the legacy reset returns generated plaintext to its caller. The
 /// target preserves the reset OPERATION and drops both the generation and that return
-/// value: the administrator supplies the replacement credential explicitly, so there
-/// is nothing for the response to carry and no out-of-band channel to depend on. An
-/// earlier revision of this paragraph said the generated credential was "delivered out
-/// of band", which was not a design so much as a gap - the mail subsystem is excluded,
-/// so no out-of-band channel exists in this migration, and a credential nobody can
+/// value: the administrator supplies the replacement credential explicitly, so there is
+/// nothing for the response to carry. No out-of-band channel could carry it either -
+/// the mail subsystem is excluded from this migration - and a credential nobody can
 /// learn is a lockout rather than a reset.
 /// </para>
 /// </remarks>
 public sealed class ChangePasswordRequest
 {
-    // MIGRATION: This type is the union of the two SUPPORTED legacy operations rather
-    // than two request types, because the plan fixes this folder at eight files. The
-    // combination of members that is legal for each operation is enforced by
-    // Application/Validation/ChangePasswordRequestValidator.cs, not here.
-    //
-    // MIGRATION: The legacy screen's third operation - replace the recovery question and
-    // answer - is NOT reproduced, and its three members are removed rather than left
-    // inert. The recovery pair has no counterpart anywhere in the target: the owning
-    // service contract states so explicitly, the pair existed to guard credential
-    // retrieval, and retrieval is dropped because the store is now one-way. Publishing an
-    // operation that only writes two strings nothing stores would return success for work
-    // that did not happen.
-    //
-    // MIGRATION: The two surviving operations are separated by AUTHORISATION, not merely
-    // by field set. CHANGE is self-service and requires proof of possession, so the
-    // current credential is unconditionally required for it. RESET is administrative and
-    // cannot require proof of possession - an administrator does not know the credential -
-    // so it requires proof of PRIVILEGE, established by the API layer from the caller's
-    // role claims, and it requires the current credential to be ABSENT. An earlier
-    // revision required the current credential for neither, which left RESET reachable
-    // with an entirely empty body.
-    //
-    // MIGRATION: Every member is nullable and NONE is initialised to string.Empty,
-    // which deviates from the usual convention for request DTOs in this folder. The
-    // deviation is deliberate and measured: null means "this flow does not use the
-    // field" while the empty string means "submitted blank", and the legacy guards
-    // test explicitly against the empty string. Normalising either direction would
-    // break the validator.
-    //
-    // MIGRATION: The target user identifier is route-sourced, the portal identifier
-    // is resolved from the request-scoped portal context, and caller privilege is
-    // resolved from the current-user abstraction and the caller's role claims. None
-    // of the three is a member of this request; a body-supplied identifier would be a
-    // mass-assignment vector, a body-supplied portal would break tenant isolation,
-    // and a body-supplied privilege flag would be trivially forged.
-    //
-    // MIGRATION: No hashing, salting, comparison, length measurement, complexity
-    // measurement, trimming or normalisation happens in this type. The password
-    // hasher is an infrastructure concern that this layer cannot even reference, and
-    // every rule is a validator concern. The accessors below are plain automatic
-    // properties for exactly that reason.
-    //
-    // MIGRATION: The reversible encrypted password store, whose decryption key is
-    // committed to the legacy configuration in the clear, is replaced by one-way
-    // hashing. Credentials that predate the migration are replaced by ADMINISTRATIVE
-    // RESET ONLY - see the paragraph above for why the first-login re-hash that an
-    // earlier revision of this note promised cannot execute. Password RETRIEVAL is
-    // dropped outright and has no target equivalent; password RESET is kept, because
-    // the same legacy configuration enables it and it is now the sole migration path -
-    // but the legacy reset's plaintext return value is dropped, so this endpoint's
-    // response carries a status and nothing more.
-    //
-    // MIGRATION: Three legacy affordances are deliberately not reproduced. The
-    // twenty-character password ceiling, present both on the original column and as an
-    // input limit on all seven legacy text boxes, is superseded by the hash column and
-    // is not restated on any member here. The CAPTCHA control is out of scope, so no
-    // CAPTCHA member exists on this request. Password expiry and its reminder are
-    // host-level settings and out of scope; the legacy screen's last-changed and expires
-    // labels were display-only chrome and belong to the user detail response.
-    //
-    // MIGRATION: One ceiling IS enforced by the validator, and it is not a policy rule
-    // and not the legacy twenty. BCrypt consumes at most 72 encoded bytes of its input
-    // and silently ignores the rest, so a longer credential would be truncated without
-    // anyone being told and two distinct credentials could produce one digest. The
-    // validator and the infrastructure hasher enforce the same constant, measured in
-    // encoded bytes rather than characters.
-    //
-    // MIGRATION: The password policy is preserved verbatim rather than hardened -
-    // minimum length seven, zero required non-alphanumeric characters, no question and
-    // answer requirement, email uniqueness not enforced - because tightening it during
-    // a migration would lock out existing users. The one corrected behaviour is the
-    // legacy policy check's third branch, which assigned its result instead of
-    // combining it, and which the target must combine with logical AND. Both the
-    // preserved numbers and the correction are recorded in this type's documentation
-    // for the validator author and appear nowhere here as code.
+    // MIGRATION: every divergence this contract embodies - one request type for two
+    // operations, the removed recovery pair, the authorisation split between possession and
+    // privilege, the deliberate null-versus-empty-string distinction, the route-sourced
+    // identifiers, the shared 256-byte credential bound and the preserved password policy -
+    // is stated once in this type's <remarks> above, with its measured legacy line numbers.
+    // It is not restated here: two copies of one rationale drift apart, and the copy a
+    // reader happens to find first then decides what they believe.
 
     /// <summary>
     /// The value of <see cref="Operation"/> that selects the change-password flow:
@@ -406,17 +351,21 @@ public sealed class ChangePasswordRequest
 
     /// <summary>
     /// The value of <see cref="Operation"/> that selects the reset-password flow: the
-    /// legacy <c>pnlReset</c> panel, and the administrative fallback for a credential
-    /// that cannot be verified against the new hash.
+    /// legacy <c>pnlReset</c> panel, and the sole migration path for a credential stored
+    /// under the legacy reversible scheme, which nothing in this solution can verify.
     /// </summary>
+    /// <remarks>
+    /// A request carrying this value must satisfy the portal-administrator policy, which
+    /// <c>UsersController.ChangePasswordAsync</c> evaluates before the body is validated.
+    /// </remarks>
     public const string OperationReset = "reset";
 
-    // MIGRATION: There is deliberately NO third operation constant. An earlier revision
-    // published "change-question-and-answer" for the legacy pnlQA panel, whose entire
-    // effect was to store a recovery question and answer that the target does not store
-    // and cannot check. Removing the constant - rather than keeping it and rejecting it -
-    // means the three places that share these values (the validator, the service and the
-    // Angular model) cannot name an operation that does not exist.
+    // MIGRATION: There are deliberately only TWO operation constants. A third for the legacy
+    // pnlQA panel would publish an operation whose entire effect is to store a recovery
+    // question and answer that the target does not store and cannot check. Declaring no
+    // constant for it - rather than declaring one and rejecting it - means the three places
+    // that share these values (the validator, the service and the Angular model) cannot name
+    // an operation that does not exist.
 
     /// <summary>
     /// Which of the two supported operations this request performs. Expected to be either

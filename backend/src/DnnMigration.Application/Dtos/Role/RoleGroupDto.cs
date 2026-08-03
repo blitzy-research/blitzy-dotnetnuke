@@ -27,14 +27,18 @@ namespace DnnMigration.Application.Dtos.Role;
 /// constraint over <c>(PortalID, RoleGroupName)</c>.
 /// </para>
 /// <para>
-/// One shape serves reads and writes alike for the <c>/api/v1/role-groups</c>
-/// resource; there is deliberately no separate creation or update variant,
-/// because the legacy editor posted the very same four fields in both cases
-/// (<c>EditGroups.ascx.vb</c> lines 107 to 111). The type is an inert data
-/// carrier: it holds no behaviour, performs no validation and reaches no
-/// database. Field rules live in the FluentValidation validators under
-/// <c>Application/Validation</c>, and translation to and from the persisted model
-/// lives in <c>Application/Mapping/RoleMappings.cs</c>.
+/// One shape serves reads and writes alike for the
+/// <c>/api/v1/portals/{portalId}/role-groups</c> resource; there is deliberately
+/// no separate creation or update variant, because the legacy editor posted the
+/// very same four fields in both cases (<c>EditGroups.ascx.vb</c> lines 107 to
+/// 111). The type is an inert data carrier: it holds no behaviour, performs no
+/// validation and reaches no database. NO FluentValidation validator exists for
+/// it - the API's validation filter finds none registered for this type - so every
+/// field rule is enforced by <c>Application/Services/RoleService.cs</c>, which
+/// raises <see cref="DnnMigration.Domain.Common.DomainException"/> for a blank or
+/// over-long group name and answers a duplicate with a conflict reason.
+/// Translation to and from the persisted model lives in
+/// <c>Application/Mapping/RoleMappings.cs</c>.
 /// </para>
 /// <para>
 /// Two legacy affordances are intentionally absent. The role tally the legacy
@@ -102,11 +106,12 @@ public sealed class RoleGroupDto
     /// <c>String</c> at <c>RoleGroupInfo.vb</c> line 83, bound to a
     /// fifty-character mandatory text box at <c>EditGroups.ascx</c> lines 11 and
     /// 12, the single field validator that screen declared. Both the length
-    /// ceiling and the mandatory-value rule are reproduced declaratively by the
-    /// FluentValidation validator, and a uniqueness clash surfaces as a conflict
-    /// raised by the service layer, mirroring the duplicate-group message the
-    /// legacy editor emitted at <c>EditGroups.ascx.vb</c> line 117. This contract
-    /// asserts none of those rules itself.
+    /// ceiling and the mandatory-value rule are reproduced in the service layer,
+    /// which raises a domain exception the API answers with a 400, and a
+    /// uniqueness clash surfaces as a conflict from the same layer, mirroring the
+    /// duplicate-group message the legacy editor emitted at
+    /// <c>EditGroups.ascx.vb</c> line 117. This contract asserts none of those
+    /// rules itself, and no boundary validator asserts them either.
     /// </remarks>
     public string RoleGroupName { get; set; } = string.Empty;
 

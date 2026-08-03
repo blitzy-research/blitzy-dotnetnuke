@@ -159,10 +159,12 @@ namespace DnnMigration.Application.Abstractions;
 ///     <c>auth.account_not_approved</c></term>
 ///     <description>
 ///     The three account-approval outcomes, preserving the legacy message keys
-///     <c>EnterCode</c>, <c>InvalidCode</c> and <c>UserNotAuthorized</c> in that order. They are
-///     declared so that the approval flow described on <see cref="LoginAsync"/> can be reported
-///     unambiguously; the shipped implementation deliberately answers all three with the uniform
-///     denial instead, for the anti-disclosure reason recorded on that member.
+///     <c>EnterCode</c>, <c>InvalidCode</c> and <c>UserNotAuthorized</c> in that order. Each is
+///     reported to the caller, which is safe only because the approval gate is required to close
+///     <em>after</em> the credential has been proved: every caller who receives one of these has
+///     presented the account's correct credential, so none of the three tells an unauthenticated
+///     caller that an account exists. An implementation that evaluated approval ahead of the
+///     credential would have to answer all three with the uniform denial instead.
 ///     </description>
 ///   </item>
 /// </list>
@@ -231,8 +233,9 @@ public interface IAuthService
     /// <c>auth.request_invalid</c> when the submission is unusable, <c>auth.invalid_credentials</c>
     /// for every rejected credential, <c>auth.locked_out</c> for a locked account when the caller is
     /// entitled to that detail, one of <c>auth.verification_required</c>,
-    /// <c>auth.verification_code_invalid</c> or <c>auth.account_not_approved</c> where an
-    /// implementation elects to report the approval outcome explicitly, or
+    /// <c>auth.verification_code_invalid</c> or <c>auth.account_not_approved</c> when a proved
+    /// credential met an account the tenant has not yet admitted,
+    /// <c>auth.approval_store_unavailable</c> when a correct code could not be recorded, or
     /// <c>TOKEN_STORE_UNAVAILABLE</c> propagated unchanged when the credential was accepted and the
     /// session could not be recorded.
     /// </returns>
@@ -269,21 +272,35 @@ public interface IAuthService
     /// aggregate. This layer never reaches into a request object for it.
     /// </para>
     /// <para>
-    /// <b>Required decision order.</b> Resolve the tenant, then the account within it; verify the
-    /// credential; then evaluate lockout and approval; then, where a correct code accompanied a
+    /// <b>Required decision order.</b> Resolve the tenant, then the account within it; evaluate
+    /// lockout, applying the automatic-unlock window before concluding that an account is locked;
+    /// verify the credential; then evaluate approval; then, where a correct code accompanied a
     /// correct credential on an unapproved account, approve the account and persist that; then mint
-    /// the pair. Verifying the credential before disclosing an account's approval state reverses the
-    /// legacy order deliberately - see the annotation below - and a legitimate caller reaches the
-    /// same outcome by either order.
+    /// the pair. Two properties of that order are load-bearing rather than incidental. A locked
+    /// account must never have its credential compared, so it cannot be used as a credential oracle -
+    /// which is what the legacy provider did at <c>AspNetMembershipProvider.vb:L1481</c> and is worth
+    /// preserving. And NOTHING may be written before the credential has been accepted, which is what
+    /// reverses the legacy order for approval; see the annotations below. A legitimate caller reaches
+    /// the same outcome by either order.
     /// </para>
     /// <para>
-    /// <b>The credential-migration obligation.</b> A legacy stored value cannot be verified against
-    /// a one-way hash, so after a <em>successful</em> verification the implementation must ask the
-    /// domain hashing abstraction whether the stored value is outdated and, if it is, replace it
-    /// with a current hash inside the same operation. This is entirely transparent to the caller: it
-    /// changes no part of this signature, adds nothing to the response, and is neither a member, a
-    /// flag nor a reason code. An account whose stored value cannot be verified at all needs an
-    /// administrative reset instead, which the account-administration contract owns.
+    /// <b>The work-factor upgrade obligation, which is NOT a legacy-credential migration.</b> After a
+    /// <em>successful</em> verification the implementation must ask the domain hashing abstraction
+    /// whether the stored value is outdated and, if it is, replace it with a current hash inside the
+    /// same operation. "Outdated" means one thing only: produced by this scheme at a cost lower than
+    /// the one now configured. The upgrade is entirely transparent to the caller - it changes no part
+    /// of this signature, adds nothing to the response, and is neither a member, a flag nor a reason
+    /// code.
+    /// </para>
+    /// <para>
+    /// It rescues no legacy credential, and the distinction is load-bearing rather than pedantic. A
+    /// value held under the legacy reversible scheme cannot be verified here at all, so the
+    /// successful verification this upgrade depends upon can never occur for one; there is no
+    /// sequence of events in which a legacy value reaches the upgrade. <b>An administrative reset,
+    /// owned by the account-administration contract, is the only path by which a pre-existing
+    /// credential becomes usable</b>, and it is the whole path rather than a fallback behind a lazy
+    /// upgrade. Reading it as a fallback is what leads an operator to skip the resets that every
+    /// pre-existing account actually requires.
     /// </para>
     /// <para>
     /// <b>The effective legacy verdict, preserved for reference.</b> The legacy screen computed
@@ -371,12 +388,21 @@ public interface IAuthService
     // first makes the guessable code insufficient on its own, while the composition itself is
     // preserved for the parity reason given above.
 
-    // MIGRATION: the re-hash on first successful sign-in is the credential-migration path, and it is
-    // an implementation obligation rather than part of this signature. The legacy value was
-    // reversibly encrypted and cannot be verified against a one-way hash, so a correct credential is
-    // re-hashed and persisted within the same sign-in, and an account whose stored value cannot be
-    // verified at all is left to administrative reset. Nothing about it is observable to the caller:
-    // it adds no member, no response field and no reason code.
+    // MIGRATION: the re-hash performed on a successful sign-in is a WORK-FACTOR UPGRADE, not the
+    // credential-migration path, and an earlier revision of this annotation said otherwise. It read
+    // "the re-hash on first successful sign-in is the credential-migration path ... so a correct
+    // credential is re-hashed and persisted within the same sign-in, and an account whose stored value
+    // cannot be verified at all is left to administrative reset", which describes a two-tier scheme
+    // this solution does not and cannot have: the legacy value was reversibly encrypted, the hashing
+    // abstraction recognises BCrypt digests only and holds no legacy verifier, and no entity maps a
+    // legacy credential column - so no legacy value is ever the subject of a successful verification,
+    // and the tier the annotation called the main path could never execute.
+    //
+    // What remains is true and narrow: a value THIS scheme produced is re-hashed at the current cost
+    // once that cost has been raised, within the same sign-in that verified it, and nothing about it is
+    // observable to the caller - no member, no response field, no reason code. Every pre-existing
+    // account requires an administrative reset, which is the whole migration path rather than a
+    // fallback, and is recorded as a deliberate functional reduction in MIGRATION_NOTES.md.
 
     // MIGRATION: the three approval outcomes keep their legacy identities but not their legacy
     // wording. Login.ascx.vb:L168-L185 selected between the resource keys EnterCode, InvalidCode and

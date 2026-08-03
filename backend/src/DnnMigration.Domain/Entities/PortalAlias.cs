@@ -93,7 +93,8 @@ public sealed class PortalAlias : Entity<int>
     /// spells the acronym <c>Id</c> while the column spells it <c>ID</c>. Unlike the portal and role
     /// keys, this identity seeds at 1, so no negative or zero value occurs in stored data - which is
     /// still not licence to read one as "unsaved": persisted state is declared through
-    /// <see cref="Entity{TId}.MarkIdentityPersisted"/>, never inferred from the value.
+    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows the row exists, and
+    /// nothing declares it automatically - it is never inferred from the value.
     /// </remarks>
     public int PortalAliasId { get; set; }
 

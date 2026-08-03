@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// UserDetailDto - the single-user detail contract for GET /api/v1/users/{id}.
+// UserDetailDto - the single-user detail contract for GET /api/v1/portals/{portalId}/users/{userId}.
 //
 // PROVENANCE. Every member below is derived from a measured legacy source rather
 // than from the shape of the domain entity, so that no entity crosses the wire:
@@ -32,7 +32,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// The full detail projection of a single portal user, returned by
-/// <c>GET /api/v1/users/{id}</c>.
+/// <c>GET /api/v1/portals/{portalId}/users/{userId}</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -129,8 +129,9 @@ public sealed class UserDetailDto
     /// <para>
     /// <b>Do not test this value for absence.</b> <c>Portals.PortalID</c>
     /// is declared <c>IDENTITY(-1, 1)</c>
-    /// (01.00.00.SqlDataProvider L77), so the first portal ever created has the
-    /// identifier <c>-1</c> and the second has <c>0</c>. The
+    /// (01.00.00.SqlDataProvider L77), so the seed and first generated value is
+    /// <c>-1</c>, while the shipped default portal row is inserted explicitly with
+    /// <c>PortalID</c> <c>0</c> (L7125); both are valid keys. The
     /// legacy sentinel for a missing integer is also <c>-1</c>
     /// (Null.vb L41-L45), and <c>Null.IsNull(-1)</c> returns
     /// <see langword="true"/> (Null.vb L207-L235) - the same bit pattern means
@@ -186,8 +187,8 @@ public sealed class UserDetailDto
     /// rebuilds, so this member is non-nullable and defaults to the empty string.
     /// <see cref="LastName"/> reaches the same terminal shape by a different
     /// route: the baseline declared it nullable and a later rebuild promoted it.
-    /// An earlier revision of this remark read only the baseline and therefore
-    /// described the pair as permanently asymmetric.
+    /// Reading only the baseline is what makes the pair look permanently
+    /// asymmetric; it is not.
     /// </remarks>
     public string FirstName { get; set; } = string.Empty;
 
@@ -198,8 +199,8 @@ public sealed class UserDetailDto
     // 01.00.05:L57; the 01.00.06 rebuild preserves NOT NULL at 01.00.06:L186 and repeats the
     // drop-and-rename at 01.00.06:L227 and L230. No ALTER COLUMN in any of the 88 scripts touches
     // the column afterwards, so nvarchar(50) NOT NULL is terminal and the baseline asymmetry with
-    // FirstName no longer exists. An earlier revision of this member read only the baseline,
-    // declared this "the one genuinely nullable name column", and typed it as nullable.
+    // FirstName no longer exists. Reading only the baseline is what makes this look like "the one
+    // genuinely nullable name column" and invites typing it as nullable; it is NOT nullable.
     /// <summary>
     /// The user's family name, from <c>Users.LastName</c>.
     /// </summary>
@@ -270,12 +271,12 @@ public sealed class UserDetailDto
     /// narrows it. <b>The validators must use 256.</b>
     /// </para>
     /// <para>
-    /// MIGRATION: there is consequently <b>no width collision to resolve.</b> An
-    /// earlier revision of this remark read the baseline as terminal and concluded
-    /// that the legacy <c>MaxLength(256)</c> editor attribute
-    /// (UserInfo.vb L121-L123) exceeded the column, instructing validators to use
-    /// 100. Once the whole chain is replayed the attribute and the terminal column
-    /// AGREE at 256, and enforcing 100 would have refused addresses the store
+    /// MIGRATION: there is consequently <b>no width collision to resolve.</b> Reading
+    /// the baseline as terminal is what produces the false collision: it makes the
+    /// legacy <c>MaxLength(256)</c> editor attribute
+    /// (UserInfo.vb L121-L123) look as though it exceeded the column, and points
+    /// validators at 100. Once the whole chain is replayed the attribute and the terminal
+    /// column AGREE at 256, and enforcing 100 would refuse addresses the store
     /// already holds - every row populated by the 03.00.13 back-fill came from a
     /// 256-wide source column.
     /// </para>
@@ -647,7 +648,7 @@ public sealed class UserDetailDto
     //
     // NO NESTED PROFILE. The legacy UserInfo.Profile (UserInfo.vb L236) is not
     // embedded and not referenced. The profile is its own response, served by
-    // GET /api/v1/users/{id}/profile, and keeping the two independent is what
+    // GET /api/v1/portals/{portalId}/users/{userId}/profile, and keeping the two independent is what
     // keeps this detail read cheap.
     //
     // NO OPERATION STATUS. The legacy create, delete and sign-in paths reported

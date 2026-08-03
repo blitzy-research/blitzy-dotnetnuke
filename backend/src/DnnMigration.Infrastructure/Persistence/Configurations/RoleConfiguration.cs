@@ -1,5 +1,5 @@
 using DnnMigration.Domain.Entities;
-using DnnMigration.Domain.Enums;
+using DnnMigration.Infrastructure.Persistence.ValueConverters;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -53,12 +53,15 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
 
         builder.ToTable("Roles", "dbo");
 
-        // MIGRATION: PK_Roles is declared NONCLUSTERED [01.00.05:L2783-2788]. Clustering is physical
-        // storage metadata with no EF Core surface, so it is recorded here rather than expressed in
-        // code. The earlier, textually identical keys at 01.00.00:L490 and 01.00.04:L1357-1358 were
-        // destroyed by the two table rebuilds, and the no-op rename at 02.00.00:L120 changes nothing;
-        // the 01.00.05 declaration is the terminal one.
-        builder.HasKey(x => x.RoleId).HasName("PK_Roles");
+        // MIGRATION: PK_Roles is declared NONCLUSTERED [01.00.05:L2783-2788]. The earlier, textually
+        // identical keys at 01.00.00:L490 and 01.00.04:L1357-1358 were destroyed by the two table
+        // rebuilds, and the no-op rename at 02.00.00:L120 changes nothing; the 01.00.05 declaration is
+        // the terminal one.
+        //
+        // MIGRATION: the clustering IS expressed. The SQL Server provider defaults a primary key to
+        // CLUSTERED, so a bare declaration would put a physical topology into the model that this table
+        // does not have, and the model snapshot is exactly what a future migration is diffed against.
+        builder.HasKey(x => x.RoleId).HasName("PK_Roles").IsClustered(false);
 
         // MIGRATION: the identity is seeded at ZERO - "RoleID int NOT NULL IDENTITY (0, 1)"
         // [01.00.05:L2748], restating the baseline at 01.00.00:L115 and the first rebuild at
@@ -76,10 +79,10 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
             .ValueGeneratedOnAdd()
             .UseIdentityColumn(0, 1);
 
-        // MIGRATION: THIS COLUMN IS NULLABLE. An earlier revision of this file pinned it with
-        // IsRequired() and recorded the disagreement with the domain property as deliberately
-        // escalated - "either the property tightens to int or this line relaxes, and the two must not
-        // disagree indefinitely". It is resolved here, in favour of nullable, on three grounds.
+        // MIGRATION: THIS COLUMN IS NULLABLE, and it must not be pinned with IsRequired(): doing so
+        // would put this mapping in disagreement with the domain property, and the two must never
+        // disagree - either the property tightens to int or this line stays relaxed. It is settled in
+        // favour of nullable on three grounds.
         //
         // First, the schema this mapping actually binds to declares it nullable:
         // backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql:L259 is "[PortalID] int
@@ -146,11 +149,23 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
         // hold rows containing those letters. The domain enumeration therefore carries the
         // characters themselves as its values, and persistence must round-trip the CHARACTER.
         //
-        // The conversion is written explicitly because both convenient shorthands are wrong and fail
-        // silently. Converting through the member name would store "None" or "Month" and overflow a
-        // single-character column; letting the enumeration persist as its numeric backing value
-        // would store the code point of the letter, so 'D' would arrive as 68. Neither produces a
-        // build error and neither is recoverable once written.
+        // The conversion is BillingFrequencyToStringConverter.Instance rather than a pair of lambdas
+        // written here, and both halves of that choice matter. Sharing one instance is what makes the
+        // two frequency columns provably read the same way - one object, one pair of expressions, no
+        // second copy for a later change to miss - and it lets the conversion be exercised directly by
+        // a test instead of only through a built model. Both convenient shorthands the converter
+        // replaces are wrong and fail silently: converting through the member name would store "None"
+        // or "Month" and overflow a single-character column, while letting the enumeration persist as
+        // its numeric backing value would store the code point of the letter, so 'D' would arrive as
+        // 68. Neither produces a build error and neither is recoverable once written.
+        //
+        // MIGRATION: THE CONVERSION IS THE SHARED ONE, deliberately, and it is not restated inline.
+        // BillingFrequencyToStringConverter.Instance is a single object bound by this property and by
+        // TrialFrequency below, so the two char(1) columns that hold the same vocabulary cannot drift
+        // apart - there is one pair of expressions rather than two copies for a later change to miss -
+        // and the conversion can be exercised by a unit test without building an entire model. Two
+        // duplicated inline lambda pairs previously stood here; they shared nothing, could not be tested
+        // in isolation, and omitted the normalisation described next.
         //
         // MIGRATION: the read side maps a store NULL and an empty string onto the same CLR null.
         // That is a normalisation of two indistinguishable legacy encodings of absence, not a
@@ -161,13 +176,15 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
         // MIGRATION: nothing validates these codes at the database level. The foreign key that once
         // constrained this column against a code lookup table existed [01.00.00:L584] and was
         // recreated by both rebuilds [01.00.04:L1366, 01.00.05:L2802], but it is dropped for good at
-        // 03.00.01:L1297 with no recreate. No check constraint replaced it. The exactness of this
-        // conversion is consequently the only thing standing between the enumeration and the column.
+        // 03.00.01:L1297 with no recreate. No check constraint replaced it, so a live installation may
+        // legitimately hold a character outside the vocabulary. That is precisely why the shared
+        // converter resolves an unrecognised character to the None member through Enum.IsDefined rather
+        // than casting it through: an undeclared enumeration value would materialise, survive into a
+        // response, and then fail JSON serialisation at the wire boundary - turning one legacy row into
+        // a failed request. A bare cast, as the removed inline lambdas performed, does exactly that.
         builder.Property(x => x.BillingFrequency)
             .HasColumnName("BillingFrequency")
-            .HasConversion(
-                v => v.HasValue ? ((char)v.Value).ToString() : null,
-                s => string.IsNullOrEmpty(s) ? null : (BillingFrequency?)(BillingFrequency)s[0])
+            .HasConversion(BillingFrequencyToStringConverter.Instance)
             .HasColumnType("char(1)")
             .HasMaxLength(1)
             .IsUnicode(false);
@@ -178,14 +195,22 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
             .HasColumnType("int");
 
         // MIGRATION: char(1) NULL [01.00.05:L2755], carrying the same six codes over the same
-        // enumeration as the billing frequency and converted identically. No separate trial-specific
-        // enumeration is introduced, mirroring the legacy type, which backed both properties with
-        // one String contract [RoleInfo.vb:L49 with L149-154, and L51 with L188-193].
+        // enumeration as the billing frequency and converted by THE SAME SHARED INSTANCE, which is what
+        // makes "converted identically" a structural fact rather than a claim two call sites happen to
+        // honour. No separate trial-specific enumeration is introduced, mirroring the legacy type, which
+        // backed both properties with one String contract [RoleInfo.vb:L49 with L149-154, and L51 with
+        // L188-193]. This column never had even the code-lookup foreign key that once covered the
+        // billing column, so an out-of-vocabulary character here is the likeliest of the two - and the
+        // shared converter's Enum.IsDefined normalisation is what keeps such a row readable.
+        //
+        // MIGRATION: this column is the less constrained of the two. FK_Roles_CodeFrequency covered
+        // the billing column [01.00.05:L2801-2808] and nothing ever covered this one, so an arbitrary
+        // character here is a row a legacy installation already accepts. The converter's fallback is
+        // consequently load-bearing on this column even in an installation whose billing codes are
+        // clean.
         builder.Property(x => x.TrialFrequency)
             .HasColumnName("TrialFrequency")
-            .HasConversion(
-                v => v.HasValue ? ((char)v.Value).ToString() : null,
-                s => string.IsNullOrEmpty(s) ? null : (BillingFrequency?)(BillingFrequency)s[0])
+            .HasConversion(BillingFrequencyToStringConverter.Instance)
             .HasColumnType("char(1)")
             .HasMaxLength(1)
             .IsUnicode(false);
@@ -254,8 +279,17 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
         // own a role of the same name. An earlier constraint of the same name [02.00.03:L208-209] was
         // dropped at 03.00.09:L298 immediately before this one replaced it. The physical name is
         // singular on a plural table and is carried across verbatim rather than tidied.
+        //
+        // MIGRATION: THE FILTER IS EXPLICITLY SUPPRESSED. PortalID is nullable on this table - that is
+        // what lets an installation-wide role exist with no owning tenant - and the SQL Server provider
+        // attaches a "PortalID IS NOT NULL" predicate to a unique index over a nullable column unless
+        // told otherwise. Under that predicate the installation-wide roles would be excluded from
+        // uniqueness entirely, so two host-level roles could share a name; the terminal constraint is a
+        // plain UNIQUE NONCLUSTERED table constraint with no predicate, which admits exactly one
+        // host-level role per name. Passing null as the filter removes the predicate.
         builder.HasIndex(x => new { x.PortalId, x.RoleName })
             .IsUnique()
+            .HasFilter(null)
             .HasDatabaseName("IX_RoleName");
 
         // MIGRATION: the terminal IX_Roles covers the BILLING FREQUENCY [03.00.09:L302], having been

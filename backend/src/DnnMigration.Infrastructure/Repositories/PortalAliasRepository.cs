@@ -68,25 +68,47 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(string httpAlias, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(
+        IReadOnlyList<string> httpAliasCandidates,
+        CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(httpAlias);
+        ArgumentNullException.ThrowIfNull(httpAliasCandidates);
 
-        string wanted = Normalise(httpAlias);
+        // Normalised the same way a single value was, and de-duplicated: a chain built from a request path
+        // can repeat a value when a segment is empty, and repeating it in the generated IN list would cost
+        // the store work for no answer it has not already given.
+        List<string> wanted = httpAliasCandidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Select(Normalise)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (wanted.Count == 0)
+        {
+            // Nothing can match, so the store is not asked. Returning early rather than issuing a query
+            // with an empty IN list, which some providers translate into a predicate that is always false
+            // and others reject outright.
+            return Array.Empty<PortalAlias>();
+        }
 
         // EVERY match is returned rather than one chosen row. The legacy resolution procedure collapsed
         // multiple matches with min(PortalID) and so could serve one tenant's content under another
         // tenant's host name; returning the matches lets the caller refuse an ambiguous host instead.
-        // The schema's installation-wide unique constraint on HTTPAlias bounds this at one row for a
-        // well-formed installation, so the unbounded read costs nothing and a second row is the signal
-        // that the data is defective.
+        // The schema's installation-wide unique constraint on HTTPAlias bounds this at one row PER
+        // CANDIDATE for a well-formed installation, so a chain of N candidates yields at most N rows and a
+        // second row for one candidate is the signal that the data is defective.
+        //
+        // Several candidates in one query is what keeps a virtual-path alias to a single round trip: a
+        // request for host/child/api/v1/portals has to be matched against host/child/api/v1/portals,
+        // host/child/api/v1, host/child/api, host/child and host, and asking one at a time would be one
+        // query per path segment on every request.
         //
         // The owning portal and its roles are loaded because the request-scoped tenant context built from
         // this result needs the portal's administrator and registered role NAMES, which are not columns on
         // Portals. Loading them here keeps tenant resolution to a single round trip.
         return await _context.PortalAliases
             .AsNoTracking()
-            .Where(alias => alias.HttpAlias != null && alias.HttpAlias.ToLower() == wanted)
+            .Where(alias => alias.HttpAlias != null && wanted.Contains(alias.HttpAlias.ToLower()))
             .Include(alias => alias.Portal)
                 .ThenInclude(portal => portal.Roles)
             .OrderBy(alias => alias.PortalAliasId)

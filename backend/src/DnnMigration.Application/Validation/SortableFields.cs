@@ -14,17 +14,24 @@ namespace DnnMigration.Application.Validation;
 /// had to trust, and would have to be tightened again every time someone widened it.
 /// </para>
 /// <para>
-/// <b>Two levels, because one shared contract serves every collection.</b>
-/// <see cref="All"/> is the union, and it is the bound that <c>PagedRequestValidator</c>
-/// applies: that validator cannot know which collection a given request addresses,
-/// because <c>PagedRequest</c> is one shared contract bound by every collection endpoint
-/// and FluentValidation resolves one validator per request type. Applying the union there
-/// is what makes an unrecognised name a 400 before any service runs. The per-collection
-/// sets are the narrower authority for a listing that knows which collection it is
-/// reading, and they are declared here, beside the union that is built from them, so the
-/// two can never drift apart. They are <see langword="internal"/> because the listings
-/// that consult them are application services in this same assembly; nothing outside it
-/// needs, or is given, the ability to widen an ordering surface.
+/// <b>Two levels, and the per-collection level is the one that binds.</b> Each set below
+/// is applied AT THE BOUNDARY by its own sealed validator over its own derived request
+/// type - <c>PortalPagedRequestValidator</c> over <c>PortalPagedRequest</c>, and so on -
+/// so naming a portal field while reading accounts is a field-level 400 rather than a
+/// silently ignored parameter. That arrangement replaces an earlier one in which the union
+/// was the only bound anything applied: FluentValidation resolves one validator per
+/// request TYPE, every collection endpoint bound the one shared <c>PagedRequest</c>, and
+/// the per-collection sets below consequently had no consumer at all. Deriving a request
+/// type per collection is what gives the narrow sets somewhere to be enforced.
+/// </para>
+/// <para>
+/// <see cref="All"/> remains as the union and is applied to a bare <c>PagedRequest</c> -
+/// a shape no registered endpoint now binds, but one the contract still permits - so an
+/// unrecognised name is refused even there. It is built from the sets rather than restated,
+/// so a field added to a collection cannot leave the outer bound behind. Every set is
+/// <see langword="internal"/> because the validators and listings that consult them live
+/// in this same assembly; nothing outside it needs, or is given, the ability to widen an
+/// ordering surface.
 /// </para>
 /// <para>
 /// <b>Comparison is case-insensitive and ordinal.</b> A query-string parameter is typed
@@ -49,14 +56,18 @@ namespace DnnMigration.Application.Validation;
 // columns would be inventing policy while appearing to preserve it.
 //
 // MIGRATION: the sets below are derived from a stated rule instead: A FIELD IS SORTABLE
-// WHEN IT IS PROJECTED BY THE COLLECTION'S LIST ITEM AND IS BACKED BY A COLUMN THE
-// LISTING QUERY ALREADY READS. Both halves matter. The first half means a caller can only
-// order by something the response actually shows, so an ordering is always explicable from
-// the payload in front of the user. The second half means the repository can honour the
-// request with the tables it already joins, so a name that is accepted at the boundary
-// cannot fail deeper down - which is the failure mode an allowlist exists to prevent.
-// Every member excluded by that rule is named below with the reason, so a later reader can
-// see that the exclusion was a decision rather than an oversight.
+// WHEN IT IS PROJECTED BY THE COLLECTION'S LIST ITEM, IS BACKED BY A COLUMN THE LISTING
+// QUERY ALREADY READS, AND IS ACTUALLY HONOURED BY THAT LISTING. All three halves matter.
+// The first means a caller can only order by something the response actually shows, so an
+// ordering is always explicable from the payload in front of the user. The second means the
+// listing can honour the request with the tables it already reads, so a name accepted at the
+// boundary cannot fail deeper down. The third was added after review found the first two
+// insufficient on their own: several names satisfied both and were nevertheless DISCARDED by
+// the listing, which answered 200 with an order the caller had not asked for - a silent
+// failure strictly worse than a rejection, because nothing in the response says the request
+// was not carried out. Every listing now applies every name in its own set, and every member
+// excluded is named below with the reason, so a later reader can see that an exclusion was a
+// decision rather than an oversight.
 internal static class SortableFields
 {
     /// <summary>
@@ -77,6 +88,14 @@ internal static class SortableFields
     //     to aggregate over two other tables first.
     //   - Aliases is a COLLECTION. A portal may hold several aliases, so there is no single
     //     value to order by; ordering by a collection has no defined meaning.
+    //
+    // Every one of the five IS honoured by PortalRepository.ApplyOrder. HostFee and HostSpace
+    // were advertised here and fell through that method's default arm to PortalName, so a
+    // caller who asked to order by hosting charge received an alphabetical page and no
+    // indication that the request had been discarded. The two arms exist now. In the other
+    // direction that method also honoured Description and Currency, neither of which this
+    // set admits and neither of which PortalListItemDto projects, so both arms were
+    // unreachable dead code and were removed rather than advertised.
     internal static readonly IReadOnlySet<string> Portals =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -124,16 +143,12 @@ internal static class SortableFields
     /// <c>GET /api/v1/portals/{portalId}/users</c>.
     /// </summary>
     /// <remarks>
-    /// Backed either by a column on <c>Users</c> - <c>UserID</c>, <c>Username</c>,
-    /// <c>FirstName</c>, <c>LastName</c>, <c>DisplayName</c>, <c>Email</c> - or by a
-    /// column on <c>UserPortals</c>, which the portal-scoped listing must join in any
-    /// case: <c>CreatedDate</c> and <c>LastLoginDate</c>
-    /// (<c>01.00.02.SqlDataProvider:L254</c>) and <c>Authorized</c>
-    /// (<c>01.00.00.SqlDataProvider:L153</c>), surfaced by the projection as
-    /// <c>IsApproved</c>. <c>IsSuperUser</c> is a <c>Users</c> column
+    /// Every member is a mapped column on <c>Users</c> that the listing query reads directly:
+    /// <c>UserID</c>, <c>Username</c>, <c>FirstName</c>, <c>LastName</c>, <c>DisplayName</c>
+    /// and <c>Email</c>, together with <c>IsSuperUser</c>
     /// (<c>01.00.02.SqlDataProvider:L242-L243</c>).
     /// </remarks>
-    // MIGRATION: five members of the projection are deliberately absent, and each for a
+    // MIGRATION: eight members of the projection are deliberately absent, and each for a
     // structural reason rather than a stylistic one.
     //   - Address and Telephone are PROFILE VALUES, not account columns. They live as
     //     key-value rows in UserProfile (03.02.03.SqlDataProvider:L1364) keyed by property
@@ -142,11 +157,84 @@ internal static class SortableFields
     //     reached the screen through the profile projection rather than as account columns.
     //   - IsOnline is DERIVED from the users-online tracking whose purge job this migration
     //     omits; there is no column to order by.
-    //   - IsLockedOut belongs to the EXTERNAL aspnet_* membership store, which this
-    //     solution maps alongside rather than owns.
     //   - PortalId is CONSTANT within a portal-scoped listing, so ordering by it cannot
     //     change the order of any page.
+    //   - CreatedDate, LastLoginDate, IsApproved and IsLockedOut ARE PROJECTED BUT ARE NOT
+    //     PART OF THE QUERY, and this is the correction review found. UserConfiguration
+    //     Ignore()s all four on the User entity - they are not mapped columns of the entity
+    //     the listing pages over - and UserRepository fills them AFTER the page has been
+    //     taken, from the external aspnet_* membership store and the UserPortals join, in
+    //     PopulateAsync. Ordering by a value that does not exist until after Skip and Take
+    //     have run would order the page rather than the collection, which is not an ordering
+    //     at all: page two would be sorted among itself and would still hold whichever rows
+    //     the underlying order put there. They were advertised and silently discarded, and
+    //     they are withdrawn rather than faked. Honouring them properly means projecting the
+    //     membership store into the query, which is a data-access change no finding asks for
+    //     and which the AAP places outside this work - the aspnet_* objects are an external
+    //     dependency this solution maps alongside rather than owns (AAP 0.7.1.3).
     internal static readonly IReadOnlySet<string> Users =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "UserId",
+            "Username",
+            "FirstName",
+            "LastName",
+            "DisplayName",
+            "Email",
+            "IsSuperUser",
+        };
+
+    /// <summary>
+    /// Field names that may order the module listing served by
+    /// <c>GET /api/v1/portals/{portalId}/modules</c>.
+    /// </summary>
+    /// <remarks>
+    /// This set is NET-NEW, and its absence was itself part of the defect: the module listing
+    /// bound the shared request contract and was therefore bounded only by the union, so it
+    /// accepted every portal and role field name and discarded all of them. Each member below
+    /// is projected by <c>ModuleListItemDto</c> and is backed by a column the listing already
+    /// materialises - <c>ModuleID</c>, <c>ModuleTitle</c> and <c>IsDeleted</c> on
+    /// <c>Modules</c>, and <c>StartDate</c> and <c>EndDate</c> on the same table.
+    /// </remarks>
+    // MIGRATION: eight members of the projection are deliberately absent.
+    //   - TabModuleId, TabId, ModuleOrder, AllTabs, Visibility and DisplayTitle belong to the
+    //     PLACEMENT rather than to the module. A module may be placed on many pages, so each
+    //     has as many values as the module has placements and there is no single value to
+    //     order the module by. The projection shows the placement the listing selected, which
+    //     is a display choice rather than an orderable fact.
+    //   - ModuleDefId and FriendlyName come from the DEFINITION, which the listing resolves
+    //     per row after the page has been taken; ordering by either would order the page
+    //     rather than the collection.
+    internal static readonly IReadOnlySet<string> Modules =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ModuleId",
+            "ModuleTitle",
+            "IsDeleted",
+            "StartDate",
+            "EndDate",
+        };
+
+    /// <summary>
+    /// Field names that may order the role-membership listing served by
+    /// <c>GET /api/v1/portals/{portalId}/roles/{roleId}/users</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every name below is an ACCOUNT field, because the legacy grid rendered the account and sorted on
+    /// what it rendered. The listing materialises the role's assignment rows composed with their accounts
+    /// and pages them in memory, so each name is honoured over a value that is genuinely present -
+    /// including the three the external membership store supplies, which the composing read populates and
+    /// which no ordering clause over <c>dbo.UserRoles</c> alone could reach.
+    /// </para>
+    /// <para>
+    /// It is narrower than the projection: the two assignment dates the projection carries are deliberately
+    /// not orderable, because the legacy grid offered no ordering by them, and the role identifier is fixed
+    /// by the route for every record on the page, so ordering by it could not change any order.
+    /// <c>IRoleService</c> records both reductions.
+    /// </para>
+    /// </remarks>
+    internal static readonly IReadOnlySet<string> RoleUsers =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "UserId",
@@ -197,6 +285,55 @@ internal static class SortableFields
         string.IsNullOrWhiteSpace(fieldName) || All.Contains(fieldName);
 
     /// <summary>
+    /// Reports whether the supplied name is a member of one particular collection's set.
+    /// </summary>
+    /// <param name="permitted">The collection's set, one of the members declared above.</param>
+    /// <param name="fieldName">
+    /// The name a caller supplied, which may be <see langword="null"/>, empty or entirely
+    /// white space.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when <paramref name="fieldName"/> is absent, or when it names a
+    /// field in <paramref name="permitted"/>; otherwise <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// Absence is tolerated on exactly the same terms as in the union overload, so a caller who
+    /// expressed no preference is never asked to justify a field they did not name. This overload
+    /// is what the per-collection validators apply, and it is the reason the narrow sets are no
+    /// longer declared without a consumer.
+    /// </remarks>
+    internal static bool IsPermitted(IReadOnlySet<string> permitted, string? fieldName)
+    {
+        ArgumentNullException.ThrowIfNull(permitted);
+
+        return string.IsNullOrWhiteSpace(fieldName) || permitted.Contains(fieldName);
+    }
+
+    /// <summary>
+    /// Reports whether the supplied name is a member of one specific collection's set.
+    /// </summary>
+    /// <param name="fieldName">
+    /// The name a caller supplied, which may be <see langword="null"/>, empty or entirely
+    /// white space.
+    /// </param>
+    /// <param name="permitted">The collection's set, one of the members declared above.</param>
+    /// <returns>
+    /// <see langword="true"/> when <paramref name="fieldName"/> is absent - an absent sort field
+    /// expresses no preference and is never an error, whatever the collection - or when it is a
+    /// member of <paramref name="permitted"/>; otherwise <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// This is the test each listing applies before it reads anything, and it is the narrower
+    /// authority: <see cref="IsPermitted(string?)"/> only proves the name is a constant declared in
+    /// this file, which is what keeps caller text out of an ordering clause, while this proves the
+    /// name means something for the collection actually being read. It is the field-first spelling
+    /// of <see cref="IsPermitted(IReadOnlySet{string}, string?)"/> and delegates to it, so the two
+    /// call shapes used across the solution cannot answer differently.
+    /// </remarks>
+    internal static bool IsPermittedFor(string? fieldName, IReadOnlySet<string> permitted) =>
+        IsPermitted(permitted, fieldName);
+
+    /// <summary>
     /// Combines the per-collection sets into the union exposed by <see cref="All"/>.
     /// </summary>
     /// <returns>An immutable, case-insensitive set holding every permitted field name.</returns>
@@ -207,6 +344,8 @@ internal static class SortableFields
         union.UnionWith(Portals);
         union.UnionWith(Roles);
         union.UnionWith(Users);
+        union.UnionWith(Modules);
+        union.UnionWith(RoleUsers);
 
         return union;
     }

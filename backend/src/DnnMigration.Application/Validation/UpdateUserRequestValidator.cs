@@ -6,7 +6,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Declarative validator for <see cref="UpdateUserRequest"/>, the inbound contract of
-/// <c>PUT /api/v1/users/{id}</c>.
+/// <c>PUT /api/v1/portals/{portalId}/users/{userId}</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -88,7 +88,7 @@ namespace DnnMigration.Application.Validation;
 // in this schema make it actively wrong one field over: Portals.PortalID is declared
 // IDENTITY (-1, 1) at 01.00.00.SqlDataProvider:L77 and the shipped _default portal is inserted
 // with PortalID 0 at L7125, Roles.RoleID is IDENTITY (0, 1) at L115, and the legacy integer
-// sentinel is itself minus one, so one integer means both "the first portal" and "nothing" at the
+// sentinel is itself minus one, so one integer means both "a real portal key" and "nothing" at the
 // same time. Library/Components/Shared/Null.vb likewise returns 255 for its byte sentinel and the
 // framework minimum date for its date sentinel, so those too are values carrying meaning rather
 // than validation failures.

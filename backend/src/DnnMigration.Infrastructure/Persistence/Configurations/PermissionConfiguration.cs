@@ -243,30 +243,33 @@ internal sealed class PermissionConfiguration : IEntityTypeConfiguration<Permiss
         //   01.00.05:L474-L477 and FK_ModuleControls_ModuleDefinitions at 02.00.00:L5026-L5029.
         //   Every constraint that names this table points the other way, INTO it.
         //
-        // MIGRATION: the reference is unenforced BY DESIGN, not by omission. A system-level row
-        //   carries ModuleDefID = -1, which matches no ModuleDefinitions row, so a real key would
-        //   reject the very rows the legacy installer creates. Two consequences follow and both are
-        //   deliberate. The relationship is declared here so the mapping uses the real ModuleDefID
-        //   column rather than inventing a shadow one, and it is given no delete behaviour: the
-        //   database cascades nothing from this side, and a system-level reference has no principal
-        //   row to cascade from. Because the column is NOT NULL the relationship is required, which
-        //   is unavoidable and accepted - the practical caveat for callers is that the navigation is
-        //   NOT loadable for a system-level row, so no query may rely on being able to include it.
-        //   No constraint name is attached, precisely because there is no constraint to name.
+        // MIGRATION: the reference is unenforced BY DESIGN, not by omission, and THEREFORE NO
+        //   RELATIONSHIP IS DECLARED FOR IT. A system-level row carries ModuleDefID = -1, which matches
+        //   no ModuleDefinitions row: that value is real data naming a product-wide permission, so a
+        //   real key would reject the very rows the legacy installer creates. ModuleDefID is int NOT
+        //   NULL, and Entity Framework Core rejects an optional relationship over a non-nullable foreign
+        //   key at model validation, so every relationship expressible here is a REQUIRED one. A
+        //   required relationship states that every row of this table has a principal row, which the -1
+        //   rows falsify - it puts a foreign key into the model that the database does not have and
+        //   never could have, and the model snapshot it lands in is what every future migration is
+        //   diffed against. It also advertises a navigation that can never load for a system-level row.
         //
-        // MIGRATION: this is the only relationship this file declares, and it declares it from the
-        //   dependent end. The assembly scan that applies these configurations guarantees no
-        //   ordering, so a relationship declared from both ends would let whichever end ran last
-        //   silently decide the delete behaviour, with neither a compile error nor a
-        //   model-validation error to reveal it. This table is also the principal of two grant
-        //   tables whose keys DO cascade in the database - FK_ModulePermission_Permission at
-        //   03.00.09:L492 and FK_TabPermission_Permission at 03.00.09:L488 - and both are owned by
-        //   ModulePermissionConfiguration and TabPermissionConfiguration respectively. Declaring
-        //   either inverse here would race with those files and could soften a cascade the scripts
-        //   record, so this file declares no principal-side collection mapping at all.
-        builder.HasOne(p => p.ModuleDefinition)
-            .WithMany(d => d.Permissions)
-            .HasForeignKey(p => p.ModuleDefinitionId)
-            .OnDelete(DeleteBehavior.NoAction);
+        //   An earlier revision declared the relationship anyway, reasoning that doing so kept the
+        //   mapping bound to the real ModuleDefID column rather than a shadow one. That reasoning does
+        //   not hold: ModuleDefinitionId is mapped explicitly above, so the column is bound whether or
+        //   not a relationship exists, and declaring one bought nothing while asserting something
+        //   untrue. Permission carries no ModuleDefinition navigation and ModuleDefinition carries no
+        //   Permissions collection, because leaving either end in place would let the
+        //   relationship-discovery convention rebuild exactly the required relationship this omission
+        //   exists to prevent. A caller needing the definition behind a real identifier resolves it
+        //   through IModuleDefinitionRepository, which forces the -1 case to be handled deliberately.
+        //
+        // MIGRATION: consequently THIS FILE DECLARES NO RELATIONSHIP AT ALL, in either direction. The
+        //   table is the principal of two grant tables whose keys DO cascade in the database -
+        //   FK_ModulePermission_Permission at 03.00.09:L492 and FK_TabPermission_Permission at
+        //   03.00.09:L488 - and both are owned by ModulePermissionConfiguration and
+        //   TabPermissionConfiguration respectively, declared once from their dependent ends. The
+        //   assembly scan that applies these configurations guarantees no ordering, so an inverse
+        //   declared here would race with those files and could soften a cascade the scripts record.
     }
 }

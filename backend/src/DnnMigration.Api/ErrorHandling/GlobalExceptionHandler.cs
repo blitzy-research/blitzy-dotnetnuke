@@ -1,5 +1,6 @@
 using System.Text;
 using DnnMigration.Api.Middleware;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -656,11 +657,15 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
 /// the other.
 /// </para>
 /// <para>
-/// <strong>No failure translated here becomes a 500.</strong> A failed <c>Result</c> is by definition an
-/// expected outcome that the caller can be told about, so it maps to a status in the 4xx range, or to 503
-/// where a dependency is genuinely unavailable. A 500 means something happened that this application did not
-/// anticipate, which is exactly the set of conditions that arrive as exceptions and are handled by the
-/// sibling type.
+/// <strong>A failure that describes an internal fault is reported as one.</strong> Most failed
+/// <c>Result</c> values describe something the caller can correct, and those map into the 4xx range. A
+/// minority do not: a portal that could not be written, a role that could not be created, a module
+/// business controller whose own code threw while exporting or importing. Nothing about the request
+/// produced those, so answering 400 would tell a caller to edit a request that was already correct, and
+/// would let a genuine server fault pass unnoticed through every monitor that watches the 5xx rate.
+/// Those codes are enumerated in <see cref="ApiResults.InternalFailureTokens"/> and map to 500, alongside
+/// the 503 reserved for a dependency that is genuinely unreachable. The 400 default is therefore the
+/// answer for a request the caller can correct and for nothing else.
 /// </para>
 /// <para>
 /// <strong>The mapping keys on the reason token, not on the whole code.</strong> Failure codes in this
@@ -681,16 +686,27 @@ public static class ApiResults
 
     /// <summary>The reason tokens that mean the request conflicts with the current state.</summary>
     /// <remarks>
+    /// <para>
     /// <c>in_use</c> belongs here rather than with the request-correction default. A removal refused
     /// because the thing is still referenced - a role group that still classifies a role - is a
     /// perfectly well formed request that the STATE of the resource declines, which is the definition of
     /// a conflict, and releasing the references makes the identical request succeed. Classifying it as a
     /// bad request would tell the caller to edit a request that has nothing wrong with it.
+    /// </para>
+    /// <para>
+    /// <c>last_remaining</c> is here for exactly that reason, and its absence was a defect rather than a
+    /// choice. <c>portal.last_remaining</c> refuses the removal of the only portal an installation has
+    /// left; it matched no table and therefore fell to the 400 default, while the endpoint's own published
+    /// description declared the refusal as a 409 and argued the case in the same terms this table does.
+    /// The declared 409 was consequently unreachable and the 400 the caller actually received was
+    /// undeclared - one defect with two visible halves. Adding the token makes the published contract true
+    /// rather than editing the description to match a classification that contradicted the reasoning above.
+    /// </para>
     /// </remarks>
     private static readonly string[] ConflictTokens =
     {
         "duplicate", "already_exists", "already_registered", "already_required", "unchanged",
-        "not_different", "conflict", "in_use",
+        "not_different", "conflict", "in_use", "last_remaining",
     };
 
     /// <summary>The reason tokens that mean the caller is not permitted to do this.</summary>
@@ -705,12 +721,96 @@ public static class ApiResults
         "provider_error", "store_unavailable",
     };
 
+    /// <summary>
+    /// Published in place of a failed outcome's own message when that message is absent, or when it does
+    /// not have the shape of an authored explanation.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately identical in spirit to the unhandled-exception text: it says that the request did not
+    /// complete and points at the one diagnostic handle a caller holds. It names no cause, because in the
+    /// case that produces it the cause is precisely what must not be published.
+    /// </remarks>
+    private const string UnauthoredDetail =
+        "The request could not be completed. Quote the "
+        + CorrelationIdMiddleware.HeaderName
+        + " response header when reporting this problem.";
+
+    /// <summary>
+    /// Longest detail this edge will publish from a failed outcome's own message.
+    /// </summary>
+    /// <remarks>
+    /// Generous by design. The longest explanation this solution authors is well inside it, so the bound
+    /// exists only to refuse the kind of length that an object-relational-mapper, database-client or
+    /// third-party message reaches - never to trim a legitimate sentence, which would leave a caller with
+    /// half an explanation and no indication that anything was removed.
+    /// </remarks>
+    private const int MaximumPublishedDetailLength = 512;
+
     /// <summary>The whole codes that mean the caller has not proved who they are.</summary>
+    /// <remarks>
+    /// The three approval outcomes sit here alongside the lock-out outcome, and for the same reason: each
+    /// describes an account state that refuses a sign-in the credential itself did not refuse, so the
+    /// request failed to authenticate rather than being malformed. Classifying them by the default arm
+    /// would render them <c>400</c>, which would tell a client that its request was at fault when the
+    /// request was correct and the account was not yet admissible.
+    /// </remarks>
     private static readonly string[] UnauthorizedCodes =
     {
         "auth.invalid_credentials", "auth.locked_out", "auth.invalid_refresh_token",
         "auth.insecure_admin_password", "auth.insecure_host_password",
+        "auth.verification_required", "auth.verification_code_invalid",
+        "auth.account_not_approved",
     };
+
+    /// <summary>The reason tokens that mean this application, not the caller, is at fault.</summary>
+    /// <remarks>
+    /// <para>
+    /// Every entry names an operation that had already passed validation and authorisation when it failed,
+    /// so nothing the caller could change would make the identical request succeed. The measured set of
+    /// producing codes is <c>portal.creation_failed</c> and <c>role.create_failed</c> in the application
+    /// services, and <c>module.content.export_failed</c>, <c>module.content.import_failed</c>,
+    /// <c>module.controller.capability_probe_failed</c> and <c>module.upgrade_failed</c> in the module
+    /// business-controller boundary. The tokens are matched rather than the whole codes, for the same
+    /// reason every other table here does: a new code that follows the naming convention classifies
+    /// correctly without this file changing.
+    /// </para>
+    /// <para>
+    /// <c>create_failed</c> and <c>creation_failed</c> are both listed because the services genuinely
+    /// disagree about which they spell, and a table that guessed one would silently misclassify the other.
+    /// Neither is a prefix of the other, so neither entry is redundant.
+    /// </para>
+    /// <para>
+    /// This table is consulted AFTER the more specific classifications above it. That ordering matters:
+    /// a code such as <c>module.content.import_failed</c> is an internal fault, whereas a hypothetical
+    /// <c>..._failed_not_found</c> would name a missing resource, and the narrower reading must win.
+    /// </para>
+    /// </remarks>
+    internal static readonly string[] InternalFailureTokens =
+    {
+        "creation_failed", "create_failed", "export_failed", "import_failed",
+        "capability_probe_failed", "upgrade_failed", "internal_error",
+    };
+
+    /// <summary>
+    /// The failure code reported when a read succeeded but the thing addressed does not exist.
+    /// </summary>
+    /// <remarks>
+    /// Stated as a constant so the problem type a client branches on is identical whichever endpoint
+    /// produced it, and so that the token it carries is classified by <see cref="NotFoundTokens"/> rather
+    /// than by a status code written out at the call site.
+    /// </remarks>
+    private const string ResourceNotFoundCode = "resource.not_found";
+
+    /// <summary>
+    /// The detail reported with a 404 produced from a successful outcome that carried no value.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately says nothing about which identifier was addressed or which resource kind was asked
+    /// for. Echoing either would reflect caller-supplied text into a response body and would let an
+    /// unauthorised caller distinguish "this exists but is not yours" from "this does not exist", which is
+    /// the enumeration oracle every other refusal in this API is written to avoid.
+    /// </remarks>
+    private const string ResourceNotFoundDetail = "The requested resource does not exist.";
 
     /// <summary>Translates an outcome that carries no value.</summary>
     /// <param name="controller">The controller producing the response.</param>
@@ -720,6 +820,18 @@ public static class ApiResults
     /// otherwise a problem-details payload with the mapped status.
     /// </returns>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    // MIGRATION: this overload deliberately does NOT return the payload-free ApiResponse companion, and the
+    // reason is a requirement rather than a preference. A payload-free success here is 204, which HTTP
+    // forbids from carrying a body at all, so an envelope could only be attached by demoting these responses
+    // to 200 - and the acceptance criteria pin DELETE to 204 explicitly for portals, modules and users.
+    // Answering 200 with an empty envelope to satisfy a type's symmetry would break a stated criterion in
+    // order to tidy an unused declaration, which is the wrong trade in both directions.
+    //
+    // Consequence, stated plainly so it is not mistaken for an oversight: ApiResponse - the non-generic,
+    // payload-free arity - has no controller consumer in this API and cannot have one while 204 is the
+    // correct answer for a command that returns nothing. It remains declared beside its generic form as the
+    // documented shape for a payload-free 200, should an endpoint ever legitimately need one. Recorded in
+    // the repository migration notes rather than resolved by forcing a wrong status code.
     public static ActionResult Complete(this ControllerBase controller, Result result)
     {
         ArgumentNullException.ThrowIfNull(controller);
@@ -728,17 +840,38 @@ public static class ApiResults
         return result.IsSuccess ? controller.NoContent() : controller.Problem(result);
     }
 
-    /// <summary>Translates an outcome that carries a value.</summary>
+    /// <summary>Translates an outcome that carries a value into the shared success envelope.</summary>
     /// <typeparam name="TValue">The value type.</typeparam>
     /// <param name="controller">The controller producing the response.</param>
     /// <param name="result">The outcome to translate.</param>
     /// <returns>
-    /// <c>200 OK</c> with the value on success; <c>404 Not Found</c> when the outcome succeeded but carries
-    /// no value, because a nullable value on a successful outcome is how this solution expresses "asked, and
+    /// <c>200 OK</c> carrying an <see cref="ApiResponse{T}"/> around the value on success;
+    /// <c>404 Not Found</c> carrying a problem-details payload when the outcome succeeded but carries no
+    /// value, because a nullable value on a successful outcome is how this solution expresses "asked, and
     /// it is not there"; otherwise a problem-details payload with the mapped status.
     /// </returns>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
-    public static ActionResult<TValue> Complete<TValue>(
+    /// <remarks>
+    /// The not-found answer is built by the same factory as every other failure, so it carries the
+    /// documented <c>type</c>, <c>title</c>, <c>detail</c> and <c>traceId</c> members rather than an empty
+    /// body. A bodyless 404 was the previous behaviour and it contradicted the response type every action
+    /// declares: a client written against the published envelope received a payload on every failure except
+    /// this one, and no failure announced itself.
+    /// </remarks>
+    // MIGRATION: the envelope is applied HERE, at the one translation point every read and every update
+    // already flowed through, rather than at each of the sixty-odd call sites. That is what makes the wire
+    // contract uniform by construction instead of by convention: an action cannot opt out of the envelope
+    // without abandoning this helper, and no call site had to change to adopt it. Before this change the
+    // helper returned the payload bare, so ApiResponse<T> had no consumer anywhere in the solution while
+    // its own documentation stated that every controller returns that shape on success - a contract the
+    // code contradicted rather than implemented.
+    //
+    // MIGRATION: the envelope wraps the payload and adds nothing else. It carries no outcome flag, no
+    // failure member and no transport-level status code, because a failure is already an RFC 7807 document
+    // with a failing status line; a body claiming failure alongside a 200 is the exact ambiguity that
+    // standard exists to remove. The metadata companion is left absent for a single value - it describes a
+    // page, and there is no page here.
+    public static ActionResult<ApiResponse<TValue>> Complete<TValue>(
         this ControllerBase controller,
         Result<TValue> result)
     {
@@ -752,9 +885,169 @@ public static class ApiResults
 
         TValue value = result.Value;
 
-        return value is null ? controller.NotFound() : controller.Ok(value);
+        return value is null
+            ? controller.NotFoundProblem()
+            : controller.Ok(ApiResponse<TValue>.Success(value));
     }
 
+    /// <summary>
+    /// Translates an outcome that carries a domain page into the shared paging envelope.
+    /// </summary>
+    /// <typeparam name="TItem">The element type of the page.</typeparam>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <param name="result">The outcome to translate.</param>
+    /// <returns>
+    /// <c>200 OK</c> carrying a <see cref="PagedResponse{T}"/> on success; otherwise a problem-details
+    /// payload with the mapped status.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A page is deliberately NOT wrapped in <see cref="ApiResponse{T}"/> as well. Two envelopes around one
+    /// payload would make a client unwrap twice and would put the paging facts one level deeper than the
+    /// records they describe, whereas <see cref="PagedResponse{T}"/> already pairs the records with an
+    /// <see cref="ApiMeta"/> companion - it IS the success envelope for a collection, not a payload that
+    /// needs one.
+    /// </remarks>
+    // MIGRATION: this overload exists to make the wrong shape UNEXPRESSIBLE, not merely discouraged. A
+    // domain page is a Result<PagedResult<TItem>>, which the general helper above would happily accept with
+    // TValue bound to PagedResult<TItem> - and that is precisely the layering breach this repair removes,
+    // because it would serialise a Domain type, nested one level deeper than before. Overload resolution
+    // prefers this member for that argument, since Result<PagedResult<TItem>> is more specific than
+    // Result<TValue>, so every existing call site adopts the projection without being edited and a reader
+    // cannot accidentally get the other one. Producing the domain page on the wire now requires writing the
+    // type argument out by hand, which is visible in review.
+    //
+    // MIGRATION: the projection is PagedResponse<T>.From, which owns the one reshaping decision involved -
+    // a domain page reports "unpaged" as a page size of zero, and the wire form reports the total instead,
+    // so a client that divides to derive a page count is never handed a zero divisor for a response that
+    // plainly holds records. That decision belongs to the Application layer's own projection and is
+    // deliberately not restated here.
+    public static ActionResult<PagedResponse<TItem>> Complete<TItem>(
+        this ControllerBase controller,
+        Result<PagedResult<TItem>> result)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (result.IsFailure)
+        {
+            return controller.Problem(result);
+        }
+
+        PagedResult<TItem> page = result.Value;
+
+        if (page is null)
+        {
+            // A successful listing must produce a page, even an empty one. Reaching here means a service
+            // returned success with no envelope at all, which is a defect in that service rather than a
+            // condition a caller can act on, so it is surfaced as an unexpected failure rather than
+            // silently answered with an empty page a client would read as "nothing matched".
+            throw new InvalidOperationException(
+                "A listing reported success but produced no page to return.");
+        }
+
+        return controller.Ok(PagedResponse<TItem>.From(page));
+    }
+
+    /// <summary>
+    /// Builds the problem-details payload reported when a successful outcome carried no value.
+    /// </summary>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <returns>A <c>404 Not Found</c> problem-details response.</returns>
+    /// <remarks>
+    /// Exposed so that an action which establishes absence for itself - rather than by reading a
+    /// <c>Result</c> - answers with the identical payload instead of a bare <c>NotFound()</c>.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="controller"/> is <see langword="null"/>.</exception>
+    public static ObjectResult NotFoundProblem(this ControllerBase controller)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+
+        return controller.Problem(
+            detail: ResourceNotFoundDetail,
+            statusCode: StatusCodes.Status404NotFound,
+            type: BuildProblemType(ResourceNotFoundCode));
+    }
+
+    /// <summary>
+    /// Builds the problem-details payload reported when an authenticated caller is not permitted to
+    /// perform an operation.
+    /// </summary>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <param name="code">
+    /// The failure code identifying the refusal, so a client can branch on it without parsing prose.
+    /// </param>
+    /// <returns>A <c>403 Forbidden</c> problem-details response.</returns>
+    /// <remarks>
+    /// The detail is fixed and names neither the missing grant nor the resource. A refusal that explained
+    /// itself would tell an unauthorised caller which identifiers exist and which privilege to acquire,
+    /// and it would differ from the refusal the authorisation middleware produces for the same cause -
+    /// which is precisely the drift that made the two paths distinguishable before.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    public static ObjectResult ForbiddenProblem(this ControllerBase controller, string code)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+
+        return controller.Problem(
+            detail: AuthorizationProblemDetails.ForbiddenDetail,
+            statusCode: StatusCodes.Status403Forbidden,
+            type: BuildProblemType(code));
+    }
+
+    /// <summary>Translates a paged outcome, projecting the domain page onto the wire envelope.</summary>
+    /// <typeparam name="TRow">The row contract the page carries.</typeparam>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <param name="result">The outcome to translate.</param>
+    /// <returns>
+    /// <c>200 OK</c> carrying a <see cref="PagedResponse{T}"/> on success; otherwise a problem-details
+    /// payload with the mapped status.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS EXISTS SEPARATELY FROM <see cref="Complete{TValue}(ControllerBase, Result{TValue})"/>. The generic member returns the
+    /// outcome's value AS IT STANDS, which for a paged outcome means serialising
+    /// <see cref="PagedResult{T}"/> - a DOMAIN type - straight onto the wire. That breaks the DTO boundary
+    /// this solution is built on in a way no compiler notices: the response happens to look reasonable, so
+    /// nothing fails, and the domain's internal shape silently becomes a published contract that cannot then
+    /// be changed without breaking every client. It also left the mandated wire envelope unreachable.
+    /// </para>
+    /// <para>
+    /// Projecting HERE rather than in each action is deliberate. Five actions across four controllers return
+    /// a page, and a projection repeated five times is a projection four of them can forget or spell
+    /// differently. One member means the envelope is applied by construction, and a new paged endpoint that
+    /// calls the wrong translator returns the wrong TYPE - which the declared
+    /// <c>ProducesResponseType</c> and the compiler both object to - rather than the wrong shape.
+    /// </para>
+    /// <para>
+    /// A successful outcome carrying no page is refused rather than answered with <c>404</c>, which is where
+    /// this member deliberately differs from <see cref="Complete{TValue}(ControllerBase, Result{TValue})"/>. Absence is meaningful for a
+    /// single resource - "asked, and it is not there" - but a listing that matched nothing is an EMPTY PAGE,
+    /// not a missing one, and every service in this solution returns exactly that. A null page therefore
+    /// means the service is defective, and answering <c>404</c> would present a defect as an ordinary
+    /// outcome and teach clients to treat "no results" as "endpoint not found".
+    /// </para>
+    /// </remarks>
+    public static ActionResult<PagedResponse<TRow>> CompletePage<TRow>(
+        this ControllerBase controller,
+        Result<PagedResult<TRow>> result)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (result.IsFailure)
+        {
+            return controller.Problem(result);
+        }
+
+        PagedResult<TRow> page = result.Value
+            ?? throw new InvalidOperationException(
+                "A listing reported success but produced no page to return.");
+
+        return controller.Ok(PagedResponse<TRow>.From(page));
+    }
     /// <summary>Translates the outcome of a creation into a <c>201 Created</c> response.</summary>
     /// <typeparam name="TValue">The created representation's type.</typeparam>
     /// <param name="controller">The controller producing the response.</param>
@@ -771,7 +1064,10 @@ public static class ApiResults
     /// named-route lookup would add a second place the address is spelled, and a mismatch between them fails
     /// only at run time and only in the header.
     /// </remarks>
-    public static ActionResult<TValue> Created<TValue>(
+    // MIGRATION: a creation answers with the SAME envelope a read answers with, which is the whole point of
+    // having one. A client that posts and then re-reads the resource unwraps one shape in both directions,
+    // and the location header - not a differently shaped body - is what distinguishes the two responses.
+    public static ActionResult<ApiResponse<TValue>> Created<TValue>(
         this ControllerBase controller,
         Result<TValue> result,
         Func<TValue, object> identify)
@@ -799,7 +1095,32 @@ public static class ApiResults
         string collectionPath = controller.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
         string location = FormattableString.Invariant($"{collectionPath}/{identify(value)}");
 
-        return controller.Created(location, value);
+        return controller.Created(location, ApiResponse<TValue>.Success(value));
+    }
+
+    /// <summary>
+    /// Builds the problem-details payload for a failed outcome whose successful counterpart is not a JSON
+    /// representation.
+    /// </summary>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <param name="result">The failed outcome.</param>
+    /// <returns>The problem-details response.</returns>
+    /// <remarks>
+    /// Almost every action reaches the failure path through <c>Complete</c>, which needs no separate entry
+    /// point. The exception is an action whose success is not a JSON envelope at all - the module export,
+    /// which returns an XML document - and which therefore cannot use <c>Complete</c> for either outcome.
+    /// Before this member existed, that action assembled a <see cref="ProblemDetails"/> by hand, which
+    /// bypassed the shared factory and so omitted the trace identifier and the problem type that every
+    /// other failure in this API carries. Exposing the translation is what removes the incentive to
+    /// re-create it.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    internal static ObjectResult Failed(this ControllerBase controller, Result result)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        ArgumentNullException.ThrowIfNull(result);
+
+        return controller.Problem(result);
     }
 
     /// <summary>Builds the problem-details payload for a failed outcome.</summary>
@@ -815,12 +1136,61 @@ public static class ApiResults
     {
         ResultReason? error = result.Error;
         string code = error?.Code ?? "request.failed";
-        string detail = error?.Message ?? "The request could not be completed.";
+        string detail = SafeDetail(error?.Message);
 
         return controller.Problem(
             detail: detail,
             statusCode: MapStatusCode(code),
             type: BuildProblemType(code));
+    }
+
+    /// <summary>Publishes an expected failure's explanation, or a stand-in when it does not look authored.</summary>
+    /// <param name="message">The message carried by the failed outcome, if any.</param>
+    /// <returns>The message to publish; never <see langword="null"/> and never empty.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>This is defence in depth and not a substitute for authoring safe messages.</b> Every message a
+    /// service places on a failed outcome is meant to be caller-safe by construction, because this method
+    /// publishes it verbatim as the RFC 7807 <c>detail</c>. A security review found one place where that
+    /// intention had not held: the module-lifecycle factory placed a third-party module's own
+    /// <c>Exception.Message</c> on its failed outcomes, on the reasonable-sounding premise that the
+    /// underlying explanation should survive for the caller to log - and this method then published it to
+    /// an HTTP client, complete with whatever connection string, path, statement or content the module had
+    /// quoted. That source is fixed at source.
+    /// </para>
+    /// <para>
+    /// The guard below exists because fixing the instance does not close the class. Any future author may
+    /// reach for the same premise, and nothing about a <c>string</c> announces where it came from. So the
+    /// two shapes that an exception's text has and an authored sentence does not are refused here: a
+    /// multi-line value, which is what a stack trace or an aggregated failure looks like, and a value
+    /// longer than any explanation this solution authors. Neither test can be satisfied by a legitimate
+    /// message - every authored detail in this solution is one short single-line sentence - so the guard
+    /// costs nothing and cannot mask a correct message.
+    /// </para>
+    /// <para>
+    /// It is deliberately NOT a general redactor. It cannot tell whether a short single-line message
+    /// quotes something it should not, and pretending otherwise would invite exactly the complacency that
+    /// produced the finding. The rule remains that a failed outcome's message must be authored text; this
+    /// is the backstop for the case where it is not.
+    /// </para>
+    /// </remarks>
+    private static string SafeDetail(string? message)
+    {
+        // Unreachable through the public contract, and kept anyway so this method is total. A reason
+        // refuses a blank message by construction and a failed outcome always carries a reason, so an
+        // absent explanation cannot be built today - but this method's guarantee is about what it
+        // publishes, and a guarantee that depends on a sibling type's invariant is weaker than one that
+        // does not.
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return UnauthoredDetail;
+        }
+
+        bool looksAuthored = message.Length <= MaximumPublishedDetailLength
+            && message.IndexOf('\n', StringComparison.Ordinal) < 0
+            && message.IndexOf('\r', StringComparison.Ordinal) < 0;
+
+        return looksAuthored ? message : UnauthoredDetail;
     }
 
     /// <summary>Chooses the status code for one failure code.</summary>
@@ -861,6 +1231,15 @@ public static class ApiResults
         if (Matches(reason, ConflictTokens))
         {
             return StatusCodes.Status409Conflict;
+        }
+
+        // Last before the default, and deliberately so: the narrower classifications above describe
+        // conditions a caller can act on, and one of those readings must win where both could match. What
+        // reaches here having a failure token is an operation that had already been validated and
+        // authorised when it failed, which is a server fault.
+        if (Matches(reason, InternalFailureTokens))
+        {
+            return StatusCodes.Status500InternalServerError;
         }
 
         // Everything remaining describes a request the caller can correct.
@@ -918,8 +1297,13 @@ public static class ApiResults
     /// A relative, non-dereferenceable identifier. RFC 7807 permits one, and inventing an absolute URL for a
     /// documentation page that does not exist would be worse than not having one: a client would follow it
     /// and get a 404 from an unrelated host.
+    /// <para>
+    /// Visible to the rest of the API assembly so that a refusal decided outside a controller - by the
+    /// authorisation middleware result handler - carries a problem type built by this same method, rather
+    /// than a second spelling of the same convention.
+    /// </para>
     /// </remarks>
-    private static string BuildProblemType(string code)
+    internal static string BuildProblemType(string code)
     {
         return FormattableString.Invariant($"urn:dnnmigration:error:{Normalise(code)}");
     }

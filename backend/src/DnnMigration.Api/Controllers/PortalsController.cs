@@ -1,6 +1,8 @@
 using Asp.Versioning;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
+using DnnMigration.Api.Extensions;
+using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Portal;
@@ -38,32 +40,59 @@ namespace DnnMigration.Api.Controllers;
 /// MIGRATION: the legacy screens authorised themselves imperatively, by calling
 /// <c>PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName)</c> in the page lifecycle and
 /// answering a refusal with <c>Response.Redirect(NavigateURL("Access Denied"), True)</c> - a 302 to an
-/// HTML page, which no programmatic caller can interpret. That becomes the declarative class-level
-/// policy below, which answers <c>401</c> when no credential was presented and <c>403</c> when the
-/// credential is valid but does not administer the addressed tenant. The two conditions were
+/// HTML page, which no programmatic caller can interpret. That becomes the declarative per-action
+/// policies below, which answer <c>401</c> when no credential was presented and <c>403</c> when the
+/// credential is valid but carries the wrong authority. The two conditions were
 /// indistinguishable to a legacy caller. The measured legacy role name is <c>Administrators</c> -
 /// plural (<c>PortalController.vb:L1390</c>) - and resolving it is the concern of
 /// <c>Extensions/AuthenticationExtensions.cs</c>, not of this file.
+/// </para>
+/// <para>
+/// <strong>TWO KINDS OF AUTHORITY, DECLARED PER ACTION, and the split is measured rather than chosen.</strong>
+/// Three of the six actions resolve no tenant at all and were host-only in the legacy application:
+/// enumerating every portal and removing a portal both lived on
+/// <c>Website/admin/Portal/Portals.ascx.vb</c>, which opens at L339 with
+/// <c>If Not UserInfo.IsSuperUser Then Response.Redirect(NavigateURL("Access Denied"), True)</c>, and
+/// creation lived on <c>Signup.ascx.vb</c>, gated at L70 on the host menu together with
+/// <c>UserInfo.IsSuperUser</c>. Those three therefore name
+/// <see cref="PolicyNames.HostAdministrator"/>. The other three address one named tenant and were
+/// reached through <c>SiteSettings.ascx.vb</c>, an ordinary tenant administration screen, so they name
+/// <see cref="PolicyNames.PortalAdministrator"/> - whose handler additionally binds the route's tenant
+/// to the tenant the request resolved to, so an administrator of one portal cannot address another.
+/// </para>
+/// <para>
+/// The class-level attribute is therefore authentication ONLY, and every action states its policy
+/// explicitly. That is deliberate and not a weakening: authorisation attributes COMBINE rather than
+/// override, so a class-level tenant policy would have been ANDed onto the three host actions and would
+/// have made them unreachable by the only credential entitled to them - a host account holds no
+/// administrator role assignment in any tenant. The risk that an action added later declares no policy
+/// and inherits mere authentication is closed by an integration test that fails when any action on this
+/// controller carries no explicit policy, rather than by an attribute that cannot express the split.
 /// </para>
 /// <para>
 /// MIGRATION: identifiers are never compared against a magic number here, and no lower bound is placed
 /// on <c>portalId</c>. The legacy absent-integer marker is -1
 /// (<c>Library/Components/Shared/Null.vb:L41-L45</c>), but that value is not free: the portal table is
 /// declared <c>IDENTITY (-1, 1)</c>
-/// (<c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77</c>), so -1 is the
-/// identifier of the first portal an installation creates and 0 is the shipped default one; -1 is
+/// (<c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77</c>), so -1 is its
+/// seed and the first identifier it generates, while the shipped default portal row carries an explicit
+/// 0 (<c>:L7125</c>) - both are real portal keys; -1 is
 /// simultaneously the unauthenticated-role token <c>glbRoleAllUsers</c>
 /// (<c>Library/Components/Shared/Globals.vb:L95</c>). The role, page and module tables all seed at 0,
 /// so 0 is a genuine identifier three more times over. Both values are therefore valid route values and
 /// neither may be read as meaning "absent".
 /// </para>
 /// <para>
-/// MIGRATION: no sentinel is manufactured or erased on this boundary. Serialisation is configured once
-/// for the whole application to emit every property including nulls, and the transfer objects carry the
+/// MIGRATION: no sentinel is manufactured or erased on this boundary. The transfer objects carry the
 /// stored values through unchanged, so a legacy consumer still sees the retention period as -1 and an
-/// unset expiry as the minimum date rather than as an omitted field. The individual sentinel decisions
-/// belong to the transfer objects that declare the properties; this file adds none and removes none,
-/// which is the only way the two can stay consistent.
+/// unset expiry as the minimum date. That survives the serialiser because a preserved sentinel is a
+/// VALUE, not a null: serialisation is configured once for the whole application with a
+/// when-writing-null ignore condition (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a
+/// property only when its value is null, and -1 and the minimum date are neither. What that policy
+/// does affect is the members deliberately modelled as nullable, which are omitted from the body when
+/// absent rather than emitted as a null literal. The individual sentinel decisions belong to the
+/// transfer objects that declare the properties; this file adds none and removes none, which is the
+/// only way the two can stay consistent.
 /// </para>
 /// <para>
 /// MIGRATION: there is no configuration-writing action, and no key-value configuration action of any
@@ -77,40 +106,36 @@ namespace DnnMigration.Api.Controllers;
 /// this file serves reads stored columns on the portal record, and every settable column is written
 /// through the single update action.
 /// </para>
+/// <para>
+/// <strong>Two authorisation policies, not one, and the split is the security boundary.</strong> The class
+/// declares tenant-bound portal administration, which the policy's handler binds to the <c>portalId</c> the
+/// route names, so an action addressing one tenant cannot be satisfied by an administrator of another. Three
+/// actions override that with installation-wide host authority because they are not about a tenant at all:
+/// listing portals returns every tenant's name and host bindings, creating one adds a tenant to the
+/// installation, and deleting one removes a tenant along with its content. Gating those on portal
+/// administration would let an administrator of any single tenant enumerate and destroy every other, which
+/// is a cross-tenant disclosure reached from a tenant-scoped grant. The legacy application drew the same
+/// line by putting exactly those three operations on the host menu
+/// (<c>Website/admin/Portal/Portals.ascx</c>) and leaving site settings for the caller's own portal on the
+/// admin menu (<c>Website/admin/Portal/SiteSettings.ascx</c>).
+/// </para>
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/portals")]
-[Authorize(Policy = PolicyNames.PortalAdministrator)]
+[Authorize]
 [Produces("application/json")]
 public sealed class PortalsController : ControllerBase
 {
-    /// <summary>
-    /// The failure code the application layer reports when a removal was refused to keep one portal in
-    /// the installation.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: this is the sole non-empty outcome the legacy delete could produce.
-    /// <c>PortalController.DeletePortal</c> (<c>PortalController.vb:L162-L204</c>) reported its result as
-    /// a <c>String</c> - empty meaning success - and read a portal tally before doing anything; when the
-    /// tally was not greater than one it returned the shared message keyed <c>LastPortal</c>, whose
-    /// wording is "You Can Not Delete The Last Portal In Your Database". Every other path returned the
-    /// empty string. A caller therefore had to compare display text to learn whether the delete had
-    /// happened, and the rule is preserved here as a code rather than as prose.
-    /// </remarks>
-    private const string LastRemainingFailureCode = "portal.last_remaining";
-
-    /// <summary>
-    /// The problem type published for <see cref="LastRemainingFailureCode"/>.
-    /// </summary>
-    /// <remarks>
-    /// Spelled to match exactly what the shared translator in
-    /// <c>ErrorHandling/GlobalExceptionHandler.cs</c> publishes for every other failure code, so a client
-    /// branching on the problem type sees one consistent scheme across the whole API. It is a relative,
-    /// non-dereferenceable identifier for the reason recorded on that translator: inventing an absolute
-    /// address for a documentation page that does not exist would be worse than having none.
-    /// </remarks>
-    private const string LastRemainingProblemType = "urn:dnnmigration:error:portal.last_remaining";
+    // MIGRATION: THIS FILE NAMES NO FAILURE CODE AND NO PROBLEM TYPE. An earlier revision declared both
+    //   for the last-portal refusal - the sole non-empty outcome the legacy delete could produce, since
+    //   PortalController.DeletePortal (PortalController.vb:L162-L204) read a portal tally first and
+    //   returned the localised message keyed LastPortal when the tally was not greater than one, while
+    //   every other path returned the empty string - and translated it locally into a 409 because the
+    //   shared table did not recognise the reason. The reason token is now recorded in that table, so both
+    //   constants and the branch that used them are gone: this controller states the outcome and the one
+    //   translator decides the status, which is the only arrangement in which the two cannot drift. The
+    //   rule itself is unchanged and still travels as a stable code rather than as display text.
 
     /// <summary>The portal service this controller delegates to.</summary>
     private readonly IPortalService _portalService;
@@ -122,9 +147,13 @@ public sealed class PortalsController : ControllerBase
     /// </exception>
     /// <remarks>
     /// <para>
-    /// One dependency, and it is an application-layer contract. Persistence is unreachable from this
-    /// layer by construction - the project reference graph makes reaching it a compile error rather than
-    /// a review finding - and nothing else is needed: the tenant is named explicitly by every route, so
+    /// One dependency, and it is an application-layer contract. Persistence is unreachable from here,
+    /// but the mechanism is accessibility rather than the reference graph: this project does reference
+    /// <c>DnnMigration.Infrastructure</c>, because composition has to register its services, yet
+    /// <c>DnnDbContext</c> and every repository implementation are declared <see langword="internal"/>
+    /// to that assembly, so naming one in this file is a compile error. What this controller can see is
+    /// the Application layer's abstractions, and nothing else is needed: the tenant is named explicitly
+    /// by every route, so
     /// no ambient per-request tenant context is consulted here, and the clock, the cache and the
     /// host-settings reader all belong behind the service.
     /// </para>
@@ -151,7 +180,7 @@ public sealed class PortalsController : ControllerBase
     /// An optional fragment of a portal's name. Passed through exactly as bound.
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>One page of portals, together with the total across every page.</returns>
+    /// <returns>One page of portals, in the wire envelope: an <c>items</c> array of rows and a <c>meta</c> object carrying the total across every page, the page index and the page size. The domain paging type is not serialised.</returns>
     /// <response code="200">
     /// The page. An empty page is a legitimate answer and means nothing matched the supplied filter; it
     /// is never reported as a failure.
@@ -203,13 +232,25 @@ public sealed class PortalsController : ControllerBase
     /// scope, and no endpoint in the plan invokes them.
     /// </para>
     /// </remarks>
+    // HOST-SCOPED, NOT PORTAL-SCOPED. This action names no portal anywhere in its route, so the
+    // portal-administrator policy would fall back to the tenant the caller arrived through and ask a truthful
+    // but irrelevant question: an administrator of one tenant would satisfy it and then reach every tenant.
+    // An operation over the whole collection of portals is a host operation and is gated as one.
     [HttpGet]
-    [ProducesResponseType(typeof(PagedResult<PortalListItemDto>), StatusCodes.Status200OK)]
+    [Authorize(Policy = PolicyNames.HostAdministrator)]
+    // Installation-wide, and a bootstrap path: an installation with no portal has no alias for any host name
+    // to resolve against, so requiring a resolved tenant here would make a fresh installation permanently
+    // unlistable. The host-administrator policy admits only a super-user, which is the entitlement that
+    // substitutes for the tenant.
+    [TenantOptional(
+        "Enumerates every portal in the installation and must work on an installation that has none, where no "
+        + "alias can resolve; restricted to host accounts.")]
+    [ProducesResponseType(typeof(PagedResponse<PortalListItemDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<PagedResult<PortalListItemDto>>> ListAsync(
-        [FromQuery] PagedRequest request,
+    public async Task<ActionResult<PagedResponse<PortalListItemDto>>> ListAsync(
+        [FromQuery] PortalPagedRequest request,
         [FromQuery] string? name,
         CancellationToken cancellationToken)
     {
@@ -219,7 +260,10 @@ public sealed class PortalsController : ControllerBase
 
         // The shared translator tests the outcome before reading its value, so a failed outcome never
         // has its value touched - reading the value of a failed outcome throws by design.
-        return this.Complete(outcome);
+        // Projected onto the wire envelope here rather than returned as the domain page. CompletePage
+        // applies PagedResponse<T>.From, so the response carries `items` plus `meta` and the domain
+        // paging type never crosses the boundary.
+        return this.CompletePage(outcome);
     }
 
     /// <summary>Reads one portal in full.</summary>
@@ -230,7 +274,6 @@ public sealed class PortalsController : ControllerBase
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The portal.</returns>
     /// <response code="200">The portal.</response>
-    /// <response code="400">The route value could not be bound to an integer.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request addresses.
@@ -244,12 +287,12 @@ public sealed class PortalsController : ControllerBase
     /// reserves a failed outcome for a lookup that genuinely could not be attempted.
     /// </remarks>
     [HttpGet("{portalId:int}")]
-    [ProducesResponseType(typeof(PortalDetailDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<PortalDetailDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PortalDetailDto?>> GetAsync(
+    public async Task<ActionResult<ApiResponse<PortalDetailDto?>>> GetAsync(
         int portalId,
         CancellationToken cancellationToken)
     {
@@ -327,13 +370,30 @@ public sealed class PortalsController : ControllerBase
     /// <c>/api/v1/portals/{identifier}</c> for this endpoint.
     /// </para>
     /// </remarks>
+    // HOST-SCOPED, NOT PORTAL-SCOPED, for the same reason as the listing above and one more: creating a
+    // portal creates a NEW tenant together with its administrator account and its stock roles, which is not
+    // an act within any existing tenant's authority. Under the portal-administrator policy an administrator
+    // of one tenant could mint tenants indefinitely.
     [HttpPost]
-    [ProducesResponseType(typeof(PortalDetailDto), StatusCodes.Status201Created)]
+    [Authorize(Policy = PolicyNames.HostAdministrator)]
+    // HASHES A CREDENTIAL: provisioning a tenant creates its administrator account and hashes the credential
+    // supplied for it. "portals" is not on the path matcher's word list, so this was unbounded too. As on the
+    // account-creation endpoint, the mark alone brings both bounds; see the note there.
+    [CredentialEndpoint]
+    // The bootstrap path proper. The FIRST portal must be creatable before any alias exists, or the
+    // installation can never be brought up; the request carries the alias it is claiming, so the tenant it
+    // concerns is named in the body rather than in the host name.
+    [TenantOptional(
+        "Creates the first portal on an installation where no alias yet exists; the portal alias being "
+        + "claimed is named in the request body. Restricted to host accounts.")]
+    [ProducesResponseType(typeof(ApiResponse<PortalDetailDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<PortalDetailDto>> CreateAsync(
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult<ApiResponse<PortalDetailDto>>> CreateAsync(
         [FromBody] CreatePortalRequest request,
         CancellationToken cancellationToken)
     {
@@ -422,12 +482,13 @@ public sealed class PortalsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPut("{portalId:int}")]
-    [ProducesResponseType(typeof(PortalDetailDto), StatusCodes.Status200OK)]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<PortalDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PortalDetailDto?>> UpdateAsync(
+    public async Task<ActionResult<ApiResponse<PortalDetailDto?>>> UpdateAsync(
         int portalId,
         [FromBody] UpdatePortalRequest request,
         CancellationToken cancellationToken)
@@ -444,7 +505,6 @@ public sealed class PortalsController : ControllerBase
     /// <param name="cancellationToken">Abandons the work when the caller disconnects.</param>
     /// <returns>No content once the portal has been removed.</returns>
     /// <response code="204">The portal was removed. There is nothing to return.</response>
-    /// <response code="400">The route value could not be bound to an integer.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request addresses.
@@ -482,17 +542,21 @@ public sealed class PortalsController : ControllerBase
     /// portal was removed" are distinguishable.
     /// </para>
     /// <para>
-    /// MIGRATION: the legacy screen wrote an audit entry keyed <c>PortalName</c> with the event type
-    /// <c>PORTAL_DELETED</c> on the success path (<c>Portals.ascx.vb:L397-L398</c>). The event-log
-    /// provider it used is beyond the migrated scope; the audit intent survives as structured request
-    /// logging emitted by <c>Middleware/RequestLoggingMiddleware.cs</c>, correlated by the identifier
-    /// that <c>Middleware/CorrelationIdMiddleware.cs</c> attaches, so no logging call is made here.
+    /// MIGRATION - AUDIT OMISSION, stated plainly rather than papered over. The legacy screen wrote an
+    /// audit entry keyed <c>PortalName</c> with the event type <c>PORTAL_DELETED</c> on the success path
+    /// (<c>Portals.ascx.vb:L397-L398</c>). The event-log provider it used is beyond the migrated scope,
+    /// and NO equivalent business-audit record is written by this endpoint or by the service behind it.
+    /// The request log that <c>Middleware/RequestLoggingMiddleware.cs</c> emits, correlated by
+    /// <c>Middleware/CorrelationIdMiddleware.cs</c>, is not a replacement and must not be read as one -
+    /// that middleware says so itself (<c>RequestLoggingMiddleware.cs:L11-L16</c>): it records that a
+    /// request occurred, not that a business event happened, and it names no portal. A deployment that
+    /// requires deletion to be auditable has to add that record deliberately.
     /// </para>
     /// </remarks>
     [HttpDelete("{portalId:int}")]
+    [Authorize(Policy = PolicyNames.HostAdministrator)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
@@ -502,32 +566,12 @@ public sealed class PortalsController : ControllerBase
             .DeletePortalAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        // Error is null for a successful outcome and carries the reason for a failed one, so testing it
-        // for null is the same test as asking whether the outcome failed - and it never reads the value
-        // of a failed outcome, which throws by design.
-        ResultReason? failure = outcome.Error;
-
-        // MIGRATION: the last-portal refusal is translated here rather than by the shared table, and
-        // this is the one place in this file that names a failure code. The shared translator in
-        // ErrorHandling/GlobalExceptionHandler.cs classifies a code by the reason token at the end of it,
-        // and this reason - "last_remaining" - matches none of the tokens it recognises as a conflict, so
-        // it would otherwise be reported as 400. That is the wrong answer: the request is perfectly well
-        // formed and there is no field for the caller to correct, which is exactly the distinction
-        // between 400 and 409. Correcting it here keeps the change local to the one endpoint that can
-        // produce this code and alters no sibling controller. Should the project prefer this centrally,
-        // the single edit is to add the reason token to that translator's conflict set, after which this
-        // branch becomes redundant and should be deleted rather than left to disagree with it.
-        if (failure is not null
-            && string.Equals(failure.Code, LastRemainingFailureCode, StringComparison.Ordinal))
-        {
-            return Problem(
-                detail: failure.Message,
-                statusCode: StatusCodes.Status409Conflict,
-                type: LastRemainingProblemType);
-        }
-
-        // Every other outcome - success, and every other failure code - is translated by the shared
-        // table, so this endpoint agrees with the rest of the API about what each code means.
+        // MIGRATION: the last-portal refusal is translated by the SHARED table like every other failure
+        // code, and this file no longer names a failure code at all. An earlier revision special-cased it
+        // here because the shared translator did not recognise "last_remaining" as a conflict and would
+        // have reported it as 400; the reason token is now recorded in that translator's conflict set, so
+        // the endpoint and the rest of the API cannot disagree about what the code means. A local branch
+        // and a central table describing the same code is exactly the arrangement that drifts.
         return this.Complete(outcome);
     }
 
@@ -536,7 +580,6 @@ public sealed class PortalsController : ControllerBase
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The configuration projection.</returns>
     /// <response code="200">The configuration.</response>
-    /// <response code="400">The route value could not be bound to an integer.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request addresses.
@@ -561,12 +604,12 @@ public sealed class PortalsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpGet("{portalId:int}/settings")]
-    [ProducesResponseType(typeof(PortalSettingsDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<PortalSettingsDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PortalSettingsDto?>> GetSettingsAsync(
+    public async Task<ActionResult<ApiResponse<PortalSettingsDto?>>> GetSettingsAsync(
         int portalId,
         CancellationToken cancellationToken)
     {

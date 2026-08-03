@@ -104,8 +104,8 @@ public sealed class TabModule : Entity<int>
     /// insert. Unlike the identity columns of the portal, role, tab and module tables, this one seeds
     /// at 1, so zero is not a legitimate value here - but nothing in this type draws any conclusion
     /// from that, and nothing may be added that does. Whether a placement has been written is
-    /// declared by the persistence layer through <see cref="Entity{TId}.MarkIdentityPersisted"/>,
-    /// never inferred from this value.
+    /// declared through <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows it -
+    /// nothing declares it automatically - and never inferred from this value.
     /// </remarks>
     public int TabModuleId { get; set; }
 

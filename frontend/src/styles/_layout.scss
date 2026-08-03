@@ -93,23 +93,25 @@
     'main'
     'footer';
 
-  // minmax(0, 1fr) rather than a bare 1fr. A 1fr track carries an automatic minimum, so a single
-  // wide descendant - a data table with many columns, say - would widen the track and push a
-  // horizontal scrollbar onto the whole document. Clamping the minimum to zero makes the track
-  // shrinkable and confines the overflow to the element that actually caused it.
-  grid-template-columns: minmax(0, 1fr);
+  // The fluid track rather than a bare fraction. A bare `1fr` carries an automatic minimum, so a
+  // single wide descendant - a data table with many columns, say - would widen the track and push a
+  // horizontal scrollbar onto the whole document. The token clamps that minimum to zero, which makes
+  // the track shrinkable and confines the overflow to the element that actually caused it; resolving
+  // it from the vocabulary is what stops one call site quietly omitting the clamp.
+  grid-template-columns: var(--grid-track-fluid);
 
-  // The main row takes the slack, which is what pins the footer to the bottom of a short screen. The
-  // first row belongs to the skip link, whose only occupant is out of flow until focused, so an
-  // `auto` row measures nothing at rest.
-  grid-template-rows: auto auto auto 1fr auto;
+  // The main row takes the slack, which is what pins the footer to the bottom of a short screen. It
+  // uses the remainder track rather than the fluid one: main must be free to grow PAST the viewport
+  // when its content is taller, which a zero minimum would prevent. The first row belongs to the skip
+  // link, whose only occupant is out of flow until focused, so an `auto` row measures nothing at rest.
+  grid-template-rows: auto auto auto var(--grid-track-remainder) auto;
 
   // Declaration order is load-bearing and the two must stay in this order: a declaration whose unit
   // an engine cannot resolve is discarded, leaving the preceding one in force. The dynamic unit
   // therefore goes second, because on a mobile browser whose toolbar retracts the static unit
   // overshoots the visible area.
-  min-block-size: 100vh;
-  min-block-size: 100dvh;
+  min-block-size: var(--size-viewport-block);
+  min-block-size: var(--size-viewport-block-dynamic);
 
   // No `gap`. The four regions are contiguous bands: a gap would open strips of page background
   // between the header, the sidebar and the footer, cutting through backgrounds those components
@@ -129,11 +131,11 @@
     // handles every state without a modifier class: present, and it fits the region's own content
     // and padding; empty, and the region leaves the flow so the track collapses to zero; absent, and
     // there is no item to measure so it collapses to zero. A fixed track would leave an empty column
-    // standing in the latter two cases, and the second track's `minmax(0, 1fr)` already guarantees
+    // standing in the latter two cases, and the second track's fluid token already guarantees
     // the main region absorbs whatever the first does not take. If a sidebar-width token is ever
     // added, apply it in the sidebar COMPONENT's own stylesheet; this track follows it either way.
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-columns: auto var(--grid-track-fluid);
+    grid-template-rows: auto auto var(--grid-track-remainder) auto;
   }
 }
 
@@ -216,9 +218,9 @@
 .content-region {
   display: grid;
 
-  // Same clamped track as the shell, for the same reason: a wide table inside a section must not be
+  // Same fluid track as the shell, for the same reason: a wide table inside a section must not be
   // able to widen the column that contains it.
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
 
   // The rhythm between sections and between stacked panels. `row-gap` rather than margins on the
   // children, so no rule has to be unwound for the first or last item and no collapsing margin can

@@ -2,8 +2,10 @@ using Asp.Versioning;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Extensions;
 using DnnMigration.Api.Filters;
+using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Auth;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using FluentValidation;
@@ -54,6 +56,13 @@ namespace DnnMigration.Api.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/auth")]
+// Every action here names its tenant by a means other than the host name, and the sign-in action MUST stay
+// reachable from a host that resolves to no portal - it is how an operator obtains the session that repairs
+// the alias configuration. Sign-in takes an explicit portal identifier when no alias matches; refresh, logout
+// and the current-caller projection are bound to the token, whose portal claim was fixed when it was issued.
+[TenantOptional(
+    "Sign-in accepts an explicit portal identifier and must remain reachable from an unconfigured host so an "
+    + "operator can obtain a session; the other three actions take their portal from the bearer token.")]
 [Produces("application/json")]
 public sealed class AuthController : ControllerBase
 {
@@ -65,23 +74,23 @@ public sealed class AuthController : ControllerBase
     public const string PortalQueryParameterName = "portalId";
 
     private readonly IAuthService _auth;
-    private readonly IValidator<LoginRequest> _loginValidator;
     private readonly IPortalContextHolder _portalContext;
 
+    // NO VALIDATOR IS INJECTED, AND THAT IS THE POINT. Every request contract this controller binds is
+    // validated by FluentValidationActionFilter, which is registered once for the whole API, runs before
+    // the action and resolves a validator from each argument's declared type. This controller used to
+    // take validators of its own and invoke them by hand as well, which was a second invocation path for
+    // one rule set and the reason the paging contract was judged against the wrong sortable vocabulary.
+    // Adding a validator argument back here would recreate that split.
     /// <summary>Initialises a new instance of the <see cref="AuthController"/> class.</summary>
     /// <param name="auth">The authentication service.</param>
-    /// <param name="loginValidator">Validates a sign-in request.</param>
     /// <param name="portalContext">
     /// Holds the tenant the alias-resolution middleware resolved from the request host, if any.
     /// </param>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
-    public AuthController(
-        IAuthService auth,
-        IValidator<LoginRequest> loginValidator,
-        IPortalContextHolder portalContext)
+    public AuthController(IAuthService auth, IPortalContextHolder portalContext)
     {
         _auth = auth ?? throw new ArgumentNullException(nameof(auth));
-        _loginValidator = loginValidator ?? throw new ArgumentNullException(nameof(loginValidator));
         _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
     }
 
@@ -106,26 +115,28 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("login")]
+    // Verifies a credential and, on the first successful sign-in against a legacy record, re-hashes it. The
+    // path matcher already classifies this address; the mark states the fact rather than inferring it, and
+    // is what guarantees the process-wide concurrency bound applies even if the path list ever changes.
+    [CredentialEndpoint]
     [AllowAnonymous]
     [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
-    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
-    public async Task<ActionResult<LoginResponse>> LoginAsync(
+    [ProducesResponseType(typeof(ApiResponse<LoginResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult<ApiResponse<LoginResponse>>> LoginAsync(
         [FromBody] LoginRequest request,
         [FromQuery(Name = PortalQueryParameterName)] int? portalId,
         CancellationToken cancellationToken)
     {
-        ActionResult? invalid = await this
-            .ValidateRequestAsync(_loginValidator, request, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (invalid is not null)
-        {
-            return invalid;
-        }
-
+        // VALIDATED BY THE GLOBALLY REGISTERED FILTER, NOT HERE. FluentValidationActionFilter runs
+        // before every action, resolves a validator from each bound argument's declared type and
+        // short-circuits with the same RFC 7807 validation document this call used to build - so the
+        // block that used to stand here could never fire. It was a second invocation path for one
+        // rule set, which is exactly what the review asked to be collapsed: two paths are two places
+        // for the rules, the context and the failure shape to diverge, and the one written by hand
+        // reached the wrong validator on the paging contract.
         // The resolved tenant is read through the holder rather than out of the request's feature bag:
         // the middleware publishes it nowhere else, and an abstraction is the one thing a caller cannot
         // reach in to replace.
@@ -169,13 +180,15 @@ public sealed class AuthController : ControllerBase
     /// detected.
     /// </remarks>
     [HttpPost("refresh")]
+    // Exchanges a token derived from a credential, which is a credential-equivalent secret.
+    [CredentialEndpoint]
     [AllowAnonymous]
     [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
-    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
-    public async Task<ActionResult<LoginResponse>> RefreshAsync(
+    [ProducesResponseType(typeof(ApiResponse<LoginResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult<ApiResponse<LoginResponse>>> RefreshAsync(
         [FromBody] RefreshTokenRequest request,
         CancellationToken cancellationToken)
     {
@@ -210,11 +223,13 @@ public sealed class AuthController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPost("logout")]
+    // Revokes a token derived from a credential.
+    [CredentialEndpoint]
     [AllowAnonymous]
     [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult> LogoutAsync(
         [FromBody] RefreshTokenRequest request,
         CancellationToken cancellationToken)
@@ -244,10 +259,10 @@ public sealed class AuthController : ControllerBase
     /// </remarks>
     [HttpGet("me")]
     [Authorize]
-    [ProducesResponseType(typeof(CurrentUserDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<CurrentUserDto?>> GetCurrentUserAsync(
+    [ProducesResponseType(typeof(ApiResponse<CurrentUserDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<CurrentUserDto?>>> GetCurrentUserAsync(
         CancellationToken cancellationToken)
     {
         Result<CurrentUserDto?> outcome = await _auth

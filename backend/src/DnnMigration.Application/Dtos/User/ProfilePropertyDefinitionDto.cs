@@ -21,7 +21,7 @@ namespace DnnMigration.Application.Dtos.User;
 /// </para>
 /// <para>
 /// Served as a lookup collection by the profile-definition endpoints under
-/// <c>/api/v1/profile-definitions</c>, and embedded by the user-profile contract so that a
+/// <c>/api/v1/portals/{portalId}/profile-definitions</c>, and embedded by the user-profile contract so that a
 /// rendered profile can carry the metadata describing its own fields. This type is inert: it
 /// holds no behaviour, no validation and no persistence concern. The rules that mirror the
 /// legacy screens live in <c>DnnMigration.Application.Validation</c>, and projection to and

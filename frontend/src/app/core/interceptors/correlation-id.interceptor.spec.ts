@@ -163,15 +163,21 @@ const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9
 /** A collection endpoint, matching the `/api/v1` prefix the API exposes. */
 const PORTAL_LIST_URL = '/api/v1/portals';
 
-/** A second endpoint, used where two distinct requests must be told apart. */
-const ROLE_LIST_URL = '/api/v1/roles';
+/**
+ * A second endpoint, used where two distinct requests must be told apart.
+ *
+ * Portal-nested, because that is the route the API actually exposes: roles are reached at
+ * `/api/v1/portals/{portalId}/roles` and there is no flat `/api/v1/roles`.
+ */
+const ROLE_LIST_URL = '/api/v1/portals/0/roles';
 
 /**
  * The identifier of the portal a delete spec addresses.
  *
  * `0` rather than `1`, because the legacy `Portals.PortalID` column is declared
- * `IDENTITY(-1,1)`: the first real portal is `0` and `-1` is simultaneously a
- * legitimate row identifier and the legacy `Null.NullInteger` sentinel. Nothing in
+ * `IDENTITY(-1,1)`: the seed and first generated value is `-1`, while the shipped default
+ * portal row is inserted explicitly with `PortalID` `0`, so both are legitimate row
+ * identifiers - and `-1` is simultaneously the legacy `Null.NullInteger` sentinel. Nothing in
  * this interceptor interprets the value - it is a path segment here and no more -
  * but choosing a realistic one keeps the fixture honest about the schema this
  * migration maps onto.
@@ -187,6 +193,19 @@ const DELETED_PORTAL_ID = 0;
  * preserved rather than regenerated and coincidentally matched.
  */
 const CALLER_SUPPLIED_ID = 'retry-of-a-prior-attempt';
+
+/**
+ * A second caller-supplied identifier, used only to build a request whose
+ * correlation header arrives on **two** header lines.
+ *
+ * It is deliberately as acceptable as {@link CALLER_SUPPLIED_ID} on its own merits -
+ * non-blank, well inside the length bound and printable US-ASCII throughout - and
+ * that is the whole point. The single-line clause is the only reason a request
+ * carrying both must be replaced, so a specification built from two individually
+ * *valid* values fails the moment that clause is weakened, whereas one built from
+ * invalid values would keep passing on the strength of a different clause entirely.
+ */
+const SECOND_CALLER_SUPPLIED_ID = 'a-concurrent-and-unrelated-attempt';
 
 /** An unrelated header, used to prove that everything else is carried across. */
 const OTHER_HEADER = 'X-Other-Header';
@@ -445,6 +464,35 @@ function requestCarrying(value: string): HttpRequest<unknown> {
   return new HttpRequest<unknown>('GET', PORTAL_LIST_URL).clone({
     setHeaders: { [CORRELATION_ID_HEADER]: value },
   });
+}
+
+/**
+ * Builds a request whose correlation header arrives on **two** header lines.
+ *
+ * `append` is the only way to reach this state, and reaching it is the entire
+ * reason this helper exists rather than reusing {@link requestCarrying}. Every
+ * other route collapses the two values into one line and so cannot exercise the
+ * clause under test: an object literal keyed by header name can hold one value per
+ * key, and `setHeaders` - which is what `requestCarrying` uses - *replaces* the
+ * named header rather than adding to it. Only `append` produces the two-element
+ * array that `getAll` returns and that the interceptor's single-line clause
+ * inspects.
+ *
+ * @param first The value on the first header line.
+ * @param second The value on the second header line.
+ * @returns A GET request carrying both values under the correlation header.
+ */
+function requestCarryingTwoIdentifiers(first: string, second: string): HttpRequest<unknown> {
+  const headers = new HttpHeaders()
+    .append(CORRELATION_ID_HEADER, first)
+    .append(CORRELATION_ID_HEADER, second);
+
+  return new HttpRequest<unknown>('GET', PORTAL_LIST_URL, { headers });
+}
+
+/** Reads every value the correlation header carries, or `null` when it is absent. */
+function allIdentifiersOn(request: HttpRequest<unknown>): readonly string[] | null {
+  return request.headers.getAll(CORRELATION_ID_HEADER);
 }
 
 /**
@@ -929,6 +977,68 @@ describe('correlationIdInterceptor', () => {
     // and its log entry carried different identifiers — the one failure mode
     // correlation exists to prevent. Each clause is asserted separately so a
     // regression names the clause it broke.
+
+    // THE SINGLE-LINE CLAUSE. Asserted first because it is the first clause the
+    // comment above names, and separately from the three value-shape clauses below
+    // because it is the only one that is not a property of a value at all: both
+    // values here would be forwarded untouched on their own. What disqualifies the
+    // request is the ambiguity of there being two of them, and `getAll` returning a
+    // two-element array is the only way that state is observable.
+    //
+    // Every other test in this block reaches the interceptor through a single header
+    // line, so without these three the `inbound.length === 1` comparison could be
+    // relaxed to `>= 1` - or deleted along with the surrounding `null` check - and the
+    // whole suite would still pass while the browser and the server silently
+    // disagreed about the identifier for the same request.
+
+    it('replaces a repeated header even though either value alone would be kept', () => {
+      const forwarded = runInterceptor(
+        requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID),
+      ).forwarded[0];
+
+      // The premise, asserted rather than assumed: each value on its own takes the
+      // pass-through branch. That is what makes the replacement below attributable to
+      // the repetition and to nothing else about either value.
+      expect(identifierOn(runInterceptor(requestCarrying(CALLER_SUPPLIED_ID)).forwarded[0]))
+        .toBe(CALLER_SUPPLIED_ID);
+      expect(identifierOn(runInterceptor(requestCarrying(SECOND_CALLER_SUPPLIED_ID)).forwarded[0]))
+        .toBe(SECOND_CALLER_SUPPLIED_ID);
+
+      expect(identifierOn(forwarded)).toMatch(CANONICAL_UUID_PATTERN);
+    });
+
+    it('collapses the two lines into exactly one', () => {
+      const forwarded = runInterceptor(
+        requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID),
+      ).forwarded[0];
+
+      // The premise: the request really did arrive with two lines. Without this the
+      // assertion below would also be satisfied by a helper that had quietly
+      // collapsed them before the interceptor ever ran.
+      expect(
+        allIdentifiersOn(requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID)),
+      ).toEqual([CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID]);
+
+      // `setHeaders` replaces rather than appends, so the ambiguity the server refuses
+      // is resolved here rather than forwarded. Appending would have produced three
+      // lines and left the request refusable for the very same reason.
+      expect(allIdentifiersOn(forwarded)?.length).toBe(1);
+    });
+
+    it('forwards neither inbound value, and leaves the caller\'s request untouched', () => {
+      const original = requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID);
+      const forwarded = runInterceptor(original).forwarded[0];
+
+      // Neither value survives. Keeping the first would be the tempting "repair" - it
+      // is a usable identifier, after all - but the server discards the whole header
+      // when it arrives more than once, so forwarding either value would leave the
+      // browser holding an identifier that appears in no server log line.
+      expect(allIdentifiersOn(forwarded)).not.toContain(CALLER_SUPPLIED_ID);
+      expect(allIdentifiersOn(forwarded)).not.toContain(SECOND_CALLER_SUPPLIED_ID);
+
+      expect(forwarded).not.toBe(original);
+      expect(allIdentifiersOn(original)).toEqual([CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID]);
+    });
 
     it('replaces an empty value rather than forwarding it', () => {
       const forwarded = runInterceptor(requestCarrying('')).forwarded[0];

@@ -1,4 +1,5 @@
 using DnnMigration.Application.Dtos.Module;
+using DnnMigration.Domain.Common;
 using FluentValidation;
 
 namespace DnnMigration.Application.Validation;
@@ -69,19 +70,20 @@ namespace DnnMigration.Application.Validation;
 //   the relationship between two submitted values belongs, and a declarative shape validator has no
 //   business duplicating it.
 //
-// MIGRATION: NO IDENTIFIER CARRIES A NUMERIC BOUND, AND A PREVIOUS REVISION OF THIS FILE GOT IT WRONG IN
-//   BOTH DIRECTIONS. The measured identity seeds in 01.00.00.SqlDataProvider are Modules.ModuleID
-//   IDENTITY (0, 1) at L221, Tabs.TabID IDENTITY (0, 1) at L140, Portals.PortalID IDENTITY (-1, 1) at L77
-//   with the shipped portal seeded at L7125, Roles.RoleID IDENTITY (0, 1) at L115, and
-//   ModuleDefinitions.ModuleDefID IDENTITY (1, 1) at L66. Zero is therefore a REAL page and a REAL module,
-//   and the portal seed collides exactly with the legacy absent-integer sentinel, so no single numeric
-//   rule can serve identifiers that seed at three different values and any such rule risks refusing a row
-//   that genuinely exists. A positive-only rule on the definition asserted existence, which is a stateful
-//   question a shape validator cannot answer; a zero-or-greater rule on the page asserted nothing the type
-//   had not already guaranteed while risking the wildcard the legacy query surface used. Both are gone.
-//   Presence is expressed by the members being non-nullable integers, and EXISTENCE - whether the
-//   definition is available to the portal, whether the page belongs to it - is answered by the module
-//   service against the store, which the integration suite exercises through its own not-found cases.
+// MIGRATION: NO IDENTIFIER CARRIES A NUMERIC BOUND, AND BOTH OBVIOUS BOUNDS WOULD BE WRONG. The measured
+//   identity declarations in 01.00.00.SqlDataProvider are Modules.ModuleID IDENTITY (0, 1) at L221,
+//   Tabs.TabID IDENTITY (0, 1) at L140, Portals.PortalID IDENTITY (-1, 1) at L77 - whose shipped default
+//   row is inserted with an explicit PortalID of 0 at L7125, so -1 and 0 are both real portal keys -
+//   Roles.RoleID IDENTITY (0, 1) at L115, and ModuleDefinitions.ModuleDefID IDENTITY (1, 1) at L66. Zero is
+//   therefore a REAL page and a REAL module, and the portal seed collides exactly with the legacy
+//   absent-integer sentinel, so no single numeric rule can serve identifiers that start at three different
+//   values and any such rule risks refusing a row that genuinely exists. A positive-only rule on the
+//   definition would assert existence, which is a stateful question a shape validator cannot answer; a
+//   zero-or-greater rule on the page would assert nothing the type has not already guaranteed while
+//   risking the wildcard the legacy query surface used. Neither is declared. Presence is expressed by the
+//   members being non-nullable integers, and EXISTENCE - whether the definition is available to the portal,
+//   whether the page belongs to it - is answered by the module service against the store, which the
+//   integration suite exercises through its own not-found cases.
 //
 // MIGRATION: NEITHER DATE CARRIES A LOWER BOUND. Null.vb returns the minimum date value for an absent
 //   date, and the legacy screen stored exactly that for a blank box while rendering it back as an empty
@@ -111,20 +113,25 @@ namespace DnnMigration.Application.Validation;
 //   discipline requires be equivalent, and it is kept intact - the full legacy strings are recorded
 //   verbatim in the census above so nothing is lost from the record.
 //
-// MIGRATION: THE NON-NEGATIVE CACHE RULE IS NET-NEW, IS STATED AS SUCH, AND DOES NOT REJECT THE LEGACY
-//   BLANK. valCacheTime checked integrality only, so the legacy screen accepted a negative cache
-//   lifetime that nothing honours. Refusing one is a deliberate addition rather than a port. Zero is NOT
-//   refused, which is the load-bearing half of the rule: ModuleSettings.ascx.vb L349-L350 parses the box
-//   only when it is non-empty, leaving a blank as zero, so zero means "do not cache" and remains a fully
-//   legitimate submitted value. Only negatives are refused, and this validator is the sole place they are.
+// MIGRATION: THE CACHE PERIOD CARRIES NO RULE, BECAUSE THE LEGACY SCREEN IMPOSED NONE BEYOND THE ONE THE
+//   TYPE SYSTEM NOW ENFORCES FOR FREE. valCacheTime (modulesettings.ascx L172) declared
+//   Operator="DataTypeCheck" Type="Integer" and nothing further - no CompareValidator against a floor, no
+//   RangeValidator - and the code-behind stored whatever parsed, Int32.Parse(txtCacheTime.Text) at L349-L350
+//   with no comparison of any kind. A negative period was therefore an accepted submission. An earlier
+//   revision of this file added a non-negative floor and labelled it net-new; that floor is REMOVED. It was
+//   not authorised by the legacy screen, by the request contract or by the AAP, and the migration discipline
+//   requires identical inputs to produce identical outcomes rather than a tighter rule imposed because a
+//   tighter rule looks defensible. Integrality itself needs no rule here: the member is typed int, so a
+//   non-integer never binds and the payload is refused by the binder before any validator runs - the same
+//   check the legacy validator performed, relocated to the type rather than dropped.
 //
-// MIGRATION: CROSS-FILE CONFLICT, REPORTED - THE CACHE PERIOD IS A NON-NULLABLE INTEGER, SO ITS RULE
-//   CANNOT BE MADE CONDITIONAL AND DOES NOT NEED TO BE. A guard on a value being supplied is not
-//   expressible for a non-nullable integer, and the contract documents why the member is not nullable: a
-//   blank legacy box stored literally zero, so nullability would invent an unspecified state the legacy
-//   contract never had. The legacy blank is still accepted, by a different mechanism - an omitted JSON
-//   property leaves the member at zero, and zero satisfies the rule - so the substance of "a blank is
-//   valid" survives even though the syntax of a conditional guard does not apply.
+// MIGRATION: A BLANK LEGACY BOX IS STILL A ZERO, AND THE MEMBER IS STILL NOT NULLABLE. L349-L350 parses the
+//   box only when it is non-empty and otherwise assigns zero, so "blank" and "zero" were the same
+//   submission and zero means "do not cache". An omitted JSON property leaves the member at zero, which
+//   reproduces that exactly. Nullability is deliberately not introduced: it would invent an unspecified
+//   state the legacy contract never had. Note also that minus one is meaningful rather than nonsensical in
+//   this domain - ModuleSettings.ascx.vb L138 tests a definition's DefaultCacheTime against the legacy
+//   integer sentinel of minus one - which is a further reason a floor at zero is not this layer's to assert.
 //
 // MIGRATION: THE LEGACY SCREENS COMPILED WITH OPTION STRICT OFF, AND EVERY IMPLICIT COERCION IS NOW
 //   EXPLICIT. Website/release.config L125 sets strict="false" for the administration screens while the
@@ -149,7 +156,7 @@ namespace DnnMigration.Application.Validation;
 //   API edge. This file is a declarative shape check and nothing else.
 
 /// <summary>
-/// Validates the shape of a module creation submitted to <c>POST /api/v1/modules</c>.
+/// Validates the shape of a module creation submitted to <c>POST /api/v1/portals/{portalId}/modules</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -197,11 +204,12 @@ namespace DnnMigration.Application.Validation;
 public class CreateModuleRequestValidator : AbstractValidator<CreateModuleRequest>
 {
     /// <summary>
-    /// The wording of <c>valCacheTime.ErrorMessage</c>, preserved character for character. The leading
-    /// <c>&lt;br&gt;</c> the legacy resource carried was layout markup for the inline validator and is
-    /// dropped, because a JSON payload has no layout duty and its consumer is not a browser.
+    /// Message reported when a submitted date falls outside the range the terminal <c>datetime</c>
+    /// column can hold. The wording is net-new: the legacy screen declared only a format check and had
+    /// no such rule, and the failure it reports was previously a server fault naming no field.
     /// </summary>
-    private const string CacheTimeInvalidMessage = "Invalid Cache Time";
+    private static readonly string DateUnrepresentableMessage = FormattableString.Invariant($"A date must fall between {SqlServerRange.MinimumDateTime:yyyy-MM-dd} and ")
+        + FormattableString.Invariant($"{SqlServerRange.MaximumDateTime:yyyy-MM-dd}, which is the range the stored column can hold.");
 
     /// <summary>
     /// Names the three permitted display states rather than their persisted numbers, so the message
@@ -247,18 +255,35 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
         RuleFor(request => request.Visibility)
             .IsInEnum().WithMessage(VisibilityInvalidMessage);
 
-        // Zero stays valid - a blank legacy box stored zero, meaning "do not cache" - so only a negative
-        // period is refused. Unconditional because the member is a non-negotiable integer; an omitted
-        // property arrives as zero and satisfies the rule, which is how the legacy blank survives.
-        RuleFor(request => request.CacheTime)
-            .GreaterThanOrEqualTo(0).WithMessage(CacheTimeInvalidMessage);
+        // MIGRATION: the two date members carry a REPRESENTABILITY bound and nothing else, and the
+        // non-negative floor on the cache period that an earlier revision declared beside them is NOT
+        // reinstated here - the census below records why. The CLR date type begins in the year one while
+        // the stored column begins in 1753, so a value the type accepts can still be unstorable;
+        // unbounded, such a value passed every rule here and was refused by the provider instead, which
+        // surfaces as a server fault naming no field rather than a field-level answer. The bound states
+        // only what the column can hold. The two are still NOT compared to one another - see the
+        // annotation on that omission - and the upper bound is stated at the last representable instant of
+        // 9999-12-31 rather than at that day's midnight, so a preserved perpetual value is admitted by the
+        // rule rather than refused by it.
+        RuleFor(request => request.StartDate)
+            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
+
+        RuleFor(request => request.EndDate)
+            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
 
         // Deliberately unvalidated, each for a measured reason, so that a later reader does not mistake
         // an absence for an omission:
+        //   CacheTime                   - the legacy validator checked INTEGRALITY AND NOTHING ELSE
+        //                                 (modulesettings.ascx L172, Operator="DataTypeCheck"
+        //                                 Type="Integer"), and the code-behind stored whatever parsed
+        //                                 (L349-L350, Int32.Parse with no comparison). Integrality is
+        //                                 already total here, because the member is typed int and a
+        //                                 non-integer never binds. See the migration note above
         //   ModuleDefId, TabId          - identifiers; the seeds collide with the legacy sentinel, so no
         //                                 numeric bound is admissible and existence is the store's answer
-        //   StartDate, EndDate          - the nullable date type already enforces the only legacy check,
-        //                                 and the two are never compared to each other
+        //   StartDate, EndDate          - the two are never compared to each other, and the nullable date
+        //                                 type enforces the only legacy check; the storage-range bound
+        //                                 applied above is a different kind of rule, annotated there
         //   ModuleOrder                 - minus one is a load-bearing instruction meaning "append at the
         //                                 bottom of the pane", never an absent value, so it must pass
         //   Header, Footer              - unbounded national text columns; the legacy controls declared

@@ -110,8 +110,8 @@ public sealed class UserRole : Entity<int>
     /// <c>dbo.Roles</c>, <c>dbo.Tabs</c> and <c>dbo.Modules</c> - each seeded at 0 - and
     /// <c>dbo.Portals</c> - seeded at -1 - the default value of this property is not a
     /// persisted key. It is still not read as "unsaved": whether an entity has been written is
-    /// declared by the persistence layer through <see cref="Entity{TId}.MarkIdentityPersisted"/>
-    /// and never deduced from a key value anywhere in this model.
+    /// declared through <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows it -
+    /// nothing declares it automatically - and never deduced from a key value anywhere in this model.
     /// </remarks>
     public int UserRoleId { get; set; }
 
@@ -286,15 +286,34 @@ public sealed class UserRole : Entity<int>
     /// result here.
     /// </para>
     /// <para>
-    /// MIGRATION: "no bound" is two values rather than one. The column is nullable, but the legacy
-    /// property could not be, so absence was carried as <c>Null.NullDate</c>
-    /// (<c>Date.MinValue</c>). Both a null and a <c>DateTime.MinValue</c> are therefore read as
-    /// unbounded, and the comparison is made on the date part alone - the legacy emptiness tests
-    /// at <c>Null.vb</c> lines 183-186 and 222-224 both compare <c>.Date</c> against
-    /// <c>NullDate.Date</c>, carrying the source comment "this avoids subtle time differences".
-    /// Matching that avoids classifying an already-hydrated legacy object differently from its
-    /// legacy self. This is a read-side compatibility allowance only: under Rule T7 the sentinel
-    /// is never the normal representation, and no member of this class ever stores one.
+    /// MIGRATION: "NO BOUND" IS ONE VALUE, AND IT IS <see langword="null"/>. Rule T7 keeps sentinel
+    /// knowledge at the boundary and out of the Domain, and this method holds none: a bound is set
+    /// when it is not null, and that is the whole of the test. An earlier revision additionally
+    /// treated <c>DateTime.MinValue</c> - the legacy <c>Null.NullDate</c> marker, which the
+    /// non-nullable legacy property used to carry absence - as unbounded, on the reasoning that a
+    /// migrated row should not classify differently from its legacy self. That allowance was wrong
+    /// on both counts and has been removed.
+    /// </para>
+    /// <para>
+    /// It was unnecessary, because the marker cannot arrive. The legacy write path converted it to
+    /// <c>DBNull</c> on every write - <c>Null.GetNull</c> (<c>Null.vb</c> lines 183-186) substitutes
+    /// <c>DBNull</c> when the date part equals <c>NullDate.Date</c>, and both members that wrote these
+    /// two columns passed both values through it (<c>AddUserRole</c> and <c>UpdateUserRole</c>,
+    /// membership <c>DataProvider/SqlDataProvider.vb</c> lines 280-286). Independently of that, both
+    /// columns are SQL Server <c>datetime</c>, whose range begins at 1753-01-01: the value 0001-01-01
+    /// is not merely absent from them, it is unstorable, and an attempt to write it is refused by the
+    /// database. So no stored row can produce it, and the target write boundary reproduces
+    /// <c>GetNull</c> explicitly - <c>RoleRepository.AddUserRoleAsync</c> and
+    /// <c>UpdateUserRoleAsync</c>, the two members that stand in for those two legacy members,
+    /// normalise the marker to <see langword="null"/> before anything is staged.
+    /// </para>
+    /// <para>
+    /// And it was harmful, because the allowance is indistinguishable from a genuine bound in the
+    /// only direction that matters. This classification decides whether a membership is in force, and
+    /// an administrator role assignment classified <see cref="RoleStatus.Active"/> is what the
+    /// tenant-administration policy grants on. A Domain that silently reinterprets one particular
+    /// stored instant as "unbounded" is a Domain in which the authorisation answer depends on a
+    /// sentinel table, which is exactly the coupling Rule T7 exists to prevent.
     /// </para>
     /// <para>
     /// MIGRATION: expiry is tested before the effective bound, and the reason is worth recording
@@ -320,31 +339,74 @@ public sealed class UserRole : Entity<int>
     public RoleStatus GetStatus(DateTime asOfUtc)
     {
         // Each test reads "the bound is set, and the instant falls strictly outside it". A bound
-        // counts as set only when it is neither null nor the legacy Null.NullDate sentinel, and the
-        // sentinel is recognised by its date part alone, matching Null.vb. The two conditions are
-        // written inline rather than extracted into a helper so that this type declares exactly one
-        // method in the emitted assembly as well as in source - a local function would be compiled
-        // into a second, compiler-named member.
+        // counts as set when it is not null, and nothing else - no sentinel is recognised here, for
+        // the reasons the remarks set out and cite.
 
         // Set, and strictly before the instant: it has lapsed. Tested FIRST because expiry is
         // terminal - see the ordering paragraph in the remarks, which records why and cites the
         // cancellation path that makes the two bounds observably contradictory.
-        if (ExpiryDate is DateTime expiry
-            && expiry.Date != DateTime.MinValue.Date
-            && expiry < asOfUtc)
+        if (ExpiryDate is DateTime expiry && expiry < asOfUtc)
         {
             return RoleStatus.Expired;
         }
 
         // Set, and strictly after the instant: granted, but not yet in force.
-        if (EffectiveDate is DateTime effective
-            && effective.Date != DateTime.MinValue.Date
-            && effective > asOfUtc)
+        if (EffectiveDate is DateTime effective && effective > asOfUtc)
         {
             return RoleStatus.Pending;
         }
 
         // In force: inside both bounds, on either bound, or bounded on neither side.
         return RoleStatus.Active;
+    }
+
+    /// <summary>
+    /// Reports whether any of a set of assignments places its holder in one particular role, in force at one
+    /// particular instant.
+    /// </summary>
+    /// <param name="assignments">The assignments to examine.</param>
+    /// <param name="roleId">The role the holder must be in.</param>
+    /// <param name="asOfUtc">The instant each assignment's validity window is judged against.</param>
+    /// <returns><see langword="true"/> when at least one assignment names that role and is in force.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="assignments"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A DOMAIN MEMBER RATHER THAN A PREDICATE AT EACH CALL SITE. "Is this account in that role
+    /// right now" is asked in two layers for two different purposes - by the API layer when it authorises a
+    /// request, and by the Application layer when a service needs to know whether its caller holds
+    /// administrative authority - and the two must never be able to answer differently. Expressed at each
+    /// call site it is a two-line LINQ predicate, which is exactly the kind of expression that gets copied
+    /// with one clause subtly altered; expressed here it is one implementation over
+    /// <see cref="GetStatus(DateTime)"/>, which is itself the single implementation of the validity window.
+    /// </para>
+    /// <para>
+    /// EVERY ASSIGNMENT IS EXAMINED, not just the first that names the role. Nothing in the schema prevents
+    /// two rows pairing the same account with the same role, so stopping at the first match would let a
+    /// lapsed duplicate hide a valid grant. The role is compared by KEY and never by name, because role names
+    /// are not unique in this schema and a name-based test is satisfied by a role belonging to another tenant.
+    /// </para>
+    /// <para>
+    /// It asks nothing about which tenant the role belongs to; that is the caller's responsibility, and the
+    /// callers satisfy it by obtaining the assignments through a portal-scoped read.
+    /// </para>
+    /// </remarks>
+    public static bool AnyActiveInRole(
+        IEnumerable<UserRole> assignments,
+        int roleId,
+        DateTime asOfUtc)
+    {
+        ArgumentNullException.ThrowIfNull(assignments);
+
+        foreach (UserRole assignment in assignments)
+        {
+            if (assignment.RoleId == roleId && assignment.GetStatus(asOfUtc) == RoleStatus.Active)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

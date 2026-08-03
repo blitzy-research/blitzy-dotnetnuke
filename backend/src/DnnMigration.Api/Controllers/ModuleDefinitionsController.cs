@@ -33,22 +33,27 @@
 // endpoint here adds or removes a grant. The grant is still honoured when reading: the read below
 // returns only definitions whose desktop module is either not premium or has been granted.
 //
-// MIGRATION: the twelve legacy READS collapse into the single action below. Nine were lookups that
+// MIGRATION: the twelve legacy READS collapse into the three actions below. Nine were lookups that
 // differed only in which column they filtered on - DesktopModuleController.vb:L50 (by identifier),
 // :L54 (by module name), :L58 (all), :L62 (by portal), :L66 (portal grants), :L80 and :L85 (by
 // display name) and ModuleDefinitionController.vb:L41 (by identifier), :L45 (by desktop module and
 // display name), :L49 (by desktop module) - and each returned an untyped ArrayList hydrated by
-// reflection through CBO.FillCollection. The application contract exposes one portal-scoped read
-// that already joins a definition to its owning desktop module, so one endpoint covers the picker's
-// whole need without inventing behaviour. The two display-name lookups were also both marked
-// <Obsolete> in the source, on the stated grounds that a display name "is not guaranteed to be the
-// same as when the module is created", so reproducing them would have carried a defect forward.
+// reflection through CBO.FillCollection. Three of the nine survive as addresses of their own because
+// the specified surface names them - the catalogue, ONE definition by identifier, and the definitions
+// of ONE installed package - and each maps to a member of the application contract, so this controller
+// still invents no query. The remaining six differed only by a column this API has no reason to expose
+// separately. The two display-name lookups were also both marked <Obsolete> in the source, on the
+// stated grounds that a display name "is not guaranteed to be the same as when the module is created",
+// so reproducing them would have carried a defect forward.
 //
-// MIGRATION: no per-definition endpoint exists, and its absence is a decision. The legacy single
-// lookups at ModuleDefinitionController.vb:L41 and DesktopModuleController.vb:L50 have no counterpart
-// on the application contract, whose only definition member returns the whole catalogue for a portal.
-// Adding an address for one definition would mean inventing a service member, and a controller that
-// invents its own query is a controller that has started holding business logic.
+// MIGRATION: the by-identifier and by-package reads are PORTAL-SCOPED, and that is a deliberate
+// narrowing of the legacy members they replace. ModuleDefinitionController.vb:L41 and :L49 answered
+// from the whole installation with no tenant argument at all, so a caller naming an identifier learnt
+// about a definition regardless of whether its portal had been granted the package. Both reads here
+// narrow the portal's own catalogue instead, so the premium-grant rule applies to a single-row read
+// exactly as it applies to the collection, and a definition the tenant may not instantiate is reported
+// as absent. Without that narrowing the pair would be a way to enumerate another tenant's catalogue one
+// identifier at a time.
 //
 // MIGRATION: reflection-based provider access is gone. Every legacy member reached its data through
 // DataProvider.Instance(), a reflection-instantiated singleton, and hydrated rows through the
@@ -61,6 +66,7 @@ using Asp.Versioning;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
@@ -83,10 +89,12 @@ namespace DnnMigration.Api.Controllers;
 /// ported and the reason for each.
 /// </para>
 /// <para>
-/// <strong>Asks, never decides.</strong> The single action here poses a question to the application
-/// service and translates the answer into a status code. It applies no filtering, sorting, grouping,
-/// name matching or caching of its own, so no rule is expressed here that could drift away from the
-/// rule expressed in the service.
+/// <strong>Asks, never decides.</strong> Each of the three actions here poses a question to the
+/// application service and translates the answer into a status code. None applies filtering, sorting,
+/// grouping, name matching or caching of its own, so no rule is expressed here that could drift away
+/// from the rule expressed in the service - and in particular the by-identifier and by-package reads
+/// narrow nothing themselves, because the narrowing they need is the premium-grant rule the service
+/// already owns.
 /// </para>
 /// <para>
 /// <strong>The catalogue is host-level data read through a portal-shaped question.</strong>
@@ -118,8 +126,9 @@ namespace DnnMigration.Api.Controllers;
 /// MIGRATION: no identifier accepted or emitted by this controller carries a numeric sentinel, and no
 /// range constraint is placed on one. The legacy sentinel for a missing integer is -1
 /// (<c>Library/Components/Shared/Null.vb:L41-L45</c>) and that value is not free: the portal table is
-/// <c>IDENTITY (-1, 1)</c>, so -1 identifies the first real portal, and the role, page and module
-/// tables all seed at 0, so 0 is a real identifier too. <c>ModuleDefinitions.ModuleDefID</c> is
+/// <c>IDENTITY (-1, 1)</c>, so -1 is its seed and first generated value while the shipped default portal
+/// row carries an explicit 0 - both real portal keys - and the role, page and module tables all seed at 0,
+/// so 0 is a real identifier there too. <c>ModuleDefinitions.ModuleDefID</c> is
 /// <c>IDENTITY (1, 1)</c>, so a definition is never numbered 0 or -1, but that is a fact about one
 /// table rather than a licence to test identifiers against a lower bound anywhere.
 /// </para>
@@ -132,6 +141,16 @@ namespace DnnMigration.Api.Controllers;
 public sealed class ModuleDefinitionsController : ControllerBase
 {
     /// <summary>The catalogue reader this controller delegates to.</summary>
+    /// <summary>
+    /// Failure code carried as the problem type when the request reached this action without a tenant.
+    /// </summary>
+    /// <remarks>
+    /// A distinct code from the middleware's generic refusal, so an operator reading a support log can
+    /// tell "this host resolves to no portal" apart from "this caller lacks the grant" - while the caller
+    /// reads the same fixed wording either way and learns nothing from the difference.
+    /// </remarks>
+    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+
     private readonly IModuleService _modules;
 
     /// <summary>The tenant this request addresses, resolved from the request host.</summary>
@@ -162,7 +181,8 @@ public sealed class ModuleDefinitionsController : ControllerBase
     /// to the identity and capability facts of its owning desktop module.
     /// </returns>
     /// <response code="200">
-    /// The catalogue, as a JSON array. An empty array is a legitimate answer - it means the portal has
+    /// The catalogue, inside the shared success envelope: the definitions are the envelope's payload
+    /// rather than the whole body. An empty payload is a legitimate answer - it means the portal has
     /// been granted no definitions - and is never reported as a failure.
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
@@ -172,8 +192,8 @@ public sealed class ModuleDefinitionsController : ControllerBase
     /// </response>
     /// <remarks>
     /// <para>
-    /// This one action replaces all twelve legacy catalogue reads; the head of this file records which,
-    /// and why no per-definition address exists.
+    /// This action, together with the two reads below it, replaces all twelve legacy catalogue reads; the
+    /// head of this file records which, and why the six that survive as no address at all do not.
     /// </para>
     /// <para>
     /// MIGRATION: the portal is taken from the tenant the alias-resolution middleware resolved from the
@@ -218,23 +238,37 @@ public sealed class ModuleDefinitionsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<ModuleDefinitionDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<IReadOnlyList<ModuleDefinitionDto>>> ListAsync(
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<ModuleDefinitionDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ModuleDefinitionDto>>>> ListAsync(
         CancellationToken cancellationToken)
     {
         // The tenant is read through the holder rather than from the request's feature bag: the
         // middleware publishes it nowhere else, and an abstraction is the one thing a caller cannot
         // reach in to replace. Resolution is tested before the tenant is read because the holder
         // throws rather than returning a placeholder - a placeholder tenant would be silently wrong
-        // instead of loudly absent. Under the class-level policy an unresolved host has already been
-        // refused, so this is a precondition rather than a branch a caller can steer into; it answers
-        // with the same bare 403 the authorisation middleware would have produced for that very cause,
-        // so the two paths are indistinguishable to a client.
+        // instead of loudly absent.
+        //
+        // THIS GUARD IS DEFENCE IN DEPTH AND IS EXPECTED TO BE UNREACHABLE. An earlier revision of this
+        // comment claimed the class-level policy had already refused an unresolved host, which was not
+        // true: that policy is anchored to the portal named in the route, this route names none, and a
+        // host account passes it from any host name whatsoever. What does refuse first is the tenant
+        // resolution middleware, because this action carries no tenant-optional mark and its route has no
+        // portalId segment - so a request that reaches here has a resolved tenant. The guard stays because
+        // the alternative to an unreachable refusal is an InvalidOperationException from the holder, and a
+        // 500 is a worse answer than a 403 for a condition that is not the caller's fault.
+        //
+        // The refusal is produced through the shared problem-details path rather than by Forbid(), and with
+        // the same failure code the middleware uses. A controller's Forbid() does NOT pass through the
+        // authorisation middleware's result handler, so it answered with an empty body while this action
+        // declares a problem document for 403 - which made this path distinguishable from the middleware's
+        // refusal for the identical cause, the opposite of what the surrounding comment claimed. Both now
+        // carry the same type, the same fixed wording and a trace identifier, so a client cannot tell them
+        // apart and neither discloses why.
         if (!_portalContext.IsResolved)
         {
-            return Forbid();
+            return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
         // The portal identifier is forwarded exactly as resolved. Clamping it, or treating any
@@ -246,6 +280,125 @@ public sealed class ModuleDefinitionsController : ControllerBase
 
         // Complete tests the outcome before reading its value, so a failed outcome never has its value
         // touched, and maps any failure code to a status through the one table this API uses.
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Reads one module definition available to the addressed portal.</summary>
+    /// <param name="moduleDefinitionId">
+    /// Identifier of the definition wanted. Forwarded exactly as bound: no lower bound is imposed here,
+    /// for the reason recorded at the head of this file.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns>The definition.</returns>
+    /// <response code="200">The definition.</response>
+    /// <response code="400">The identifier could not be bound to its parameter type.</response>
+    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
+    /// <response code="403">
+    /// The caller is authenticated but is not an administrator of the portal this request addresses, or
+    /// the request host is not a configured portal alias and so addresses no portal at all.
+    /// </response>
+    /// <response code="404">
+    /// The addressed portal has no such definition available. That covers both a definition that does not
+    /// exist and one whose package the portal has not been granted, and the two are DELIBERATELY
+    /// indistinguishable: telling them apart would let one tenant enumerate another's catalogue by
+    /// identifier.
+    /// </response>
+    /// <remarks>
+    /// <para>
+    /// Replaces the legacy single-definition read. It is scoped to the addressed portal rather than to the
+    /// installation, so it answers the same question the catalogue above answers, for one row.
+    /// </para>
+    /// <para>
+    /// Read-only, like everything on this resource: a definition is written by module installation, which
+    /// this migration excludes, so there is no create, update or delete action to pair with this read.
+    /// </para>
+    /// </remarks>
+    // The declared success type is the ENVELOPE, which is what this action actually returns. Declaring the
+    // bare payload here made the published contract disagree with the response for one endpoint out of the
+    // whole API, so a client generated from the document unwrapped every other resource and this one twice.
+    // The refusal statuses declare a body for the same reason: a status advertised without one forces a
+    // special case for an endpoint that does not have one.
+    [HttpGet("{moduleDefinitionId:int}")]
+    [ProducesResponseType(typeof(ApiResponse<ModuleDefinitionDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<ModuleDefinitionDto?>>> GetAsync(
+        int moduleDefinitionId,
+        CancellationToken cancellationToken)
+    {
+        // The same precondition the catalogue read states: the holder throws rather than returning a
+        // placeholder tenant, and under the class-level policy an unresolved host has already been refused.
+        if (!_portalContext.IsResolved)
+        {
+            return Forbid();
+        }
+
+        Result<ModuleDefinitionDto?> outcome = await _modules
+            .GetModuleDefinitionAsync(_portalContext.Current.PortalId, moduleDefinitionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // A successful outcome carrying no value means the definition is not available here, which the
+        // shared translator answers as 404 - the convention every single-record read in this API follows.
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Lists the definitions one installed package declares for the addressed portal.</summary>
+    /// <param name="desktopModuleId">
+    /// Identifier of the installed package whose definitions are wanted. Forwarded exactly as bound.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
+    /// <returns>The definitions that package declares, in the catalogue's own order.</returns>
+    /// <response code="200">
+    /// The definitions, as a JSON array. An empty array is a legitimate answer - the package may declare
+    /// none, or may not be available to this portal - and is never reported as a failure, which is the same
+    /// treatment the catalogue gives an empty result.
+    /// </response>
+    /// <response code="400">The identifier could not be bound to its parameter type.</response>
+    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
+    /// <response code="403">
+    /// The caller is authenticated but is not an administrator of the portal this request addresses, or
+    /// the request host is not a configured portal alias and so addresses no portal at all.
+    /// </response>
+    /// <remarks>
+    /// <para>
+    /// Replaces the legacy read that took a desktop-module identifier and returned every definition under
+    /// it. One installed package commonly declares several definitions, and the legacy administration
+    /// screens grouped them this way when offering the definitions of a chosen package.
+    /// </para>
+    /// <para>
+    /// The address is a sub-resource of this catalogue rather than a <c>desktopModuleId</c> filter on it,
+    /// because it answers a different question: the catalogue answers "what may this portal instantiate",
+    /// while this answers "what does this package offer it". Paging is absent here for the same reason it
+    /// is absent above - a package declares definitions in the single figures.
+    /// </para>
+    /// </remarks>
+    // Every advertised refusal declares a body, and the shape is the general problem document rather than
+    // the validation one: this action's request carries no content and no query, so there are no request
+    // members a validation document could name - a path segment constrained to an integer refuses a value of
+    // the wrong shape before the action is reached at all.
+    [HttpGet("desktop-modules/{desktopModuleId:int}")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<ModuleDefinitionDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ModuleDefinitionDto>>>> ListForDesktopModuleAsync(
+        int desktopModuleId,
+        CancellationToken cancellationToken)
+    {
+        if (!_portalContext.IsResolved)
+        {
+            return Forbid();
+        }
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await _modules
+            .ListDesktopModuleDefinitionsAsync(
+                _portalContext.Current.PortalId,
+                desktopModuleId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         return this.Complete(outcome);
     }
 }

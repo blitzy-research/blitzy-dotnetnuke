@@ -5,6 +5,7 @@ using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,7 +14,8 @@ namespace DnnMigration.Api.Controllers;
 
 /// <summary>
 /// The role resource - DotNetNuke's permission grouping - together with the membership that joins an
-/// account to a role, exposed at <c>/api/v1/portals/{portalId}/roles</c> and
+/// account to a role, exposed at <c>/api/v1/roles</c> and <c>/api/v1/roles/{roleId}/users</c>, and
+/// additionally at <c>/api/v1/portals/{portalId}/roles</c> and
 /// <c>/api/v1/portals/{portalId}/roles/{roleId}/users</c>.
 /// </summary>
 /// <remarks>
@@ -60,7 +62,8 @@ namespace DnnMigration.Api.Controllers;
 /// (<c>Library/Components/Shared/Null.vb:L41-L45</c>), the "Global Roles" selector value meaning a role
 /// belongs to no group (<c>Roles.ascx.vb:L114</c>), the <c>RoleGroupID</c> such a role actually carries,
 /// the token <c>glbRoleAllUsers</c> (<c>Library/Components/Shared/Globals.vb:L95</c>) and the seed of
-/// <c>Portals.PortalID</c>, declared <c>IDENTITY (-1, 1)</c>, so it is also the first real portal. -2 is
+/// <c>Portals.PortalID</c>, declared <c>IDENTITY (-1, 1)</c>, so it is also a real portal key - the seed
+/// and first generated value, alongside the shipped default portal row's explicit 0. -2 is
 /// both the "All Roles" selector value (<c>Roles.ascx.vb:L112</c>) and <c>glbRoleSuperUser</c>
 /// (<c>Globals.vb:L96</c>). And 0 is not absent either: <c>Roles.RoleID</c> is declared
 /// <c>IDENTITY (0, 1)</c> at
@@ -109,10 +112,12 @@ namespace DnnMigration.Api.Controllers;
 /// (<c>RoleController.vb:L25</c>) that supplied <c>DateAdd</c>, belong to the service.
 /// </para>
 /// <para>
-/// MIGRATION: no sentinel is manufactured or erased on this boundary. Serialisation is configured once
-/// for the whole application to emit every property including nulls, so an absent date arrives as
-/// <c>null</c> rather than vanishing, and a perpetual expiry arrives as <c>9999-12-31</c> rather than
-/// being rounded away. That matters because the legacy read path funnelled every value through
+/// MIGRATION: no sentinel is manufactured or erased on this boundary, but absence is expressed by an
+/// ABSENT MEMBER rather than by a JSON null. Serialisation is configured once for the whole application
+/// with a when-writing-null ignore condition, so a null-valued property is omitted from the response
+/// body; an absent date therefore does not appear at all, while a perpetual expiry arrives as
+/// <c>9999-12-31</c> rather than being rounded away. A client reads a missing member as "no value" and
+/// never as <c>DateTime.MinValue</c>, 0 or -1. That matters because the legacy read path funnelled every value through
 /// <c>Null.SetNull</c>, whose date sentinel is <c>DateTime.MinValue</c> and whose string sentinel is the
 /// empty string rather than <c>null</c> (<c>Null.vb:L66-L75</c>), so a database <c>NULL</c> and an empty
 /// value were indistinguishable once loaded. Which of the two now stands for absence is settled once, in
@@ -216,6 +221,12 @@ namespace DnnMigration.Api.Controllers;
 /// for want of a role.
 /// </para>
 /// <para>
+/// The two are nevertheless RECONCILED, and by the policy rather than by anything written here: a caller
+/// that is not a host account and names a portal other than the one its request resolved to is refused
+/// before an action body is entered. Being distinct is not the same as being unrelated, and that
+/// reconciliation is what keeps a routed identifier from becoming a way to read another tenant's roles.
+/// </para>
+/// <para>
 /// <strong>Paging and searching.</strong> The page index is zero-based, so index 0 is the first page,
 /// and a free-text filter matches from the start of the value rather than anywhere within it. Both are
 /// the legacy data layer's own conventions rather than new ones, and both are fixed by the envelope and
@@ -239,6 +250,35 @@ namespace DnnMigration.Api.Controllers;
 /// this file binds carries it.
 /// </para>
 /// <para>
+/// <strong>Two addresses, one implementation.</strong> The specified addresses for this resource are the
+/// flat <c>/api/v1/roles</c> and <c>/api/v1/roles/{roleId}/users</c>, and each action declares its flat
+/// template first because that is the canonical one. The nested
+/// <c>/api/v1/portals/{portalId}/roles...</c> forms are retained alongside them, and both are served by the
+/// same nine actions - no second controller, no duplicated body, no forwarding action. They differ in
+/// exactly one respect, which is where the tenant comes from. On a FLAT address it is the tenant the
+/// request resolved to, and a caller cannot name another one because there is no parameter through which
+/// to name it, so the isolation is structural. On a NESTED address the routed identifier is reconciled
+/// against the resolved tenant by the policy, as described above. The identifier is bound
+/// <c>[FromRoute]</c> and never from the query string, and that is load-bearing rather than tidy: a
+/// query-bound tenant would travel on the flat addresses too, where the policy has no route value to
+/// reconcile it against, and would reopen precisely the hole the reconciliation closes.
+/// </para>
+/// <para>
+/// The nested addresses are also what make a host account able to administer a NAMED tenant's roles. A
+/// request resolves to whichever portal's alias it arrived on and an HTTP client cannot forge another
+/// tenant's host name, so removing them would leave cross-tenant administration with no address at all.
+/// </para>
+/// <para>
+/// <strong>Why there are nine actions and not eight.</strong> The extra one is the account-side projection
+/// of membership - the roles ONE ACCOUNT holds - and it is required rather than additional. The legacy
+/// assignment screen offered both directions of the same relation from one page: its <c>BindGrid</c> bound
+/// <c>GetUserRolesByRoleName</c> when a role was the subject and <c>GetUserRolesByUsername</c> when an
+/// account was (<c>Website/admin/Security/SecurityRoles.ascx.vb:L246</c> and <c>:L253</c>). Serving
+/// only the role-side projection would leave the account-side half of that screen unimplementable, which
+/// the functional-parity requirement does not permit. Both projections read through the same application
+/// contract and neither owns logic of its own.
+/// </para>
+/// <para>
 /// <strong>Validation.</strong> Declarative validation is applied by the globally registered validation
 /// filter, which runs before any action body and reports failures through the shared problem-details
 /// factory as an RFC 7807 validation document. No validator is injected here, no action inspects model
@@ -258,28 +298,85 @@ public sealed class RolesController : ControllerBase
 {
     /// <summary>The application contract that owns roles, role groups and membership.</summary>
     /// <remarks>
-    /// One dependency, and it is an application-layer interface. There is no repository, no persistence
-    /// context, no unit of work, no cache, no clock and no HTTP context accessor here, and the project
-    /// reference graph makes the first three unreachable from this layer rather than merely discouraged.
+    /// The only service dependency, and it is an application-layer interface. There is no repository, no
+    /// persistence context, no unit of work, no cache, no clock and no HTTP context accessor here. The
+    /// first three are unreachable by ACCESSIBILITY rather than by the reference graph: this project does
+    /// reference <c>DnnMigration.Infrastructure</c>, because composition must register its services, but
+    /// <c>DnnDbContext</c>, the unit of work and every repository implementation are
+    /// <see langword="internal"/> to that assembly, so naming one here would not compile. The tenant
+    /// holder beside it is not a fourth kind of thing: it reads a value the middleware already resolved
+    /// and performs no lookup of its own.
     /// The acting user is not injected either: the legacy assignment call passed the operator's
     /// identifier as its sixth argument (<c>SecurityRoles.ascx.vb:L542</c>), and that fact is now read
     /// from the current-user abstraction inside the service, so it cannot be spoofed by a request body.
     /// </remarks>
     private readonly IRoleService _roles;
 
+    /// <summary>The tenant this request addresses, resolved from the request host.</summary>
+    /// <remarks>
+    /// Needed only by the flat addresses, which carry no tenant identifier and therefore have to read the
+    /// one the alias-resolution middleware already resolved. It is an abstraction over that resolution and
+    /// not a reach for the ambient HTTP context: this file still performs no alias lookup and still touches
+    /// no request feature bag, so the claim made above - that resolution belongs to the middleware and
+    /// scoping belongs to the service - continues to hold.
+    /// </remarks>
+    private readonly IPortalContextHolder _portalContext;
+
     /// <summary>Initialises a new instance of the <see cref="RolesController"/> class.</summary>
     /// <param name="roles">The role service.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="roles"/> is <see langword="null"/>.</exception>
-    public RolesController(IRoleService roles)
+    /// <param name="portalContext">
+    /// Holds the tenant that the alias-resolution middleware resolved from the request host, which is the
+    /// tenant the flat addresses act on.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    public RolesController(IRoleService roles, IPortalContextHolder portalContext)
     {
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
+    }
+
+    /// <summary>
+    /// Chooses the tenant an action acts on: the routed identifier when a nested address was used, and
+    /// otherwise the tenant the request resolved to.
+    /// </summary>
+    /// <param name="routedPortalId">
+    /// The identifier bound from the route, or <see langword="null"/> when a flat address was used.
+    /// </param>
+    /// <returns>
+    /// The tenant identifier, or <see langword="null"/> when a flat address was used and the request
+    /// resolved to no tenant at all.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The routed value wins when present, because on that address it IS the subject of the request and the
+    /// portal-administrator policy has already reconciled it against the resolved tenant. It is forwarded
+    /// exactly as bound: no lower bound is imposed and no value is treated as "absent", because the portal
+    /// table is <c>IDENTITY (-1, 1)</c> and -1 is therefore a real portal rather than the legacy
+    /// missing-integer sentinel.
+    /// </para>
+    /// <para>
+    /// The holder throws rather than yielding a placeholder tenant, so resolution is tested before the
+    /// tenant is read. An unresolved request has already been refused by the class-level policy, which
+    /// denies for want of a portal, so the null answer here is a precondition rather than a state a caller
+    /// can steer into - and the caller sees the same bare <c>403</c> either way.
+    /// </para>
+    /// </remarks>
+    private int? ResolvePortalId(int? routedPortalId)
+    {
+        if (routedPortalId is { } portalId)
+        {
+            return portalId;
+        }
+
+        return _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
     }
 
     /// <summary>Lists one page of the roles a portal defines.</summary>
     /// <param name="portalId">
     /// Identifier of the portal whose roles are listed. Forwarded exactly as bound: no lower bound is
-    /// imposed, because the portal table is seeded <c>IDENTITY (-1, 1)</c> and -1 therefore identifies
-    /// the first real portal rather than an absent one.
+    /// imposed, because <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c>, so -1 is its seed and first
+    /// generated value while the shipped default portal row carries an explicit 0. Both are real portal
+    /// keys and neither means "absent".
     /// </param>
     /// <param name="request">
     /// Paging, sorting and free-text filtering, bound from the query string. The page index is
@@ -287,19 +384,28 @@ public sealed class RolesController : ControllerBase
     /// contract and are not restated per action.
     /// </param>
     /// <param name="roleGroupId">
-    /// Restricts the listing to one role group, or is omitted for every role in the portal irrespective
-    /// of group. Omitting it is the successor to the legacy "All Roles" selector entry.
+    /// Restricts the listing to one role group. Omit it to let <paramref name="scope"/> decide. Zero is a
+    /// real group key - <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1)</c> - so absence is expressed
+    /// by omitting the value and never by sending a small number.
+    /// </param>
+    /// <param name="scope">
+    /// Chooses between the two answers a group identifier cannot express: <c>All</c>, every role in the
+    /// portal, which is the successor to the legacy "&lt; All Roles &gt;" selector entry and the default
+    /// when the parameter is omitted; and <c>Ungrouped</c>, only the roles belonging to no group at all,
+    /// which is the successor to its "&lt; Global Roles &gt;" entry. The parameter is a closed
+    /// enumeration, so an unrecognised spelling is refused by model binding.
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>One page of the portal's roles.</returns>
+    /// <returns>One page of the portal's roles, in the wire envelope: an <c>items</c> array of rows and a <c>meta</c> object carrying the total across every page, the page index and the page size. The domain paging type is not serialised.</returns>
     /// <response code="200">
     /// The page, inside an envelope carrying the total across every page. An empty page is a legitimate
     /// answer and is never reported as a failure.
     /// </response>
     /// <response code="400">
-    /// A query value could not be bound, or a paging rule was broken - a negative page index, or a page
-    /// size above the ceiling the request contract declares. Reported as an RFC 7807 validation document
-    /// naming the offending member.
+    /// A query value could not be bound, a paging rule was broken - a negative page index, or a page size
+    /// above the ceiling the request contract declares - or the two narrowing arguments contradict each
+    /// other, which is <c>role_group.scope_invalid</c>. Reported as an RFC 7807 document; the paging and
+    /// binding cases name the offending member.
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -310,37 +416,59 @@ public sealed class RolesController : ControllerBase
     /// are distinct from an empty page, which is a successful answer.
     /// </response>
     /// <remarks>
+    /// <para>
     /// MIGRATION: this replaces the branch at <c>Roles.ascx.vb:L72-L76</c>, which chose between
     /// <c>GetPortalRoles</c> and <c>GetRolesByGroup</c> by testing its selector value against -1 and
-    /// returned an untyped <c>ArrayList</c> either way. The two intents are now one member with an
-    /// optional, nullable, typed group filter, and the untyped collection becomes a typed page. Because
-    /// the filter is nullable rather than sentinel-valued, the third intent the legacy drop-down offered
-    /// - the roles belonging to NO group, its "Global Roles" entry - is not expressible: the absent
-    /// state of the filter already means "do not filter". That is a known difference from the legacy
-    /// screen, recorded here rather than reintroduced by letting -1 travel as a magic value, which would
-    /// restore the collision where one integer meant an absent value, a stored identifier and a
-    /// filtering intent at the same time.
+    /// returned an untyped <c>ArrayList</c> either way. All THREE of the intents that branch served are
+    /// expressible here, and the untyped collection becomes a typed page.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an earlier revision of this endpoint offered only two of the three, and recorded the
+    /// missing one - the legacy drop-down's "&lt; Global Roles &gt;" entry, the roles belonging to no
+    /// group - as "a known difference from the legacy screen". The concern that produced that gap was
+    /// sound: letting -1 travel as a magic value would restore the collision in which one integer meant
+    /// an absent value, a stored identifier and a filtering intent at once. The gap itself was not
+    /// acceptable, because the legacy screen's selector is part of the functional parity this migration
+    /// owes. Both are satisfied by separating the two concerns: the identifier stays a plain nullable key
+    /// with no magic values, and the branch that no key can name is chosen by a closed enumeration. The
+    /// evidence for all three legacy bands, including the stale legacy comment that misdescribes the
+    /// middle one, is recorded on <see cref="RoleGroupScope"/>.
+    /// </para>
     /// </remarks>
+    [HttpGet("roles")]
     [HttpGet("portals/{portalId:int}/roles")]
-    [ProducesResponseType(typeof(PagedResult<RoleListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResponse<RoleListItemDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PagedResult<RoleListItemDto>>> ListAsync(
-        int portalId,
-        [FromQuery] PagedRequest request,
+    public async Task<ActionResult<PagedResponse<RoleListItemDto>>> ListAsync(
+        [FromRoute] int? portalId,
+        [FromQuery] RolePagedRequest request,
         [FromQuery] int? roleGroupId,
+        [FromQuery] RoleGroupScope scope,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
+        // An omitted scope binds to the enumeration's zero member, which is All - the same answer this
+        // endpoint gave before the parameter existed - so no existing caller changes behaviour. The
+        // contradictory pairing is not tested here: the application contract owns that rule and reports it
+        // as a reason code, and a second copy of the test in this controller could disagree with it.
         Result<PagedResult<RoleListItemDto>> outcome = await _roles
-            .ListRolesAsync(portalId, request, roleGroupId, cancellationToken)
+            .ListRolesAsync(scopedPortalId, request, roleGroupId, scope, cancellationToken)
             .ConfigureAwait(false);
 
         // The shared translator tests the outcome before reading its value, so a failed outcome never
         // has its value touched - reading the value of a failed outcome throws by design - and any
         // failure code is mapped to a status through the single table this API uses.
-        return this.Complete(outcome);
+        // Projected onto the wire envelope here rather than returned as the domain page. CompletePage
+        // applies PagedResponse<T>.From, so the response carries `items` plus `meta` and the domain
+        // paging type never crosses the boundary.
+        return this.CompletePage(outcome);
     }
 
     /// <summary>Reads one role.</summary>
@@ -357,7 +485,6 @@ public sealed class RolesController : ControllerBase
     /// <c>M</c> and <c>Y</c> for a period in days, weeks, months and years - because those characters
     /// are the stored values.
     /// </response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request resolves to.
@@ -367,19 +494,24 @@ public sealed class RolesController : ControllerBase
     /// exists in a different portal is reported here rather than returned, which is how the legacy
     /// screens treated a cross-tenant identifier.
     /// </response>
+    [HttpGet("roles/{roleId:int}")]
     [HttpGet("portals/{portalId:int}/roles/{roleId:int}")]
-    [ProducesResponseType(typeof(RoleDetailDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<RoleDetailDto?>> GetAsync(
-        int portalId,
+    public async Task<ActionResult<ApiResponse<RoleDetailDto?>>> GetAsync(
+        [FromRoute] int? portalId,
         int roleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<RoleDetailDto?> outcome = await _roles
-            .GetRoleAsync(portalId, roleId, cancellationToken)
+            .GetRoleAsync(scopedPortalId, roleId, cancellationToken)
             .ConfigureAwait(false);
 
         // A successful outcome carrying no value means the role is absent, which is a different answer
@@ -431,20 +563,27 @@ public sealed class RolesController : ControllerBase
     /// check-then-insert sequence (<c>:L252-L253</c>) had a race this arrangement removes, since the
     /// service performs both inside one unit of work.
     /// </remarks>
+    [HttpPost("roles")]
     [HttpPost("portals/{portalId:int}/roles")]
-    [ProducesResponseType(typeof(RoleDetailDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<RoleDetailDto>> CreateAsync(
-        int portalId,
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult<ApiResponse<RoleDetailDto>>> CreateAsync(
+        [FromRoute] int? portalId,
         [FromBody] CreateRoleRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<RoleDetailDto> outcome = await _roles
-            .CreateRoleAsync(portalId, request, cancellationToken)
+            .CreateRoleAsync(scopedPortalId, request, cancellationToken)
             .ConfigureAwait(false);
 
         // The location header is built from this request's own path plus the new identifier, which is
@@ -490,20 +629,26 @@ public sealed class RolesController : ControllerBase
     /// is coherent rather than defective in practice: the value it guarded could not change. The defect
     /// is recorded, not silently "improved", and a name member must not be added here to create one.
     /// </remarks>
+    [HttpPut("roles/{roleId:int}")]
     [HttpPut("portals/{portalId:int}/roles/{roleId:int}")]
-    [ProducesResponseType(typeof(RoleDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<RoleDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<RoleDetailDto>> UpdateAsync(
-        int portalId,
+    public async Task<ActionResult<ApiResponse<RoleDetailDto>>> UpdateAsync(
+        [FromRoute] int? portalId,
         int roleId,
         [FromBody] UpdateRoleRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<RoleDetailDto> outcome = await _roles
-            .UpdateRoleAsync(portalId, roleId, request, cancellationToken)
+            .UpdateRoleAsync(scopedPortalId, roleId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
@@ -518,7 +663,6 @@ public sealed class RolesController : ControllerBase
     /// The role has been removed, together with every membership that referenced it. An empty body is
     /// correct: there is no remaining representation to return.
     /// </response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request resolves to.
@@ -535,19 +679,24 @@ public sealed class RolesController : ControllerBase
     /// likewise the service's, inside a single unit of work; the legacy sequence was not transactional
     /// across statements.
     /// </remarks>
+    [HttpDelete("roles/{roleId:int}")]
     [HttpDelete("portals/{portalId:int}/roles/{roleId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> DeleteAsync(
-        int portalId,
+        [FromRoute] int? portalId,
         int roleId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result outcome = await _roles
-            .DeleteRoleAsync(portalId, roleId, cancellationToken)
+            .DeleteRoleAsync(scopedPortalId, roleId, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
@@ -562,10 +711,11 @@ public sealed class RolesController : ControllerBase
     /// match-from-the-start terms as every other listing in this API.
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>One page of the accounts holding the role.</returns>
+    /// <returns>One page of the accounts holding the role, in the wire envelope: an <c>items</c> array of rows and a <c>meta</c> object carrying the total across every page, the page index and the page size. The domain paging type is not serialised.</returns>
     /// <response code="200">
-    /// The page, inside an envelope carrying the total across every page. An empty page means the role
-    /// has no members and is a successful answer.
+    /// The page, inside an envelope carrying the total across every page. Each record is a MEMBERSHIP -
+    /// the account, the role and the period the assignment runs for - rather than an account. An empty
+    /// page means the role has no members and is a successful answer.
     /// </response>
     /// <response code="400">
     /// A query value could not be bound, or a paging rule was broken. Reported as an RFC 7807 validation
@@ -587,31 +737,48 @@ public sealed class RolesController : ControllerBase
     /// static controller, and they collapse into the one member this action calls.
     /// </para>
     /// <para>
-    /// MIGRATION - a functional reduction, stated rather than hidden. The legacy grid bound five columns
-    /// (<c>securityroles.ascx</c>), among them the membership's effective and expiry dates. This
-    /// projection carries the account, not the membership, so those two dates are not on the read path;
-    /// they travel on the write path, on the assignment contract. Restoring them would require a named
-    /// membership projection, and inventing one here would put a type on the wire that no other layer
-    /// owns.
+    /// MIGRATION: all five columns the legacy grid bound are on this read path, including the
+    /// membership's effective and expiry dates. An earlier revision of this action projected the ACCOUNT
+    /// contract and recorded the two dates as "a functional reduction, stated rather than hidden",
+    /// reasoning that restoring them would mean inventing a projection no other layer owned. The
+    /// reduction is now closed: the membership projection is owned by the application layer, named in the
+    /// role DTO folder AAP 0.4.1.1 enumerates, and derived from what the legacy screen rendered as
+    /// AAP 0.5.1.2 requires. The earlier note is quoted here rather than deleted so that the change is
+    /// legible to anyone who read it.
+    /// </para>
+    /// <para>
+    /// Consequently the record is a membership and not an account: it carries the account's key, login
+    /// name and display name, the role's key and name, and the two dates. The remaining account fields -
+    /// electronic mail address, approval, lock-out and the rest - are not here, because the legacy grid
+    /// rendered none of them and the account endpoints already publish them.
     /// </para>
     /// </remarks>
+    [HttpGet("roles/{roleId:int}/users")]
     [HttpGet("portals/{portalId:int}/roles/{roleId:int}/users")]
-    [ProducesResponseType(typeof(PagedResult<UserListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResponse<RoleMembershipDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PagedResult<UserListItemDto>>> ListUsersAsync(
-        int portalId,
+    public async Task<ActionResult<PagedResponse<RoleMembershipDto>>> ListUsersAsync(
+        [FromRoute] int? portalId,
         int roleId,
-        [FromQuery] PagedRequest request,
+        [FromQuery] UserPagedRequest request,
         CancellationToken cancellationToken)
     {
-        Result<PagedResult<UserListItemDto>> outcome = await _roles
-            .ListRoleUsersAsync(portalId, roleId, request, cancellationToken)
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
+        Result<PagedResult<RoleMembershipDto>> outcome = await _roles
+            .ListRoleUsersAsync(scopedPortalId, roleId, request, cancellationToken)
             .ConfigureAwait(false);
 
-        return this.Complete(outcome);
+        // Projected onto the wire envelope here rather than returned as the domain page. CompletePage
+        // applies PagedResponse<T>.From, so the response carries `items` plus `meta` and the domain
+        // paging type never crosses the boundary.
+        return this.CompletePage(outcome);
     }
 
     /// <summary>Lists the roles one account holds in a portal.</summary>
@@ -620,10 +787,9 @@ public sealed class RolesController : ControllerBase
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The roles the account holds in this portal.</returns>
     /// <response code="200">
-    /// The roles, as a JSON array. An empty array means the account holds none and is a successful
-    /// answer.
+    /// The roles, inside the shared success envelope: the sequence is the envelope's payload rather than
+    /// the whole body. An empty payload means the account holds none and is a successful answer.
     /// </response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but does not administer the portal this request resolves to.
@@ -652,19 +818,24 @@ public sealed class RolesController : ControllerBase
     /// application never had.
     /// </para>
     /// </remarks>
+    [HttpGet("users/{userId:int}/roles")]
     [HttpGet("portals/{portalId:int}/users/{userId:int}/roles")]
-    [ProducesResponseType(typeof(IReadOnlyList<RoleListItemDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<RoleListItemDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IReadOnlyList<RoleListItemDto>>> ListForUserAsync(
-        int portalId,
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<RoleListItemDto>>>> ListForUserAsync(
+        [FromRoute] int? portalId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<IReadOnlyList<RoleListItemDto>> outcome = await _roles
-            .ListUserRolesAsync(portalId, userId, cancellationToken)
+            .ListUserRolesAsync(scopedPortalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
@@ -737,20 +908,26 @@ public sealed class RolesController : ControllerBase
     /// one pairing rather than rejected.
     /// </para>
     /// </remarks>
+    [HttpPost("roles/{roleId:int}/users")]
     [HttpPost("portals/{portalId:int}/roles/{roleId:int}/users")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> AssignUserAsync(
-        int portalId,
+        [FromRoute] int? portalId,
         int roleId,
         [FromBody] RoleAssignmentRequest request,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result outcome = await _roles
-            .AssignUserToRoleAsync(portalId, roleId, request, cancellationToken)
+            .AssignUserToRoleAsync(scopedPortalId, roleId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
@@ -769,7 +946,6 @@ public sealed class RolesController : ControllerBase
     /// informational reason on the successful outcome, and either way the account no longer holds the
     /// role.
     /// </response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The removal is refused because it is protected: the portal's designated administrator may not be
@@ -795,20 +971,25 @@ public sealed class RolesController : ControllerBase
     /// than sharing one message. Both legacy overloads - the one reached from a role and the one reached
     /// from an account - collapse into this single operation.
     /// </remarks>
+    [HttpDelete("roles/{roleId:int}/users/{userId:int}")]
     [HttpDelete("portals/{portalId:int}/roles/{roleId:int}/users/{userId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> RemoveUserAsync(
-        int portalId,
+        [FromRoute] int? portalId,
         int roleId,
         int userId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result outcome = await _roles
-            .RemoveUserFromRoleAsync(portalId, roleId, userId, cancellationToken)
+            .RemoveUserFromRoleAsync(scopedPortalId, roleId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);

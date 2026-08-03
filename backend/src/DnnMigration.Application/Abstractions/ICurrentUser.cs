@@ -28,7 +28,8 @@ namespace DnnMigration.Application.Abstractions;
 /// <b>No numeric value on this surface may carry sentinel meaning.</b> The legacy constructor
 /// initialised both the user and portal identifiers from the shared integer sentinel, whose value is
 /// -1; but <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c>, so -1 is simultaneously the
-/// legacy "absent" marker and the identifier of the first real portal, and the role, page and module
+/// legacy "absent" marker and the seed of the portal identity column - whose shipped default row carries
+/// an explicit 0 - and the role, page and module
 /// keys all seed at 0. Absence is therefore carried exclusively by the nullable types below and by
 /// <see cref="IsAuthenticated"/>. An implementation must never coalesce -1 or 0 to
 /// <see langword="null"/>, and a consumer must never read either value as meaning "anonymous". An

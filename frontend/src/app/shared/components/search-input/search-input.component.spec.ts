@@ -50,9 +50,11 @@ const FIELD_ID_PATTERN = /^app-search-input-\d+$/;
  * Restating the figure means a deliberate change has to be made in both places,
  * and an accidental one fails these expectations loudly.
  *
- * The figure is schema-derived: the widest column any legacy search predicate
- * matched against is `nvarchar(256)` (the terminal `UserName` and `Email`), and
- * the predicate is starts-with, so a longer prefix cannot match any row.
+ * The figure is the width of the widest column a search predicate compares against,
+ * the terminal `Email` column at `nvarchar(256)`. It is not a shared width -
+ * `Username` is `nvarchar(100)` - and it is not behaviour-preserving: the general
+ * free-text filter is a SUBSTRING match, so truncating a longer term can change which
+ * rows match. It is a policy ceiling on request size.
  */
 const MAX_TERM_LENGTH = 256;
 
@@ -299,14 +301,12 @@ describe('SearchInputComponent', () => {
   }
 
   describe('creation and rendered structure', () => {
-    // REPLACES a single test whose five assertions could not fail. `component` is
-    // assigned in `beforeEach` from a fixture that has already been constructed, so
-    // asserting it is truthy restates the harness rather than the component; and
-    // `requireElement` either throws with a named selector or returns a live
-    // element, so wrapping its result in a truthiness matcher adds nothing the
-    // helper had not already decided. The three tests below assert what that one was
-    // reaching for and could not reach: the exact elements, the exact class
-    // vocabulary AAP 0.3 fixes, the nesting, and the document order.
+    // These three tests assert the rendered contract precisely: the exact elements, the
+    // exact class vocabulary AAP 0.3 fixes, the nesting, and the document order. Do not
+    // collapse them into a single truthiness check - `component` is assigned in
+    // `beforeEach` from an already-constructed fixture, so asserting it is truthy restates
+    // the harness, and `requireElement` already throws on a missing selector, so wrapping
+    // its result in a truthiness matcher can never fail.
 
     it('renders each part of the contract as the exact element and class it names', () => {
       fixture.detectChanges();
@@ -473,7 +473,7 @@ describe('SearchInputComponent', () => {
     });
   });
 
-  describe('emitted term fidelity — starts-with match, no wildcard', () => {
+  describe('emitted term fidelity — verbatim term, no wildcard', () => {
     it('emits the typed term exactly, appending no wildcard', fakeAsync(() => {
       component.debounceMs = SHORT_DEBOUNCE_MS;
       fixture.detectChanges();
@@ -897,9 +897,9 @@ describe('SearchInputComponent', () => {
       tick(SHORT_DEBOUNCE_MS);
 
       // A tab survives a single-line control's own value sanitisation, unlike a
-      // carriage return or line feed, so it is the case worth pinning. No such
-      // character exists in any searched column's data, and the predicate is
-      // starts-with, so removing it cannot change which rows match.
+      // carriage return or line feed, so it is the case worth pinning. Stripping it is an
+      // input-hygiene rule for this control; no claim is made about what the searched
+      // columns contain, because no schema constraint forbids a control character there.
       expect(emitted).toEqual([PLAIN_TERM]);
     }));
 
@@ -1288,10 +1288,10 @@ describe('SearchInputComponent', () => {
 
   // =========================================================================
   // Disabled state. The control's disabled state is owned by its own reactive
-  // control, which a consumer drives with `term.disable()`. Before this was
-  // fixed the state was HALF applied: the field greyed out and refused input
-  // while the submit button beside it stayed live, stayed focusable and still
-  // ran a query on click.
+  // control, which a consumer drives with `term.disable()`. The state must be applied to
+  // BOTH parts: applying it to the field alone leaves the submit button beside it live,
+  // focusable and still able to run a query on click, which is the failure these tests
+  // exist to catch.
   // =========================================================================
   describe('disabled state', () => {
     /**
@@ -1320,7 +1320,7 @@ describe('SearchInputComponent', () => {
       // The field is form-bound, so the forms directive renders its attribute.
       expect(field().disabled).toBeTrue();
       // The button is NOT form-bound, so this can only come from the
-      // component's own binding. This is the half that used to be missing.
+      // component's own binding - the half that is easy to omit.
       expect(submitButton().disabled).toBeTrue();
     });
 
@@ -1705,18 +1705,16 @@ describe('SearchInputComponent within a consuming form', () => {
       .toBeTrue();
   });
 
-  // REMOVED: a test that pressed Enter and then asserted `submitCount` was zero.
-  // It could not fail. Implicit submission is triggered only by a TRUSTED key
-  // event, and `dispatchEvent` produces an untrusted one, so no synthetic Enter
-  // reaches the form as a submission whether or not the component cancels
-  // anything — the assertion read as a guarantee while measuring the test runner.
-  // The expectation above keeps the honest observable in a runner, the
-  // cancellation state itself, and it does fail when the suppression is removed.
-  // The same vacuous assertion is removed from the Enter test below for the same
-  // reason. Verification with a trusted event belongs to browser runtime coverage,
-  // and `submitCount` remains genuinely load-bearing in the click test further
-  // down: `HTMLElement.click()` DOES run a button's activation behaviour, so a
-  // button that lost `type="button"` really would submit there.
+  // DO NOT assert that `submitCount` is zero after dispatching Enter: such an assertion
+  // cannot fail. Implicit submission is triggered only by a TRUSTED key event, and
+  // `dispatchEvent` produces an untrusted one, so no synthetic Enter reaches the form as a
+  // submission whether or not the component cancels anything - the assertion would read as
+  // a guarantee while actually measuring the test runner. The expectation above pins the
+  // honest observable, the cancellation state itself, and it does fail when the suppression
+  // is removed. Verification with a trusted event belongs to browser runtime coverage.
+  // `submitCount` IS genuinely load-bearing in the click test further down, because
+  // `HTMLElement.click()` does run a button's activation behaviour, so a button that lost
+  // `type="button"` really would submit there.
 
   it('still emits the term exactly once on Enter inside a form', fakeAsync(() => {
     // The fix must not have cost the feature it was protecting. Typing starts the

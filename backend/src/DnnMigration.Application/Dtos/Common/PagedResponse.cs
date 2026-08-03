@@ -90,10 +90,14 @@ namespace DnnMigration.Application.Dtos.Common;
 /// </typeparam>
 /// <remarks>
 /// <para>
-/// Every collection endpoint returns this envelope, so a client writes one deserialisation path rather
-/// than one per resource and can render a pager without issuing a second request. The two members are
-/// named plainly and mirror the client model member for member, so a field name carries across without
-/// a translation table.
+/// STATUS: DECLARED BUT NOT YET ADOPTED. No collection endpoint in <c>Api/Controllers/</c> returns
+/// this envelope today; the paged endpoints return the flat <see cref="PagedResult{T}"/> produced by
+/// the Application layer, which carries the same four facts under its own member names. This type is
+/// the intended convergence point - one deserialisation path per client rather than one per resource,
+/// and a pager renderable without a second request - and its two members are named plainly so they
+/// mirror the client model member for member. Until the convergence is performed for every collection
+/// endpoint at once, together with the client models, nothing here describes a body a caller can
+/// observe.
 /// </para>
 /// <para>
 /// <b>Page indexing is zero-based.</b> A page index of 0 identifies the first page, 1 the second, and
@@ -125,8 +129,12 @@ namespace DnnMigration.Application.Dtos.Common;
 /// <para>
 /// Both members are initialise-only, so an envelope cannot be repointed once built, and both carry a
 /// default so that a caller and a deserialiser alike always observe a usable instance rather than a
-/// null reference. An envelope produced by <see cref="From(PagedResult{T})"/> is additionally safe to
-/// share, because the domain envelope publishes its rows as an already-immutable snapshot.
+/// null reference. That is SHALLOW immutability and it is not thread safety: <see cref="Meta"/> points
+/// at an <see cref="ApiMeta"/> whose own three members are settable, so a shared envelope can still
+/// have its coordinates changed underneath a reader. The rows are the exception - an envelope produced
+/// by <see cref="From(PagedResult{T})"/> takes them from the domain envelope's already-immutable
+/// snapshot - so treat the metadata, not the rows, as the mutable part, and either keep an instance to
+/// one thread or never touch its metadata after construction.
 /// </para>
 /// </remarks>
 public sealed class PagedResponse<T>

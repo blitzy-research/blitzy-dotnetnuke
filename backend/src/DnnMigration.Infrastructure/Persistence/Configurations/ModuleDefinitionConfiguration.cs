@@ -79,8 +79,14 @@ internal sealed class ModuleDefinitionConfiguration : IEntityTypeConfiguration<M
         // 01.00.00:L462-467 - CONSTRAINT PK_ModuleDefinitions PRIMARY KEY NONCLUSTERED
         // (ModuleDefID), the name at line 464. Named explicitly so the model carries the constraint
         // name the database already has rather than one invented by convention.
+        //
+        // MIGRATION: NONCLUSTERED is expressed rather than left to the provider, whose default for a
+        // primary key is CLUSTERED. Recording the clustering in the model is what keeps the snapshot a
+        // truthful description of the existing table, so a later scaffold cannot propose rebuilding a
+        // key that is already correct.
         builder.HasKey(m => m.ModuleDefinitionId)
-            .HasName("PK_ModuleDefinitions");
+            .HasName("PK_ModuleDefinitions")
+            .IsClustered(false);
 
         // MIGRATION: the property is spelled ModuleDefinitionId in full, but the column keeps the
         //   abbreviated legacy spelling ModuleDefID (01.00.00:L66). That abbreviation is not local

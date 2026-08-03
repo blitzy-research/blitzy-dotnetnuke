@@ -19,11 +19,11 @@ namespace DnnMigration.Application.Dtos.Module;
 // silently producing an empty document.
 //
 // MIGRATION: the module identifier is absent. It is taken from the route of
-// POST /api/v1/modules/{moduleId}/export, so a body-supplied identifier could export a different module
+// POST /api/v1/portals/{portalId}/modules/{moduleId}/export, so a body-supplied identifier could export a different module
 // than the one addressed.
 
 /// <summary>
-/// The state submitted to <c>POST /api/v1/modules/{moduleId}/export</c> to export a module's content.
+/// The state submitted to <c>POST /api/v1/portals/{portalId}/modules/{moduleId}/export</c> to export a module's content.
 /// </summary>
 /// <remarks>
 /// Both members are naming hints for the produced document; neither causes a write to the server's file

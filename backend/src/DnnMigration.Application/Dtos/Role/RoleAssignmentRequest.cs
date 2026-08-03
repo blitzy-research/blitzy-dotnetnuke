@@ -55,9 +55,16 @@ namespace DnnMigration.Application.Dtos.Role;
 /// caller must not read one into them.
 /// </para>
 /// <para>
-/// The type is an inert data carrier. Field rules live in <c>Application/Validation</c>, and outcome
-/// rules - including the protected-assignment rule and the trial-preserving expiry on removal - live
-/// in <c>Application/Services/RoleService.cs</c>.
+/// The type is an inert data carrier, and NO FluentValidation validator exists for it. The API's
+/// validation filter resolves a validator per action-argument type and finds none registered for this
+/// one, so a body reaching <c>POST portals/{portalId}/roles/{roleId}/users</c> is forwarded to the
+/// service exactly as bound. Every rule is therefore enforced in
+/// <c>Application/Services/RoleService.cs</c>: an unknown user or role answers
+/// <c>user.not_found</c> or <c>role.not_found</c>, a protected assignment answers
+/// <c>role_assignment.protected</c>, and a malformed value raises <see cref="DnnMigration.Domain.Common.DomainException"/>,
+/// which the API translates to a 400. What that costs is worth stating plainly: there is no
+/// boundary-level field report for this contract, so a caller receives one reason at a time rather
+/// than a per-field list.
 /// </para>
 /// </remarks>
 // MIGRATION: both dates are DateTime? and deliberately not DateTimeOffset?. The columns are SQL
@@ -101,8 +108,10 @@ public sealed class RoleAssignmentRequest
     //            -1 and 0 are both real identifiers elsewhere in this very schema - Portals.PortalID
     //            is IDENTITY(-1,1) at 01.00.00 line 77 and Roles.RoleID is IDENTITY(0,1) at line 115.
     //            A "less than or equal to zero means absent" shortcut would therefore be wrong for a
-    //            sibling identifier on this endpoint's own route, so the valid range is the
-    //            validator's business and is stated nowhere in this file.
+    //            sibling identifier on this endpoint's own route. No range rule is stated in this file
+    //            and none is applied at the boundary either, because this contract has no validator:
+    //            an identifier matching no stored user is answered by the service with
+    //            user.not_found.
     public int UserId { get; set; }
 
     /// <summary>

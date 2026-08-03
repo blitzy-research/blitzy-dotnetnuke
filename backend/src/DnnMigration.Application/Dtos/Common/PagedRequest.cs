@@ -33,6 +33,24 @@ namespace DnnMigration.Application.Dtos.Common;
 /// attribute is declared by the controller on its own parameter rather than by this contract, which
 /// keeps the application layer free of any web-framework reference.
 /// </para>
+/// <para>
+/// <b>IT IS DELIBERATELY NOT SEALED, AND EVERY REGISTERED ENDPOINT BINDS A DERIVATION OF IT RATHER
+/// THAN THIS TYPE.</b> The derivations - <see cref="PortalPagedRequest"/>,
+/// <see cref="RolePagedRequest"/>, <see cref="UserPagedRequest"/> and
+/// <see cref="ModulePagedRequest"/> - add no member and change no behaviour. They exist solely to
+/// give each collection a request TYPE of its own, because a type is the only thing a validator
+/// registry dispatches on. While every endpoint bound this one shared type, one validator was
+/// resolved for all of them and the only sortable vocabulary it could apply was the union of every
+/// collection's field names - so a caller could order the account listing by a portal field, receive
+/// <c>200 OK</c>, and be served an order they had not asked for, with nothing in the response to say
+/// the parameter had been discarded. Unsealing this type is what allows each collection's narrow
+/// sortable set to be enforced at the boundary instead of being declared and never consulted.
+/// </para>
+/// <para>
+/// Nothing about that arrangement invites a derivation to add state. A derivation that introduced a
+/// property would be introducing a query parameter, and a query parameter belongs on the action that
+/// declares it; the four that exist are empty and are expected to stay so.
+/// </para>
 /// </remarks>
 // MIGRATION: the legacy "return everything, unpaged" call shape is deliberately NOT reproduced. It
 // was expressed by handing the integer null sentinel of minus one to the page index, the page size
@@ -45,7 +63,7 @@ namespace DnnMigration.Application.Dtos.Common;
 // the reply, removes a second database round trip. The legacy membership surface could not answer
 // "which page, and how many altogether?" in one call, so it shipped an independent count member
 // (GetUserCountByPortal) alongside paged readers that returned a forward-only reader and no total.
-public sealed class PagedRequest
+public class PagedRequest
 {
     /// <summary>
     /// Gets or sets the zero-based index of the page of records to return, defaulting to 0 and

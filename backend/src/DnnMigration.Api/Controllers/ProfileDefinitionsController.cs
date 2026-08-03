@@ -18,9 +18,10 @@
 // (Library/Components/Shared/Null.vb:L41-L45). Here the HTTP METHOD is the discriminator: POST to the
 // collection creates, PUT to a member updates. No action accepts -1 as an identifier, none emits -1
 // as an identifier, and none tests an identifier against -1 or 0. That prohibition is not fastidious:
-// -1 is genuinely overloaded - the portal table is IDENTITY (-1, 1) so -1 is the first real portal,
-// and Globals.vb:L95-L98 spends -1 through -4 on the pseudo-role names - while the role, page and
-// module tables all seed at 0, so 0 is a real identifier too. Consequently no lower bound and no
+// -1 is genuinely overloaded - the portal table is IDENTITY (-1, 1), so -1 is its seed and first
+// generated value while the shipped default portal row is inserted explicitly with PortalID 0, making
+// BOTH real portal keys, and Globals.vb:L95-L98 spends -1 through -4 on the pseudo-role names - while
+// the role, page and module tables all seed at 0, so 0 is a real identifier there too. Consequently no lower bound and no
 // range constraint is placed on any identifier below.
 //
 // MIGRATION: the same sentinel also carried the DUPLICATE-NAME outcome, and that channel is replaced
@@ -81,7 +82,9 @@ using Asp.Versioning;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -89,7 +92,9 @@ using Microsoft.AspNetCore.Mvc;
 namespace DnnMigration.Api.Controllers;
 
 /// <summary>
-/// The profile property definition resource: which profile fields a portal collects, and how.
+/// The profile property definition resource - which profile fields a portal collects, and how - exposed at
+/// <c>/api/v1/profile-definitions</c>, and additionally at
+/// <c>/api/v1/portals/{portalId}/profile-definitions</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -100,11 +105,29 @@ namespace DnnMigration.Api.Controllers;
 /// why deleting a definition is a different act from clearing a value.
 /// </para>
 /// <para>
-/// <strong>Tenant-scoped by path, because the scope is mandatory.</strong> Definitions belong to a
-/// portal - the legacy read was tenant-scoped at
-/// <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> L133 and the legacy editor passed the tenant
-/// alongside the definition identifier - so the portal is a path segment rather than an optional
-/// query value. Every operation here requires it, and a mandatory parent scope belongs in the
+/// <strong>Tenant-scoped always, and never by a query value.</strong> Definitions belong to a portal -
+/// the legacy read was tenant-scoped at <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> L133 and
+/// the legacy editor passed the tenant alongside the definition identifier - so every operation here
+/// requires a tenant and none of them accepts one in the query string.
+/// </para>
+/// <para>
+/// <strong>Two addresses, one implementation.</strong> The specified address is the flat
+/// <c>/api/v1/profile-definitions</c>, declared first below because it is the canonical one, and the
+/// nested <c>/api/v1/portals/{portalId}/profile-definitions</c> is retained alongside it. Both are served
+/// by the same five actions: no second controller, no duplicated body, no forwarding action. They differ
+/// in exactly one respect, which is where the mandatory tenant comes from. On the FLAT form it is the
+/// tenant the request resolved to, read from <see cref="IPortalContextHolder"/>, and a caller cannot name
+/// another one because there is no parameter through which to name it - the isolation is structural. On
+/// the NESTED form the routed identifier is reconciled against the resolved tenant by the
+/// portal-administrator policy before this file is entered, so a caller that is not a host account cannot
+/// address another tenant there either. The identifier is bound <c>[FromRoute]</c> and never from the
+/// query string, which is what keeps that reconciliation unavoidable: a query-bound tenant would travel on
+/// the flat form too, where the policy has no route value to reconcile it against.
+/// </para>
+/// <para>
+/// The nested form is what makes a host account able to administer a NAMED tenant's definitions at all. A
+/// request resolves to whichever portal's alias it arrived on and an HTTP client cannot forge another
+/// tenant's host name, so removing the routed form would leave cross-tenant administration with no
 /// address.
 /// </para>
 /// <para>
@@ -153,6 +176,7 @@ namespace DnnMigration.Api.Controllers;
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
+[Route("api/v{version:apiVersion}/profile-definitions")]
 [Route("api/v{version:apiVersion}/portals/{portalId:int}/profile-definitions")]
 [Authorize(Policy = PolicyNames.PortalAdministrator)]
 [Produces("application/json")]
@@ -164,36 +188,88 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// meaningless apart from the profiles they shape and every rule about them - name uniqueness,
     /// length, the cascade that discards values when a definition is removed - is a rule about
     /// accounts. One dependency, and it is an application-layer interface: there is no repository, no
-    /// persistence context and no evaluator here, and the project reference graph makes the first two
-    /// unreachable from this layer rather than merely discouraged.
+    /// persistence context and no evaluator here. The first two are unreachable by ACCESSIBILITY rather
+    /// than by the reference graph - this project does reference <c>DnnMigration.Infrastructure</c> so
+    /// that composition can register its services, but <c>DnnDbContext</c> and every repository
+    /// implementation are <see langword="internal"/> to that assembly, so naming one here would not
+    /// compile.
     /// </remarks>
     private readonly IUserService _users;
 
+    /// <summary>The tenant this request addresses, resolved from the request host.</summary>
+    /// <remarks>
+    /// Needed only by the flat address, which carries no tenant identifier and therefore has to read the
+    /// one the alias-resolution middleware already resolved. It is an abstraction over that resolution
+    /// rather than a reach for the ambient HTTP context: this file performs no alias lookup and touches no
+    /// request feature bag.
+    /// </remarks>
+    private readonly IPortalContextHolder _portalContext;
+
     /// <summary>Initialises a new instance of the <see cref="ProfileDefinitionsController"/> class.</summary>
     /// <param name="users">The account service, which owns profile definitions.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="users"/> is <see langword="null"/>.</exception>
-    public ProfileDefinitionsController(IUserService users)
+    /// <param name="portalContext">
+    /// Holds the tenant that the alias-resolution middleware resolved from the request host, which is the
+    /// tenant the flat address acts on.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
+    public ProfileDefinitionsController(IUserService users, IPortalContextHolder portalContext)
     {
         _users = users ?? throw new ArgumentNullException(nameof(users));
+        _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
+    }
+
+    /// <summary>
+    /// Chooses the tenant an action acts on: the routed identifier when the nested address was used, and
+    /// otherwise the tenant the request resolved to.
+    /// </summary>
+    /// <param name="routedPortalId">
+    /// The identifier bound from the route, or <see langword="null"/> when the flat address was used.
+    /// </param>
+    /// <returns>
+    /// The tenant identifier, or <see langword="null"/> when the flat address was used and the request
+    /// resolved to no tenant at all.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The routed value wins when present, because on that address it IS the subject of the request and the
+    /// policy has already reconciled it against the resolved tenant. It is forwarded exactly as bound: no
+    /// lower bound is imposed and no value is treated as "absent", because the portal table is
+    /// <c>IDENTITY (-1, 1)</c> and -1 is therefore a real portal rather than the legacy missing-integer
+    /// sentinel this file refuses to reintroduce.
+    /// </para>
+    /// <para>
+    /// The holder throws rather than yielding a placeholder tenant, so resolution is tested before the
+    /// tenant is read. An unresolved request has already been refused by the class-level policy, which
+    /// denies for want of a portal, so the null answer here is a precondition rather than a state a caller
+    /// can steer into - and the caller sees the same bare <c>403</c> either way.
+    /// </para>
+    /// </remarks>
+    private int? ResolvePortalId(int? routedPortalId)
+    {
+        if (routedPortalId is { } portalId)
+        {
+            return portalId;
+        }
+
+        return _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
     }
 
     /// <summary>Lists a portal's profile property definitions, in display order.</summary>
     /// <param name="portalId">
-    /// Identifier of the portal whose definitions are listed. Forwarded exactly as bound: no lower
-    /// bound is imposed, because the portal table is <c>IDENTITY (-1, 1)</c> and -1 therefore
-    /// identifies the first real portal rather than an absent one.
+    /// Identifier of the portal whose definitions are listed, bound from the route on the nested address
+    /// and absent on the flat one, where the tenant the request resolved to is used instead. Forwarded
+    /// exactly as bound: no lower bound is imposed, because the portal table is <c>IDENTITY (-1, 1)</c>:
+    /// -1 is its seed and first generated value and the shipped default portal row is inserted explicitly
+    /// with <c>PortalID</c> 0, so both identify a real portal rather than an absent one.
     /// </param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The portal's definitions, ordered by display order.</returns>
     /// <response code="200">
-    /// The definitions, as a JSON array. An empty array is a legitimate answer and means the portal
-    /// declares none; it is never reported as a failure, which matches the legacy read at
+    /// The definitions, inside the shared success envelope: the sequence is the envelope's payload rather
+    /// than the whole body. An empty payload is a legitimate answer and means the portal declares none; it
+    /// is never reported as a failure, which matches the legacy read at
     /// <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> L133 returning an empty collection rather
     /// than a missing one.
-    /// </response>
-    /// <response code="400">
-    /// The portal identifier could not be bound to its parameter type. The shared problem-details
-    /// factory reports this as an RFC 7807 validation document naming the offending parameter.
     /// </response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
@@ -208,21 +284,25 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// MIGRATION: deliberately unpaged, and the <c>404</c> the shared translator can produce is
     /// unreachable here. The legacy grid listed every definition on one page with no pager at all, a
     /// portal declares definitions in the tens, and the contract promises an empty sequence rather
-    /// than a null one - so nothing matched is <c>200</c> with an empty array. Introducing paging
+    /// than a null one - so nothing matched is <c>200</c> with an empty payload. Introducing paging
     /// would add a contract the legacy application never had.
     /// </para>
     /// </remarks>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<ProfilePropertyDefinitionDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<IReadOnlyList<ProfilePropertyDefinitionDto>>> ListAsync(
-        int portalId,
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<ProfilePropertyDefinitionDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ProfilePropertyDefinitionDto>>>> ListAsync(
+        [FromRoute] int? portalId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await _users
-            .ListProfilePropertyDefinitionsAsync(portalId, cancellationToken)
+            .ListProfilePropertyDefinitionsAsync(scopedPortalId, cancellationToken)
             .ConfigureAwait(false);
 
         // Complete tests the outcome before reading its value, so a failed outcome never has its
@@ -231,7 +311,10 @@ public sealed class ProfileDefinitionsController : ControllerBase
     }
 
     /// <summary>Retrieves one profile property definition.</summary>
-    /// <param name="portalId">Identifier of the portal that declares the definition.</param>
+    /// <param name="portalId">
+    /// Identifier of the portal that declares the definition, bound from the route on the nested address
+    /// and absent on the flat one, where the tenant the request resolved to is used instead.
+    /// </param>
     /// <param name="propertyDefinitionId">
     /// Identifier of the definition to read. Forwarded exactly as bound and never compared against a
     /// sentinel; see the note at the head of this file on why no range constraint appears here.
@@ -239,7 +322,6 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The definition.</returns>
     /// <response code="200">The definition.</response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but is not an administrator of the portal this request resolves to.
@@ -256,25 +338,32 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// the whole of how this action produces that status - there is no null test written here.
     /// </remarks>
     [HttpGet("{propertyDefinitionId:int}")]
-    [ProducesResponseType(typeof(ProfilePropertyDefinitionDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ProfilePropertyDefinitionDto?>> GetAsync(
-        int portalId,
+    [ProducesResponseType(typeof(ApiResponse<ProfilePropertyDefinitionDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<ProfilePropertyDefinitionDto?>>> GetAsync(
+        [FromRoute] int? portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<ProfilePropertyDefinitionDto?> outcome = await _users
-            .GetProfilePropertyDefinitionAsync(portalId, propertyDefinitionId, cancellationToken)
+            .GetProfilePropertyDefinitionAsync(scopedPortalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);
     }
 
     /// <summary>Declares a new profile property definition for a portal.</summary>
-    /// <param name="portalId">Identifier of the portal that will declare the definition.</param>
+    /// <param name="portalId">
+    /// Identifier of the portal that will declare the definition, bound from the route on the nested
+    /// address and absent on the flat one, where the tenant the request resolved to is used instead.
+    /// </param>
     /// <param name="definition">
     /// The definition to declare. Its own identifier member is ignored on this path, because the
     /// identifier is assigned by the store - which is precisely why the method rather than a sentinel
@@ -308,18 +397,23 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// inside an integer any more.
     /// </remarks>
     [HttpPost]
-    [ProducesResponseType(typeof(ProfilePropertyDefinitionDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ApiResponse<ProfilePropertyDefinitionDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<ProfilePropertyDefinitionDto>> CreateAsync(
-        int portalId,
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ApiResponse<ProfilePropertyDefinitionDto>>> CreateAsync(
+        [FromRoute] int? portalId,
         [FromBody] ProfilePropertyDefinitionDto definition,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result<ProfilePropertyDefinitionDto> outcome = await _users
-            .CreateProfilePropertyDefinitionAsync(portalId, definition, cancellationToken)
+            .CreateProfilePropertyDefinitionAsync(scopedPortalId, definition, cancellationToken)
             .ConfigureAwait(false);
 
         // The location header is built from this request's own path plus the assigned identifier,
@@ -330,7 +424,10 @@ public sealed class ProfileDefinitionsController : ControllerBase
     }
 
     /// <summary>Updates an existing profile property definition, including its display order.</summary>
-    /// <param name="portalId">Identifier of the portal that declares the definition.</param>
+    /// <param name="portalId">
+    /// Identifier of the portal that declares the definition, bound from the route on the nested address
+    /// and absent on the flat one, where the tenant the request resolved to is used instead.
+    /// </param>
     /// <param name="propertyDefinitionId">Identifier of the definition to update.</param>
     /// <param name="definition">The new state of the definition.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
@@ -364,24 +461,29 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// </para>
     /// </remarks>
     [HttpPut("{propertyDefinitionId:int}")]
-    [ProducesResponseType(typeof(ProfilePropertyDefinitionDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<ProfilePropertyDefinitionDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<ProfilePropertyDefinitionDto>> UpdateAsync(
-        int portalId,
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ApiResponse<ProfilePropertyDefinitionDto>>> UpdateAsync(
+        [FromRoute] int? portalId,
         int propertyDefinitionId,
         [FromBody] ProfilePropertyDefinitionDto definition,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         // The identifier travels as a route value and the state travels in the body. Reconciling the
         // two - preferring one, or refusing a mismatch - is the contract's decision, not this
         // layer's, so the pair is forwarded as received and no member of the body is rewritten here.
         Result<ProfilePropertyDefinitionDto> outcome = await _users
             .UpdateProfilePropertyDefinitionAsync(
-                portalId,
+                scopedPortalId,
                 propertyDefinitionId,
                 definition,
                 cancellationToken)
@@ -391,20 +493,19 @@ public sealed class ProfileDefinitionsController : ControllerBase
     }
 
     /// <summary>Removes a profile property definition from a portal.</summary>
-    /// <param name="portalId">Identifier of the portal that declares the definition.</param>
+    /// <param name="portalId">
+    /// Identifier of the portal that declares the definition, bound from the route on the nested address
+    /// and absent on the flat one, where the tenant the request resolved to is used instead.
+    /// </param>
     /// <param name="propertyDefinitionId">Identifier of the definition to remove.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> once the definition has been removed.</returns>
     /// <response code="204">The definition has been removed.</response>
-    /// <response code="400">An identifier could not be bound to its parameter type.</response>
     /// <response code="401">No credential was presented, or the one presented is not valid.</response>
     /// <response code="403">
     /// The caller is authenticated but is not an administrator of the portal this request resolves to.
     /// </response>
     /// <response code="404">The portal declares no definition with that identifier.</response>
-    /// <response code="409">
-    /// The definition cannot be removed in the portal's current state, as reported by the contract.
-    /// </response>
     /// <remarks>
     /// <para>
     /// Removal discards the values accounts hold against the definition in the same unit of work, so
@@ -422,18 +523,21 @@ public sealed class ProfileDefinitionsController : ControllerBase
     /// </remarks>
     [HttpDelete("{propertyDefinitionId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult> DeleteAsync(
-        int portalId,
+        [FromRoute] int? portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken)
     {
+        if (ResolvePortalId(portalId) is not { } scopedPortalId)
+        {
+            return Forbid();
+        }
+
         Result outcome = await _users
-            .DeleteProfilePropertyDefinitionAsync(portalId, propertyDefinitionId, cancellationToken)
+            .DeleteProfilePropertyDefinitionAsync(scopedPortalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         // The valueless overload answers 204 on success, which is the documented contract for a

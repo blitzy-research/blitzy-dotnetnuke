@@ -9,7 +9,7 @@ namespace DnnMigration.Application.Validation;
 
 /// <summary>
 /// Validates <see cref="CreateUserRequest"/>, the inbound contract of
-/// <c>POST /api/v1/users</c>, reproducing the legacy DotNetNuke user-creation rules
+/// <c>POST /api/v1/portals/{portalId}/users</c>, reproducing the legacy DotNetNuke user-creation rules
 /// exactly and adding nothing to them.
 /// </summary>
 /// <remarks>
@@ -124,9 +124,9 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         "The Password and Confirmation Passwords do not match";
 
     // MIGRATION: the recovery-question and recovery-answer wordings are deliberately NOT
-    // declared here. An earlier revision carried both, taken from SharedResources.resx L288
-    // and L279, and attached them to rules gated on the bound question-and-answer policy
-    // flag. The request no longer carries either member, because the owning service contract
+    // declared here, and must not be added. Their legacy wordings sit at SharedResources.resx
+    // L288 and L279, and a rule gated on the bound question-and-answer policy flag is what would
+    // consume them. The request carries neither member, because the owning service contract
     // states the recovery pair has no counterpart at all, so a message for a field that
     // cannot be submitted would be unreachable text asserting a rule that does not exist.
     // The two resource entries still exist in the legacy tree and are cited here so their
@@ -307,10 +307,10 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
     /// kind of silent divergence this migration must surface rather than absorb.
     /// </exception>
     // MIGRATION NOTE ON THE CONSTRUCTOR SHAPE - deliberate, and matching this solution's
-    // established convention. An earlier revision took IOptions<PasswordPolicyOptions>
-    // and added Microsoft.Extensions.Options to this project to make that compile. AAP
-    // 0.6.1 fixes this layer's package surface at the two FluentValidation entries, so
-    // that package was not approved and the manifest was the wrong thing to change.
+    // established convention. Taking IOptions<PasswordPolicyOptions> here would require adding
+    // Microsoft.Extensions.Options to this project to compile, and that is the wrong thing to
+    // change: AAP 0.6.1 fixes this layer's package surface at the two FluentValidation entries,
+    // so the options package is not approved for it.
     //
     // The bound policy instance is taken directly instead, which is what the sibling
     // ChangePasswordRequestValidator already did and what the policy type itself
@@ -389,12 +389,12 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // a missing family name would defer a constraint violation to write time. The two
         // person names are therefore identical in every respect that matters here - same
         // width, same requiredness, same message shape - and the rules below are deliberately
-        // symmetric. An earlier revision typed the family name as nullable on the request and
-        // reached it through a null-forgiving operator, on the stated ground that wire
-        // optionality let an omitted field and an explicitly blank one be told apart. NotEmpty
-        // cannot make that distinction: it treats a null and an empty string alike and emits
-        // one message either way, so the operator suppressed a warning without buying a
-        // behaviour. The request member is now non-nullable and the operator is gone.
+        // symmetric. Do not type the family name as nullable on the request and reach it through a
+        // null-forgiving operator: the tempting ground is that wire optionality lets an omitted field
+        // and an explicitly blank one be told apart, but NotEmpty
+        // cannot make that distinction - it treats a null and an empty string alike and emits
+        // one message either way, so the operator would suppress a warning without buying a
+        // behaviour. The request member is non-nullable and no such operator appears here.
         RuleFor(request => request.FirstName)
             .NotEmpty().WithMessage(FirstNameRequiredMessage)
             .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage);
@@ -497,13 +497,12 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // retired everywhere, so no endpoint, screen or rule in the target reads a password
         // back. Password RESET survives and is a different feature.
         //
-        // MIGRATION: THE RULE IS NOW UNCONDITIONAL. An earlier revision guarded every
-        // credential rule with "when random generation was not requested". The generation
-        // branch is removed from the contract - a generated credential cannot be delivered,
-        // because the mail subsystem is excluded and no endpoint returns a credential - so
-        // there is one creation path and it always carries a credential. The guard is gone
-        // rather than left as an always-true condition, and the null-forgiving operator this
-        // rule used to need is gone with it, because the member is no longer nullable.
+        // MIGRATION: THE RULE IS UNCONDITIONAL, and must not be guarded with "when random
+        // generation was not requested". No generation branch exists on the contract - a generated
+        // credential cannot be delivered, because the mail subsystem is excluded and no endpoint
+        // returns a credential - so there is one creation path and it always carries a credential.
+        // An always-true guard would be dead weight, and no null-forgiving operator is needed here
+        // either, because the member is not nullable.
         RuleFor(request => request.Password)
             .NotEmpty().WithMessage(invalidPasswordMessage)
             .MinimumLength(policy.MinRequiredPasswordLength).WithMessage(invalidPasswordMessage)
@@ -543,14 +542,15 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // MIGRATION: NO RECOVERY QUESTION OR ANSWER RULE, AND NO REQUEST MEMBER TO ATTACH ONE
         // TO. The provider's question-and-answer attribute at Website/release.config L241 is
         // false and the legacy screen hid both inputs and skipped their checks unless the
-        // provider demanded them, so nothing was enforced in the observed installation. An
-        // earlier revision reproduced that conditionality faithfully, gating two rules on the
-        // bound policy flag - but the pair has no target counterpart at all: the owning
+        // provider demanded them, so nothing was enforced in the observed installation.
+        // Reproducing that conditionality faithfully - gating two rules on the
+        // bound policy flag - is not the right translation, because the pair has no target
+        // counterpart at all: the owning
         // service contract states no member declares a question or answer parameter, because
         // the pair existed to guard credential retrieval, which is dropped outright. A rule
         // that could only fire for a field the contract does not accept, storing an answer
-        // nothing can later check, is worse than no rule, so both rules and both request
-        // members are removed. The bound flag is consequently unsatisfiable in the target and
+        // nothing can later check, is worse than no rule, so neither rule nor either request
+        // member is declared. The bound flag is consequently unsatisfiable in the target and
         // PasswordPolicyOptions.Validate rejects it at start-up, which is what stops a
         // deployment from believing it switched the requirement on.
 

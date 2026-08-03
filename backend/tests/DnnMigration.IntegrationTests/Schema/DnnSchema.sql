@@ -331,6 +331,16 @@ CREATE TABLE [dbo].[UserProfile] (
 GO
 
 
+-- RoleID carries the ALL-USERS SENTINEL -1, so it has NO foreign key to Roles. That is not an omission:
+-- the terminal legacy schema declares exactly three foreign keys on each permission-grant table - to
+-- Permission, to the owning row (Modules or Tabs) and to Users - and never one to Roles. See
+-- 02.02.00.SqlDataProvider line 762 and 768, 03.00.09 line 448 to 451 and 487 to 493, and 04.05.00 line
+-- 481 and 645 for the Users key. 04.06.00 line 1199 adds IX_{objectQualifier}TabPermission_Roles, which is
+-- an INDEX rather than a constraint, and is the only Roles-related object on the table. A Roles key would
+-- make the legacy all-users grant unrepresentable, because Globals.vb line 95 defines
+-- glbRoleAllUsers = "-1" and Roles is IDENTITY(0, 1), so no Roles row bears -1; Upgrade.vb line 190 to 192
+-- writes precisely that grant alongside two administrator grants. A test schema stricter than the terminal
+-- one would forbid legitimate legacy data and report it as an application fault.
 CREATE TABLE [dbo].[ModulePermission] (
     [ModulePermissionID] int NOT NULL IDENTITY,
     [ModuleID] int NOT NULL,
@@ -341,8 +351,15 @@ CREATE TABLE [dbo].[ModulePermission] (
     CONSTRAINT [PK_ModulePermission] PRIMARY KEY ([ModulePermissionID]),
     CONSTRAINT [FK_ModulePermissionUsers] FOREIGN KEY ([UserID]) REFERENCES [dbo].[Users] ([UserID]),
     CONSTRAINT [FK_ModulePermission_Modules] FOREIGN KEY ([ModuleID]) REFERENCES [dbo].[Modules] ([ModuleID]) ON DELETE CASCADE,
-    CONSTRAINT [FK_ModulePermission_Permission] FOREIGN KEY ([PermissionID]) REFERENCES [dbo].[Permission] ([PermissionID]) ON DELETE CASCADE,
-    CONSTRAINT [FK_ModulePermission_Roles_RoleID] FOREIGN KEY ([RoleID]) REFERENCES [dbo].[Roles] ([RoleID])
+    CONSTRAINT [FK_ModulePermission_Permission] FOREIGN KEY ([PermissionID]) REFERENCES [dbo].[Permission] ([PermissionID]) ON DELETE CASCADE
+    -- DELIBERATELY NO FOREIGN KEY ON [RoleID]. The terminal legacy schema declares none - the chain
+    -- creates FK_ModulePermission_Modules, FK_ModulePermission_Permission and FK_ModulePermissionUsers and
+    -- nothing else, and the entity and its configuration both record that in as many words. Adding one here
+    -- would be a fabrication, and not a harmless one: -1 (All Users), -2 (Administrators placeholder) and -3
+    -- (Unauthenticated Users) are persisted pseudo-principals that match NO dbo.Roles row, which is why the
+    -- legacy read joins Roles with a LEFT OUTER JOIN. A key on RoleID makes every preserved public and
+    -- anonymous grant unstorable, so no test could record one and no test could ever detect the day such a
+    -- grant stopped being honoured.
 );
 GO
 
@@ -356,9 +373,12 @@ CREATE TABLE [dbo].[TabPermission] (
     [AllowAccess] bit NOT NULL,
     CONSTRAINT [PK_TabPermission] PRIMARY KEY ([TabPermissionID]),
     CONSTRAINT [FK_TabPermission_Permission] FOREIGN KEY ([PermissionID]) REFERENCES [dbo].[Permission] ([PermissionID]) ON DELETE CASCADE,
-    CONSTRAINT [FK_TabPermission_Roles_RoleID] FOREIGN KEY ([RoleID]) REFERENCES [dbo].[Roles] ([RoleID]),
     CONSTRAINT [FK_TabPermission_Tabs] FOREIGN KEY ([TabID]) REFERENCES [dbo].[Tabs] ([TabID]) ON DELETE CASCADE,
     CONSTRAINT [FK_TabPermission_Users] FOREIGN KEY ([UserID]) REFERENCES [dbo].[Users] ([UserID])
+    -- DELIBERATELY NO FOREIGN KEY ON [RoleID], for the reason set out on ModulePermission above. A page grant
+    -- to the All Users or Unauthenticated Users pseudo-role is how a public page is expressed in this data, so
+    -- a key on RoleID here does not merely diverge from the legacy schema - it makes a public page
+    -- inexpressible, and therefore makes the authorisation path that honours one untestable.
 );
 GO
 

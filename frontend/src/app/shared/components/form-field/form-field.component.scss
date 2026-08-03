@@ -73,13 +73,15 @@
 @include mx.respond-above('md') {
   .form-field {
     display: grid;
-    // The label column resolves to the shared token, never to a literal: the width
-    // is the measured legacy label-cell width and belongs to the vocabulary, so a
-    // second form surface agrees with this one instead of choosing its own. Paired
-    // with `minmax(0, …)` so the column yields rather than overflowing on a narrow
-    // viewport, and with `1fr` for the control column, which is a fraction of the
-    // remaining space rather than a dimension and so has no token to resolve to.
-    grid-template-columns: minmax(0, var(--field-label-inline-size)) minmax(0, 1fr);
+    // Both tracks resolve to the shared vocabulary, and the label track is taken as a
+    // TRACK rather than composed here from the width token: the measured legacy
+    // label-cell width and the zero minimum that makes the column yield are one
+    // decision, and the other form surface that lays a field out this way has to make
+    // it identically. The control column is the shared fluid track — a fraction of the
+    // remaining space is a design value like any other, and the token is what
+    // guarantees the zero minimum that keeps a long unbreakable value from widening
+    // the grid past its container.
+    grid-template-columns: var(--grid-track-label) var(--grid-track-fluid);
     column-gap: var(--space-4);
     align-items: baseline;
   }

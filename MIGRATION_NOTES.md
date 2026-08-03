@@ -2550,6 +2550,21 @@ failure with its own message rather than an ignored value. `NewPassword` and
 `ConfirmPassword` are required for **both** operations, so a reset can no longer be
 submitted as an empty body.
 
+**Corrected under code review: the separation is now enforced by the route, not only by a
+field.** The two operations were distinguished by a value in the body while sharing one
+endpoint and one authorisation gate, so a caller who could reach the endpoint at all could
+select `reset` and obtain a credential change that proves nothing. They are now separate
+actions on separate routes: the self-service change requires ownership of the account and
+always verifies the current credential, and the administrative reset requires administration
+of the portal the account belongs to. A reset is therefore unreachable without administrator
+authorisation rather than merely undesirable, and a plain member is refused it **even on
+their own account** — self-service is the change operation, which is what proof-of-possession
+is for.
+
+**The shipped `enablePasswordReset` default is left enabled**, matching
+`Website/release.config:L240`. The authorisation gate is the fix; disabling the capability
+would have removed a legacy feature rather than securing it.
+
 **Why.** The two operations differ in who is allowed to perform them and in what
 proves the right to perform them, and collapsing them left a reset that proved
 nothing. Requiring the current credential for a self-service change restores
@@ -2673,21 +2688,33 @@ trailing separator to whatever was supplied and probed it through
 came back empty. Nothing rejected a rooted path, a drive qualifier, a UNC prefix or a
 `..` segment.
 
-**Target behaviour.** Both `CreatePortalRequest.HomeDirectory` and
-`UpdatePortalRequest.HomeDirectory` are validated by one shared rule set,
-`Application/Validation/PortalHomeDirectoryRules`. It refuses a whitespace-only
-value, any control character, any of `\ : * ? " < > |`, a leading `/` - which
-covers both a rooted path and a `//server/share` form - an empty or blank segment,
-and any `.` or `..` segment. It then confirms lexically that the combined path
-remains under a probe root. A single trailing `/` is tolerated.
+**Target behaviour.** `CreatePortalRequest.HomeDirectory` is validated by
+`Application/Validation/CreatePortalRequestValidator`, which declares the rule set
+directly. It refuses a whitespace-only value, any control character, any of
+`\ : * ? " < > |`, a leading `/` - which covers both a rooted path and a
+`//server/share` form - an empty or blank segment, and any `.` or `..` segment. It then
+confirms lexically that the combined path remains under a probe root. A single trailing
+`/` is tolerated.
+
+`UpdatePortalRequest.HomeDirectory` deliberately carries **no** lexical shape rule. An
+earlier revision applied the same rule to both contracts from one shared file, but code
+review established that the legacy update screen declared no validator on its
+home-directory box at all, so the rule was an unauthorised addition on the update path
+and was removed. The create path keeps it because its own contract states that no mapped
+or absolute path is accepted from a caller. With one contract left applying the rules,
+the shared file had no second caller to justify it and its members were moved into the
+validator that applies them. Should a second contract ever carry this field, extracting
+them again - rather than copying them - is the correct answer, for the reason given
+below.
 
 **Why.** The value names a directory the application will read and write, so a
-rooted or traversing form is a path-traversal vector. Sharing one rule set across
-the two contracts is the point: a create path and an update path that maintain the
-same column cannot be allowed to disagree about what that column may hold, and two
-copies of a security predicate are two things to keep in step. The trailing
-separator is tolerated because the legacy code appended one itself, so refusing it
-would reject values the legacy application produced.
+rooted or traversing form is a path-traversal vector. Wherever more than one contract
+maintains this column, those contracts must not be allowed to disagree about what it may
+hold: two copies of a security predicate are two things to keep in step, and the weaker
+copy would define the application's actual behaviour. That is why the rules are declared
+once and would be extracted again rather than duplicated. The trailing separator is
+tolerated because the legacy code appended one itself, so refusing it would reject values
+the legacy application produced.
 
 **Two platform facts that shaped the implementation.**
 `Path.GetInvalidPathChars()` is deliberately not used: on Linux it contains only the
@@ -3063,11 +3090,21 @@ reached through `UserModuleBase.GetSetting` over `UserController.GetUserSettings
 both it and the profile-property definitions the check reads belong to the
 account-administration vertical rather than to sign-in. Evaluating them in the sign-in
 service would place a profile rule and two further reads on the anonymous credential
-path and would give the completeness rule a second implementation. The
-`MustUpdateProfile` flag is therefore carried by the response contract and left unset
-by the sign-in service. **Operational consequence:** an installation that relied on
-being sent to a profile-completion step at sign-in is not sent there; the profile
-screens remain reachable and enforce their own required-field rules.
+path and would give the completeness rule a second implementation.
+
+**Superseded: the flag now has an authoritative producer.** This entry described the tree
+while `MustUpdateProfile` was carried and never set. The rule has since been implemented
+ONCE, as `IUserService.RequiresProfileCompletionAsync` in the account-administration
+vertical that owns the profile-property definitions and reads the tenant's
+`Security_RequireValidProfileAtLogin` membership setting, and the sign-in service asks it
+the question rather than re-deriving the answer. Both objections above are answered rather
+than overridden: the rule still has exactly one implementation, and the two extra reads land
+on an **already-authenticated** path, after the credential has been accepted, never on the
+anonymous one. A read that fails is treated as "no advisory", so an advisory outage can
+never become a sign-in outage. **Operational consequence:** an installation that relied on
+being sent to a profile-completion step at sign-in now receives the advisory on the wire;
+this application does not yet render a step for it, and the profile screens remain reachable
+and enforce their own required-field rules.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Application/Services/AuthService.cs`,
@@ -3103,7 +3140,65 @@ to propagate, because a cancelled request is not a failed write.
 `backend/src/DnnMigration.Application/Services/AuthService.cs`,
 `backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs`.
 
-### GAP REPORTED: the sign-in audit record cannot be emitted from the application layer
+### CORRECTION: the sign-in audit record IS emitted, through an abstraction the application layer owns
+
+**This supersedes the gap reported below, which was closed under code review.** The
+reasoning that follows was sound about `ILogger<T>` and wrong about the conclusion it
+drew from that. `ILogger<T>` genuinely cannot be named in the application layer, and
+the manifest is genuinely not the thing to change — but neither fact requires the
+application layer to stay silent. It requires the application layer to declare *its own*
+contract and let a project that already has logging implement it, which is the same
+ruling the layer's manifest records for `IOptions<T>`, applied properly rather than read
+as a prohibition.
+
+**What is delivered now.** `Application/Abstractions/IAuditSink.cs` declares the audit
+contract in terms of the base class library only, so it names nothing the layer cannot
+reference. `Infrastructure/Services/LoggingAuditSink.cs` implements it over `ILogger`, where
+logging is already available transitively, and is registered as a singleton in
+`Infrastructure/DependencyInjection.cs`. `AuthService` takes the contract and records the
+outcome of **every** sign-in at the one point after which the outcome can no longer
+change — immediately after the shipped-credential promotion and before the status is
+translated — under a stable event name drawn from `AuditEventNames`.
+
+An earlier revision of this note described the contract as `IAuditTrail`/`AuditTrail` with
+three members. Two abstractions for this one concern were authored independently and the
+delivered tree carries exactly one, `IAuditSink`; the other was removed rather than kept
+beside it, because two audit streams that can disagree about the same operation are worse
+than either alone. The reasoning below is unaffected — it was never about the type's name —
+and the safety property is now stated in the shape the delivered contract actually has.
+
+**The per-gate loss described below is therefore recovered.** The specific gate that
+closed a sign-in *is* now recorded, because the emitted event carries the computed status
+member name itself: an unknown tenant, an unknown account name, an account with no
+credential record, and every outcome the status enumeration can express, are separate
+values of the `SignInOutcome` property rather than a single "refused" observation.
+
+**Two deliberate divergences from the legacy trail, both supersets.** The legacy entry
+was raised for the locked-out and failure outcomes only; every outcome is now audited,
+including success. And where the legacy call always passed `Null.NullInteger` as the
+account identifier — so the legacy trail never recorded *which* account failed — the
+resolved identifier is now carried when one exists and is `null` when the account name
+matched nothing.
+
+**The closed event shape is the safety property, not a convenience.** The contract exposes
+exactly one member, `void Record(AuditEvent)`, and `AuditEvent` declares a closed set of
+init-only members: an outcome, a tenant, an actor and its name, a subject, a resource type
+and identifier, a failure code, and a string-keyed property bag. A credential is not merely
+omitted from the call sites; there is no member that could carry one, so no future call site
+can introduce one. The member returns `void` rather than `Task`, so an audit entry can never
+fail, delay or cancel the operation it describes, and the implementation is documented never
+to throw — including for a null event, which is discarded rather than escalated.
+
+**The network-address note below still stands unchanged.** The address remains absent from
+the layer, and remains recorded by the Api request log.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Abstractions/IAuditSink.cs`,
+`backend/src/DnnMigration.Application/Abstractions/AuditEvent.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/LoggingAuditSink.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+### Superseded gap report: the sign-in audit record cannot be emitted from the application layer
 
 **Legacy behaviour.** `UserController.vb:L66-L82` wrote an audit entry whose log type
 key was `loginStatus.ToString` at `:L80`, carrying the properties `IP`, the tenant
@@ -3458,15 +3553,33 @@ its storage medium, locking strategy or retention policy; swapping either then c
 line. An unresolvable dependency is also reported at startup with the name of what is
 missing, which is strictly better than a placeholder that defers the failure to a request.
 
-**Note on test visibility.** No `InternalsVisibleTo` attribute is declared anywhere in the
-solution, and this is a decision rather than an omission. Tests build a container by
-calling `AddInfrastructure` and resolve the same contracts production code resolves, so
-they exercise the wiring rather than bypassing it. Granting a test assembly access to the
-internals would let a test construct a concrete type directly, allowing a test to pass
-while the registration is broken, and would quietly turn private implementation detail into
-a contract that could not be changed without breaking tests. Anything a test genuinely
-needs to observe belongs on the Domain contract, where production callers can rely on it
-too.
+**Note on test visibility.** Exactly **one** `InternalsVisibleTo` grant is declared in this
+solution — `DnnMigration.Infrastructure` names `DnnMigration.UnitTests`, and no other
+assembly — and it is deliberately narrow. An earlier revision of this note recorded that no
+such grant existed anywhere and argued that resolving contracts from a container was always
+sufficient. Most of that argument still holds and still governs: a test that can construct a
+concrete type directly can pass while the registration is broken, and anything a *caller*
+needs to observe belongs on the Domain contract.
+
+Where the argument did not survive contact with the code is the two security components in
+`Infrastructure/Security` whose decisions are **algorithmic rather than relational**. The
+work factor a hash is produced at, the pre-hash that removes BCrypt's input-length limit,
+the refusal of a malformed stored value, and the pseudo-principal rules in the permission
+evaluator are all decided in code, with no database and no observable difference through the
+`IPasswordHasher` contract. An endpoint test proves that *some* implementation is wired up
+and returns the right status code; it cannot observe **which cost** a hash was produced at.
+The consequence of having no seam was not an absence of tests but something worse: both
+suites had drifted into asserting a *private re-implementation* of the algorithm they
+claimed to protect, so they passed whatever production did and read as coverage while
+protecting nothing. AAP 0.5.1.5 sources those suites from those files, so the seam realises
+the plan rather than working around it.
+
+Two bounds are load-bearing and are recorded here because they are the reason this grant is
+safe. **No type was made public** to enable it — every concrete type in that assembly is
+still internal, and widening one would have permanently enlarged the assembly's surface
+instead. And **no production layering changed**: this is a change to the *test* project
+graph only. Do not add a second assembly to the grant, and do not make a type public in
+order to reach it from a test.
 
 
 ## API edge, composition root and observability
@@ -3607,10 +3720,27 @@ portal settings; the canonical site is
 equivalent policy as being registered with the framework-native role requirement,
 `RequireRole`, reading the administrator role name from bound configuration.
 
-**Target behaviour.** The policy is registered with `AddRequirements` and an empty
-`PortalAdministratorRequirement`, and decided by a scoped
-`PortalAdministratorAuthorizationHandler` that reads the addressed portal's administrator role
-from `IPortalContext`.
+**Target behaviour, as corrected under code review.** The policy is registered with
+`AddRequirements` and a `PortalAdministratorRequirement`, and decided by a scoped
+`PortalAdministratorAuthorizationHandler` that is **anchored to the portal the route names**.
+It resolves the target portal from the route's `portalId` first and falls back to the
+resolved tenant only when the route names none, then loads *that* portal to read *its*
+administrator role and verifies time-bounded membership of it.
+
+**Why the correction was needed.** The handler previously read the administrator role from
+`IPortalContext` alone — the tenant the caller arrived through — while the action went on to
+act on the portal named in the route. Those are not the same portal. An administrator of one
+tenant, arriving through their own host name, therefore satisfied the policy for a request
+addressing **another** tenant's portal, and the strongest reach was over portal aliases: an
+alias addressed by its own global identifier carries no portal binding at all, so retargeting
+one moves which tenant a host name serves. The gate must be evaluated against the resource
+being acted on, not against the door the caller came through.
+
+**Operations with no portal binding are host-scoped instead.** Listing every portal, creating
+a portal, and the identifier-addressed alias operations cannot be anchored to a route portal
+because there is none, so they require `HostAdministrator` — verified against authoritative
+super-user state — rather than falling back to whichever tenant the caller resolved to. Every
+`{portalId}`-nested action keeps the route-anchored portal policy.
 
 **Why.** `RequireRole` closes over the role names given to it at start-up, and there is one
 registration for the whole process - whereas the administrator role is a per-portal column in a
@@ -4296,25 +4426,49 @@ being moved or removed. The failure mode of a stale host-to-tenant mapping is th
 request is served the wrong tenant's data. Correctness is preferred to a saved
 lookup, and the omission is recorded here rather than left to look like an oversight.
 
-### Tenant resolution is best effort, and a failure does not fail the request
+### Tenant resolution refuses a request that can only get its tenant from the host name, and lets every other request continue
 
 **Legacy behaviour.** The page pipeline resolved the tenant before anything else and
 had nowhere to go if it could not.
 
-**Target behaviour.** A host that matches no configured alias, and a tenant lookup
-that throws, both leave the request without a resolved tenant. The request
-continues.
+**Target behaviour, as corrected under code review.** An unresolved tenant no longer
+lets every request through. The middleware now asks whether the *matched endpoint* can
+obtain its tenant by any means other than the host name, and refuses the request with
+`403` and the shared problem-details vocabulary — type
+`urn:dnnmigration:error:portal.tenant_unresolved` — when it cannot. Continuing was the
+original behaviour and it was wrong: an endpoint whose only source of tenant is the host
+name was being served with no tenant at all, which is the condition tenant isolation
+exists to prevent.
 
-**Why the difference is deliberate.** This was found by running the host, not by
-reading it: with the lookup failure propagating, *every* `/api` request became a 500
-including requests that never needed a tenant at all. Endpoints that require a
-tenant fail on their own terms with their own message, which is both more accurate
-and more useful than a blanket server error, and the health endpoint continues to
-report the state of the database rather than the state of the alias table. A failed
-lookup is logged.
+**Three cases are deliberately still served.** A request that matched **no endpoint** is
+a routing 404 and that answer belongs to routing; refusing it here would replace a
+truthful "no such address" with a misleading one and would tell a caller probing for
+addresses that the host is unconfigured. An endpoint marked `TenantOptionalAttribute`
+carries a written justification for why it does not need one — sign-in, which may be
+told its tenant explicitly; the permission catalogue, which is host-wide; the
+identifier-addressed alias operations, which are host-scoped; and the pages addressed by
+identifier alone, which take their tenant from the caller's signed portal claim. And an
+endpoint whose **route carries a `portalId`** is served, because a route value is set by
+route matching alone — it cannot be supplied through the query string or a header — so
+its presence means the tenant arrives by a means other than the host name. That is not
+treated as an authorisation decision: the portal-administrator policy separately verifies
+administration of *that exact portal* against stored role membership, and every service
+verifies that the record it acts on belongs to it.
 
-**Operational consequence.** A misconfigured alias produces a specific failure from
-the endpoint that needed the tenant, not a total outage.
+**The original concern that motivated continuing is preserved.** The finding that
+provoked it — that a propagating lookup failure turned *every* `/api` request into a 500,
+including requests needing no tenant — still holds, and is still avoided. The refusal is
+scoped to endpoints that genuinely depend on the host name, so the health endpoint
+continues to report the state of the database rather than the state of the alias table,
+and no request that never needed a tenant is affected. A failed lookup is still logged.
+
+**Verified by running it.** With a host name that matches no alias,
+`GET /api/v1/module-definitions` — no `portalId` in its route and not tenant-optional —
+answers `403` with the problem document, while the same route on a configured alias
+answers `200`. A `portalId`-bearing route answers `200` on the unknown host, as intended.
+
+**Operational consequence.** A misconfigured alias now produces an explicit, uniform
+refusal from the endpoints that depend on it, and still not a total outage.
 
 ## Request pipeline
 
@@ -6323,19 +6477,38 @@ is spelt with a lower-case `w` although the argument it read was `KeyWords`),
 `ChildPath` and `IsChildPortal`. The password argument was **not** among them, so the
 legacy code already declined to record the credential.
 
-**Target behaviour.** The record becomes a structured log event, but it is **not
-emitted from this service**. `DnnMigration.Application` declares exactly two
-packages, `FluentValidation` and its dependency-injection extensions, and
-`Microsoft.Extensions.Logging.Abstractions` is neither among them nor present in the
-reference pack a class library targets. Naming `ILogger<T>` in this project fails to
-compile with `CS0234` and `CS0246`; that was **verified by compiling it**, not
-assumed, exactly as the project file already records for an earlier attempt to import
-the options package. Serilog belongs to the API layer, and structured logging is
-placed in `Program.cs` and `Api/Middleware/RequestLoggingMiddleware.cs`, so the
-owning layer sits above this one. The fourteen property names are recorded in the
-service so the owning layer has everything it needs, and the successful outcome
-carries the created portal's identifier, which is the value that middleware needs in
-order to record the installation. No password, hash or token is logged anywhere.
+**Target behaviour, as corrected under code review.** The record becomes a structured
+log event, and it **is** emitted from this service — through `IAuditSink`, an
+abstraction the application layer declares itself in terms of the base class library
+only. The earlier reasoning, preserved below because it remains correct on its own
+terms, established that `ILogger<T>` cannot be named here: `DnnMigration.Application`
+declares exactly two packages, `FluentValidation` and its dependency-injection
+extensions, and `Microsoft.Extensions.Logging.Abstractions` is neither among them nor
+present in the reference pack a class library targets. Naming `ILogger<T>` in this
+project fails to compile with `CS0234` and `CS0246`; that was **verified by compiling
+it**, not assumed, exactly as the project file already records for an earlier attempt
+to import the options package. What did not follow from any of that is silence. The
+layer names its own contract and `Infrastructure/Services/LoggingAuditSink.cs` implements it
+over `ILogger`, which is the same ruling the manifest records for the options package —
+the consumer changes, not the manifest.
+
+**What the entry carries.** `PortalService` emits stable event `1002 PortalInstalled`
+on a successful installation with **eleven** of the legacy fourteen properties, plus the
+created tenant's identifier, which the legacy entry did not have: `PortalId`,
+`PortalName`, `PortalAlias`, `HomeDirectory`, `TemplateFile`, `IsChildPortal`,
+`PortalDescription`, `PortalKeywords`, `AdministratorUsername`,
+`AdministratorFirstName`, `AdministratorLastName` and `AdministratorEmail`.
+`TemplatePath`, `ServerPath` and `ChildPath` are **omitted rather than guessed**: they
+are file-system paths belonging to a subsystem this migration excludes, and inventing
+values for them would put fabricated data into an audit trail. The credential remains
+absent, as it was in the legacy call — and now cannot be supplied, because the contract
+does not admit it.
+
+**The legacy `BypassBuffering = True` has no counterpart and needs none.** It forced an
+unbatched write so a failed installation left a trace; the structured event is written
+by the configured sink on the same synchronous path, and the entry is emitted only on
+success, so there is no batching window to defeat. No password, hash or token is logged
+anywhere.
 
 ### `RemoveCache("GetRoles")` has no counterpart
 
@@ -6607,15 +6780,34 @@ group identifier.
 its own, so a failure part-way through left a half-built tenant behind and the
 clean-up branch at `:L1164-L1167` had to delete it explicitly.
 
-**Target behaviour.** Every insert is **staged** and committed **once** through the
-unit of work, so a partially built tenant cannot be left behind and no
-store-assigned identifier is needed beforehand — every foreign key inside the graph
-is resolved by the object graph itself. Three portal columns and the credential
-record cannot join that commit, because each needs an identifier the database assigns
-during it; the legacy path had the same shape, stamping those identifiers only after
-the rows existed. Any failure in that second step is compensated by removing
-everything the first commit created, and the compensation deliberately does not
-swallow its own failure.
+**Target behaviour.** Every insert is **staged** and the whole graph is committed
+inside **one database transaction**, so a partially built tenant cannot be left
+behind and no store-assigned identifier is needed beforehand — every foreign key
+inside the graph is resolved by the object graph itself. Three portal columns and the
+credential record still cannot be written in the *first* save, because each needs an
+identifier the database assigns during it, and the legacy path had the same shape,
+stamping those identifiers only after the rows existed. The difference is that both
+saves now happen **inside the same transaction**, so neither is durable on its own.
+
+**Correction — the compensation routine described here previously is gone.** An
+earlier revision of this note recorded that a failure in the second step was
+"compensated by removing everything the first commit created". That design was
+replaced, because the compensation could only run *in process*: it could not survive
+termination of the process performing it, and it deliberately excluded cancellation,
+so a caller who disconnected mid-creation left the half-built tenant it was written to
+remove. Compensation is therefore deleted rather than retained as a fallback — there
+is no second durable commit left to compensate for, and a failure or a cancellation
+anywhere in the sequence is reversed by the store when the scope is disposed without
+committing. One consequence is worth stating plainly: **a cancellation now rolls
+back**, where previously it was the one case compensation ignored.
+
+Retry-on-failure is retained for the connection but is **suspended inside a
+caller-opened transaction**, because the SQL Server retrying execution strategy
+refuses a user-initiated transaction outright: retrying a partially applied
+multi-statement sequence is not safe, and the strategy is right to refuse. The
+suspension is expressed by deferring the decision to execution time rather than by
+disabling retries globally, so every read and write *outside* an explicit transaction
+keeps its resilience.
 
 ### Portal configuration is columns, not a settings table
 
@@ -6636,3 +6828,1598 @@ listing and detail reads: it backs an editing screen whose purpose is to show an
 administrator what is stored immediately after they changed it, and serving that from
 a sixty-minute cache would show a stale form and invite them to save the old values
 back over their own edit.
+### Correction: the seven convention-asserted foreign-key indexes are now suppressed at the context
+
+**What changed.** The entry above, on
+`backend/src/DnnMigration.Infrastructure/Persistence/Configurations/`, recorded that Entity
+Framework Core's `ForeignKeyIndexConvention` asserts seven indexes the DotNetNuke 4.9 schema
+does not have, established that no per-configuration suppression exists, and named the single
+correct suppression point as a `ConfigureConventions` override on a context that did not exist
+at the time. **That context now exists and the override is implemented.**
+`DnnDbContext.ConfigureConventions` removes the convention once for the whole model.
+
+**Consequence.** The model now declares exactly the thirty-three non-primary-key indexes the
+terminal schema declares, each explicitly through `HasIndex` and named with
+`HasDatabaseName`. The eight convention-derived extras are gone. Nothing real is suppressed:
+the convention only ever adds an index where no declared index already leads with the
+foreign-key column, so every index the schema actually has was declared explicitly in the
+first place and is untouched by the removal.
+
+**Why this is a correction rather than a new difference.** The divergence itself was already
+documented and already had no runtime consequence, because Entity Framework Core consults
+index metadata only when generating migrations or scaffolding. What the divergence did affect
+was model comparison: a future `dotnet ef` diff started from a topology the database does not
+have. Removing the convention removes that.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Persistence/DnnDbContext.cs`.
+
+### Correction: primary-key clustering and unfiltered unique constraints are now asserted
+
+**Legacy behaviour.** Seven of the twenty-one tables in scope declare their primary key
+`PRIMARY KEY NONCLUSTERED`, against SQL Server's clustered default: `Modules`
+(`01.00.00.SqlDataProvider` line 515), `ModuleDefinitions` (line 464), `Tabs` (line 498),
+`Portals` (`01.00.05.SqlDataProvider` line 1457), `Roles` (line 2784), `RoleGroups`
+(`04.00.04.SqlDataProvider` line 58) and `UserProfile` (line 1423). The remaining fourteen are
+clustered, `Users` among them — its terminal declaration is
+`PRIMARY KEY CLUSTERED` (`03.00.13.SqlDataProvider` line 27), so it is deliberately not in
+this set. Separately, five unique constraints are declared over columns that permit null and
+carry **no** filter: `IX_ModuleControls` (`02.00.00.SqlDataProvider` line 5017),
+`IX_ModulePermission` (`04.05.02.SqlDataProvider` line 135), `IX_TabPermission` (line 215),
+`IX_PortalAlias` (`03.00.07.SqlDataProvider`) and `IX_RoleName`
+(`03.00.09.SqlDataProvider` line 323).
+
+**Target behaviour.** The seven keys declare `.IsClustered(false)`. The five unique indexes
+declare `.HasFilter(null)`. The fourteen clustered keys are left alone, which is how the
+model states that they are clustered.
+
+**Why the differences matter.** Neither is cosmetic, and neither has a runtime effect on
+query translation — both are model metadata. What they affect is the model's account of the
+database it maps. Left unstated, the model claimed seven clustered keys the database does not
+have. Left unstated, the unique filters were worse than merely wrong: the SQL Server provider
+adds `WHERE [column] IS NOT NULL` to a unique index over a nullable column, and on the two
+permission grant tables every row has a null in one of the constrained columns by
+construction — a grant names either a role or an account, never both — so the generated
+filter would have excluded essentially every row from the uniqueness the database actually
+enforces over all of them.
+
+**Annotated in code at.** `ModuleConfiguration.cs`, `ModuleDefinitionConfiguration.cs`,
+`PortalConfiguration.cs`, `RoleConfiguration.cs`, `RoleGroupConfiguration.cs`,
+`TabConfiguration.cs`, `UserProfileValueConfiguration.cs`, `ModuleControlConfiguration.cs`,
+`ModulePermissionConfiguration.cs`, `TabPermissionConfiguration.cs`,
+`PortalAliasConfiguration.cs`.
+
+### Correction: the permission catalogue's module-definition reference is a scalar, not a relationship
+
+**Legacy behaviour.** `dbo.Permission.ModuleDefID` is `int NOT NULL`, and the value `-1` is
+real, seeded data: the product-wide catalogue entries — those carrying the
+`SYSTEM_MODULE_DEFINITION` and `SYSTEM_TAB` scope codes — use it precisely because they belong
+to no single module definition. There is no `ModuleDefinitions` row with that key.
+
+**Target behaviour.** The conceptual relationship between the catalogue entry and the module
+definition is **removed** at both ends: the reference navigation, the inverse collection and
+the `HasOne`/`WithMany` configuration. The scalar `ModuleDefinitionId` remains exactly as it
+was, `int` and non-nullable, and `-1` continues to travel through it untouched. Code that
+needs the definition behind a real identifier resolves it explicitly.
+
+**Why the alternative is not merely undesirable but impossible.** A relationship over a
+non-nullable foreign key is **required** by definition in Entity Framework Core; the model
+cannot be built with an optional relationship over one, so "keep the relationship and make the
+navigation nullable" is not an available option. A required relationship asserts that every
+`ModuleDefID` names an existing row, which the `-1` entries falsify. Removing the concept is
+the only way to keep the data truthful, and it costs nothing: no code read either navigation.
+Both ends had to go, because leaving the inverse collection in place would let convention
+rediscover the relationship.
+
+**Annotated in code at.** `backend/src/DnnMigration.Domain/Entities/Permission.cs`,
+`backend/src/DnnMigration.Domain/Entities/ModuleDefinition.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Configurations/PermissionConfiguration.cs`.
+
+### Correction: role billing and trial frequency use the shared converter again
+
+**What changed.** `dbo.Roles.BillingFrequency` and `dbo.Roles.TrialFrequency` are
+`char(1) NULL` holding the codes `D`, `W`, `M` and `Y`, and the mapping between those codes and
+the domain enumeration belongs to one place —
+`Persistence/ValueConverters/BillingFrequencyToStringConverter`, which normalises through
+`Enum.IsDefined` so an unrecognised stored character cannot become a member that does not
+exist. A revision had replaced both bindings with inline conversion lambdas that duplicated the
+mapping and dropped the normalisation, leaving the shared converter unreferenced. Both
+properties bind to `BillingFrequencyToStringConverter.Instance` again and the duplicated
+lambdas are deleted.
+
+**Why it matters.** Two copies of a code mapping is one copy too many, and the copy that was
+in use was the weaker of the two. The codes are load-bearing stored data rather than an
+implementation detail, so they may not be renamed or reinterpreted.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Persistence/Configurations/RoleConfiguration.cs`.
+
+### Correction: the baseline migration snapshot is regenerated from the corrected model
+
+**What changed.** The baseline migration's designer and the model snapshot are regenerated
+from the model as corrected by the four entries above, so
+`dotnet ef migrations has-pending-model-changes` reports no pending changes. The drift being
+closed was real: the snapshot carried unnamed indexes where the model declares `IX_UserProfile`,
+`IX_UserRoles`, `IX_UserRoles_1` and the four named page-permission indexes.
+
+**What deliberately did not change.** `InitialCreate.Up` and `InitialCreate.Down` remain
+**empty**, and the migration identifier is preserved exactly, so an existing
+`__EFMigrationsHistory` row stays valid and no schema statement of any kind can reach a
+database from this work. The migration exists to seed migration history as a baseline, never
+to create or alter a table — the schema depends on externally installed `aspnet_*` membership
+objects that the eighty-eight scripts only ever `ALTER`, so a generated create-migration could
+not reproduce the terminal schema even in principle.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260802072256_InitialCreate.Designer.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/DnnDbContextModelSnapshot.cs`.
+
+### Sign-in proves the credential before it approves anything
+
+**Legacy behaviour.** The legacy membership provider evaluated a sign-in in the order
+lock, then approval, then password (`AspNetMembershipProvider.vb` lines 1445-1480). The
+approval branch **wrote** — it set the account approved when the submitted verification code
+matched — and the code it compared against was derived from the portal and account
+identifiers, so it was guessable by anyone who could enumerate two integers. The credential
+had not been checked at the point that write happened.
+
+**Target behaviour.** The order is lock, then **credential**, then approval. The approval
+write is unreachable unless the credential comparison has already succeeded. Lockout
+bookkeeping is unchanged and still short-circuits ahead of the credential comparison, so a
+locked account never becomes a credential oracle.
+
+**A second, visible consequence, adopted deliberately.** Because the credential is now proved
+first, the reply to an unapproved account can safely say which step remains, and it does:
+verification required, verification code invalid, or account not approved. These are reported
+as `400 Bad Request` rather than `401 Unauthorized`, because the caller **has** authenticated
+and the submission is incomplete rather than unauthorised. The legacy stack discarded this
+distinction.
+
+**Why the difference is deliberate.** Reproducing the legacy order would reproduce a
+credential-free account approval, which is a privilege escalation reachable by an
+unauthenticated caller. The migration discipline requires behavioural equivalence, and equally
+requires that a discovered defect not be carried into new code silently; this one is carried
+into neither.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IAuthService.cs`.
+
+### A lockout expires on its own, as it did in the legacy stack
+
+**Legacy behaviour.** `AspNetMembershipProvider.AutoUnlockUser` (lines 64-86) read the host
+setting `AutoAccountUnlockDuration`, defaulted it to ten minutes when the setting was absent,
+treated a configured zero as "never unlock automatically", and unlocked the account when its
+recorded lockout instant was further in the past than that window.
+
+**Target behaviour.** Reproduced. The same host setting is read, the same ten-minute default
+applies when it is absent, a configured zero still disables automatic unlocking, and the
+window is compared against the recorded lockout instant using the injected clock rather than
+the server's local time.
+
+**One narrowing, stated.** A **negative** configured duration is treated as disabling
+automatic unlocking, exactly as zero is. Read literally, a negative window would describe an
+interval that has always already elapsed, which would unlock every locked account on its next
+sign-in attempt and make the lockout mechanism inert. Treating it as a disabling value is the
+safe reading of a configuration mistake.
+
+**An account with no recorded lockout instant is not unlocked**, because there is no window to
+measure and inventing one would unlock an account on the strength of missing data.
+
+**No lockout detail is disclosed.** Whether an unlock happened is never reported to the
+caller; the reply is the reply the resulting sign-in earns.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+### A token-store outage is reported as an outage, not as a server fault
+
+**What changed.** The refresh-token store reports its own unavailability with a distinct
+reason code. A revision converted that code into a thrown `InvalidOperationException` on the
+refresh, sign-out and issuance paths, which the API edge could only render as a generic server
+fault — so an availability problem reached the caller looking like a defect, and the typed code
+the contract promises to propagate unchanged was discarded on the way. The code now propagates
+unchanged, and token issuance reports it as a typed failed outcome rather than throwing.
+
+**Consequence.** The condition renders as `503 Service Unavailable` at the API edge, through
+the existing reason-code mapping and with no special case anywhere. That is the honest status
+for a dependency that is temporarily unreachable, and it is the status a client can retry
+against.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+### The sign-in reply no longer advertises a profile-completion flag
+
+**Legacy behaviour.** The legacy stack could require a valid profile at sign-in, gated by a
+**module setting** on the login control (`UserController.vb` lines 1189-1193 with
+`ProfileController.vb` lines 305-319). The gate was a property of a Web Forms control instance,
+not of any schema-backed configuration.
+
+**Target behaviour, as finally delivered.** The sign-in reply carried a `mustUpdateProfile`
+member that **nothing produced** — no code path ever set it, so every reply reported the same
+value regardless of the account's profile. That was the defect. It is closed by giving the
+member a producer rather than by deleting the member: `IUserService.RequiresProfileCompletionAsync`
+reads the tenant's `Security_RequireValidProfileAtLogin` membership setting and then walks the
+tenant's required profile-property definitions against the caller's stored values, exactly as
+`ProfileController.vb` lines 305-319 did, and the sign-in service assigns the flag from it on
+both the sign-in and the renewal path.
+
+**Why implementation rather than removal.** An intermediate revision of this file recorded the
+opposite decision, and the reasoning that produced it was sound at the time: a field that always
+reports the same value is worse than an absent field, because a client cannot tell "your profile
+is complete" from "nobody implemented this". What changed is that the gate turned out to be
+readable after all — it is a membership setting this migration already surfaces, not the Web
+Forms control property the earlier reading assumed — so the choice was no longer between a false
+signal and an absent one. The member is carried **only** because that producer now exists and is
+authoritative.
+
+**The client deliberately does not carry it, and that is a scope decision rather than the earlier
+absence-of-producer one.** Nothing in this application consumes the advisory: the legacy flow sent
+this one case to a **different** step rather than to the credential interstitial, and no such step
+exists here. Keeping it in stored session state would put a signal there that no screen can act
+on. An extra property on the wire is ignored, so nothing is lost, and adding it is a one-line
+change on the day a profile-completion step is built. Profile completeness also remains fully
+observable through the profile endpoints.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`frontend/src/app/core/models/auth.model.ts`.
+
+### The page listing includes pages in the recycle bin
+
+**Legacy behaviour.** The terminal page read returns soft-deleted pages and projects the
+deletion flag as one of its columns. `GetTabs` was rewritten at `04.04.00.SqlDataProvider`
+lines 440-448 to select every column of `vw_Tabs` under a portal predicate alone, and that
+view's terminal definition (`04.05.04.SqlDataProvider`) carries no deletion predicate either.
+The flag is projected precisely so that the **reader** decides, and the legacy readers decided
+differently: the page-management grid hid recycled pages while the recycle-bin screen listed
+nothing but them.
+
+**Target behaviour.** The single page listing this migration exposes returns the complete
+read, and every row carries its own `isDeleted` flag. Filtering recycled pages out is a
+client-side projection over a complete answer.
+
+**Why not reproduce the page-management grid's filter.** Because both legacy filters were
+call-site policy over one complete read rather than properties of the read, and this migration
+has one listing rather than two screens. Hard-coding either policy would contradict the
+completeness this endpoint's contract promises, would put the recycle-bin view of the data out
+of reach entirely, and would do so **silently** — a caller cannot distinguish a portal with no
+recycled pages from a portal whose recycled pages were withheld from it. No boolean filter
+argument is added either: the surface is deliberately narrow, and a filter over a field every
+row already carries earns nothing.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/TabService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/ITabService.cs`.
+
+### Correction: the sortable allowlist is enforced per collection, and two collections offer no ordering
+
+**What changed.** The entry "Paging, filtering and sorting are bounded, and caller-chosen
+sorting is a new capability" above states that sorting is restricted to an explicitly
+enumerated set **per resource**. Enforcement did not match that statement: the shared request
+validator applied the **union** of every collection's set, and no listing consulted its own.
+A field meaningful only for roles was therefore accepted for a portal listing and then answered
+in that listing's default order — a page the caller could neither account for nor detect.
+
+**Target behaviour.** Every listing now checks the caller's sort field against **its own** set
+before it dispatches a read, and refuses a field it cannot honour. The union remains as the
+outer bound, and it has to: FluentValidation resolves one validator per request **type**, and
+one paging contract serves every collection endpoint, so the union is the narrowest vocabulary
+that boundary can possibly apply. Neither half is redundant — without the boundary an entirely
+unknown name reaches a store, and without the per-collection check a known-but-foreign name is
+silently ignored. Enforcing in the service also binds callers that never pass through request
+validation at all.
+
+**Each allowlist is now exactly what its ordering expression honours**, in both directions.
+The portal set is the five arms the portal read honours; the role and role-membership sets are
+the eleven and ten arms their orderings honour. An allowlist entry with no arm behind it is
+worse than an omission, for the same reason the union alone was worse than nothing.
+
+**Two collections deliberately offer no ordering at all, and refuse rather than ignore.**
+
+- **The account listing.** Its page is assembled by the database under a fixed order, and
+  three of the ten columns the legacy account grid bound — the creation instant, the last
+  sign-in instant and the approval flag — are not columns of this database at all. They are
+  read from the external `aspnet_*` membership store **after** the page has been selected, and
+  `dbo.UserPortals` carries no last-sign-in column at any schema version. Offering the seven
+  that are account columns while refusing the three that are not would give one endpoint a
+  partial ordering surface whose membership a caller could not predict from the payload.
+- **The module listing.** Its projected row is not its paged unit: the page window is taken over
+  modules while each module then contributes one row per placement, so a page of ten modules
+  routinely returns more than ten rows. Any ordering could only ever apply to the modules
+  behind the rows, never to the rows the caller receives, and the payload gives the caller no
+  way to see that distinction.
+
+Reordering either page is a client-side projection over the answer, which is the mechanism the
+shared data table and its feature store already provide.
+
+**Operational consequence.** A caller that named a sort field a listing cannot honour now
+receives a refusal where it previously received a differently ordered page. Because the legacy
+grids offered no sorting at all, no legacy caller can be affected.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Validation/SortableFields.cs`,
+`backend/src/DnnMigration.Application/Validation/PagedRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`,
+`backend/src/DnnMigration.Application/Services/RoleService.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/PortalRepository.cs`.
+
+### Correction: the module cache period carries no lower bound, and is no longer clamped
+
+**Legacy behaviour.** The module settings screen validated the cache period for
+**integrality and nothing else** — `valCacheTime` at `modulesettings.ascx` line 172 declares
+`Operator="DataTypeCheck" Type="Integer"` with no companion comparison — and the code-behind
+stored whatever parsed, `Int32.Parse(txtCacheTime.Text)` at lines 349-350 with no comparison of
+any kind. A negative period was an accepted submission. The column is a plain `int NOT NULL`
+with no check constraint anywhere in the schema chain, and minus one is meaningful in this
+domain rather than nonsensical: line 138 tests a module definition's default cache period
+against exactly that value.
+
+**Target behaviour.** No lower bound is imposed, in **four** places where a revision had
+imposed one: both module request validators refused a negative period, and both projections
+onto the placement row silently clamped it to zero. All four are removed. Integrality is still
+enforced, by the type — the member is an `int`, so a non-integer is refused by model binding
+before any validator runs, which is the same check the legacy validator performed, relocated to
+the type rather than dropped. A blank legacy field stored literally zero and an omitted JSON
+property arrives as zero, so that submission behaves identically and zero still means "do not
+cache".
+
+**Why the clamp was the worse half.** Removing only the validator rules would have left a
+negative period accepted and then **silently rewritten**, so the record read back would not be
+the record submitted and the caller would have no way to detect the substitution. The clamp's
+own justification — that the store would refuse to interpret a negative — is contradicted by
+the schema. This is the same correction already recorded for the portal contracts, where five
+comparable floors described in their own comments as "a deliberate, documented strengthening"
+were likewise removed; the deliberate contrast is that `editroles.ascx` **does** declare
+`Operator="GreaterThanEqual" ValueToCompare="0"` for its fee fields, so the role fee floors are
+ported rather than invented and remain in place.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Validation/CreateModuleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Validation/UpdateModuleRequestValidator.cs`,
+`backend/src/DnnMigration.Application/Mapping/ModuleMappings.cs`.
+
+### A module's own failure explanation is logged, not returned
+
+**Legacy behaviour.** Three of the legacy module lifecycle call sites **swallowed** the
+failure outright — a bare handler around the export site, one commented "ignore errors" around
+the import site, and one wrapping the queued import — so a failed export wrote an incomplete
+portal template and a failed import lost content while the caller was told nothing.
+
+**Target behaviour.** The failure is reported, and its explanation is **logged rather than
+returned**. Each lifecycle operation reports a stable reason code with a fixed message naming
+the operation that failed; the exception itself, with its type, message and stack, is written to
+the log at error severity inside the request's correlation scope. Not swallowing the fault and
+not disclosing its text are two separate obligations, and both are met rather than one being
+traded for the other.
+
+**Why the explanation may not be returned.** A business controller is third-party code, and the
+fault classification is deliberately wide — anything it raises is a module fault, including an
+exception raised by dependency resolution on its behalf — so the message can hold a connection
+string, a file system path, an internal type name, or personal data quoted out of the very
+payload being parsed. A failed outcome from this boundary is published by the API edge as the
+problem-details explanation, which is to say to the HTTP client. Nothing actionable is lost: the
+correlation identifier already in the logging scope joins a log entry to the exact response the
+caller saw.
+
+**Nothing else travels on the message either** — not the supplied controller key, not the
+payload, not a stack trace. The payload is never logged either; its size alone makes it
+unsuitable, and it is the one argument crossing that boundary expected to hold tenant data.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Services/ModuleBusinessControllerFactory.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IModuleBusinessControllerFactory.cs`.
+
+### Permission evaluation reads every grant once, and the catalogue in one request
+
+**What changed.** Evaluating what a caller holds on a module or a page issued one grant read
+per applicable catalogue entry, and resolving the catalogue behind a set of grants issued one
+read per distinct permission. Both are now single reads. The number of round trips no longer
+varies with how many permissions a module definition declares or how many distinct permissions
+a tenant uses.
+
+**How, and why it is not a trick.** The legacy grant procedures accept `-1` in their permission
+argument as a wildcard meaning "every permission" — measured from the terminal bodies'
+`(PermissionID = @PermissionID OR @PermissionID = -1)` guard — and that wildcard is part of the
+procedure contract the repository interface inherits. Asking it once and completing the
+narrowing against the catalogue already in memory is the contract's own way of expressing the
+question. A set-wise catalogue reader is **net-new**: the legacy provider's catalogue reader
+took one identifier, so there was nothing to port, and the batching belongs where the query is
+composed rather than being simulated in a loop.
+
+**Nothing about the decision changed.** The in-memory join is exactly as strict as the
+per-permission reads it replaced: a grant is judged only when its own permission identifier is
+one of the catalogue entries that passed the key filter and the scope test, so a row the
+wildcard read now returns but the narrowed read could never have fetched is discarded rather
+than admitted. Deny precedence, the pseudo-principal sentinels, the superuser short-circuit,
+the current-role refresh and the fail-closed reading of a grant naming a catalogue entry that
+does not exist are all untouched. The order of the intermediate matches changes and cannot
+matter, because precedence is computed as a set operation and the resulting key names are
+sorted before they are returned.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Security/PermissionEvaluator.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IPermissionRepository.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/PermissionRepository.cs`.
+
+## Code-review remediation — differences introduced while closing sixteen findings
+
+Everything in this section was introduced while resolving a code review, not while
+writing the original migration. Each entry records a difference a consumer or an
+operator can observe, so that no correction made under review is absorbed silently.
+Three sections earlier in this document were also **corrected rather than extended**,
+because the fixes made their claims untrue: the sign-in audit gap report, the
+portal-creation audit note, and the tenant-resolution note.
+
+### The wire contract: every payload-bearing response is now enveloped
+
+**What changed.** A response that carries a payload now always carries it inside one of
+two envelopes. A single record is `{ "data": ... }`; a page is
+`{ "items": [...], "meta": { "pageIndex", "pageSize", "totalCount", "totalPages" } }`.
+Both shapes were declared by the application layer from the outset and **neither had a
+single consumer**: collection endpoints were serialising the domain paging type
+directly, so a domain type *was* the public contract and a change to the domain model
+would have been a breaking API change.
+
+**A page is not double-wrapped.** The paging projection is returned as itself, not placed
+inside the single-record envelope. Two levels of wrapping would make a client unwrap twice
+for a page and once for a record, which is the inconsistency the envelope exists to remove.
+
+**A bodyless command still answers `204 No Content` with no envelope**, because there is
+no payload to wrap and inventing one would mean a client parsing a body to learn nothing.
+A consequence worth stating: the non-generic `ApiResponse` therefore has no consumer and
+**cannot** have one. It is retained and documented as such rather than deleted, because it
+is the arity the generic form is understood against.
+
+**Migration impact for a client.** The paging numbers used to be siblings of the records
+and are now one level down under `meta`. Binding the old flat shape against the new body
+still yields the records while reading every paging number as zero — a pager showing one
+page of everything instead of failing where a reader would notice — so this is a change a
+client must make deliberately.
+
+**An unpaged collection reports `pageSize` equal to `totalCount`**, which is the honest
+reading of "one page containing everything" rather than a fabricated page size.
+
+**On the front end, `PagedResult<T>` is now a client-side view rather than the wire
+contract.** `PagedResponse<T>` is the wire shape and `flattenPagedResponse` lifts it into
+the flat view that shared components already render.
+
+### Sorting is validated against the collection being sorted, not against every collection
+
+**What changed.** The sort allowlist was the union of every sortable field across every
+collection, so a field belonging to one collection was accepted on another and then
+silently ignored — the caller received a differently-ordered page with a `200` and no
+indication that the ordering they asked for had not been applied. Each collection now
+validates against its own set and answers `400` naming the fields it accepts.
+
+**Observable by contrast.** `sortBy=hostFee` is accepted on the portal collection and
+refused on the role collection; `sortBy=roleName` is accepted on roles and refused on
+users. Both refusals name the accepted set.
+
+**Every advertised field is now genuinely ordered by.** Two arms of the portal ordering
+switch — `Description` and `Currency` — were unreachable and are removed, and `HostFee`
+and `HostSpace` arms were added because both were advertised and neither was implemented.
+Role, module and user ordering are honoured end to end, which for users meant carrying the
+sort into the repository so that ordering is applied **before** the page is taken rather
+than to the page after it.
+
+**Two collections deliberately advertise less than their grid could.** Users cannot be
+sorted by created date, last sign-in or approval state, and modules cannot be sorted by
+order or display title, because no measured legacy grid offered those orderings.
+
+### Statuses and body shapes are now declared only where they can occur
+
+**What changed.** Thirteen actions took nothing but route values constrained to integers,
+and each advertised a `400` carrying a validation document naming the offending parameter.
+Twelve of those responses were unreachable: a route value that is not an integer fails the
+route constraint, so the request matches no endpoint and the router answers **`404`**
+before any action, filter or model binder runs. Removal of a profile definition also
+advertised a `409` for a state conflict the service has no way to report. All of these
+declarations are removed, along with the prose that described them.
+
+**A validation document is now advertised exactly where the request carries content.**
+The validation shape differs from the plain problem document by carrying a map of the
+request members that were refused, so it belongs only where the request has members to
+refuse. A route-only action may still refuse a well-formed request on **state** grounds —
+an account that is not locked, an installation that must retain one portal — and such a
+refusal is declared as the plain problem document it actually is.
+
+**The published contract gained the statuses the pipeline really produces**: `401` and
+`403` wherever authentication or a policy or the tenant gate can refuse, `429` on the
+seven credential-bearing actions, and `500`/`503` on the four operations whose failure
+codes deliberately classify as server faults.
+
+**The universal `500` is deliberately not declared anywhere.** Any endpoint can meet an
+unexpected exception, so declaring it on all of them carries no information; it is
+declared only where a designed outcome maps there.
+
+**A module's exported content is now published under `application/xml`.** The response
+itself is unchanged — it was always served as XML — but the document advertised
+`application/json`, because the description is built from the media types declared for the
+whole action and then narrowed to those a registered output formatter can write. The
+payload is written as a content result and never passes through a formatter, so the
+formatter set was the wrong authority. This is corrected in the description only:
+declaring the media type on the action would have forced every **failure** from that one
+action to be negotiated as XML and answered `406` with an empty body.
+
+### Refusing to delete the last portal is a conflict, not a malformed request
+
+**What changed.** The refusal now answers `409 Conflict` where it previously answered
+`400 Bad Request`. The legacy member reported it by *returning* the shared resource string
+keyed `LastPortal.Text`, with an empty string meaning success, so it had no HTTP status of
+its own to preserve — and the endpoint's own published description already declared the
+refusal as a `409`, arguing the case in the same words this API uses for a removal blocked
+by a still-referenced resource. The declared `409` was therefore unreachable and the `400`
+the caller actually received was undeclared: one defect with two visible halves. The
+legacy wording of the message is unchanged.
+
+**Consistency, not preference.** A well-formed request that current state declines is a
+conflict. Answering `400` told the caller to edit a request that had nothing wrong with it.
+
+### A refusal never carries a third party's exception text, and no failure is silently a bad request
+
+**Plugin text is not surfaced.** A module business controller is third-party code. Its
+exception message used to travel into the problem document, which discloses internal
+detail to a caller and hands an extension author a channel into this API's error surface.
+The message is logged internally with correlation context and the caller receives fixed,
+caller-safe text.
+
+**An operation that had already passed validation and authorisation before failing is a
+server fault.** Such codes previously fell to a `400` default, telling the caller to
+correct a request that nothing they could change would fix. They now classify as `500`,
+with the narrower classifications still winning where both could match.
+
+**A `404` produced from a successful read that found nothing is a problem document**, not
+a bare status with an empty body, and it carries a stable type so a client branches on the
+same value whichever endpoint produced it.
+
+**A refusal by the authorisation pipeline carries a body.** A token or policy refusal used
+to answer `401` or `403` with nothing in it, so a client could not tell an authentication
+failure from an authorisation failure without inferring it from the status alone. Both now
+carry the shared vocabulary with the correlation identifier.
+
+### Credential work is bounded wherever it happens, not only where the path says so
+
+**What changed.** The credential window and the process-wide concurrency ceiling were
+applied by matching whole segments of the request path against a word list, so operations
+that hash a credential without saying so in their path — creating a user, creating a
+portal, changing and resetting a password — were completely unbounded. Hashing is
+deliberately expensive, so an unbounded hashing endpoint lets the caller decide how much of
+this process's time is spent. Those actions now carry an explicit mark that the limiter's
+classifier reads from endpoint metadata, which is a statement about what the action *does*
+rather than about how its path is spelt. The path matcher is retained as a fall-back.
+
+**Requiring a password change is deliberately not bounded**: it sets a flag and hashes
+nothing.
+
+### An unrecognised stored frequency character reads as "none" instead of failing the row
+
+**What changed.** The role billing and trial frequency columns are a single legacy
+character, and both readers cast whatever was stored straight to the enumeration. A value
+outside the six defined codes produced an undefined enumeration value that later threw
+while being written to the wire, turning a perfectly readable row into a `500`. Both
+columns now go through the shared converter, which resolves an unrecognised character to
+`None`.
+
+**The comparison is case-sensitive, and that is deliberate.** A stored `'m'` reads as
+`None`, not as `Month`. The legacy comparison was VB's binary comparison against a
+case-insensitive database collation, and preserving the stricter reading is what keeps a
+lower-case value from being silently promoted to a meaning nobody stored. The wire
+converter takes the opposite position and upper-cases inbound caller text; that asymmetry
+is intentional — caller input is being interpreted, stored data is being reported.
+
+### A module's "append" instruction is resolved before the write, never persisted
+
+**What changed.** A position of `-1` is a command meaning "put this at the end", and it was
+being persisted literally, so a newly appended module sorted *before* every normal
+non-negative position — the opposite of what was asked. The sentinel is now resolved in the
+application layer to the next valid position and the row never holds it.
+
+**The legacy arithmetic is reproduced exactly.** The greatest position in the target pane is
+read and two is added. Two, not one, because the renumbering pass assigns odd positions, so
+appended positions stay on the same sequence. An empty pane yields position `1`, which is
+what the legacy expression produced from `-1 + 2`.
+
+**One legacy consequence is preserved and one legacy omission is not.** Updating a module
+that is alone in its pane, with no position supplied, leaves it at `1` — the legacy answer,
+because the legacy wrote the row carrying `-1` and only then resolved, so its own read
+included the row it had just written. But the legacy *copy* path passed `-1` under a comment
+saying "add to the bottom" and then never resolved it, leaving the sentinel in the row; the
+intent is honoured and the omission is not reproduced.
+
+**Placing a module on every page appends to each page's own pane**, resolved per target,
+rather than reusing one position across pages.
+
+### Validation runs once, on one path, for every write
+
+**What changed.** Four request contracts had no validator at all, so six write actions
+reached their service with unvalidated bodies. The validators now exist, reproducing the
+measured legacy field rules including the icon-path containment rule that the update verb
+was missing while the create verb had it. The shared rules are extracted so the two verbs
+cannot disagree, which is what made choosing the other verb a way around the rule.
+
+**Manual validation is gone.** Ten hand-written validation calls across five controllers
+invoked the same rules a globally registered filter already ran before the action. Two
+invocation paths for one rule set is how the paging contract came to be judged against the
+wrong vocabulary; there is now exactly one.
+
+**Three bounds are net additions.** A profile definition's data type admits zero, because
+zero is a real type identifier in the legacy list; a length lower bound of zero is new; and
+the role-assignment account identifier must be positive, which is justified only by that
+column's identity seed and must not be generalised to identifiers that seed at zero or minus
+one.
+
+**A latent legacy truncation defect is annotated, not inherited.** The terminal update
+procedure still declares narrower parameter widths than the columns it writes.
+
+### Diff hygiene
+
+Four files ended with a trailing blank line and no longer do. Three were reported; the
+fourth was found by sweeping every tracked text file, because leaving a known instance of a
+reported defect would be a partial fix. The twelve files that lack a final newline are all
+in the read-only legacy trees and are untouched by design.
+
+
+## Review remediation: deliberate behavioural differences
+
+Every entry below was introduced while resolving a code-review finding. Each is a
+behavioural difference from the legacy application, from an earlier revision of this
+migration, or both, and each is recorded here rather than absorbed silently.
+
+### Portal-scoped authority is bound to the addressed tenant, and installation-wide operations are a separate policy
+
+**Legacy behaviour.** A caller-supplied tenant was honoured only in narrow
+circumstances. `SiteSettings.ascx.vb:L235` reads a portal identifier from the query
+string **only** when the request sits under the host navigation tree or the caller is a
+host account, and forces every other caller onto the ambient tenant.
+`EditPortalAlias.ascx.vb:L65-L70` states the same rule as a refusal, rejecting with
+"You do not have access to view this Portal Alias" when the addressed record belongs to
+a different portal than the ambient one and the caller is not a host account.
+
+**Target behaviour.** A portal-scoped action now requires that the `portalId` in the
+route **equal the tenant resolved from the address the caller used**, in addition to the
+administrator role it already required. The three genuinely installation-wide portal
+lifecycle operations — listing portals, creating one, and deleting one — move to a
+separate `HostAdministrator` policy keyed on the super-user claim, so installation-wide
+authority is named explicitly instead of being an implicit consequence of holding an
+administrator role in one tenant.
+
+**The divergence.** The **host-account arm of the legacy rule is deliberately not
+reproduced.** A host credential cannot address another tenant's records through any
+tenant's host name; it administers a tenant by addressing that tenant's own alias and
+holding its administrator role, and retains the three installation-wide operations
+through the host policy. This is a **capability reduction** — narrower than legacy,
+never wider — and it is deliberate: honouring the legacy arm would reintroduce exactly
+the unbounded cross-tenant authority that separating the two policies exists to prevent,
+and AAP 0.2.2.4 additionally places host-level administration outside this migration.
+The legacy `DemoSignup` host-setting exception is likewise not carried forward.
+
+Two mechanical consequences are worth recording. A request whose route carries **no**
+`portalId` is unaffected, so by-key routes still behave as before. And a request for
+which no tenant can be resolved at all is refused rather than defaulted, because there
+is nothing to compare the route value against.
+
+### A refresh no longer outlives the account's eligibility to sign in
+
+**Legacy behaviour.** Forms authentication issued a ticket whose lifetime was
+independent of the account behind it; disabling or locking an account did not invalidate
+a ticket already held.
+
+**Target behaviour.** Rotation now **re-reads credential and membership eligibility**
+before it commits, applying the same rules the sign-in path applies — the account must
+still exist, must not be locked out, and must be approved, with the measured super-user
+exemption preserved. When any of those fails, the presented token is refused **and the
+entire refresh family is revoked**, so a disabled account cannot continue trading one
+refresh token for the next until the family's own deadline arrives. Every outcome is
+recorded as a session audit event.
+
+### The absolute refresh-family ceiling is bounded at thirty days
+
+**Legacy behaviour.** No absolute session ceiling existed.
+
+**Target behaviour.** An individual refresh token was already bounded at thirty days,
+but the *family* deadline was accepted anywhere in a thirty-one to three-hundred-and-
+sixty-five day range, so a deployment could configure a session family that outlived the
+individual token limit by more than a factor of ten. The configurable maximum is now
+**thirty days**, validated at startup, and a value above it stops the host with a message
+naming the permitted bound rather than being accepted quietly. The store's own
+three-hundred-and-sixty-five day guard is retained as a defensive backstop, deliberately
+unreachable through configuration.
+
+### A failed credential-cost upgrade is now reported
+
+**Legacy behaviour.** Passwords were stored reversibly, so no cost existed to become
+obsolete.
+
+**Target behaviour.** A successful sign-in still succeeds when re-hashing the credential
+at the current cost fails to persist — refusing the sign-in would deny service for a
+condition the caller cannot influence. What changed is that the failure is no longer
+**silently discarded**: it emits a `PASSWORD_REHASH_FAILURE` audit event carrying the
+account identifier and the failure reason and no credential material, so a credential
+that is quietly stuck at an obsolete cost becomes visible to an operator instead of
+persisting indefinitely with no signal.
+
+### The business audit trail is restored, with the real account identifier
+
+**Legacy behaviour.** `EventLogController.vb:L38-L77` defines a vocabulary of stable
+business event names, and the legacy application wrote them for portal, user, role and
+page changes. For sign-in it recorded only two outcomes, and it recorded them with the
+`-1` identifier sentinel rather than the account that attempted the sign-in.
+
+**Target behaviour.** Business events are emitted again through an audit abstraction
+declared in the Application layer, with a nineteen-name vocabulary covering portal
+creation and removal, user creation and removal, role and role-membership changes, page
+updates, every sign-in outcome, and session renewal, refusal and end. The abstraction
+carries **no logging dependency**, because the Application project references only the
+Domain project and FluentValidation; the implementation that writes the events lives in
+Infrastructure. Events are emitted as structured properties, so an operator filters on
+the event name rather than matching text, and failures are emitted at warning level so
+they can be alerted on separately.
+
+Two differences from legacy are deliberate. Every sign-in outcome is recorded, not two.
+And each carries the **real account identifier**, not the `-1` sentinel. No credential,
+hash, or token material appears in any event.
+
+### The legacy absent-date marker is read as absence at the boundaries that own it
+
+**Legacy behaviour.** `Null.vb:L66-L70` defines the absent-date marker as
+`Date.MinValue`, and `Null.vb:L183-L186` shows the write boundary substituting SQL
+`NULL` for a value whose **date part** matches it. A role-membership row therefore
+carried absence as SQL `NULL` in the store, while in-memory objects carried the marker.
+
+**Target behaviour.** The Domain model expresses absence as **null and only null**. The
+marker is translated at the two boundaries that own it: inbound writes normalise it to
+null before the row is staged, and the repository normalises it on the way through, both
+mirroring the legacy substitution. Role-active evaluation therefore no longer special-
+cases a magic date, which matters because that evaluation feeds authorization.
+
+This is also the one sentinel in the set that is **physically unstorable**: the columns
+are SQL Server `datetime`, whose minimum is 1753-01-01, so the marker cannot round-trip
+even if something tried. Removing the normalization makes the store raise a range error
+rather than silently accepting the value — which is how the normalization is proved to be
+load-bearing.
+
+### A child portal's alias is composed beneath its parent, and resolved by longest prefix
+
+**Legacy behaviour.** `Signup.ascx.vb:L175-L290` composes a child portal's alias as the
+**current request's authority followed by the child path** — `GetDomainName(Request) &
+"/" & ChildPath` — so a child tenant is addressed at a path *beneath* an existing host
+name rather than at a host name of its own.
+
+**Target behaviour.** The `IsChildPortal` flag is now **read** by the creation path and
+determines how the alias is built: for a child portal the service composes the alias from
+the **resolved parent authority** plus the validated path segment, instead of storing the
+submitted segment raw. A child portal whose parent authority cannot be resolved is refused
+with `portal.parent_alias_unresolved` rather than being created with an alias that could
+never match a request. Validation applies the parent/child character-set distinction, so a
+host name and a path segment are not judged by the same rule.
+
+Request-time resolution matches an authority-plus-path alias by **longest prefix**, most
+specific first, and a new middleware stage rebases the request path before routing so the
+application sees a route it can match. That stage is deliberately un-named in the plan's
+pipeline order and sits before routing; every stage the plan does name keeps its relative
+position.
+
+### Page updates are validated at the edge, and one legacy omission is preserved
+
+**Legacy behaviour.** `managetabs.ascx` declares a required-field validator on the page
+name and column widths that the store enforces. A `RequiredFieldValidator` fails on an
+empty **and** on a whitespace-only value.
+
+**Target behaviour.** A validator now enforces the one presence rule the legacy screen
+declared and the **nine terminal column widths** measured from the schema, so an overlong
+value is refused with a validation problem at the edge instead of reaching SQL Server and
+surfacing as a server fault. An empty or whitespace-only page name is now refused; an
+earlier revision accepted it on a **misreading** of the legacy screen, and that reading is
+corrected here rather than left in place.
+
+**Not corrected.** The legacy screen declares **no comparison** between the start and end
+dates, so an end date before a start date was storable. That omission is reproduced
+deliberately and pinned by a test: correcting it would be an unrequested behavioural
+change to a rule the legacy application did not have.
+
+### Paged responses carry the wire envelope, and three derived members are no longer sent
+
+**Legacy behaviour.** Paging was a control-level concern with no wire contract.
+
+**Target behaviour.** Every paged endpoint now returns the mandated `{ items, meta }`
+envelope, and the Domain paging type no longer crosses the API boundary. `meta` carries
+the total count, page index, page size and total pages.
+
+**The divergence.** Three members an earlier revision exposed — `isUnpaged`,
+`hasPreviousPage` and `hasNextPage` — are **not sent**. They were derived, not stored, so
+a client that read them off the wire received `undefined` at run time; the client model is
+reshaped to match what is actually transmitted, and a consumer that needs them derives
+them from the three numbers in `meta`.
+
+### The last-portal invariant is decided and acted on inside one serializable transaction
+
+**Legacy behaviour.** The refusal message is
+`SharedResources.resx` keyed `LastPortal.Text`, and the check was a count followed later
+by a delete, with nothing between them.
+
+**Target behaviour.** The count and the delete now occur inside a **single serializable
+transaction**, so two concurrent removals cannot both observe that two portals remain and
+leave the installation with none. Serializable is used here and *not* on the creation path:
+creation is guarded by unique indexes on the alias and account-name columns, so the store
+already arbitrates a duplicate, and a stricter level would only widen the lock footprint of
+the installation's busiest write.
+
+### The shared table always has an accessible name
+
+**Legacy behaviour.** The legacy grids rendered no caption element at all.
+
+**Target behaviour.** The shared table renders a visually-hidden caption and now falls back
+to a **generic accessible name** when a consumer projects no caption of its own, so a
+consumer cannot produce a table that is unnamed — previously an omitted caption produced an
+*empty* caption element, which is worse than none. The fallback uses the framework's default
+projection content, so **no input is added** to the component's fixed input surface. It is a
+floor, not a licence: projecting a real, screen-specific caption remains the consumer's
+obligation and overrides the fallback completely.
+
+### The visual vocabulary gains fourteen tokens, and one measured width is unified
+
+**Legacy behaviour.** The legacy stylesheets contain no spacing, radius or elevation scale,
+and no media queries at all.
+
+**Target behaviour.** Fourteen semantic layout, sizing, geometry and measure tokens are
+added so that fill values, viewport heights, grid tracks, flex ratios, a clip shape, a
+quarter turn and a table minimum resolve to named tokens rather than to literals, and the
+four breakpoint widths are named at their single authorised declaration site. The
+breakpoint steps remain Sass variables because a media query cannot evaluate a CSS custom
+property; the four widths themselves are a **net addition**, since the legacy design had
+none.
+
+**One intentional value change.** The form label column is now the canonical measured
+**9.375rem** everywhere. One screen previously composed its own **9rem** approximation of
+the same measured legacy width, so a single measured value had two definitions that had
+already drifted apart; the second is removed. Everything else in this change is
+effect-equivalent, and that was verified rather than asserted: ten screenshots across five
+routes at two viewport widths are **byte-identical** before and after.
+
+Three inline comments that argued a geometric literal needed no token have been corrected
+rather than left to contradict the vocabulary rule they predate.
+
+### Two security suites now bind to the code they claim to protect
+
+**Legacy behaviour.** The legacy tree contains no automated tests of any kind.
+
+**Target behaviour.** The password-hashing and permission-evaluation suites now exercise the
+**production** implementations instead of private re-implementations declared inside the test
+files. The mechanism and its bounds are recorded under "Note on test visibility" above.
+
+Two deletions are deliberate and are recorded because they reduce the test count. The
+duplicate permission evaluator **disagreed with production in three places**, each baking an
+installation-wide bypass into the evaluator layer; the shipped design refuses that
+pseudo-principal in the evaluator and grants host authority in the service instead, so the
+evaluator never holds a flag whose only possible implementation would be "admit everyone".
+And four tests describing a grant-**replacement** path were removed rather than ported: the
+target publishes no grant-write member, the repository members they described have **no
+production caller**, and AAP 0.5.1.4 specifies that surface as a read-only catalogue.
+
+## Correction: the delivered sign-in proves the credential FIRST, performs exactly one comparison per attempt, and reports the approval outcome
+
+**What this entry corrects, and why it exists rather than an edit.** Two earlier
+entries in this file describe the sign-in path, and the second of them — *"Correction:
+the delivered sign-in evaluates the lock and approval BEFORE the credential, and
+answers every refusal uniformly"* — accurately described the service as it then stood.
+It no longer does. A security review of this checkpoint found that the order it
+recorded, and defended, carried two defects that a migration must not ship, and the
+service was changed. This file is append-only, so that entry is left in place and is
+superseded here. Where the three disagree, **this entry** is the one that matches
+`backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+**Supersedes corrected claim one — the gate order is now credential-first.** The
+delivered order is: resolve the tenant, resolve the account within it, read the stored
+credential state, **compare the credential**, and only then evaluate the lock and the
+approval. The earlier entry rejected this order on two grounds, and both were
+re-examined rather than overruled:
+
+- *"Comparing a locked account's credential lets a guess be confirmed against it."* It
+  does not, in the delivered code, because the comparison's **result is discarded
+  unread** when the account is locked. The lock is still evaluated ahead of everything
+  else and a locked account is still refused without regard to what was submitted. What
+  changed is only that the comparison is *performed* rather than *skipped*, which is
+  what stops a locked account from answering measurably sooner than an unlocked one.
+- *"Spending an adaptive hash verification on every attempt is a denial-of-service
+  lever."* That cost is now paid on **every** structurally valid attempt by design —
+  see the next paragraph — so it is no longer a property of locked accounts in
+  particular. The lever it describes is answered by rate limiting on the credential
+  endpoints, which has its own entry in this file, and not by making the response time
+  depend on which account was named.
+
+**Supersedes the "residual weakness" paragraph entirely — the defect is repaired, not
+preserved.** That paragraph recorded, correctly, that a matching verification code
+approved and persisted an account *before* any credential was compared, so a party who
+could guess a tenant identifier and an account identifier could flip somebody else's
+pending registration to approved without holding its credential. It concluded that
+repairing this cost more than preserving it. **That trade-off is reversed.** The
+approval gate now sits inside the branch guarded by an accepted credential, so a wrong
+password approves nothing and persists nothing. The guessable composition
+`portalId & "-" & userId` is preserved exactly, for the parity reason given in the
+earlier entries — every account awaiting verification at cut-over still holds a code
+this service accepts — and what changed is that the code is no longer sufficient on
+its own. **Operational consequence:** an account holder who follows a verification
+link must now also present their password to complete verification, which is what the
+link's covering message already asked them to do.
+
+**Supersedes corrected claim two — the three approval outcomes are now reported.** The
+earlier entry recorded that "enter your code", "that code is wrong" and "not
+authorised" were determined and then withheld, because answering specifically would
+have confirmed to a caller who had proved nothing that a named account existed and was
+awaiting verification. That reasoning was sound *for that gate order* and does not
+survive the reordering: the approval gate is now reachable only by a caller who has
+already presented the account's correct credential, so `auth.verification_required`
+(`EnterCode`), `auth.verification_code_invalid` (`InvalidCode`) and
+`auth.account_not_approved` (`UserNotAuthorized`) are returned with authored wording.
+This restores the parity Minimal Change Clause item 4 asks for: the legacy screen told
+its user which of the three had happened, and so does this.
+
+The uniform denial `auth.invalid_credentials` still answers **every** gate that closes
+without credential proof — an unknown tenant, an unknown account name, an account
+belonging to another tenant, an account with no credential row, and a wrong credential
+— so the enumeration surface is unchanged. The lock remains reported specifically only
+to a caller already entitled to it. None of the three approval sentences quotes any
+value the caller submitted, so a rejected verification code is never echoed back.
+
+**Extends corrected claim three — one code is added to the vocabulary.**
+`auth.approval_store_unavailable` is reported when a correct code accompanied a
+correct credential and the resulting approval could not be written. It is deliberately
+not one of the three: those describe something the caller did and are actionable by
+the caller, whereas this describes a dependency that did not answer while the caller
+did everything correctly. Reporting an invalid-code outcome there would tell an
+account's own owner that a code it copied correctly was wrong. Its reason token ends
+in `store_unavailable`, so the Api edge answers `503`. The three approval codes are
+added to that edge's unauthorised list and answer `401`, alongside `auth.locked_out`.
+
+**New: exactly one credential comparison per attempt, whatever was found.** Every
+structurally valid submission performs one comparison at the configured work factor.
+Where there is no stored value to compare against — an unknown tenant, an unknown
+account, or an account with no credential row — a decoy stored value published by the
+hashing abstraction stands in for one. The decoy is produced once, at the abstraction's
+*current* work factor, from random input the implementation does not retain, so it
+costs what a genuine comparison costs and cannot succeed. It belongs to that
+abstraction rather than to the sign-in service because the algorithm, the pre-hash
+pairing and the current factor are that abstraction's knowledge; a constant embedded in
+the caller would become measurably cheaper than a real comparison the first time the
+factor was raised. **One residual difference is recorded rather than hidden:** an
+unknown tenant performs one database read where a known account performs three. Those
+are indexed lookups whose combined cost is a small fraction of one comparison at this
+factor. Equalising them would mean issuing reads whose results are discarded, which
+buys a small improvement at a permanent cost on every legitimate sign-in.
+
+**New: a wrong credential against an unapproved account now counts toward the lock.**
+This follows from the reordering and is an improvement rather than a side effect. Under
+the previous order such an attempt produced the not-approved outcome and never reached
+the failed-attempt counter, so a pending registration could be guessed against without
+limit and could never lock. Pending accounts now count like every other account.
+
+**New: a membership-store outage on the sign-in path is a server fault, not a silent
+success.** The failed-attempt increment and the successful-sign-in reset are the
+lock-out control itself, not bookkeeping around it, and their outcome is now read. The
+store reports four distinguishable results — recorded, recorded-and-locked, no such
+record, and store unavailable — where it previously returned a boolean that could not
+tell "counted, not yet locked" from "not counted at all". An unavailable store now
+fails the request, which the Api edge answers `500` with its fixed generic text; a
+missing record is recorded as a diagnostic and the sign-in proceeds. **Operational
+consequence:** a membership store that stops answering mid-request now produces visible
+`500` responses on sign-in instead of ordinary-looking refusals with a lock-out control
+that has silently stopped counting. The outage is escalated on the *success* path too,
+because the store answered a credential read moments earlier in the same request, so a
+failure at that point means it went down mid-request and issuing tokens would mean
+issuing them while the lock-out control is known to be down.
+
+**New: three security-control failures are recorded instead of being absorbed.** A
+work-factor upgrade that cannot be written, an effective-permission lookup that fails
+unexpectedly during sign-in, and the same lookup failing during a refresh were each
+absorbed silently — the first by an empty catch, the other two by substituting an empty
+permission set that is indistinguishable from an account that legitimately holds no
+permissions. Each is now recorded through a Domain-level diagnostics abstraction whose
+signature admits only a closed set of occurrence identifiers, optional tenant and
+account identifiers, and a short character-restricted reason code. It accepts no
+message, no exception and no format argument, so no credential, hash or caller-supplied
+value can be written through it even by accident. The sign-in still succeeds when an
+upgrade fails, because the credential was correct and the stored value remains valid;
+the permission set still fails closed, because minting a token that claims permissions
+the store did not confirm would be worse than minting one that claims none.
+
+## Session revocation is now reached, the refresh exchange re-decides membership, and the session store is bounded per family
+
+**Why this is one entry.** Three findings from the same security review turned out to share a single
+theme: an obligation that was documented in full and then not carried out, or a bound that was
+argued for and then not enforced on every path. Each is recorded here with what changed and what it
+costs, because in two of the three the *documentation* was already correct and only the code was
+not - which is the kind of gap that a reader of the contracts alone would never suspect.
+
+### The refresh exchange re-reads approval and lock-out
+
+**What it did.** `RefreshAsync` re-read the tenant, the account, its roles, its permission keys and
+its credential advisories, and rebuilt the caller snapshot from all of them - so a role change or a
+forced credential change took effect at the next exchange rather than at the next sign-in, exactly
+as intended. **Approval and lock-out were not among them**, because they live in the external
+membership store rather than on the account row, and nothing on that path consulted it.
+
+**The consequence.** A session whose account had since been locked by repeated wrong credentials, or
+whose approval an administrator had withdrawn, went on minting fresh access tokens for as long as the
+client kept exchanging - indefinitely, up to the family's absolute ceiling. The whole purpose of a
+short access token is that authority is re-decided at the exchange, and these two facts were the ones
+it never re-decided. The lock-out control in particular could be waited out by simply never signing
+in again.
+
+**What it does now.** The exchange reads the membership state and applies the sign-in gates to it: a
+locked account, an unapproved account that is not a host account, and an account whose credential
+record has gone are all refused. A state that refuses a sign-in must refuse a renewal, or the renewal
+becomes a way to hold a session the account could not otherwise obtain. The host-account exemption
+from approval is carried across unchanged, because a host account is created by the installer and is
+approved into no tenant.
+
+**And the refusal ends every session, not just the exchange.** Rotation has already consumed the
+presented value and minted its successor by the time the gate is reached, so refusing alone would
+leave that successor live in the store belonging to nobody, and would leave an account that may no
+longer sign in still holding the means to keep trying. The refusal therefore revokes every refresh
+token the account holds. **Operational consequence:** locking an account now ends its sessions at the
+next exchange rather than only preventing new sign-ins, and the account's holder must sign in again
+once unlocked.
+
+### The three operations that must end an account's sessions now do
+
+**What it did.** `ITokenService` states in terms that "every service operation that ends an account's
+right to sign in, or that changes the credential by which it does so, must call this member as part of
+the same request", and names four: a self-service credential change, an administrative reset, the
+withdrawal of an approval and the deletion of an account. `IUserService` restates that obligation on
+each of the three members concerned. **The implementing service did not take a dependency on the token
+contract at all**, so every one of those statements was unhonoured - the obligation was documented
+three times and discharged nowhere.
+
+**The consequence.** An administrative reset performed because a credential was believed compromised
+left every session opened under the old credential exchangeable. Withdrawing an approval took effect
+for new sign-ins only. Deleting an account left refresh tokens that were still exchanged for access
+tokens asserting an identity that no longer existed - and, the account row being gone, nothing
+remained for an administrator to find or disable.
+
+**What it does now.** The service takes the session-revocation dependency and calls it on the
+credential change (both operations), on the withdrawal of an approval, and on deletion. Granting an
+approval revokes nothing, because it takes nothing away, and requiring a future credential change
+revokes nothing either - it replaces no credential and the standing requirement travels on every
+subsequent exchange, so the client is told to act on it without being signed out first.
+
+**The ordering is the substance, not the call.** The revocation is attempted BEFORE the state change
+in all three cases, and its failure abandons the operation. Revoking first and then failing costs a
+holder an inconvenience it can undo by signing in again; changing the state first and then failing to
+revoke would report the operation as failed while the credential had in fact been replaced, or the
+approval withdrawn, with every session still live - a falsehood to the caller as well as the exposure
+the revocation exists to close. On deletion the revocation is the first destructive step for the same
+reason: nothing has been removed yet, so a refusal leaves the account whole rather than half
+dismantled.
+
+**One documented claim was corrected rather than implemented.** `IUserService` said deletion revokes
+"within the same unit of work as the rest of the cascade". The session store is not a relational
+participant, so no transaction spans it and the cascade together, and an implementation claiming
+otherwise would be describing a guarantee it does not have. The contract now promises what is
+achievable and required - ordering - and says why the stronger promise is not available.
+
+**Operational consequence.** These three operations can now fail with a dependency error when the
+session store cannot be written, where previously they always succeeded. That is the intended trade:
+the alternative is an administrator being told an account has been reset, unapproved or deleted while
+its sessions continue.
+
+### The credential removal during cleanup is now verified
+
+Two cleanup paths issued the external credential deletion and discarded its answer, so a membership
+store that refused looked exactly like one that complied. On account deletion the account row was then
+removed anyway, leaving a credential no administrative screen can reach and no later deletion will
+revisit, while the operation reported success. On the compensating reversal of a failed portal
+creation the same discard could commit a partial reversal.
+
+Both now read the answer and abandon rather than commit. In both cases nothing has been committed at
+the point of refusal, so the account - or the newly created portal, its alias, its roles and its
+administrator - is left whole for an operator to inspect, which is exactly what the compensation
+already promised in its own documentation and did not deliver.
+
+### The session store is bounded per family, not only in total
+
+**What it did.** The store refused to issue beyond a hundred thousand entries, and rotation
+deliberately never refused on capacity - correctly, because refusing to rotate destroys a live
+session where refusing to issue merely declines a new one. It was argued from there that rotation
+could not grow the store without limit, because rotation creates no family and cannot be driven
+without a valid token.
+
+**Why that did not hold, in numbers.** Rotation retains the entry it consumed, for replay detection,
+and adds a replacement beside it - so a family grows by one entry per exchange, and pruning only
+removes a family once its absolute ceiling has passed. Under the shipped configuration a client
+rotates when its sixty-minute access token lapses and the ceiling is thirty days, giving about **720**
+entries for one continuously rotating session. A hundred thousand divided by 720 is about **139**:
+fewer than a hundred and forty long-lived sessions filled the store, after which **every new sign-in
+in the installation was refused**. A single authenticated account rotating in a loop reached the same
+state far faster. The earlier claim that a hundred thousand entries is "far beyond what any single
+process serves within one absolute ceiling" was simply wrong for the configuration this solution
+ships.
+
+**What it does now.** A family retains at most **eight** generations - its live one plus its retained
+history. Older history is forgotten as rotation moves past it, oldest first, so a family costs at most
+that many entries whatever its cadence and however long it lives, and the live generation is never a
+candidate for removal because the test is whether an entry can still be redeemed, not where it sits.
+
+Two bounds for this one defect were authored independently: a retention window of eight generations and
+a looser cap of sixty-four **spent** generations. The delivered tree carries the eight-generation window
+alone. The two used the identical removability test and the tighter one always bound first, so the
+looser could never remove anything - and two retention rules that can disagree about the same family are
+a liability rather than redundancy. The arithmetic above is what justified either of them and is
+unchanged; the figure the store enforces is eight.
+
+**Rotation may refuse on the store-wide cap, and the ordering is what makes that safe.** The per-family
+trim runs BEFORE capacity is judged and before the presented token is consumed, so a session is never
+refused for space it was about to release, and a refusal leaves the presented token unconsumed and the
+family untouched - a retryable condition rather than a lost session. With the window in force rotation
+reaches a steady state in which it adds nothing at all, so the cap can effectively only be met through
+genuine exhaustion by new families, which issuing already governs.
+
+**The cost, stated plainly.** A replay of a forgotten generation classifies as unrecognised rather
+than as already-used, so it is still refused but no longer escalates to revoking the account's
+sessions. That escalation is a leak signal rather than a gate: the forgotten value is spent and
+unusable either way. Sixty-four generations is more than two and a half days of history at the shipped
+hourly cadence and proportionally longer for a client that rotates less eagerly, so the signal is kept
+for the case that matters - a copied token replayed while it is still recent. Trimming oldest-first is
+what preserves that. The accepted trade is that this reduction is far smaller than the alternative,
+which was an installation that could be talked out of accepting any new sign-in at all.
+
+## Correction: the lazy credential upgrade was claimed in nine places, and one of them was the code
+
+**What this entry corrects.** An entry earlier in this file already establishes that the credential
+migration path is an administrative reset and that no legacy credential is upgraded on sign-in. That
+correction was right, and it was incomplete: it corrected this file while **nine other places went on
+saying the opposite**. A security review of the authorisation checkpoint found them, and this entry
+records the sweep so that the claim's full reach is on record rather than only its conclusion.
+
+**Why a documentation defect is worth an entry of its own.** Nothing about this claim breaks a build,
+fails a test or throws at runtime. Its entire cost falls on whoever reads it: an operator who believes
+pre-existing accounts migrate themselves will not schedule the resets that every one of them requires,
+and will discover the gap when their users cannot sign in - after cut-over, with no diagnostic pointing
+at the cause, because nothing malfunctioned. That is precisely the class of defect the migration
+discipline exists to prevent, which is why an untrue sentence about behaviour is treated here as a
+finding rather than as a wording preference.
+
+**The eight prose sites, all corrected.** The repository contract's header note and its
+credential-write member; the hashing abstraction's header note and the return documentation of its
+upgrade predicate; the account entity's credential-migration paragraph; the authentication contract's
+"credential-migration obligation" paragraph and its own inline annotation; the account-administration
+contract's statement that a "re-hash-on-first-sign-in half" of the migration lives elsewhere; the
+sign-in response contract; the account mapping boundary note; and the account service's header note.
+Each now states the same two facts: an administrative reset is the whole path by which a pre-existing
+credential becomes usable, and the re-hash a successful sign-in performs is a **work-factor upgrade**
+on a value the current scheme itself produced.
+
+Three files were found already stating it correctly and were left alone - the hasher implementation,
+the request contract for a credential change, and its validator - and their wording was used as the
+reference so that ten files now say one thing rather than nine saying one and three another. Where a
+correction replaces a claim, it says so explicitly instead of quietly reading as though the false
+version had never been there: a future author who re-derives the plausible-sounding intention will find
+it named and refuted rather than absent.
+
+**The ninth place was executable, and it was the substantive fix.** The hasher's upgrade predicate
+answered **"yes, replace this"** for any value it could not parse - which is every value held under the
+legacy reversible scheme. The earlier defence was a reachability argument: the predicate's one caller
+consults it only after a successful verification, verification rejects exactly the values that reach
+those handlers, so the answer could never actually be acted upon for a legacy row. The argument is
+correct. The answer was still wrong, for two reasons.
+
+- It made the member assert something unperformable. "Replace this" is an instruction to pair the
+  answer with a successful verification and re-hash the plaintext that verification yields; for a
+  legacy value that verification can never occur, so the instruction can never be carried out.
+  Depending on nobody consulting a public member on a domain abstraction outside its one intended
+  pairing is a property of future authors' discipline, not of the code.
+- It left the false claim asserted in the one place a reader trusts above any comment. Correcting
+  eight prose sites while the code went on answering "upgrade this legacy value" would have fixed the
+  description and kept the defect.
+
+The predicate now answers **false** for any value it cannot parse, so it reports one thing only: this
+scheme produced this value and could now produce a stronger one. Its handled exception set already
+mirrored the verifier's; the two now agree on the *answer* as well, which is a stronger and simpler
+guarantee - a value this scheme did not produce is neither verifiable nor upgradable.
+
+**Operational consequence: none.** An account whose stored value cannot be parsed could not sign in
+before this change and cannot now, because verification rejects it either way, so it required an
+administrative reset before and requires one still. What changed is that the system no longer describes
+that account as one it is about to upgrade.
+
+**A test was corrected rather than preserved.** A unit test asserted that a legacy value reports as
+needing regeneration, and its conformance double was written to match. Both encoded the defect rather
+than a guarantee, so both were changed; the test now carries the reasoning, so the assertion cannot be
+flipped back without confronting it. A new integration suite exercises the real registered hasher
+through the public domain contract and pins the whole boundary in executable form: a legacy value
+neither verifies nor reports as upgradable; a value this scheme produced at a superseded cost both
+verifies and reports as upgradable; a current value verifies and reports as needing nothing; and the
+enumeration decoy is a current-cost value that matches nothing and is never reported as upgradable.
+Prose could not have prevented this claim's return. Those five assertions can.
+
+## A third-party module's exception message no longer reaches an HTTP response
+
+**Legacy behaviour.** The legacy platform bound a module's companion class late, from a free-text name
+held in a database column, and let whatever that code threw propagate into the page pipeline. What a
+visitor saw depended on the deployment's error configuration rather than on any decision this code
+made.
+
+**What the target did, and why it looked reasonable.** The module-lifecycle factory catches a module
+fault and reports it as a failed outcome, so that one module's failure cannot end an operation
+spanning several. A private helper produced the failure's message, and it returned the module's own
+`Exception.Message`. Its documentation gave the reason plainly: the underlying explanation must
+survive so that the caller can log something actionable. The premise is sound. The destination was
+not: the API edge publishes a failed outcome's message verbatim as the RFC 7807 `detail`, so the
+"caller" that received the module's text was an HTTP client rather than a log.
+
+**Why that is a disclosure and not merely untidy.** A module is third-party code and its message may
+quote anything it had in hand - a connection string, a file-system path, the SQL it was executing, a
+configuration value, or the content it was asked to import. None of that can be recognised from the
+exception's type, so no filter applied to the message could be trusted, and the same text bypassed
+the deliberate redaction that the global exception handler applies to every exception that escapes the
+pipeline. One code path was publishing what the rest of the application takes care never to publish.
+
+**Target behaviour.** Each of the four module operations now returns fixed authored text alongside the
+stable failure code it already carried, so a client still learns which operation failed and can still
+branch on the code, and learns nothing about the module's internals. The diagnosis is written to the
+log instead, which is where the original premise is actually satisfied - and it is written there in
+the same redacted form the API edge uses for its own diagnostics: the exception's type chain and stack
+traces, with **every message dropped and the exception object deliberately not handed to the logger**,
+because passing it would reinstate the messages through the logging framework's own formatting. The
+log entry additionally carries the operation, the registered controller name and the module instance,
+which is more than the returned message ever conveyed. The chain walk is depth-bounded so that a
+cyclic or deeply nested failure cannot write an unbounded entry.
+
+**And a backstop at the edge, because fixing the instance does not close the class.** Any future
+author may reach for the same premise, and nothing about a `string` announces where it came from. The
+edge therefore refuses to publish a failed outcome's message when it does not have the shape of an
+authored explanation: multi-line, which is what a stack trace or an aggregated failure looks like, or
+longer than any explanation this solution authors. Neither test can be satisfied by a legitimate
+message - every authored detail here is one short single-line sentence - so the guard cannot mask a
+correct message, and an overlong one is replaced rather than truncated, because half an explanation
+with no indication that anything was removed is worse than a stand-in that names the correlation
+identifier.
+
+It is deliberately **not** a general redactor: it cannot tell whether a short single-line message
+quotes something it should not, and presenting it as though it could would invite exactly the
+complacency that produced the finding. The rule remains that a failed outcome's message must be
+authored text.
+
+**What is pinned by tests.** That an authored explanation is published unchanged, so the guard has not
+become a redactor of legitimate messages; that a multi-line message and an overlong one are both
+replaced; and - the invariant that matters most - that **no member of the factory which turns an
+exception into text reproduces that exception's message**, inner messages included. That last
+assertion was first written as "no member with the shape `Exception -> string` may exist", which was
+the wrong invariant: it failed against the redacting describer that legitimately replaced the leaking
+one, and would have forbidden the fix. Forbidding the behaviour rather than the shape permits any
+number of redacting describers, under any name, and admits no leaking one.
+
+## The write surface is bounded by what the store can hold, and four bound requests gained the validator they never had
+
+Every request contract treated its CLR type as a sufficient bound, although the domains underneath are
+narrower in three separate ways: a page offset is multiplied into a 32-bit integer, a fee lands in a
+currency column whose range is far smaller than `decimal`, and an instant lands in a calendar that begins
+in 1753 rather than in the year one. The consequence was uniform and wrong in the same way each time - a
+submission the type accepted reached the provider or the arithmetic, failed there, and surfaced as a
+server fault naming no field, when the caller needed to be told which value it could not use.
+
+**Four requests were bound by an endpoint while carrying no validator whatsoever**, so every field on them
+was unbounded end to end: `UpdateRoleRequest`, `RoleAssignmentRequest`, `UpdateTabRequest` and the module
+settings payload. Their validators now exist and are picked up by the assembly scan with no registration
+edit, which the architectural test asserting the exact registered set now records by name.
+
+**Two kinds of bound, and they are not interchangeable.** A *representability* bound says what the column
+can physically hold; a *business* bound says what the application permits. The two are stated separately
+throughout, and where a business bound was measured absent from the legacy screen it stays absent. The
+role fees gained an upper bound that is the currency column's own and emphatically not a price ceiling -
+the legacy screen declared none, and inventing one would refuse a fee some installation legitimately
+charges. The portal fee already carried a nineteen-digit precision rule, which turns out to leave a narrow
+band open: fifteen leading digits of any magnitude satisfy the digit count, so an amount between the
+currency ceiling and a sixteen-digit integer part passed the rule and still overflowed the column.
+
+**The upper date bound sits at the last instant of 9999-12-31, not at that day's midnight, and that detail
+is load-bearing.** The literal `9999-12-31` is an ordinary stored value meaning "no expiry" that a legacy
+reader expects verbatim, distinct from the sentinel minimum date which means absence. A bound stated at
+midnight would have refused the very value the bound exists to protect - the rule would have broken the
+contract it was added to defend. A test asserts the perpetual value is admitted for exactly this reason.
+
+**Which date pairs are ordered is decided by MEASUREMENT, and an earlier revision of this entry had two
+of the three the wrong way round.** The rule is uniform: a pair is compared here if and only if the legacy
+screen compared it.
+
+- **Role membership dates ARE compared.** `Website/admin/Security/securityroles.ascx` line 47 declares
+  `valDates` with `operator="GreaterThan"`, `controltovalidate="txtExpiryDate"` and
+  `controltocompare="txtEffectiveDate"`, message "Expiry Date must be Greater than Effective Date". The
+  comparison is strictly greater, so an equal pair is refused too, and it fires only when both dates are
+  present, which is the ASP.NET comparison validator's own behaviour. An earlier revision recorded that
+  this pair is *not* ordered, on the stated ground that the screen declared no ordering validator. That
+  ground was false, and the reason it was believed is worth recording so it is not believed again: **the
+  markup writes its tags in lower case**, so a case-sensitive search for `CompareValidator` finds nothing
+  while `comparevalidator` finds three.
+- **Module term dates are NOT compared.** The module screen's validators on both boxes were format checks
+  alone, so an ordering rule there would be a new restriction on callers.
+- **Page term dates are NOT compared either.** `Website/admin/Tabs/managetabs.ascx` declares the two date
+  boxes with a rendered width and no `ControlToCompare` anywhere, so a reversed pair was a submission the
+  legacy screen accepted and stored. An earlier revision ordered them, reasoning that a page whose window
+  never opens is hidden permanently. That consequence is real and is a **legacy defect**, which the
+  migration discipline requires be recorded rather than corrected: identical inputs must produce identical
+  outcomes. Removing the rule also removes an asymmetry that was never justified — the same kind of value
+  is now judged the same way on every surface.
+
+**A net-new ceiling on the page refresh interval was likewise withdrawn.** It was proposed at one day and
+was self-described as net-new rather than measured; the column is a plain integer and the page screen
+declares no validator over the field, so no legacy submission was ever refused on it. The tests that
+pinned both withdrawn rules were retargeted rather than deleted, so each still asserts the measured half
+of its finding.
+
+**The user reference on a membership assignment IS bounded, to strictly positive values.** `dbo.Users.UserID`
+is `IDENTITY (1, 1)`, so no legitimate identifier is zero or negative, and the legacy screen expressed the
+same requirement through a drop-down that could only offer real users - an affordance a JSON caller does
+not have. The bound is specific to that member and must not be generalised: `dbo.Portals.PortalID` is
+`IDENTITY (-1, 1)` and `dbo.Roles.RoleID` is `IDENTITY (0, 1)`, so "at or below zero means absent" is wrong
+for a sibling identifier on the same route. Whether the nominated user exists remains the service's
+question.
+
+**The date arithmetic clamps instead of failing, and the weekly case was the worst of the four.** The
+offsets that derive a membership expiry called the framework's date arithmetic directly with a stored
+period nothing had ever bounded. Three frequencies raised an out-of-range fault. The weekly one multiplied
+by seven in unchecked 32-bit arithmetic, so a large period **wrapped to a negative day count and moved the
+expiry silently into the past** - an assignment that lapsed the instant it was granted, with no error
+anywhere. All four now clamp to the perpetual expiry, which is coherent rather than arbitrary: that value
+is already this domain's encoding of "no expiry" and is what a one-off term stores, so a term outrunning
+the calendar is recorded as the perpetual term it effectively is, in a form a legacy reader recognises.
+The yearly offset is applied as twelve months rather than through year addition so both calendar
+frequencies share one range check, and a test pins the two as equivalent.
+
+**A blank page name is now refused, and that RESTORES the legacy behaviour rather than narrowing it.** An
+earlier revision accepted an empty name, reasoning that it was "the legacy no-text value arriving
+explicitly" and citing the screen's required-field validator as authority. That inverted what the cited
+validator does: it declares no initial value, so its initial value is the empty string and it fails
+precisely when the trimmed control value equals that. The empty string was the one value the screen
+refused, and because the comparison follows a trim, a name of spaces was refused with it. Accepting a
+blank name was also actively harmful, which is why it is corrected rather than annotated: a page's stored
+path is composed from its name, so every blank-named page under one parent composes the same path and
+becomes indistinguishable to anything addressing a page by path.
+
+**The page hierarchy walk is iterative, and the recursion it replaces was a denial-of-service vector.** It
+descended once per level of a hierarchy whose depth is set by stored data, and a portal administrator
+lengthens that chain one ordinary create call at a time. A stack overflow cannot be caught: the process
+terminates, taking every other tenant's in-flight request with it. The visitation order is preserved
+exactly, because it is not cosmetic - two running counters assign every page's order in visitation
+sequence, so any reordering silently renumbers the whole portal. Children are pushed in reverse so they
+pop in sorted order, which reproduces the identical depth-first pre-order the nested calls produced, and a
+test asserts the full path sequence over a *branched* hierarchy, since a chain cannot tell depth-first and
+breadth-first apart. The depth limit that remains is read from the column rather than chosen: the path
+column holds 255 characters and every level contributes at least the two-character separator, so 127
+levels is the deepest hierarchy whose path is storable at all. A limit set there refuses nothing that
+could ever have been written.
+
+**The settings payload gained the dimension it was missing.** Every setting name and value was already
+bounded individually, but nothing bounded the *number* of entries, and the two limits multiply: a body
+well inside the request size limit could carry tens of thousands of short settings, each becoming a
+tracked entity and a row in one transaction. A per-scope bound of 250 is more than three times the
+seventy-two distinct setting names that exist across *every* bundled module in the whole legacy
+application, and a lower aggregate bound of 400 is what actually bounds one transaction, since the
+per-scope bounds alone do not. An explicitly null map is now refused rather than thrown on - both members
+are non-nullable reference types carrying an initialiser, which makes null look unreachable, but an
+initialiser only runs when the deserialiser does not assign, and a body carrying `null` assigns over it.
+
+**The shared icon rule exists because three paths disagreed.** The containment check was private to the
+role create validator, so the role update and the page update accepted rooted and parent-traversing
+references that the create path refused, and the weakest path defined the application's actual behaviour.
+It now lives in one place and is applied by all three. It is not validation *of* the reference: both
+contracts state that an icon value is opaque and may be a raw `fileid=NNN` token stored verbatim, and a
+test pins that the token is admitted unchanged. A link target is deliberately left unconstrained in shape
+for the same reason - it legitimately takes three unrelated forms, and a containment rule would refuse
+every absolute URL, since all of them carry a scheme separator. What a link target does refuse is a
+control character, which no shape of the value can contain and which is the vehicle for splitting a
+response header should the stored value ever be emitted into one.
+
+**A regression this work introduced and then removed.** The range rules were first written over the
+unwrapped optional value - `request.ServiceFee!.Value` - which made the framework report the failing field
+as `ServiceFee.Value`, so the key in the `errors` payload stopped matching the key the caller had sent.
+The existing wording tests caught it. The rules are now stated over the optional member itself, against
+overloads that treat absence as storable, and every range test additionally asserts the reported field
+name so the regression cannot return quietly.
+
+## Two named advisories are now fixed rather than accepted, and the acceptance that remains is bounded by what the pinned framework majors allow
+
+This supersedes the .NET half of *Dependency feed trust, package source mapping, and why
+advisories are not build gates* above. That section argued both ecosystems the same way -
+that promoting an advisory to a build error would stop delivery on a transitive package
+that may not even be reachable. The argument still holds for the packages listed at the end
+of this section, but it was applied too widely: two advisories had a real remedy inside the
+pinned major versions, and reachability is not the only question worth asking. Where a fix
+exists and costs nothing, the fix is taken. Advisory review remains a human activity and
+neither `npm audit` nor the NuGet audit is wired into a build; that part is unchanged.
+
+**The native SQLite library is pinned, and the pin contradicts a warning this repository
+wrote itself.** CVE-2025-6965 covers `SQLitePCLRaw.lib.e_sqlite3` at every version up to
+and including 2.1.11. `Microsoft.EntityFrameworkCore.Sqlite` 8.0.29 selects 2.1.6, so the
+version the ORM asks for is vulnerable and there is no patched release anywhere on the line
+it selects - 2.1.12 is the first unaffected 2.1.x. The integration test project therefore
+pins `SQLitePCLRaw.bundle_e_sqlite3` to 2.1.12. The bundle is pinned rather than
+`lib.e_sqlite3` alone so that core, provider and lib all move together and the native family
+cannot skew across versions. This is the same manoeuvre the approved dependency set already
+performs for `Microsoft.Data.SqlClient` 5.2.3, and for the same reason: a transitive package
+resolves to a version with a known problem, and a direct reference is the only mechanism
+that moves it.
+
+That project's own comment previously forbade exactly this pin, on the grounds that a direct
+`PackageReference` wins version resolution outright and so moves the native provider off the
+line the EF Core 8.0.29 band was tested against. **That objection is correct and the cost is
+accepted deliberately**, because the risk it describes has no path to materialise here: no
+`UseSqlite` call exists anywhere in the repository, so the native `e_sqlite3` asset is never
+loaded and a load or behaviour regression cannot reach a test. The comment has been rewritten
+to say this rather than to forbid it, and it carries the condition attached - if a fixture
+ever does adopt SQLite, the pin must be re-validated against that fixture, and aligning the
+EF Core version is still preferred over deepening the pin. The precedent does not generalise;
+it rests entirely on the provider being provably unexercised.
+
+**A stale claim in the same comment is corrected.** It described the in-memory and SQLite
+providers as the default test stores, chosen so the suite runs without a container runtime.
+That is no longer true and has not been for some time: every run uses a real SQL Server,
+either the instance named by the server-connection environment variable or a container the
+fixture starts, and the fixture documents three paths under test that a non-relational
+provider cannot execute - a set-based delete, an interpolated-SQL query root, and the
+membership availability probe that fails closed unless the provider is SQL Server and the
+external `aspnet_*` objects exist. Account creation answering 201 is an acceptance criterion
+and cannot pass without them. Both provider references are retained because the approved
+dependency set includes them, not because anything uses them, and the comment now says so.
+
+**The critical archive advisory is resolved by five overrides, chosen against a rule rather
+than by taking the newest of everything.** An override is only taken where the candidate
+version satisfies every *live range* declared against that package - an exact pin being
+precisely what an override exists to displace, but a range being a real constraint that a
+second consumer will enforce at runtime. On that test `postcss`, `piscina`, `vite` and
+`@babel/core` are all safe: every range declared against them admits the patched version,
+and only the build tooling's exact pins had to give way.
+
+`tar` is the one deliberate exception, and it is the advisory the review actually named.
+Version 6.x is abandoned at 6.2.1 with no patched 6.x in existence, so nothing inside the
+declared `^6.1.11` range can clear the finding; only 7.5.21 and later are unaffected. Three
+facts make the major move safe rather than hopeful: the upstream registry client has itself
+moved to `tar` 7, two other consumers in this very dependency tree were already resolving
+7.5.22 successfully alongside the vulnerable 6.2.1 copy, and the consumer holding the old
+range is the package-fetching client used by scaffolding commands, not by the production
+build or the test run. Both of those were then executed to confirm it.
+
+**Two further candidates were rejected, and the reason is worth recording because the
+temptation to take them is obvious.** `esbuild` 0.28.1 clears its advisory, but the bundler
+declares `^0.25.0`, which for a `0.x` version admits nothing at or above 0.26. Likewise
+`http-proxy-middleware` 3.0.7 clears its advisory, but the development server declares
+`^2.0.9`, and two majors of that package legitimately coexist in the tree today. A blanket
+override of either would force an incompatible major onto a second consumer's live range -
+trading a build-chain advisory for a broken build, which is a worse outcome than the advisory.
+They are left alone.
+
+**What remains, and the bound on accepting it.** The critical finding is gone and the total
+falls from 29 advisories to 24 - twelve high, eleven moderate, one low. Every one of the
+remainder is a build-time or scaffolding dependency that never reaches a browser bundle, and
+every one of them reports its only remedy as a framework major bump that the pinned Angular
+and Node versions forbid, or has no published remedy at all. The framework's own advisories
+keep the unreachability argument recorded in the earlier section: this workspace is built
+without server-side rendering, the server platform package is not installed, and no hydration
+provider appears anywhere in the source. The standing conditions on that acceptance are
+unchanged and now explicit - it must be re-decided whenever the framework major moves, and
+whenever a same-major patched version appears for any package listed above, because the rule
+that admitted these five overrides will admit those too. Until then the mitigations are the
+ones the review asked for: build on isolated runners, and never let an untrusted archive or
+untrusted input reach a build step.
+
+**Annotated in code at.** `backend/tests/DnnMigration.IntegrationTests/DnnMigration.IntegrationTests.csproj`,
+`frontend/package.json`.
+
+
+## Completion: opening the view policies was only half of reaching an anonymous grant - the requirement also had to be able to name the tenant
+
+An earlier section recorded that the two view policies deliberately stop demanding an authenticated
+caller, so that the migrated grants to the "All Users" and "Unauthenticated Users" pseudo-roles could
+be evaluated instead of being refused before the permission handler was consulted. That change was
+necessary and correct, and it was not sufficient. Running the finished API against a real database
+found an anonymous caller still refused on a page carrying an explicit grant to the unauthenticated
+pseudo-role, which is precisely the case the change existed to enable.
+
+**Why it still failed.** The permission handler has to know which tenant it is deciding before it can
+ask whether a grant reaches the caller. It took that tenant from the route, falling back to the
+caller's token. The page resource is addressed by page identifier alone - `tabs/{tabId}` - so it names
+no tenant, and a caller with no token carries none either. Both sources were therefore empty, the
+handler abandoned the requirement unevaluated, and the framework turned the unmet requirement into a
+challenge. The response was a 401 that looked exactly like a considered denial and was nothing of the
+kind: no grant was ever consulted. A grant that cannot be evaluated is not a grant, which is the same
+observation that motivated opening the policies in the first place - it had simply moved one step
+along, from the policy to the tenant lookup.
+
+**The fix.** The tenant now falls back to the host name the caller requested, resolved through the
+same portal-context holder the alias middleware and the administration policies already use. This
+restores the legacy behaviour, where the requested alias identified the tenant for every visitor
+including the ones with no account. The fallback is reachable only when neither the route nor the
+token names a tenant, so it cannot widen a request that already carries one, and it decides nothing by
+itself - the evaluator still has to find a grant that reaches the caller.
+
+**How the behaviour is pinned, and why one test would not have been enough.** Three cases are now
+asserted against the real pipeline, because any one of them alone is passable by a wrong
+implementation. With a grant to the unauthenticated pseudo-role an anonymous caller is served; with
+that same single grant an authenticated member is still refused; and with no grant at all the
+anonymous caller is refused again. The middle case is the one that matters most - without it, a
+fallback that had simply opened the route to everybody would have satisfied the first test while
+destroying the distinction the pseudo-role exists to draw. The third confirms the fallback grants
+nothing on its own.
+
+**Worth recording about how this was found.** It was not found by the compiler, the analysers, or the
+1,986 tests that were green at the time; it was found by driving the running API against a seeded
+database and checking a claim the test suite asserted only in its negative form. The suite covered
+"anonymous with no grant is refused" and never covered "anonymous with a grant is served", so the
+half of the property that the fix existed to deliver had no test at all. The gap is closed above.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Authorization/PermissionAuthorizationHandler.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Api/TabApiTests.cs`.
+
+
+## Correction: `NeedsRehash` answers "no" for a stored value it cannot parse
+
+**What this entry corrects.** The credential contract's replacement signal previously answered "yes,
+replace it" for a stored value it could not parse, and defended the answer on reachability: a caller
+arrives there only after verification has succeeded, verification rejects exactly the values that land
+in the malformed-value handlers, so no legacy row could ever be accompanied by an accepted credential
+and the answer was unreachable in practice. The reachability argument is correct and was never the
+problem. The **answer** was.
+
+**Why the answer was wrong.** It made the member say something untrue about a legacy row. "Replace it"
+promises an upgrade that cannot be performed: replacing a stored value requires the plaintext, the
+plaintext arrives only with a successful verification, and a value held under the legacy reversible
+scheme can never be verified here. Depending on nobody consulting a public member outside its one
+intended pairing is a property of future authors' discipline rather than of the code, and the member is
+declared on a domain abstraction any caller may reach. It was also the same conflation that had spread
+through eight contracts in prose — that a legacy credential is upgraded lazily rather than reset
+administratively — so correcting the prose while leaving the code asserting it would have left the
+misleading claim in the one place a reader trusts most.
+
+**What it does now, and what that costs.** An unparseable stored value answers "no". It costs nothing
+operationally: such an account cannot sign in either way, because verification rejects it, so it
+requires an administrative reset whatever this member says. The handled set deliberately mirrors the
+verifier's and now **agrees with it on the answer**, so the two members can never disagree about which
+stored values this implementation understands.
+
+**Annotated in code at.** `backend/src/DnnMigration.Domain/Abstractions/Services/IPasswordHasher.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs`.
+
+## The icon-containment rule has exactly one implementation, reached by three names
+
+**What this records.** The check that keeps a submitted icon reference inside the portal's own folder
+was hoisted out of a private method twice, independently — once for the two role write paths and once
+for the page update. Both hoists carried byte-identical character tests and identical message text, and
+the delivered tree keeps **one** implementation, `Validation/IconReferenceRules.cs`. The role-path name
+survives as a delegating member and its message is aliased rather than restated.
+
+**Why one and not two.** The property the shared rule exists to provide is that every path judges a
+reference the *same* way — that is the whole finding, since while the check was private to the role
+create validator the role update and the page update accepted references the create path refused, and
+the weakest path defined the application's actual behaviour. Two copies would have made that property
+hold by coincidence rather than by construction, and would have let the rule be tightened on one
+surface and missed on another. A test asserts the identity across all three paths.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Validation/IconReferenceRules.cs`,
+`backend/src/DnnMigration.Application/Validation/RoleTermsRules.cs`.
+
+## A single alias may be addressed with or without its tenant, and the absence is a mode
+
+**Legacy behaviour.** `PortalAliasController.vb:L63` read an alias by its surrogate key alone, and the
+administration screen that used it was reachable only by a host account.
+
+**The defect that was fixed, and the one that fixing it introduced.** `dbo.PortalAlias.PortalAliasID`
+is `IDENTITY (1, 1)`, so it is unique across the installation and therefore **guessable across
+tenants**: a read or write keyed by it alone let a caller authorised over one portal reach any alias in
+the installation by counting upwards, and renaming an alias re-points tenant resolution itself. The
+owning tenant is therefore supplied by the route and compared against the stored row before anything is
+reported or written, and a mismatch reads as not-found rather than as a refusal so the member cannot
+become an oracle for which keys exist elsewhere. Making the tenant **mandatory**, however, broke the
+three single-alias routes that deliberately name no tenant because they are reached only by a host
+account, whose authority is installation-wide. Two of the three still compiled while binding the tenant
+to the model binder's default of **zero** — and zero is a real portal, because `dbo.Portals.PortalID` is
+`IDENTITY (-1, 1)` — so alias update and delete would have reported not-found for every alias outside
+that one portal, on the one surface that exists to repair a broken binding.
+
+**What it does now.** The tenant is optional on those three members. Supplying it scopes the operation
+and is what every portal-nested route does; omitting it declares installation-wide authority, which the
+host-administrator policy establishes before the member is reached. The comparison is applied whenever a
+tenant is named, so the cross-tenant protection is in force on exactly the routes where the
+vulnerability existed. This is the same idiom the flat alias listing already used for the same reason.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Abstractions/IPortalService.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`,
+`backend/src/DnnMigration.Api/Controllers/PortalAliasesController.cs`.

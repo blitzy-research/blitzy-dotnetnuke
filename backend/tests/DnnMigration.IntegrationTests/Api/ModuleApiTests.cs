@@ -90,12 +90,14 @@ public sealed class ModuleApiTests
         // present proves the configuration writes it whatever its value, and therefore that -1 survives too.
         body.Should().Contain("\"defaultCacheTime\"");
 
-        IReadOnlyList<ModuleDefinitionDto>? definitions =
-            JsonSerializer.Deserialize<IReadOnlyList<ModuleDefinitionDto>>(body, ApiTestFixture.Json);
+        CollectionEnvelope<ModuleDefinitionDto>? envelope =
+            JsonSerializer.Deserialize<CollectionEnvelope<ModuleDefinitionDto>>(body, ApiTestFixture.Json);
 
-        definitions.Should().NotBeNull();
+        envelope.Should().NotBeNull();
 
-        ModuleDefinitionDto definition = definitions!
+        IReadOnlyList<ModuleDefinitionDto> definitions = envelope!.Data;
+
+        ModuleDefinitionDto definition = definitions
             .Should().ContainSingle(item => item.ModuleDefId == _fixture.Seed.ModuleDefinitionId)
             .Subject;
 
@@ -146,6 +148,124 @@ public sealed class ModuleApiTests
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>One definition is readable by its own identifier.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Restores the legacy per-definition read. The legacy member answered from the whole installation; this
+    /// address answers within the tenant the request host resolves to, which is the deliberate narrowing the
+    /// contract records.
+    /// </remarks>
+    [Fact]
+    public async Task GetModuleDefinition_ByIdentifier_ReturnsOkWithTheSeededDefinition()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/module-definitions/{_fixture.Seed.ModuleDefinitionId.ToString(CultureInfo.InvariantCulture)}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Read through the ENVELOPE, which is what every payload-bearing success in this API publishes. An
+        // earlier revision read the bare payload here and silently succeeded against defaults, because
+        // deserialising an envelope as its own payload type yields an object with every member unset.
+        ModuleDefinitionDto? definition = await response.Content
+            .ReadEnvelopeAsync<ModuleDefinitionDto>();
+
+        definition.Should().NotBeNull();
+        definition!.ModuleDefId.Should().Be(_fixture.Seed.ModuleDefinitionId);
+        definition.FriendlyName.Should().Be(IntegrationSeed.ModuleDefinitionFriendlyName);
+        definition.DesktopModuleId.Should().Be(_fixture.Seed.DesktopModuleId);
+        definition.ModuleName.Should().Be(IntegrationSeed.DesktopModuleName);
+    }
+
+    /// <summary>A definition identifier naming nothing answers <c>404 Not Found</c>.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A definition the tenant is not entitled to instantiate answers the same way, and that is deliberate:
+    /// a caller must not be able to tell "no such definition" from "not yours", because the difference
+    /// between those two answers is itself a fact about another tenant's installation.
+    /// </remarks>
+    [Fact]
+    public async Task GetModuleDefinition_WhenUnknown_ReturnsNotFound()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/module-definitions/987654", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>The definitions of one package are readable by the package identifier.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ReturnsOkWithThatPackagesDefinitions()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/module-definitions/desktop-modules/"
+                + _fixture.Seed.DesktopModuleId.ToString(CultureInfo.InvariantCulture),
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CollectionEnvelope<ModuleDefinitionDto>? envelope = await response.Content
+            .ReadFromJsonAsync<CollectionEnvelope<ModuleDefinitionDto>>(ApiTestFixture.Json);
+
+        envelope.Should().NotBeNull();
+        envelope!.Data.Should().NotBeNull();
+        envelope.Data!.Should().Contain(item => item.ModuleDefId == _fixture.Seed.ModuleDefinitionId);
+        envelope.Data!.Should().OnlyContain(item => item.DesktopModuleId == _fixture.Seed.DesktopModuleId);
+    }
+
+    /// <summary>
+    /// A package identifier naming nothing answers <c>200 OK</c> with an empty array, never <c>404</c>.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A catalogue read answers with a sequence, and an empty sequence is a legitimate answer. Reporting a
+    /// missing collection would make an empty result indistinguishable from a failure.
+    /// </remarks>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_WhenPackageUnknown_ReturnsOkWithAnEmptyArray()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/module-definitions/desktop-modules/987654", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CollectionEnvelope<ModuleDefinitionDto>? envelope = await response.Content
+            .ReadFromJsonAsync<CollectionEnvelope<ModuleDefinitionDto>>(ApiTestFixture.Json);
+
+        envelope.Should().NotBeNull();
+        envelope!.Data.Should().NotBeNull();
+        envelope.Data!.Should().BeEmpty();
+    }
+
+    /// <summary>Both new definition reads are administrator-only.</summary>
+    /// <param name="path">The address to attempt.</param>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("/api/v1/module-definitions/1")]
+    [InlineData("/api/v1/module-definitions/desktop-modules/1")]
+    public async Task ModuleDefinitionReads_AsMemberWithoutAdministratorRole_ReturnForbidden(string path)
+    {
+        using HttpClient client = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -268,10 +388,103 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>A create with a negative cache period is rejected by the request validator.</summary>
+    /// <summary>
+    /// A create by a caller holding no edit grant on the target page is REFUSED, and writes nothing. This is
+    /// the regression test for the missing authorisation on creation: the endpoint carried the bare
+    /// authentication requirement, the service verified only that the page belonged to the tenant, and the
+    /// commentary on both claimed a permission check that no code performed - so any authenticated caller
+    /// could place a module on any page of any tenant.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task CreateModule_WithNegativeCacheTime_ReturnsBadRequest()
+    public async Task CreateModule_WithoutPageEditGrant_ReturnsForbiddenAndWritesNothing()
+    {
+        using HttpClient client = MemberClient();
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        int written = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] IN "
+            + "(SELECT [ModuleID] FROM [dbo].[TabModules] WHERE [ModuleTitle] = @title);",
+            new Dictionary<string, object?> { ["title"] = request.ModuleTitle });
+
+        written.Should().Be(0, "a refused create must leave no module and no placement behind");
+    }
+
+    /// <summary>
+    /// The refusal above is a real permission evaluation rather than a blanket denial: an edit grant recorded
+    /// against the caller's role on the target page admits the same create, and a deny recorded beside it
+    /// closes it again. Proving the denial alone could not distinguish "the grant is consulted" from "creation
+    /// is simply closed to everybody but a host account".
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task CreateModule_WithPageEditGrant_IsAdmittedAndThenRefusedByADeny()
+    {
+        using HttpClient client = MemberClient();
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabEditPermissionId,
+            _fixture.Seed.RegisteredRoleId,
+            allowAccess: true);
+
+        try
+        {
+            using HttpResponseMessage admitted = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                NewModuleRequest(_fixture.Seed.ChildTabId),
+                ApiTestFixture.Json);
+
+            admitted.StatusCode.Should().Be(HttpStatusCode.Created);
+
+            await GrantTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId,
+                allowAccess: false);
+
+            using HttpResponseMessage refused = await client.PostAsJsonAsync(
+                ModulesRoute(_fixture.Seed.PortalId),
+                NewModuleRequest(_fixture.Seed.ChildTabId),
+                ApiTestFixture.Json);
+
+            refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        finally
+        {
+            // The grant is portal-wide state that other suites read, so it is removed however this ends.
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabEditPermissionId,
+                _fixture.Seed.RegisteredRoleId);
+        }
+    }
+
+    /// <summary>
+    /// A create with a negative cache period is accepted and the value is persisted exactly as submitted,
+    /// because no legacy rule and no schema constraint forbids it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: this test previously asserted <c>400 Bad Request</c>, and that assertion recorded an
+    /// invented rule rather than a ported one. <c>valCacheTime</c> (<c>modulesettings.ascx</c> L172) declared
+    /// <c>Operator="DataTypeCheck" Type="Integer"</c> and nothing else, the code-behind stored the parsed
+    /// value with no comparison (<c>ModuleSettings.ascx.vb</c> L349-L350), and the column is a plain
+    /// <c>int NOT NULL</c> with no check constraint anywhere in the eighty-eight-script chain. The whole
+    /// vertical is asserted - the validator no longer refuses, the projection no longer clamps, and the
+    /// stored column is read back through a fresh request - because the floor existed in two places and a
+    /// removal from only one of them would return 201 and still store a rewritten value.
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WithNegativeCacheTime_PersistsItVerbatim()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
@@ -283,7 +496,22 @@ public sealed class ModuleApiTests
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        ModuleDetailDto created = await ReadDetailAsync(response);
+        created.CacheTime.Should().Be(-30, "the submitted period is stored, not clamped");
+
+        using HttpResponseMessage reread = await client.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadDetailAsync(reread)).CacheTime.Should().Be(-30);
+
+        int stored = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [CacheTime] FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        stored.Should().Be(-30, "the column accepts it, so nothing between the caller and it may rewrite it");
     }
 
     /// <summary>A create whose end date precedes its start date is rejected by the request validator.</summary>
@@ -337,7 +565,7 @@ public sealed class ModuleApiTests
             .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
 
         page.Should().NotBeNull();
-        page!.TotalCount.Should().BeGreaterThan(0);
+        page!.Meta.TotalCount.Should().BeGreaterThan(0);
 
         ModuleListItemDto row = page.Items
             .Should().ContainSingle(item => item.TabModuleId == created.TabModuleId)
@@ -574,8 +802,8 @@ public sealed class ModuleApiTests
     /// <remarks>
     /// <para>
     /// MIGRATION: these seven columns are EXCLUDED from the update contract, and this test asserts that
-    /// exclusion end to end. An earlier revision asserted the opposite - that the contract accepted them as
-    /// write-only fields. It does not: pane, alignment, colour, border, the print and syndicate flags and the
+    /// exclusion end to end. They are NOT accepted as write-only fields: pane, alignment, colour, border,
+    /// the print and syndicate flags and the
     /// container source are all Web Forms pane-layout, server-side rendering or skinning concerns, excluded by
     /// AAP 0.2.2.1 and 0.2.2.4, so no request or response contract in the module group declares any of them.
     /// The absence is asserted positively against all three contracts below, so a later change that quietly
@@ -704,20 +932,35 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    /// <summary>An update carrying a negative cache period is rejected by the request validator.</summary>
+    /// <summary>
+    /// An update carrying a negative cache period is accepted and persists the value as submitted, matching
+    /// the create path.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The update counterpart of the create assertion. Both paths are asserted because the removed floor was
+    /// declared twice - once on each request validator and once on each projection - so a fix applied to one
+    /// path would leave the two disagreeing about the same column.
+    /// </remarks>
     [Fact]
-    public async Task UpdateModule_WithNegativeCachePeriod_ReturnsBadRequest()
+    public async Task UpdateModule_WithNegativeCachePeriod_PersistsItVerbatim()
     {
         using HttpClient client = _fixture.CreateHostClient();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
-            new UpdateModuleRequest { CacheTime = -1 },
+            new UpdateModuleRequest { TabId = _fixture.Seed.RootTabId, CacheTime = -1 },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadDetailAsync(response)).CacheTime.Should().Be(-1);
+
+        int stored = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [CacheTime] FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        stored.Should().Be(-1);
     }
 
     /// <summary>Reading and writing the settings projection round-trips both scopes of setting.</summary>
@@ -734,7 +977,7 @@ public sealed class ModuleApiTests
         initial.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ModuleSettingsDto? before = await initial.Content
-            .ReadFromJsonAsync<ModuleSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ModuleSettingsDto>();
 
         before.Should().NotBeNull();
         before!.ModuleId.Should().Be(created.ModuleId);
@@ -768,7 +1011,7 @@ public sealed class ModuleApiTests
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ModuleSettingsDto? after = await reread.Content
-            .ReadFromJsonAsync<ModuleSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ModuleSettingsDto>();
 
         after.Should().NotBeNull();
         after!.ModuleSettings.Should().HaveCount(2);
@@ -794,7 +1037,7 @@ public sealed class ModuleApiTests
 
         using HttpResponseMessage final = await client.GetAsync(settingsRoute);
         ModuleSettingsDto? remaining = await final.Content
-            .ReadFromJsonAsync<ModuleSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ModuleSettingsDto>();
 
         remaining.Should().NotBeNull();
         remaining!.ModuleSettings.Should().ContainSingle();
@@ -1079,6 +1322,77 @@ public sealed class ModuleApiTests
         body.Should().Contain("empty");
     }
 
+    /// <summary>
+    /// An import by a caller holding no edit grant on the target module is REFUSED, and the module's stored
+    /// content is untouched. The import's target arrives in the body, so no route-reading policy could reach
+    /// it and the endpoint carried the bare authentication requirement - which meant any authenticated caller
+    /// could overwrite any tenant's module content.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ImportModule_WithoutModuleEditGrant_ReturnsForbidden()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        using HttpClient client = MemberClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleImportRoute(_fixture.Seed.PortalId),
+            new ModuleImportRequest
+            {
+                ModuleId = created.ModuleId,
+                Content = "<content><item /></content>",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The import refusal is likewise a real evaluation: an edit grant on the module carries the request past
+    /// authorisation and on to the capability check, which refuses it for an entirely different and
+    /// non-authorisation reason. Reaching that reason is the proof that the grant was consulted and honoured.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ImportModule_WithModuleEditGrant_ReachesTheCapabilityCheck()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
+
+        // TWO gates stand in front of the capability check, and the caller has to clear both. The route names
+        // a tenant, so it carries the tenant-bound administrator policy - without which a caller holding a
+        // grant in its own tenant could import into another one, because the grant evaluation would judge its
+        // own tenant's roles against the named tenant's grants. Past that, the service evaluates the module
+        // EDIT grant itself, which is not implied by administering the tenant: only a host account is answered
+        // affirmatively without a grant. So the grant is granted to the role the administrator holds, and
+        // reaching the capability refusal is the proof that it was consulted and honoured.
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        await GrantModulePermissionAsync(
+            created.ModuleId,
+            _fixture.Seed.ModuleEditPermissionId,
+            _fixture.Seed.AdministratorRoleId,
+            allowAccess: true);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleImportRoute(_fixture.Seed.PortalId),
+            new ModuleImportRequest
+            {
+                ModuleId = created.ModuleId,
+                Content = "<content type=\"IntegrationDesktopModule\" version=\"01.00.00\"><item /></content>",
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain(
+            "does not support content import",
+            "the grant must carry the request past authorisation and into the capability check");
+    }
+
     /// <summary>An import into a package that declares no content capability is refused.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1100,6 +1414,191 @@ public sealed class ModuleApiTests
 
         string body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("does not support content import");
+    }
+
+    /// <summary>
+    /// The three module endpoints that name no module — the collection listing, creation and content import —
+    /// are administrative, so an ordinary member of the tenant holding a perfectly valid token is refused all
+    /// three.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// These endpoints were previously guarded by bare authentication, on the reasoning that a module-scoped
+    /// permission policy has no module to evaluate against. That is true and beside the point: naming no module
+    /// is a reason to choose a different policy, not a reason to have none. Any authenticated caller of any
+    /// tenant could enumerate this tenant's content, add modules to its pages and import arbitrary content into
+    /// it. The policy that applies is the tenant the route DOES name.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleEndpointsThatNameNoModule_AreRefusedToAnOrdinaryMember()
+    {
+        using HttpClient member = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        int portalId = _fixture.Seed.PortalId;
+
+        using HttpResponseMessage listed = await member.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(portalId)}/modules?pageIndex=0&pageSize=10",
+            UriKind.Relative));
+
+        listed.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "enumerating a tenant's modules is administrative, not merely authenticated");
+
+        CreateModuleRequest attempted = NewModuleRequest(_fixture.Seed.RootTabId);
+        string attemptedTitle = attempted.ModuleTitle!;
+
+        using HttpResponseMessage created = await member.PostAsJsonAsync(
+            ModulesRoute(portalId),
+            attempted,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage imported = await member.PostAsJsonAsync(
+            new Uri($"/api/v1/portals/{Route(portalId)}/modules/import", UriKind.Relative),
+            new ModuleImportRequest
+            {
+                ModuleId = 1,
+                Content = "<content />",
+            },
+            ApiTestFixture.Json);
+
+        imported.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // The refused creation left nothing behind, which is what distinguishes a refusal from a report of one.
+        // The collection is read as host, because the member may not read it at all.
+        using HttpClient host = _fixture.CreateHostClient();
+        IReadOnlyList<ModuleListItemDto> modules = await ListModulesAsync(host, includeDeleted: true);
+        modules.Should().NotContain(
+            module => module.ModuleTitle == attemptedTitle,
+            "a refused creation must not have written a row");
+    }
+
+    /// <summary>
+    /// A module whose page grants view to the all-users pseudo-role is readable by a caller with no account at
+    /// all, and one whose page grants view to the unauthenticated pseudo-role likewise.
+    /// </summary>
+    /// <param name="pseudoRoleId">The negative role identifier the grant is recorded against.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the grant that an unconditional authentication requirement on the view policy silently deleted.
+    /// Requirements inside one policy are ANDed, so demanding an authenticated caller made an anonymous request
+    /// fail before the permission handler was ever consulted — and a grant that can never be evaluated is not a
+    /// grant, it is a row that looks like one. Both identifiers are real principals in the migrated data:
+    /// <c>-1</c> reaches everybody and <c>-3</c> reaches exactly the callers with no account.
+    /// </para>
+    /// <para>
+    /// The grant is recorded against the module's PAGE rather than the module, because the module is created
+    /// inheriting its view permission, which is the stock configuration.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-3)]
+    public async Task GetModule_WhosePageGrantsViewToAPseudoRole_IsReachableAnonymously(int pseudoRoleId)
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.ChildTabId);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        // Before the grant exists the same anonymous request is refused, which is what makes the affirmative
+        // half below evidence of the grant rather than of an absent check.
+        using HttpResponseMessage beforeGrant = await anonymous.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        beforeGrant.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabViewPermissionId,
+            pseudoRoleId,
+            allowAccess: true);
+
+        try
+        {
+            using HttpResponseMessage response = await anonymous.GetAsync(
+                ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the page grants view to a pseudo-role that reaches a caller with no account");
+        }
+        finally
+        {
+            // The seeded page is shared by every test in this suite, so the grant is withdrawn again rather
+            // than left to widen unrelated assertions.
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabViewPermissionId,
+                pseudoRoleId);
+        }
+    }
+
+    /// <summary>
+    /// An anonymous caller is still refused a module EDIT, because no legacy grant reaches the unauthenticated
+    /// pseudo-role for a mutation and an anonymous change has no account to attribute itself to.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion to the test above, and the reason the two view policies and the two edit policies are
+    /// composed differently: relaxing authentication is correct for reading a public page and wrong for writing
+    /// to one. Asserting only the relaxation would not distinguish "anonymous reads are permitted" from
+    /// "authentication was removed everywhere".
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_IsRefusedToAnAnonymousCallerEvenWhenThePageIsPublic()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.ChildTabId);
+
+        await GrantTabPermissionAsync(
+            _fixture.Seed.ChildTabId,
+            _fixture.Seed.TabViewPermissionId,
+            roleId: -1,
+            allowAccess: true);
+
+        try
+        {
+            using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+            using HttpResponseMessage response = await anonymous.PutAsJsonAsync(
+                ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+                new UpdateModuleRequest
+                {
+                    ModuleTitle = "Anonymously renamed",
+                    ModuleOrder = 3,
+                    AllTabs = false,
+                    InheritViewPermissions = true,
+                    Visibility = ModuleVisibility.Maximized,
+                    DisplayTitle = true,
+                    CacheTime = 0,
+                },
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+            // The title is unchanged, read back through a client that is entitled to read it.
+            using HttpResponseMessage reread = await host.GetAsync(
+                ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+            reread.StatusCode.Should().Be(HttpStatusCode.OK);
+            ModuleDetailDto current = await ReadDetailAsync(reread);
+            current.ModuleTitle.Should().NotBe("Anonymously renamed");
+        }
+        finally
+        {
+            await RevokeTabPermissionAsync(
+                _fixture.Seed.ChildTabId,
+                _fixture.Seed.TabViewPermissionId,
+                roleId: -1);
+        }
     }
 
     /// <summary>Creates a module through the API and returns its representation.</summary>
@@ -1167,6 +1666,72 @@ public sealed class ModuleApiTests
             });
     }
 
+    /// <summary>
+    /// Records or replaces one page permission grant, written directly for the same reason the module grant
+    /// above is: the API exposes no grant-management endpoint, and the point of the test is the evaluation of
+    /// stored grants rather than the means of storing them.
+    /// </summary>
+    /// <param name="tabId">The page the grant is recorded against.</param>
+    /// <param name="permissionId">The catalogue entry being granted or denied.</param>
+    /// <param name="roleId">
+    /// The role the grant applies to. Negative identifiers are genuine principals rather than sentinels here:
+    /// <c>-1</c> is the all-users pseudo-role and <c>-3</c> the unauthenticated one, and both are written
+    /// unaltered.
+    /// </param>
+    /// <param name="allowAccess">Whether the grant allows or denies.</param>
+    /// <returns>A task representing the write.</returns>
+    private async Task GrantTabPermissionAsync(int tabId, int permissionId, int roleId, bool allowAccess)
+    {
+        await _fixture.Database.ExecuteAsync(
+            """
+            DELETE FROM [dbo].[TabPermission]
+            WHERE [TabID] = @tabId AND [PermissionID] = @permissionId AND [RoleID] = @roleId;
+
+            INSERT INTO [dbo].[TabPermission] ([TabID], [PermissionID], [RoleID], [AllowAccess])
+            VALUES (@tabId, @permissionId, @roleId, @allowAccess);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = tabId,
+                ["permissionId"] = permissionId,
+                ["roleId"] = roleId,
+                ["allowAccess"] = allowAccess,
+            });
+    }
+
+    /// <summary>Withdraws one page permission grant.</summary>
+    /// <param name="tabId">The page the grant was recorded against.</param>
+    /// <param name="permissionId">The catalogue entry.</param>
+    /// <param name="roleId">The role the grant applied to.</param>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// The seeded pages are shared by every test in this suite, so a test that widens a page's grants withdraws
+    /// them again rather than leaving an unrelated assertion to be satisfied by a grant it never asked for.
+    /// </remarks>
+    private async Task RevokeTabPermissionAsync(int tabId, int permissionId, int roleId)
+    {
+        await _fixture.Database.ExecuteAsync(
+            """
+            DELETE FROM [dbo].[TabPermission]
+            WHERE [TabID] = @tabId AND [PermissionID] = @permissionId AND [RoleID] = @roleId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = tabId,
+                ["permissionId"] = permissionId,
+                ["roleId"] = roleId,
+            });
+    }
+
+    /// <summary>Mints a client for the seeded plain member, which holds no permission grant of any kind.</summary>
+    /// <returns>An authenticated client with no module or page grants.</returns>
+    private HttpClient MemberClient() => _fixture.CreateClientFor(
+        _fixture.Seed.MemberUserId,
+        IntegrationSeed.MemberUserName,
+        _fixture.Seed.PortalId,
+        isSuperUser: false,
+        roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
     /// <summary>Builds a create request with a value for every field the contract constrains.</summary>
     /// <param name="tabId">The page the module is placed on.</param>
     /// <returns>A well formed create request.</returns>
@@ -1190,7 +1755,7 @@ public sealed class ModuleApiTests
     private static async Task<ModuleDetailDto> ReadDetailAsync(HttpResponseMessage response)
     {
         ModuleDetailDto? detail = await response.Content
-            .ReadFromJsonAsync<ModuleDetailDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ModuleDetailDto>();
 
         detail.Should().NotBeNull();
         return detail!;
@@ -1209,7 +1774,7 @@ public sealed class ModuleApiTests
     private static async Task<ModuleSettingsDto> ReadSettingsAsync(HttpResponseMessage response)
     {
         ModuleSettingsDto? settings = await response.Content
-            .ReadFromJsonAsync<ModuleSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ModuleSettingsDto>();
 
         settings.Should().NotBeNull();
         return settings!;

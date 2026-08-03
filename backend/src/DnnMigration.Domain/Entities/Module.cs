@@ -28,7 +28,7 @@ namespace DnnMigration.Domain.Entities;
 //   belong to ModuleDefinition, DesktopModule and ModuleControl.
 //
 // TERMINAL COLUMN SET - the 11 scalars declared here, and no others
-//   Derived by replaying every CREATE and ALTER TABLE against this table across the 92 upgrade
+//   Derived by replaying every CREATE and ALTER TABLE against this table across the 88 upgrade
 //   scripts in Website/Providers/DataProviders/SqlDataProvider, then independently confirmed
 //   against backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql lines 205-220:
 //     01.00.00:220  CREATE TABLE [dbo].[Modules] - ModuleID, ModuleDefID, ModuleTitle
@@ -68,7 +68,7 @@ namespace DnnMigration.Domain.Entities;
 //     AuthorizedRoles, ContainerPath, PaneModuleIndex, PaneModuleCount, IsDefaultModule,
 //     AllModules, IsPortable, IsSearchable, IsUpgradeable, Cacheability.
 //   Visibility in particular is not, and never was, a Modules column. A scan of every CREATE
-//     TABLE body in all 92 scripts finds it only on TabModules (03.00.01 line 31,
+//     TABLE body in all 88 scripts finds it only on TabModules (03.00.01 line 31,
 //     "Visibility int NOT NULL") and on the unrelated UserProfile table, and no ALTER TABLE in
 //     the chain ever adds it. It lives on TabModule.Visibility, typed ModuleVisibility, and
 //     belongs nowhere else - least of all here, under that name or any name resembling it.
@@ -122,8 +122,9 @@ public sealed class Module : Entity<int>
     /// <remarks>
     /// Zero identifies the first module of a fresh installation and is therefore a real, persisted
     /// key. Whether this entity has been written is answered by
-    /// <see cref="Entity{TId}.IdentityIsPersisted"/>, which the persistence layer declares, and
-    /// never by inspecting this value.
+    /// <see cref="Entity{TId}.IdentityIsPersisted"/>, which only a caller that already knows the row
+    /// exists may declare through <see cref="Entity{TId}.MarkIdentityPersisted"/> and which nothing
+    /// declares automatically - never by inspecting this value.
     /// </remarks>
     // MIGRATION: dbo.Modules.ModuleID is declared IDENTITY(0, 1) - Website/Providers/
     // DataProviders/SqlDataProvider/01.00.00.SqlDataProvider line 221, confirmed by

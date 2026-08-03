@@ -3,7 +3,7 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
-/// The state submitted to <c>PUT /api/v1/modules/{id}</c> to revise a module and the placement it
+/// The state submitted to <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}</c> to revise a module and the placement it
 /// is addressed through. A boundary contract and nothing more: no navigation property, no tracked
 /// state, no behaviour and no domain entity, in either direction.
 /// </summary>
@@ -21,7 +21,7 @@ namespace DnnMigration.Application.Dtos.Module;
 /// </para>
 /// <para>
 /// THE SIBLING SETTINGS ENDPOINT IS DELIBERATELY DIFFERENT AND MUST NOT BE HARMONISED WITH THIS
-/// ONE. <c>PUT /api/v1/modules/{id}/settings</c> carries <see cref="ModuleSettingsDto"/> and is an
+/// ONE. <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c> carries <see cref="ModuleSettingsDto"/> and is an
 /// UPSERT-PER-KEY, because the two legacy settings writers were measured to be plain upserts with
 /// no removal branch at all. This endpoint replaces; that one merges. The divergence is
 /// intentional, and anyone tempted to align them should change neither.
@@ -468,6 +468,7 @@ public sealed class UpdateModuleRequest
     /// bottom of the pane.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// OMITTING THIS MEMBER APPENDS; SENDING 0 EXPLICITLY MEANS POSITION ZERO. That distinction is
     /// the entire reason for the initialiser, and deserialisation preserves it: an absent property
     /// leaves the initialised value intact, while a present one overwrites it. Under this
@@ -475,6 +476,13 @@ public sealed class UpdateModuleRequest
     /// be stated plainly: omitting the property DOES NOT HOLD THE MODULE'S CURRENT POSITION - it
     /// moves it to the bottom of its pane. No validation rule may reject -1, and the legacy screen
     /// had no rule on this field at all.
+    /// </para>
+    /// <para>
+    /// The instruction is consumed by the application service, which resolves it against the placement's
+    /// own pane before anything is written, so -1 never reaches the column. When the request also asks to
+    /// place the module on every page, each new placement is appended to its own page's pane rather than
+    /// taking the position computed for the addressed page.
+    /// </para>
     /// </remarks>
     // MIGRATION: 5.1 - -1 IS A LOAD-BEARING COMMAND MEANING "APPEND AT THE BOTTOM OF THE PANE", NOT
     //   AN ABSENT VALUE, AND FOUR INDEPENDENT PROOFS SAY SO. The legacy create branched on the

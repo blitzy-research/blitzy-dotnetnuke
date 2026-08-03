@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using DnnMigration.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -453,22 +454,37 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="userName">The DotNetNuke user name.</param>
     /// <param name="utcNow">The sign-in instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a credential record was updated.</returns>
+    /// <returns>
+    /// <see cref="MembershipWriteOutcome.Recorded"/> when a credential record was updated,
+    /// <see cref="MembershipWriteOutcome.NoRecord"/> when no record matched, and
+    /// <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or not reachable.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: reproduces the correct-password branch of <c>aspnet_Membership_UpdateUserInfo</c>
     /// together with its <c>@UpdateLastLoginActivityDate = 1</c> path. The counter reset is expressed as
     /// a conditional rather than applied unconditionally, because the legacy procedure guarded it with
     /// <c>IF (FailedPasswordAttemptCount &gt; 0 OR FailedPasswordAnswerAttemptCount &gt; 0)</c>:
     /// resetting unconditionally would additionally erase a genuine <c>LastLockoutDate</c> on an account
     /// whose counters were already zero, which the legacy code left alone.
+    /// </para>
+    /// <para>
+    /// The three outcomes are reported separately because an absent store and an absent record are not the
+    /// same fact and must not be answered with one value: the first means the counter reset never ran, the
+    /// second means there was nothing to reset. A boolean forced them together, and a caller could then not
+    /// tell a working control from a broken one.
+    /// </para>
     /// </remarks>
-    public async Task<bool> RecordSuccessfulLoginAsync(string userName, DateTime utcNow, CancellationToken cancellationToken = default)
+    public async Task<MembershipWriteOutcome> RecordSuccessfulLoginAsync(
+        string userName,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userName);
 
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return false;
+            return MembershipWriteOutcome.StoreUnavailable;
         }
 
         const string Sql = @"
@@ -500,7 +516,9 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
         parameters.Add(new KeyValuePair<string, object?>("@now", utcNow));
         parameters.Add(new KeyValuePair<string, object?>("@never", NeverRecorded));
 
-        return await AffectedAsync(Sql, parameters, cancellationToken).ConfigureAwait(false);
+        return await AffectedAsync(Sql, parameters, cancellationToken).ConfigureAwait(false)
+            ? MembershipWriteOutcome.Recorded
+            : MembershipWriteOutcome.NoRecord;
     }
 
     /// <summary>Records a failed sign-in and locks the account once the threshold is reached.</summary>
@@ -509,7 +527,13 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="attemptWindow">The window within which consecutive failures accumulate.</param>
     /// <param name="utcNow">The failure instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when the account is locked out after recording this failure.</returns>
+    /// <returns>
+    /// <see cref="MembershipWriteOutcome.RecordedAndLocked"/> when the account is locked out after this
+    /// failure, <see cref="MembershipWriteOutcome.Recorded"/> when the failure was counted and the account is
+    /// not locked, <see cref="MembershipWriteOutcome.NoRecord"/> when the account holds no credential record,
+    /// and <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or not
+    /// reachable - in which case THE FAILURE WAS NOT COUNTED AT ALL.
+    /// </returns>
     /// <remarks>
     /// MIGRATION: reproduces the incorrect-password branch of
     /// <c>aspnet_Membership_UpdateUserInfo</c> as added by the 04.00.00 script, including two details
@@ -525,7 +549,7 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// that was already locked - and is therefore still locked out - from one that does not exist.
     /// </para>
     /// </remarks>
-    public async Task<bool> RecordFailedLoginAsync(
+    public async Task<MembershipWriteOutcome> RecordFailedLoginAsync(
         string userName,
         int lockoutThreshold,
         TimeSpan attemptWindow,
@@ -534,9 +558,13 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     {
         ArgumentNullException.ThrowIfNull(userName);
 
+        // The one outcome that is NOT about the account: the counter that produces a lock-out could not be
+        // incremented, so this attempt is unrecorded and the control did not run. Reporting it as "counted but
+        // not yet locked" - which the previous boolean did - is what let an attacker guess without limit
+        // against an unreachable store while every response looked ordinary.
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return false;
+            return MembershipWriteOutcome.StoreUnavailable;
         }
 
         const string UpdateSql = @"
@@ -573,7 +601,9 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user AND am
 
         if (outcome is not null)
         {
-            return Convert.ToInt32(outcome, System.Globalization.CultureInfo.InvariantCulture) == 1;
+            return Convert.ToInt32(outcome, System.Globalization.CultureInfo.InvariantCulture) == 1
+                ? MembershipWriteOutcome.RecordedAndLocked
+                : MembershipWriteOutcome.Recorded;
         }
 
         // Nothing was updated, which means either the account does not exist or it was already locked.
@@ -591,8 +621,20 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return existing is not null
-            && Convert.ToInt32(existing, System.Globalization.CultureInfo.InvariantCulture) == 1;
+        if (existing is null)
+        {
+            // No row at all, so there was nothing to count against. Distinct from an unreachable store: the
+            // control ran and found nothing, which on a sign-in path means the record was removed between the
+            // read that found it and this write.
+            return MembershipWriteOutcome.NoRecord;
+        }
+
+        // A row exists but the update matched nothing, which the WHERE clause makes conclusive: the only rows
+        // it excludes are already-locked ones. An account that was already locked is reported as locked, so a
+        // caller cannot distinguish it from one this attempt locked.
+        return Convert.ToInt32(existing, System.Globalization.CultureInfo.InvariantCulture) == 1
+            ? MembershipWriteOutcome.RecordedAndLocked
+            : MembershipWriteOutcome.Recorded;
     }
 
     /// <summary>Sets whether an account is approved for use.</summary>

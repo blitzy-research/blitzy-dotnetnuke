@@ -422,6 +422,89 @@ public sealed class PortalRepositoryTests
         }
     }
 
+    /// <summary>
+    /// I-01: the batched tallies agree with the per-portal members, row for row, and answer for every
+    /// identifier they were asked about.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The batched members exist so that a listing costs a fixed number of reads rather than two per row. The
+    /// risk that introduces is DIVERGENCE - a grouped statement whose predicate drifts from the single-portal
+    /// one would report different figures for the same tenant - so the two are compared against each other
+    /// here rather than against literals alone. The totality of the result is asserted as well, because a
+    /// grouped read naturally omits an identifier with nothing to count and a caller indexing the map
+    /// directly would then fail on a tenant that is merely empty.
+    /// </remarks>
+    [Fact]
+    public async Task BatchedTallies_AgreeWithThePerPortalCountsAndAnswerForEveryIdentifier()
+    {
+        int populated = await CreatePortalAsync(FormattableString.Invariant($"Batched Populated {Suffix()}"));
+        int empty = await CreatePortalAsync(FormattableString.Invariant($"Batched Empty {Suffix()}"));
+
+        try
+        {
+            await AddMembershipAsync(populated, _fixture.Seed.AdminUserId, authorised: true);
+            await AddMembershipAsync(populated, _fixture.Seed.MemberUserId, authorised: false);
+            await AddTabAsync(populated, "Live", isDeleted: false);
+            await AddTabAsync(populated, "Binned", isDeleted: true);
+
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
+
+            int[] asked = [populated, empty, _fixture.Seed.PortalId];
+
+            IReadOnlyDictionary<int, int> users = await portals.CountUsersForPortalsAsync(asked);
+            IReadOnlyDictionary<int, int> pages = await portals.CountPagesForPortalsAsync(asked);
+
+            users.Keys.Should().BeEquivalentTo(asked, "the contract is total over the identifiers supplied");
+            pages.Keys.Should().BeEquivalentTo(asked);
+
+            users[populated].Should().Be(2, "an unauthorised member is still a member");
+            users[empty].Should().Be(0, "a tenant with no members is present with a zero, not absent");
+            pages[populated].Should().Be(1, "a page in the recycle bin does not count against the tenant");
+            pages[empty].Should().Be(0);
+
+            foreach (int portalId in asked)
+            {
+                users[portalId].Should().Be(
+                    await portals.CountUsersAsync(portalId),
+                    "the batched member tally must not diverge from the per-portal one");
+                pages[portalId].Should().Be(
+                    await portals.CountPagesAsync(portalId),
+                    "the batched page tally must not diverge from the per-portal one");
+            }
+        }
+        finally
+        {
+            await RemovePortalAsync(populated);
+            await RemovePortalAsync(empty);
+        }
+    }
+
+    /// <summary>
+    /// I-01: an empty request is answered with an empty result, and a repeated identifier collapses to one
+    /// entry.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A listing whose page came back empty must not issue a query at all, and a duplicated identifier must
+    /// not make the dictionary construction throw.
+    /// </remarks>
+    [Fact]
+    public async Task BatchedTallies_AnswerAnEmptyRequestAndCollapseDuplicates()
+    {
+        using IServiceScope scope = _fixture.Services.CreateScope();
+        IPortalRepository portals = scope.ServiceProvider.GetRequiredService<IPortalRepository>();
+
+        (await portals.CountUsersForPortalsAsync(Array.Empty<int>())).Should().BeEmpty();
+        (await portals.CountPagesForPortalsAsync(Array.Empty<int>())).Should().BeEmpty();
+
+        int seeded = _fixture.Seed.PortalId;
+        IReadOnlyDictionary<int, int> users = await portals.CountUsersForPortalsAsync([seeded, seeded, seeded]);
+        users.Should().ContainSingle().Which.Key.Should().Be(seeded);
+        users[seeded].Should().Be(await portals.CountUsersAsync(seeded));
+    }
+
     /// <summary>The role-name lookup names both of the tenant's assigned roles.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]

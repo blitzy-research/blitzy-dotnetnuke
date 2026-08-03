@@ -85,6 +85,45 @@ export function requireNonBlankTitle(value: string): string {
   return normalised;
 }
 
+/**
+ * Normalises the `subtitle` input, collapsing a blank one to absent.
+ *
+ * The subtitle is optional, so unlike the title a blank value is not an error to
+ * report - it is simply nothing to render. The template guards the paragraph on the
+ * truthiness of this input precisely so that "absent" renders no element at all,
+ * rather than an empty paragraph that would occupy vertical space and add a node
+ * carrying no accessible name to the accessibility tree.
+ *
+ * A truthiness guard alone cannot deliver that, because `' '` is truthy in
+ * JavaScript: a whitespace-only value - the shape a consumer most plausibly arrives
+ * at by interpolating a record field that happens to hold padding, or by binding a
+ * value assembled from an empty resource string - satisfied the guard and produced
+ * exactly the blank paragraph the guard exists to prevent. Normalising here closes
+ * that at input assignment, which makes the guard correct by construction instead
+ * of leaving the template to compensate for a value that never should have been
+ * stored: after this transform the stored value is either a non-blank string or
+ * `undefined`, so there is no third state for a read site to get wrong.
+ *
+ * The value is trimmed rather than merely tested, mirroring
+ * {@link requireNonBlankTitle}, so the two inputs normalise identically and cannot
+ * drift into treating padding differently from one another. Trimming is not
+ * visually observable - a paragraph collapses leading and trailing white space when
+ * rendered - but it does make the rendered text exactly the supplied value, which
+ * is what lets a specification assert on it without trimming first.
+ *
+ * @param value The raw bound subtitle, which may be absent.
+ * @returns The trimmed subtitle, or `undefined` when there is nothing to render.
+ */
+export function normaliseOptionalSubtitle(value: string | undefined): string | undefined {
+  // Coalesced for the same reason the title transform coalesces: the declared type
+  // does not stop a JavaScript caller or an `any`-typed binding from delivering
+  // null, and `.trim()` on that would throw a TypeError naming neither this
+  // component nor this input.
+  const normalised = (value ?? '').trim();
+
+  return normalised.length === 0 ? undefined : normalised;
+}
+
 @Component({
   selector: 'app-page-header',
   standalone: true,
@@ -162,6 +201,11 @@ export class PageHeaderComponent {
    * bind a value that is itself absent. It is supporting text rather than a
    * second heading, so it renders as a paragraph and stays out of the document
    * outline.
+   *
+   * Normalised on assignment by {@link normaliseOptionalSubtitle}, so a value that
+   * is blank or nothing but white space is stored as `undefined` and renders no
+   * paragraph at all. Absent and blank are therefore the same state here by
+   * construction rather than by the template remembering to treat them alike.
    */
-  @Input() subtitle?: string;
+  @Input({ transform: normaliseOptionalSubtitle }) subtitle?: string;
 }

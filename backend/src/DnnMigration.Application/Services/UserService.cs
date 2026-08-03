@@ -18,9 +18,13 @@
 // passwordFormat="Encrypted" and enablePasswordRetrieval="true" at Website/release.config:L236-L246,
 // with the key that decrypts every stored credential committed to source control at L89-L93. The
 // target hashes one way through the domain-owned hashing abstraction, so a legacy credential cannot be
-// verified against a stored hash. The migration path is a re-hash on the first successful sign-in,
-// which belongs to the authentication service, with the administrative reset on this service as the
-// fallback for accounts that never sign in again.
+// verified against a stored hash at all. THE MIGRATION PATH IS THEREFORE THE ADMINISTRATIVE RESET ON
+// THIS SERVICE, AND IT IS THE WHOLE PATH RATHER THAN A FALLBACK. An earlier revision of this note
+// attributed the path to a re-hash on the first successful sign-in in the authentication service and
+// cast the reset as a fallback for accounts that never sign in again; that is not achievable, because
+// re-hashing needs a plaintext proven against the stored value and the stored value cannot be checked.
+// What the authentication service does upgrade on sign-in is the cost of a value this scheme already
+// produced - a working credential made stronger, never a legacy one recovered.
 //
 // MIGRATION: the legacy password policy is preserved verbatim rather than tightened - minimum length
 // seven, no required non-alphanumeric characters, no question-and-answer requirement and electronic
@@ -78,12 +82,28 @@ public sealed class UserService : IUserService
     /// failure, is reported as one - leaving a client unable to tell a request it must correct from a write
     /// another caller won and which is worth retrying.
     /// </remarks>
+    /// <summary>Resource kind published on an audit record describing an account.</summary>
+    /// <remarks>
+    /// Spelled as the domain entity's own type name, so a reader of the trail can go from a record
+    /// straight to the type that produced it.
+    /// </remarks>
+    private const string UserResourceType = "User";
+
     private const string ListFilterInvalidCode = "user.list.filter-invalid";
 
     /// <summary>
     /// Reported when the named profile property is not defined for the tenant.
     /// </summary>
     private const string ListUnknownProfilePropertyCode = "user.list.unknown-profile-property";
+
+    /// <summary>
+    /// Reported when a caller names an ordering the account listing cannot apply. Every ordering falls
+    /// into that category: the page is selected by the database under a fixed order, and three of the ten
+    /// columns the legacy grid bound live in the external membership store rather than in this database,
+    /// so no consistent caller-chosen ordering exists to offer. <c>SortableFields.Users</c> records the
+    /// measurement.
+    /// </summary>
+    private const string ListSortUnsupportedCode = "user.list.sort-unsupported";
 
     /// <summary>
     /// Reported when no such account exists within the tenant.
@@ -188,6 +208,37 @@ public sealed class UserService : IUserService
     private const string PasswordResetFailedCode = "user.password.reset-failed";
 
     /// <summary>
+    /// Reported when an operation that must end an account's sessions could not have them revoked, so the
+    /// operation itself was abandoned rather than completed with the sessions left alive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Its reason token ends in <c>store_unavailable</c>, which the Api edge classifies as a dependency
+    /// failure and answers <c>503</c>. That is the honest reading: the request was valid and the refusal
+    /// is temporary, so a caller may retry it. Reporting it as a bad request would invite an administrator
+    /// to change the request, and reporting success would tell them an account had been locked out of its
+    /// sessions when it had not.
+    /// </para>
+    /// <para>
+    /// The three operations that can report it are the credential change, the withdrawal of an approval and
+    /// the deletion of an account - the same three the token contract names.
+    /// </para>
+    /// </remarks>
+    private const string SessionRevocationFailedCode = "user.session.revocation_store_unavailable";
+
+    /// <summary>
+    /// Reported when an account's credential could not be removed during deletion, so the deletion was
+    /// abandoned rather than committed with the credential left behind.
+    /// </summary>
+    /// <remarks>
+    /// A credential surviving the account row is unreachable by any administrative screen and is revisited
+    /// by no later deletion, so reporting success over one would be a permanent, invisible remnant. Its
+    /// reason token ends in <c>store_unavailable</c> so the Api edge answers <c>503</c> and the caller
+    /// learns the refusal is temporary.
+    /// </remarks>
+    private const string CredentialRemovalFailedCode = "user.credential.removal_store_unavailable";
+
+    /// <summary>
     /// Reported when a self-service change presents the wrong current credential.
     /// </summary>
     private const string PasswordCurrentIncorrectCode = "user.password.current-incorrect";
@@ -211,6 +262,27 @@ public sealed class UserService : IUserService
     /// Reported when an administrator invokes a membership transition on their own account.
     /// </summary>
     private const string MembershipSelfForbiddenCode = "user.membership.self-forbidden";
+
+    /// <summary>
+    /// Reported when a caller asks to change a credential that is not their own.
+    /// </summary>
+    /// <remarks>
+    /// A change is proof of possession of the current credential and is therefore the account owner's
+    /// operation. An administrator acting on another account uses the reset operation instead. The reason
+    /// token classifies as 403 rather than 400, because the request is well formed and the caller simply may
+    /// not make it.
+    /// </remarks>
+    private const string PasswordChangeSelfOnlyForbiddenCode = "user.password.change-self-only-forbidden";
+
+    /// <summary>
+    /// Reported when a caller without administrative authority over the tenant asks to reset a credential.
+    /// </summary>
+    /// <remarks>
+    /// This is the check that keeps the reset operation from being a way around the change operation's
+    /// current-credential requirement. Without it the owner of an account - who legitimately passes the route
+    /// policy - could set a new credential without presenting the old one.
+    /// </remarks>
+    private const string PasswordResetForbiddenCode = "user.password.reset-forbidden";
 
     /// <summary>
     /// Reported when the account is already in the requested approval state.
@@ -323,6 +395,8 @@ public sealed class UserService : IUserService
     private readonly IClock _clock;
     private readonly ICacheService _cache;
     private readonly ICurrentUser _currentUser;
+    private readonly IAuditSink _audit;
+    private readonly ITokenService _tokens;
     private readonly PasswordPolicyOptions _passwordPolicy;
     private readonly CachingOptions _caching;
 
@@ -342,8 +416,22 @@ public sealed class UserService : IUserService
     /// <param name="clock">The clock every timestamp is taken from.</param>
     /// <param name="cache">Cache reads and invalidation.</param>
     /// <param name="currentUser">The acting caller, needed by the self-service prohibitions.</param>
+    /// <param name="audit">Receives the business audit record for a created or removed account.</param>
+    /// <param name="tokens">
+    /// Session revocation. Present because three operations below end an account's right to sign in, or
+    /// change the credential by which it does so, and the token contract states in terms that each of them
+    /// must revoke the account's refresh tokens within the same request. Without this collaborator that
+    /// obligation was documented on every one of them and honoured by none.
+    /// </param>
     /// <param name="passwordPolicy">Bound credential policy, preserved from the legacy configuration.</param>
     /// <param name="caching">Bound caching configuration supplying the performance multiplier.</param>
+    /// <remarks>
+    /// MIGRATION: the audit sink preserves the two account events the legacy site recorded,
+    /// <c>USER_CREATED</c> and <c>USER_DELETED</c> (<c>EventLogController.vb:L39-L40</c>). The deletion
+    /// entry is the one measured call site in the legacy account controller, at
+    /// <c>UserController.vb:L240</c>, which passed the account name as the log key together with the
+    /// account identifier and the ambient tenant.
+    /// </remarks>
     public UserService(
         IUserRepository users,
         IUserProfileRepository profiles,
@@ -357,6 +445,8 @@ public sealed class UserService : IUserService
         IClock clock,
         ICacheService cache,
         ICurrentUser currentUser,
+        IAuditSink audit,
+        ITokenService tokens,
         PasswordPolicyOptions passwordPolicy,
         CachingOptions caching)
     {
@@ -372,8 +462,47 @@ public sealed class UserService : IUserService
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _audit = audit ?? throw new ArgumentNullException(nameof(audit));
+        _tokens = tokens ?? throw new ArgumentNullException(nameof(tokens));
         _passwordPolicy = passwordPolicy ?? throw new ArgumentNullException(nameof(passwordPolicy));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
+    }
+
+    /// <summary>
+    /// Records one committed account change on the audit trail.
+    /// </summary>
+    /// <param name="eventName">The stable event name, from <see cref="AuditEventNames"/>.</param>
+    /// <param name="portalId">The tenant the change was made within.</param>
+    /// <param name="subjectUserId">The account the change was made against.</param>
+    /// <param name="properties">Short, non-sensitive descriptive facts about the change.</param>
+    /// <remarks>
+    /// <para>
+    /// Called only after the change has been committed. The acting account comes from the credential, and
+    /// it is not always the account acted upon: an administrator creating a member records the
+    /// administrator as the actor and the member as the subject, a distinction the legacy record - which
+    /// had a single user field - could not express.
+    /// </para>
+    /// <para>
+    /// No credential material of any kind reaches an audit record from this service: not a submitted
+    /// password, not a stored hash, not a reset token, and no answer to a security question.
+    /// </para>
+    /// </remarks>
+    private void RecordAudit(
+        string eventName,
+        int portalId,
+        int subjectUserId,
+        IReadOnlyDictionary<string, string?> properties)
+    {
+        _audit.Record(new AuditEvent(eventName)
+        {
+            PortalId = portalId,
+            ActorUserId = _currentUser.UserId,
+            ActorUserName = _currentUser.UserName,
+            SubjectUserId = subjectUserId,
+            ResourceType = UserResourceType,
+            ResourceId = subjectUserId.ToString(CultureInfo.InvariantCulture),
+            Properties = properties,
+        });
     }
 
     /// <inheritdoc />
@@ -411,6 +540,28 @@ public sealed class UserService : IUserService
     {
         ArgumentNullException.ThrowIfNull(page);
         EnsurePagingIsUsable(page);
+
+        // MIGRATION: the PER-COLLECTION ordering set is enforced HERE, against this collection's own set
+        // rather than against the union. The shared request validator applies nothing narrower than the
+        // union of every collection's set, because one PagedRequest contract serves every listing, so it
+        // would otherwise admit a portal-only or role-only field name here and the read would order by its
+        // own sequence regardless - returning a page the caller cannot account for and cannot detect.
+        // Refusing says so instead.
+        //
+        // SortableFields.Users holds exactly the names the underlying query can honour, which are the
+        // mapped columns of the entity it pages over. It is deliberately NARROWER than the projection: the
+        // creation instant, the last sign-in instant, the approval flag and the lock flag are read from the
+        // external membership store AFTER the page has been taken, so ordering by one of them would order
+        // the page rather than the collection - not an ordering at all. Those are refused here rather than
+        // accepted and silently discarded. The set and the ordering the repository actually applies must
+        // agree, and a test asserts that agreement in both directions.
+        if (!SortableFields.IsPermittedFor(page.SortBy, SortableFields.Users))
+        {
+            return Result<PagedResult<UserListItemDto>>.Failure(
+                ListSortUnsupportedCode,
+                $"Accounts cannot be ordered by '{page.SortBy}'.");
+        }
+
         EnsureFilterIsNotBlank(userNameFilter, nameof(userNameFilter));
         EnsureFilterIsNotBlank(emailFilter, nameof(emailFilter));
         EnsureFilterIsNotBlank(profilePropertyName, nameof(profilePropertyName));
@@ -469,6 +620,11 @@ public sealed class UserService : IUserService
             profilePropertyDefinitionId = filtered.PropertyDefinitionId;
         }
 
+        // The sort field travels to the repository so the database orders BEFORE it skips and takes.
+        // Re-ordering the returned page here would only re-order the rows this one page happened to
+        // contain, which is how an accepted sort field comes to be silently ignored. The field itself has
+        // already been checked against the names this collection honours - SortableFields.Users, applied
+        // by the sealed UserPagedRequestValidator at the API boundary - so nothing is re-validated here.
         PagedResult<User> matches = await _users.ListAsync(
             portalId,
             page.PageIndex,
@@ -481,7 +637,12 @@ public sealed class UserService : IUserService
             isApproved,
             includeUnauthorised: true,
             includeSuperUsers: false,
-            cancellationToken).ConfigureAwait(false);
+            // "No ordering named" is passed as null rather than as whatever blank text arrived, so the
+            // store receives one canonical representation of the absence instead of three - the same
+            // normalisation the query filter above performs for the same reason.
+            sortBy: string.IsNullOrWhiteSpace(page.SortBy) ? null : page.SortBy,
+            descending: page.SortDir == SortDirection.Descending,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var addressPropertyIds = new List<int>(AddressProfilePropertyNames.Length);
         foreach (string propertyName in AddressProfilePropertyNames)
@@ -734,6 +895,19 @@ public sealed class UserService : IUserService
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateUser(portalId, account.Username);
 
+        // MIGRATION: reproduces the legacy USER_CREATED audit entry (EventLogController.vb:L39). Recorded
+        // only once the credential store has accepted the credential, so an account whose creation was
+        // compensated away above never produces a record.
+        RecordAudit(
+            AuditEventNames.UserCreated,
+            portalId,
+            account.UserId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Username"] = account.Username,
+                ["Approved"] = request.Authorize.ToString(CultureInfo.InvariantCulture),
+            });
+
         IReadOnlyList<string> roleNames = automatic.Select(role => role.RoleName).ToList();
         return Result<UserDetailDto>.Success(UserMappings.ToDetail(account, portalId, roleNames));
     }
@@ -855,6 +1029,21 @@ public sealed class UserService : IUserService
                     $"Account {userId} is the designated administrator of portal {portalId} and cannot be deleted."));
         }
 
+        // THE FIRST DESTRUCTIVE STEP, and deliberately so. Every guard above has passed, so the deletion is
+        // going to be attempted; and nothing below has yet removed anything, so a revocation that cannot be
+        // written abandons the deletion with the account wholly intact rather than half dismantled. Placing
+        // it after the cascade would mean reporting failure over an account whose grants, role assignments
+        // and credential had already gone.
+        //
+        // IUserService calls this the worst of the three cases it covers, and the reasoning is worth keeping
+        // in view: a refresh token that outlives the account it names is exchanged for access tokens
+        // asserting an identity that no longer exists, and there is no longer any account for an
+        // administrator to inspect or disable. Revoking is part of deleting rather than a follow-up to it.
+        if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
+        {
+            return Result.Failure(sessions);
+        }
+
         // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
         // through two separate provider members - DeleteModulePermissionsByUserID at core
         // DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305 - and each terminal procedure
@@ -894,7 +1083,25 @@ public sealed class UserService : IUserService
 
         if (!holdsAnotherMembership)
         {
-            await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false);
+            // THE ANSWER IS READ, WHICH IT PREVIOUSLY WAS NOT. This is the one write in the cascade that
+            // leaves the external membership store, and it is the one whose failure matters most: the account
+            // row is about to be removed, so a credential left behind becomes an orphan that no
+            // administrative screen can reach and no later deletion will revisit, while the deletion itself
+            // reported success. Discarding the answer made an unreachable membership store look exactly like
+            // a completed removal.
+            //
+            // Refusing here is safe precisely because nothing has been committed. Every removal above is
+            // tracked or issued inside this unit of work and the commit is still ahead, so abandoning now
+            // leaves the account whole rather than partly dismantled, and the caller is told the truth. The
+            // reason token ends in store_unavailable, so the Api edge answers 503 and a caller may retry.
+            if (!await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false))
+            {
+                return Result.Failure(
+                    CredentialRemovalFailedCode,
+                    FormattableString.Invariant($"The credential held by account {userId} could not be removed.")
+                    + " The account was left intact rather than deleted without it. Try again.");
+            }
+
             _users.Remove(account);
         }
 
@@ -903,14 +1110,42 @@ public sealed class UserService : IUserService
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateUser(portalId, account.Username);
 
+        // MIGRATION: reproduces the legacy USER_DELETED audit entry, whose one measured call site is
+        // UserController.vb:L240 - AddLog("Username", objUser.Username, _portalSettings, objUser.UserID,
+        // EventLogType.USER_DELETED). The account name it recorded is carried on the Username property and
+        // the account identifier it recorded is the subject, so the two facts the legacy record held both
+        // survive. The account-fully-removed distinction is net-new detail: the legacy delete had no
+        // multi-tenant retention arm to report.
+        RecordAudit(
+            AuditEventNames.UserDeleted,
+            portalId,
+            account.UserId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Username"] = account.Username,
+                ["AccountRemoved"] = (!holdsAnotherMembership).ToString(CultureInfo.InvariantCulture),
+            });
+
         return Result.Success();
     }
 
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// A self-service change presents the current credential and is verified against the stored hash; an
-    /// administrative reset does not, and is refused outright when the deployment has reset switched off.
+    /// SELF-SERVICE ONLY, AND THE CURRENT CREDENTIAL IS ALWAYS VERIFIED. This member no longer carries the
+    /// administrative reset, and that separation is a security fix rather than a tidying. One member serving
+    /// both meant the caller's own request body chose which of the two it got: sending the reset
+    /// discriminator skipped the current-credential check entirely, so any bearer token that could reach the
+    /// endpoint could overwrite any account's credential without proving anything. The two operations now
+    /// have two members, two endpoints and two authorisation policies - this one is reachable only by the
+    /// account holder, and <see cref="ResetPasswordAsync"/> only by an administrator of the account's portal.
+    /// </para>
+    /// <para>
+    /// A reset discriminator submitted here is REFUSED rather than honoured or ignored. Honouring it would
+    /// restore the defect; ignoring it would silently perform a different operation from the one the caller
+    /// asked for, on a credential.
+    /// </para>
+    /// <para>
     /// Neither path returns, echoes or logs a credential, and no hash value appears on any result.
     /// </para>
     /// <para>
@@ -923,7 +1158,7 @@ public sealed class UserService : IUserService
     /// with nothing left to protect.
     /// </para>
     /// </remarks>
-    public async Task<Result> ChangePasswordAsync(
+    public Task<Result> ChangePasswordAsync(
         int portalId,
         int userId,
         ChangePasswordRequest request,
@@ -931,22 +1166,156 @@ public sealed class UserService : IUserService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        bool isReset = string.Equals(request.Operation, ChangePasswordRequest.OperationReset, StringComparison.OrdinalIgnoreCase);
-        bool isChange = string.Equals(request.Operation, ChangePasswordRequest.OperationChange, StringComparison.OrdinalIgnoreCase);
-
-        if (!isReset && !isChange)
+        if (EnsureOperation(request, ChangePasswordRequest.OperationChange) is ResultReason wrongOperation)
         {
-            return Result.Failure(
-                PasswordUnsupportedOperationCode,
-                FormattableString.Invariant(
-                    $"Operation \"{request.Operation}\" is not supported; use \"{ChangePasswordRequest.OperationChange}\" or \"{ChangePasswordRequest.OperationReset}\"."));
+            return Task.FromResult(Result.Failure(wrongOperation));
         }
 
-        if (isReset && !_passwordPolicy.PasswordResetEnabled)
+        return WriteCredentialAsync(portalId, userId, request, verifyCurrent: true, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// ADMINISTRATIVE, AND THEREFORE GATED OUTSIDE THIS LAYER. This member deliberately does not verify the
+    /// current credential, which is the whole point of a reset: its holder has lost it. What makes that safe
+    /// is that the endpoint carrying it requires administration of the account's own portal, so the absence
+    /// of a credential check is compensated by the presence of an authorisation check. It was previously
+    /// selectable from inside a request body on an endpoint that required nothing but authentication, which
+    /// is the account-takeover path this split closes.
+    /// </para>
+    /// <para>
+    /// Refused outright when the deployment has reset switched off, before the account is read, so a
+    /// deployment that has disabled reset cannot be probed for which accounts exist.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this member owns the whole of the credential migration path. Legacy credentials were held
+    /// reversibly and cannot be verified against a one-way hash, so an administrative reset is the only way a
+    /// pre-existing account regains access. The shipped default keeps reset ENABLED, which is faithful:
+    /// <c>Website/release.config</c> L240 registers the legacy provider with
+    /// <c>enablePasswordReset="true"</c>. Disabling it by default would be an unrequested behavioural change
+    /// that locked every pre-migration account out permanently.
+    /// </para>
+    /// <para>
+    /// The new credential is never returned. The legacy reset assigned the provider's answer onto the account
+    /// and returned it, so the credential travelled back in clear text; nothing here reproduces that.
+    /// </para>
+    /// </remarks>
+    public Task<Result> ResetPasswordAsync(
+        int portalId,
+        int userId,
+        ChangePasswordRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (EnsureOperation(request, ChangePasswordRequest.OperationReset) is ResultReason wrongOperation)
         {
-            return Result.Failure(
+            return Task.FromResult(Result.Failure(wrongOperation));
+        }
+
+        if (!_passwordPolicy.PasswordResetEnabled)
+        {
+            return Task.FromResult(Result.Failure(
                 PasswordResetNotEnabledCode,
-                "Administrative credential reset is switched off for this deployment.");
+                "Administrative credential reset is switched off for this deployment."));
+        }
+
+        return WriteCredentialAsync(portalId, userId, request, verifyCurrent: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Confirms that the submitted operation discriminator names the operation actually being performed.
+    /// </summary>
+    /// <param name="request">The submitted credential change.</param>
+    /// <param name="expected">The discriminator this entry point implements.</param>
+    /// <returns>
+    /// The failure reason when the discriminator names a different operation, or <see langword="null"/> when
+    /// it names this one or is absent.
+    /// </returns>
+    /// <remarks>
+    /// An ABSENT discriminator is accepted, because the endpoint the caller chose has already stated which
+    /// operation they meant and requiring them to say it twice would refuse well-formed requests. A
+    /// discriminator naming the OTHER operation is refused rather than ignored: the two differ in whether a
+    /// credential is verified, so silently performing the one the caller did not ask for is not an option.
+    /// An unrecognised value is refused for the same reason.
+    /// </remarks>
+    private static ResultReason? EnsureOperation(ChangePasswordRequest request, string expected)
+    {
+        if (string.IsNullOrWhiteSpace(request.Operation)
+            || string.Equals(request.Operation, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return new ResultReason(
+            PasswordUnsupportedOperationCode,
+            FormattableString.Invariant(
+                $"Operation \"{request.Operation}\" is not supported by this endpoint, which performs \"{expected}\". Use the endpoint that performs the operation you intend."));
+    }
+
+    /// <summary>
+    /// Writes a new credential, shared by the self-service change and the administrative reset.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that owns the account.</param>
+    /// <param name="userId">Identifier of the account whose credential is changing.</param>
+    /// <param name="request">The submitted credential change.</param>
+    /// <param name="verifyCurrent">
+    /// Whether the current credential must be presented and verified. This is the ONLY difference between
+    /// the two operations, and it is a parameter rather than a re-reading of the request so that the
+    /// decision belongs to the entry point - and therefore to the endpoint's authorisation policy - and can
+    /// never again be chosen by the caller.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the credential is written.</param>
+    /// <returns>A successful result with no value, or the reason the credential was not written.</returns>
+    private async Task<Result> WriteCredentialAsync(
+        int portalId,
+        int userId,
+        ChangePasswordRequest request,
+        bool verifyCurrent,
+        CancellationToken cancellationToken)
+    {
+        // WHO IS ALLOWED TO PERFORM WHICH OPERATION IS SETTLED HERE, BEFORE ANY ACCOUNT IS READ, and it is
+        // settled a SECOND time rather than once. The endpoints that reach this member already carry the
+        // policies that answer it - a change is routed through the account-owner policy and a reset through
+        // the portal-administrator policy - so on the HTTP path this check agrees with the policy that has
+        // already run. It is stated here anyway, for two reasons. Any other caller of this service reaches
+        // the member directly, with no policy in front of it. And the defect this closes is severe enough
+        // that it should not depend on a route attribute remaining correct: an earlier revision performed
+        // NEITHER check, so the reset branch skipped current-credential verification by design - correctly,
+        // since an administrator does not know the credential they are resetting - and performed no
+        // privilege check either, which meant any caller who could reach this member could set anybody's
+        // credential.
+        //
+        // A CHANGE is self-service and is refused to anyone but the owner. Verifying the current credential,
+        // which the branch below does, is proof of possession rather than of authority: it establishes that
+        // the caller knows the credential, and an administrator who wishes to act on another account uses
+        // the reset operation, which is audited as an administrative act.
+        //
+        // A RESET is administrative and is refused to anyone who does not administer the tenant the account
+        // belongs to. The asymmetry matters: were the reset operation admitted to the account itself, the
+        // owner could invoke it on themselves and thereby set a new credential WITHOUT presenting the
+        // current one - which would make the change branch's verification optional, and turn a stolen
+        // access token into a permanent account takeover.
+        //
+        // An administrator's OWN account is not additionally singled out, which is a considered position
+        // rather than an oversight: an account that already administers the tenant can reset every credential
+        // in it, so resetting its own escalates nothing that is not already conferred. This differs from the
+        // three membership transitions, which DO refuse a self-targeted change, because those exist to keep an
+        // administrator subject to a control - lockout and approval - that resetting a credential is not.
+        //
+        // The operation is read from verifyCurrent rather than from the request, so it is the entry point's
+        // answer and never the caller's: a reset is exactly the call that does not verify the current value.
+        Result authorised = await AuthoriseCredentialOperationAsync(
+                portalId,
+                userId,
+                isReset: !verifyCurrent,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (authorised.IsFailure)
+        {
+            return authorised;
         }
 
         User? account = await _users.GetAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
@@ -984,7 +1353,7 @@ public sealed class UserService : IUserService
                 FormattableString.Invariant($"Account {userId} holds no credential."));
         }
 
-        if (isChange)
+        if (verifyCurrent)
         {
             if (string.IsNullOrEmpty(request.CurrentPassword))
             {
@@ -1002,6 +1371,18 @@ public sealed class UserService : IUserService
             return Result.Failure(
                 PasswordNotDifferentCode,
                 "The new credential must differ from the one currently stored.");
+        }
+
+        // Every reason to refuse this request has now been exhausted, so this is the last moment at which
+        // the sessions can be ended without ending them for a request that was going to be rejected anyway.
+        // It is also the last moment BEFORE the credential is replaced, which is the ordering the helper
+        // exists to enforce: a credential changed with sessions left exchangeable would not end the session
+        // the change was performed to end, and the obligation is stated on IUserService in exactly those
+        // terms. Both a self-service change and an administrative reset are covered - the reset ends the
+        // sessions of the account being reset, not the administrator's own.
+        if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
+        {
+            return Result.Failure(sessions);
         }
 
         DateTime now = _clock.UtcNow;
@@ -1127,6 +1508,16 @@ public sealed class UserService : IUserService
                     $"Account {userId} is already {(isApproved ? "approved" : "unapproved")}."));
         }
 
+        // Withdrawal only. Granting an approval takes nothing away, so it revokes nothing - IUserService
+        // says so in terms, and ending a session because an account gained a right would be gratuitous.
+        // Withdrawal is the opposite: it ends the account's right to sign in, so leaving it holding
+        // exchangeable refresh tokens would let it keep obtaining access tokens after the withdrawal.
+        if (!isApproved
+            && await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
+        {
+            return Result.Failure(sessions);
+        }
+
         if (!await _users.SetApprovalAsync(userId, isApproved, cancellationToken).ConfigureAwait(false))
         {
             return Result.Failure(
@@ -1233,6 +1624,83 @@ public sealed class UserService : IUserService
         _cache.InvalidateProfileDefinitions(portalId);
 
         return Result.Success();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// C-03: the two halves of <c>UserController.vb</c> L1189-L1193, in the legacy order and with the
+    /// legacy short-circuit. The setting is consulted FIRST, so a tenant that does not require a valid
+    /// profile at sign-in never pays for the definition read at all - which is the same ordering the
+    /// legacy <c>And</c> expression produced, since VB's <c>And</c> on the two operands was evaluated left
+    /// to right and the second operand was a method call the first could not skip. The reproduction here is
+    /// the stronger one: this genuinely short-circuits, so it issues fewer reads than the legacy did while
+    /// producing an identical answer.
+    /// </para>
+    /// <para>
+    /// A tenant with no User Accounts module instance has no settings source, so the setting cannot be
+    /// read. The legacy behaviour in that case is measured rather than guessed: <c>GetUserSettings</c>
+    /// returned nothing, <c>UserModuleBase.GetSetting</c> therefore yielded the key's default, and the
+    /// default for this key is <see langword="true"/> (<c>UserModuleBase.vb</c> L94-L194). The default is
+    /// applied here rather than the gate being skipped, which is why the settings read is treated as
+    /// present-with-defaults instead of as an absence.
+    /// </para>
+    /// <para>
+    /// The completeness test walks the tenant's definitions and stops at the first required property whose
+    /// answer is missing or empty, exactly as <c>ProfileController.ValidateProfile</c> did with its
+    /// <c>Exit For</c>. An account with no stored answers at all and at least one required definition is
+    /// therefore incomplete, which is the case the legacy hit for a newly created account.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<bool>> RequiresProfileCompletionAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        MembershipSettingsDto? settings =
+            await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        // An absent settings source yields the key's own default, which is true; a present source yields
+        // whatever it stores.
+        bool required = settings?.SecurityRequireValidProfileAtLogin
+            ?? MembershipSettingsDto.DefaultRequireValidProfileAtLogin;
+
+        if (!required)
+        {
+            return Result<bool>.Success(false);
+        }
+
+        IReadOnlyList<ProfilePropertyDefinition> definitions = await _profiles
+            .GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        List<ProfilePropertyDefinition> mandatory = definitions.Where(d => d.IsRequired).ToList();
+        if (mandatory.Count == 0)
+        {
+            // Nothing is required, so nothing can be missing. The stored answers are not read at all,
+            // which keeps the sign-in path free of a query it cannot learn anything from.
+            return Result<bool>.Success(false);
+        }
+
+        IReadOnlyList<UserProfileValue> stored =
+            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+
+        var answers = new Dictionary<int, string?>(stored.Count);
+        foreach (UserProfileValue value in stored)
+        {
+            answers[value.PropertyDefinitionId] = value.PropertyValue;
+        }
+
+        foreach (ProfilePropertyDefinition definition in mandatory)
+        {
+            if (!answers.TryGetValue(definition.PropertyDefinitionId, out string? answer)
+                || string.IsNullOrWhiteSpace(answer))
+            {
+                return Result<bool>.Success(true);
+            }
+        }
+
+        return Result<bool>.Success(false);
     }
 
     /// <inheritdoc />
@@ -1608,7 +2076,26 @@ public sealed class UserService : IUserService
         await _profiles
             .DeleteDefinitionAsync(definition.PropertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
-        await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // MIGRATION: the commit is guarded exactly as the update path beside it is, and for the same
+        // race. A concurrent administrator that removed this declaration between the read above and
+        // this commit makes the tracked deletion affect no rows, which the persistence layer reports
+        // as a concurrency conflict. Left unguarded that escaped as an unhandled exception and the
+        // caller was told the server had failed, when in truth the caller had simply lost a race and
+        // the outcome it asked for has already happened. The conflict code is the one this contract
+        // documents, so the shared status table answers it as 409 and the endpoint's declared conflict
+        // response becomes reachable rather than notional.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsConcurrencyConflict(exception))
+        {
+            return Result.Failure(
+                PersistenceConflictCode,
+                "The definition was changed by another request; reload it and try again.");
+        }
+
         _cache.InvalidateProfileDefinitions(portalId);
 
         return Result.Success();
@@ -1661,6 +2148,202 @@ public sealed class UserService : IUserService
             throw new DomainException(FormattableString.Invariant(
                 $"The {name} filter must not be blank; omit it to search without it."));
         }
+    }
+
+    /// <summary>
+    /// Decides whether the current caller may perform the requested credential operation on the addressed
+    /// account.
+    /// </summary>
+    /// <param name="portalId">The tenant the account belongs to.</param>
+    /// <param name="userId">The account whose credential the operation addresses.</param>
+    /// <param name="isReset">
+    /// <see langword="true"/> for an administrative reset, which presents no current credential;
+    /// <see langword="false"/> for a self-service change, which does.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
+    /// <returns>A successful outcome when the operation is permitted, and a failure naming why when it is not.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS A SECOND CHECK, NOT THE ONLY ONE, AND BOTH ARE NECESSARY. The route policy establishes that the
+    /// caller may address this account at all - it admits the account itself or an administrator of its tenant
+    /// - and it does so without reading a request body, which is what a policy can see. It therefore cannot
+    /// distinguish the two operations this member accepts, and the distinction is exactly where the danger
+    /// lies: reset legitimately skips current-credential verification, so a caller who may address an account
+    /// but may not administer it must be prevented from choosing reset.
+    /// </para>
+    /// <para>
+    /// THE AUTHORITY IS READ FROM STORED STATE, NOT FROM THE CALLER'S CLAIMS. <c>ICurrentUser</c> reports what
+    /// the token said, and its super-user flag and role list are documented as informational for exactly this
+    /// reason: they were minted at sign-in and cannot observe an account demoted, or a role assignment lapsed,
+    /// since. Only the account key and tenant are taken from the token - the caller's identity is the one thing
+    /// the token is authoritative about - and everything that confers authority is read from the database.
+    /// </para>
+    /// <para>
+    /// AN UNAUTHENTICATED OR UNIDENTIFIABLE CALLER IS REFUSED BOTH OPERATIONS. Reaching this member without an
+    /// identity should be impossible, because every route that leads here requires one; it is refused rather
+    /// than assumed impossible, so that a future caller reaching the service directly cannot bypass the rule.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy screens expressed this by which screen a caller could open rather than by a check
+    /// inside the operation. <c>Website/admin/Users/Password.ascx</c> was the account's own change screen and
+    /// required the current credential; the administrative reset was reached from the membership panel, which
+    /// the account-management page only rendered for an administrator, and which additionally hid its commands
+    /// when an administrator was looking at their own account
+    /// (<c>Website/admin/Users/Membership.ascx.vb</c> L135). A stateless API has no screen to gate, so the rule
+    /// moves into the operation - which also makes it hold for every caller rather than only for one that came
+    /// through a page.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> AuthoriseCredentialOperationAsync(
+        int portalId,
+        int userId,
+        bool isReset,
+        CancellationToken cancellationToken)
+    {
+        // The caller's own identity, and nothing else, is taken from the token.
+        bool isSelf = _currentUser.IsAuthenticated
+            && _currentUser.UserId is int callerId
+            && callerId == userId
+            && _currentUser.PortalId is int callerPortalId
+            && callerPortalId == portalId;
+
+        if (!isReset)
+        {
+            return isSelf
+                ? Result.Success()
+                : Result.Failure(
+                    PasswordChangeSelfOnlyForbiddenCode,
+                    "A credential change may only be performed by the account that owns it; an administrator "
+                    + "uses the reset operation instead.");
+        }
+
+        bool administers = _currentUser.IsAuthenticated
+            && _currentUser.UserId is int resetterId
+            && await CallerAdministersPortalAsync(portalId, resetterId, cancellationToken).ConfigureAwait(false);
+
+        return administers
+            ? Result.Success()
+            : Result.Failure(
+                PasswordResetForbiddenCode,
+                "An administrative credential reset requires administrative authority over the portal the "
+                + "account belongs to.");
+    }
+
+    /// <summary>
+    /// Reports whether one account holds administrative authority over one tenant, judged from stored state.
+    /// </summary>
+    /// <param name="portalId">The tenant in question.</param>
+    /// <param name="callerUserId">The account whose authority is being established.</param>
+    /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
+    /// <returns><see langword="true"/> when the account is a host account or administers that tenant.</returns>
+    /// <remarks>
+    /// <para>
+    /// A host account is installation-wide and is accepted without any tenant membership, which is measured
+    /// rather than assumed: a host account is created by the installer and need hold membership of no portal,
+    /// so a portal-scoped read would not find it. The account is therefore read without a tenant scope and its
+    /// own super-user column decides.
+    /// </para>
+    /// <para>
+    /// Otherwise the question is asked by KEYS and by TIME: the administrator role's key comes from the
+    /// tenant's own <c>Portals.AdministratorRoleId</c> column, and membership is judged in force at one instant
+    /// read once from the injected clock. It is never asked by role name, because no unique constraint on
+    /// <c>Roles.RoleName</c> exists anywhere in the eighty-eight upgrade scripts, so the stock name
+    /// "Administrators" names a different row in every portal and a name-based test would be satisfied by an
+    /// administrator of any of them. The validity window itself is
+    /// <c>UserRole.AnyActiveInRole</c>, which is the single implementation shared with the API layer's
+    /// authorisation evaluator, so the two layers cannot come to different conclusions about the same
+    /// assignment.
+    /// </para>
+    /// <para>
+    /// A tenant that designates no administrator role confers authority on nobody. An unset designation is a
+    /// configuration gap, and a gap must not grant.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> CallerAdministersPortalAsync(
+        int portalId,
+        int callerUserId,
+        CancellationToken cancellationToken)
+    {
+        User? caller = await _users
+            .GetAsync(portalId: null, callerUserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (caller is null)
+        {
+            return false;
+        }
+
+        if (caller.IsSuperUser)
+        {
+            return true;
+        }
+
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (portal?.AdministratorRoleId is not int administratorRoleId)
+        {
+            return false;
+        }
+
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesAsync(portalId, callerUserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return UserRole.AnyActiveInRole(assignments, administratorRoleId, _clock.UtcNow);
+    }
+
+    /// <summary>
+    /// Ends every session the account holds, and reports why the calling operation must be abandoned when
+    /// they could not be ended.
+    /// </summary>
+    /// <param name="userId">The account whose sessions are to end.</param>
+    /// <param name="cancellationToken">Token observed while the revocation is written.</param>
+    /// <returns>
+    /// <see langword="null"/> once no refresh token belonging to the account is exchangeable - including
+    /// when it held none - or the reason the caller must report instead of success.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Call this BEFORE the state change, not after it.</b> The ordering is the whole reason this is a
+    /// helper rather than two lines repeated three times. Revoking first and then failing leaves the account
+    /// signed out of sessions it may simply re-establish, which is an inconvenience; changing the state
+    /// first and then failing to revoke leaves the operation reported as failed while the credential has in
+    /// fact been replaced, or the approval withdrawn, with every session still live - which is both a
+    /// falsehood to the caller and the exact exposure the revocation exists to close.
+    /// </para>
+    /// <para>
+    /// The residual race is bounded and is worth naming. Between the revocation and the state change a
+    /// concurrent exchange could mint one fresh family, which the revocation has already passed. That family
+    /// is short-lived by construction and, once the state change lands, cannot be renewed: the sign-in
+    /// service re-reads approval and lock-out on every exchange, so the next rotation refuses it and revokes
+    /// it. What remains is one access token's own lifetime, which is the irreducible floor for stateless
+    /// bearer tokens and is documented as such rather than papered over.
+    /// </para>
+    /// <para>
+    /// The revocation is idempotent, so an account holding no session succeeds here rather than reporting
+    /// that nothing was found, and a caller that retries after a store failure cannot do harm by retrying.
+    /// </para>
+    /// </remarks>
+    private async Task<ResultReason?> EndSessionsAsync(int userId, CancellationToken cancellationToken)
+    {
+        Result revoked = await _tokens
+            .RevokeAllRefreshTokensAsync(userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (revoked.IsSuccess)
+        {
+            return null;
+        }
+
+        // The token service's own reason is deliberately not forwarded. Its code belongs to that contract's
+        // vocabulary and its message describes a store this caller does not own, so it is replaced by this
+        // service's own code and a sentence written for the administrator who will read it.
+        return new ResultReason(
+            SessionRevocationFailedCode,
+            FormattableString.Invariant($"The sessions held by account {userId} could not be ended.")
+            + " The operation was abandoned rather than completed while they remained active. Try again.");
     }
 
     /// <summary>
@@ -1942,7 +2625,10 @@ public sealed class UserService : IUserService
                 "Security_EmailValidation",
                 MembershipSettingsDto.DefaultEmailValidationExpression),
             SecurityRequireValidProfile = ReadBoolean(map, "Security_RequireValidProfile", false),
-            SecurityRequireValidProfileAtLogin = ReadBoolean(map, "Security_RequireValidProfileAtLogin", true),
+            SecurityRequireValidProfileAtLogin = ReadBoolean(
+                map,
+                "Security_RequireValidProfileAtLogin",
+                MembershipSettingsDto.DefaultRequireValidProfileAtLogin),
             SecurityDisplayNameFormat = ReadString(map, "Security_DisplayNameFormat", string.Empty),
         };
 

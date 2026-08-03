@@ -37,5 +37,12 @@
     "karma-jasmine": "~5.1.0",
     "karma-jasmine-html-reporter": "~2.1.0",
     "typescript": "~5.7.2"
+  },
+  "overrides": {
+    "tar": "^7.5.22",
+    "postcss": "^8.5.18",
+    "piscina": "^4.9.3",
+    "vite": "^6.4.3",
+    "@babel/core": "^7.29.1"
   }
 }

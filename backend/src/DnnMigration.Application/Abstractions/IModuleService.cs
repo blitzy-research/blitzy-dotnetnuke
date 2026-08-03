@@ -1,148 +1,145 @@
 // MIGRATION: this contract replaces the orchestration half of Library/Components/Modules/ModuleController.vb
-// MIGRATION: - 1,456 measured lines carrying 38 public members, six of them Shared (static) - together with
-// MIGRATION: the three legacy admin screens Website/admin/Modules/ModuleSettings.ascx.vb, Export.ascx.vb and
-// MIGRATION: Import.ascx.vb, and the read-only halves of DesktopModuleController.vb (92 lines, 12 members)
-// MIGRATION: and ModuleDefinitionController.vb (7 members). Static members become instance members on an
-// MIGRATION: injected service so they can be substituted in tests, which the legacy shape made impossible:
-// MIGRATION: an instance member was reached through a directly constructed object and a Shared member
-// MIGRATION: through the type itself, so no consumer could stand either aside for a test double.
-// MIGRATION:
-// MIGRATION: Every line below carries the marker deliberately. Rule T5 requires each divergence to be
-// MIGRATION: annotated inline rather than silently absorbed, and a per-line marker keeps the annotation
-// MIGRATION: unambiguous if a paragraph is ever reflowed.
-// MIGRATION:
+//            - 1,456 measured lines carrying 38 public members, six of them Shared (static) - together with
+//            the three legacy admin screens Website/admin/Modules/ModuleSettings.ascx.vb, Export.ascx.vb and
+//            Import.ascx.vb, and the read-only halves of DesktopModuleController.vb (92 lines, 12 members)
+//            and ModuleDefinitionController.vb (7 members). Static members become instance members on an
+//            injected service so they can be substituted in tests, which the legacy shape made impossible:
+//            an instance member was reached through a directly constructed object and a Shared member
+//            through the type itself, so no consumer could stand either aside for a test double.
+//
 // MIGRATION: 1. THE FLATTENED OBJECT IS SPLIT FOUR WAYS. ModuleInfo.vb is one 936-line class flattening the
-// MIGRATION: Modules-to-TabModules-to-ModuleDefinitions-to-ModuleControls join. It becomes four entities
-// MIGRATION: along the real table boundaries, so a module INSTANCE is identified by the pair
-// MIGRATION: (ModuleID, TabID) and TabModuleID is the surrogate key of that placement. A module marked for
-// MIGRATION: every page is one Modules row and many TabModules rows, which is exactly why removing "the
-// MIGRATION: module" and removing "this placement" are different operations on this surface. Reported and
-// MIGRATION: not corrected: the migration plan describes that class as 58 properties, whereas the measured
-// MIGRATION: count of Public Property declarations is 54. The entity author's own measurement stands, since
-// MIGRATION: this contract exposes DTOs rather than the entity and is not the place to settle the count.
-// MIGRATION:
+//            Modules-to-TabModules-to-ModuleDefinitions-to-ModuleControls join. It becomes four entities
+//            along the real table boundaries, so a module INSTANCE is identified by the pair
+//            (ModuleID, TabID) and TabModuleID is the surrogate key of that placement. A module marked for
+//            every page is one Modules row and many TabModules rows, which is exactly why removing "the
+//            module" and removing "this placement" are different operations on this surface. Reported and
+//            not corrected: the migration plan describes that class as 58 properties, whereas the measured
+//            count of Public Property declarations is 54. The entity author's own measurement stands, since
+//            this contract exposes DTOs rather than the entity and is not the place to settle the count.
+//
 // MIGRATION: 2. TWO KEY-VALUE SETTINGS STORES, NEVER MERGED. The legacy pair returned untyped hashtables and
-// MIGRATION: documented their own separation: the module-scoped reader at L1237 is remarked
-// MIGRATION: "TabModuleSettings are not included" and the placement-scoped reader at L1336 is remarked
-// MIGRATION: "ModuleSettings are not included". Both become one typed settings DTO that carries the two
-// MIGRATION: stores as two distinct dictionaries - dbo.ModuleSettings keyed (ModuleID, SettingName) and
-// MIGRATION: shared by every placement, dbo.TabModuleSettings keyed (TabModuleID, SettingName) and owned by
-// MIGRATION: one placement. Collapsing them into a single map would destroy an every-page module's per-page
-// MIGRATION: configuration, so the scope discriminator is explicit in both the read and the write member.
-// MIGRATION:
+//            documented their own separation: the module-scoped reader at L1237 is remarked
+//            "TabModuleSettings are not included" and the placement-scoped reader at L1336 is remarked
+//            "ModuleSettings are not included". Both become one typed settings DTO that carries the two
+//            stores as two distinct dictionaries - dbo.ModuleSettings keyed (ModuleID, SettingName) and
+//            shared by every placement, dbo.TabModuleSettings keyed (TabModuleID, SettingName) and owned by
+//            one placement. Collapsing them into a single map would destroy an every-page module's per-page
+//            configuration, so the scope discriminator is explicit in both the read and the write member.
+//
 // MIGRATION: 3. SIX PER-KEY MUTATORS BECOME REPLACE-THE-SET. The module-scoped triad at L1283, L1306 and
-// MIGRATION: L1318 and the placement-scoped triad at L1373, L1395 and L1407 each set one key, deleted one
-// MIGRATION: key or deleted every key. The caller now submits the whole desired set and the service computes
-// MIGRATION: the difference and commits it as one unit of work. Keeping the triad would force the calling
-// MIGRATION: controller to decide which rows to insert, update or delete, which Rule T2 forbids.
-// MIGRATION:
+//            L1318 and the placement-scoped triad at L1373, L1395 and L1407 each set one key, deleted one
+//            key or deleted every key. The caller now submits the whole desired set and the service computes
+//            the difference and commits it as one unit of work. Keeping the triad would force the calling
+//            controller to decide which rows to insert, update or delete, which Rule T2 forbids.
+//
 // MIGRATION: 4. ORDERING AND PLACEMENT FOLD INTO THE UPDATE REQUEST. UpdateModuleOrder (L1160), the two
-// MIGRATION: UpdateTabModuleOrder overloads (L1197, L1432) and MoveModule (L1078) were separate mutators
-// MIGRATION: whose effects a caller had to sequence itself. Pane, order and placement are ordinary editable
-// MIGRATION: state on the update request, and sibling renumbering within a pane happens inside the service,
-// MIGRATION: so no caller computes an ordinal and no member exposes a renumbering step.
-// MIGRATION:
+//            UpdateTabModuleOrder overloads (L1197, L1432) and MoveModule (L1078) were separate mutators
+//            whose effects a caller had to sequence itself. Pane, order and placement are ordinary editable
+//            state on the update request, and sibling renumbering within a pane happens inside the service,
+//            so no caller computes an ordinal and no member exposes a renumbering step.
+//
 // MIGRATION: 5. THREE DELETE MEMBERS COLLAPSE, KEEPING THE DISTINCTION THEY ENCODED. DeleteAllModules (L795)
-// MIGRATION: carried an explicit deleteBaseModule flag alongside DeleteModule (L819) and DeleteTabModule
-// MIGRATION: (L837), which is the proof that removing a placement and recycling the module are genuinely two
-// MIGRATION: operations. One member expresses it through a nullable placement identifier rather than a bare
-// MIGRATION: boolean: naming a placement removes that placement, and omitting one recycles the module and
-// MIGRATION: every placement of it. The argument therefore says which row is addressed instead of asking the
-// MIGRATION: controller to know what "true" means. The legacy untyped array-list of target pages becomes a
-// MIGRATION: read-only generic list of page identifiers wherever a set of pages is genuinely needed.
-// MIGRATION:
+//            carried an explicit deleteBaseModule flag alongside DeleteModule (L819) and DeleteTabModule
+//            (L837), which is the proof that removing a placement and recycling the module are genuinely two
+//            operations. One member expresses it through a nullable placement identifier rather than a bare
+//            boolean: naming a placement removes that placement, and omitting one recycles the module and
+//            every placement of it. The argument therefore says which row is addressed instead of asking the
+//            controller to know what "true" means. The legacy untyped array-list of target pages becomes a
+//            read-only generic list of page identifiers wherever a set of pages is genuinely needed.
+//
 // MIGRATION: 6. NO CACHE CONCERN CROSSES THIS SURFACE. ModuleController reaches the legacy static cache at 21
-// MIGRATION: measured sites - the largest single concentration in scope - computing each expiry as a
-// MIGRATION: per-entity timeout multiplied by a global performance setting (L998, L1052, L1264, L1355) and
-// MIGRATION: invalidating coarsely. The read flag at L885, the definition flag at L57 of
-// MIGRATION: ModuleDefinitionController.vb, the cache-invalidation Sub at L614 and the file-based module
-// MIGRATION: OUTPUT caching helpers at L478, L482 and L486 are all absent here. Caching belongs to the
-// MIGRATION: domain cache abstraction the implementing service injects, with the legacy key names preserved
-// MIGRATION: as constants and explicit invalidation after every successful write. The three output-caching
-// MIGRATION: helpers returned a server path, and no filesystem path appears on this contract at all.
-// MIGRATION:
+//            measured sites - the largest single concentration in scope - computing each expiry as a
+//            per-entity timeout multiplied by a global performance setting (L998, L1052, L1264, L1355) and
+//            invalidating coarsely. The read flag at L885, the definition flag at L57 of
+//            ModuleDefinitionController.vb, the cache-invalidation Sub at L614 and the file-based module
+//            OUTPUT caching helpers at L478, L482 and L486 are all absent here. Caching belongs to the
+//            domain cache abstraction the implementing service injects, with the legacy key names preserved
+//            as constants and explicit invalidation after every successful write. The three output-caching
+//            helpers returned a server path, and no filesystem path appears on this contract at all.
+//
 // MIGRATION: 7. THE XML PORTAL-TEMPLATE MEMBERS ARE NOT PORTED. The deserialiser at L493 and the serialiser
-// MIGRATION: at L539 exchanged raw XML node and document types and belonged to portal-template import, which
-// MIGRATION: stays inside the portal service. No XML node, document or reader type crosses this boundary,
-// MIGRATION: and the legacy template-merge enumeration is not among the target domain enumerations.
-// MIGRATION:
+//            at L539 exchanged raw XML node and document types and belonged to portal-template import, which
+//            stays inside the portal service. No XML node, document or reader type crosses this boundary,
+//            and the legacy template-merge enumeration is not among the target domain enumerations.
+//
 // MIGRATION: 8. FIVE LATE-BOUND ACTIVATION SITES BECOME ONE INJECTED FACTORY. ModuleController.vb L231 and
-// MIGRATION: L431 both hand a stored type name to a late-bound activator, and EventMessageProcessor.vb does
-// MIGRATION: the same at L32, L52 and L77. These five are the only "COM-like" activation in scope and the
-// MIGRATION: exclusion covering COM interop, VB6 and ActiveX is therefore VACUOUS against this codebase:
-// MIGRATION: every one is ordinary .NET reflection, so no COM interop is removed here and no wording should
-// MIGRATION: suggest otherwise. The export and import members resolve a module's portability behaviour from
-// MIGRATION: the closed, dependency-injected set behind the sibling business-controller factory abstraction,
-// MIGRATION: which the implementing service injects and this contract never names in a signature. A type
-// MIGRATION: name consequently never crosses a boundary to be activated.
-// MIGRATION:
+//            L431 both hand a stored type name to a late-bound activator, and EventMessageProcessor.vb does
+//            the same at L32, L52 and L77. These five are the only "COM-like" activation in scope and the
+//            exclusion covering COM interop, VB6 and ActiveX is therefore VACUOUS against this codebase:
+//            every one is ordinary .NET reflection, so no COM interop is removed here and no wording should
+//            suggest otherwise. The export and import members resolve a module's portability behaviour from
+//            the closed, dependency-injected set behind the sibling business-controller factory abstraction,
+//            which the implementing service injects and this contract never names in a signature. A type
+//            name consequently never crosses a boundary to be activated.
+//
 // MIGRATION: 9. THE SILENT SWALLOW IS NOT REPRODUCED. Both activation sites sit inside a Try whose Catch
-// MIGRATION: body is the comment "ignore errors", so a module that failed to export or import reported
-// MIGRATION: success. Those outcomes are failure reasons here. Two consequences are documented on the
-// MIGRATION: members themselves: a module whose behaviour is not registered fails with a reason rather than
-// MIGRATION: throwing a reflection error, and an EMPTY export payload is a success rather than a failure,
-// MIGRATION: preserving the legacy guard at L233 that wrote a content element only for non-empty content.
-// MIGRATION:
+//            body is the comment "ignore errors", so a module that failed to export or import reported
+//            success. Those outcomes are failure reasons here. Two consequences are documented on the
+//            members themselves: a module whose behaviour is not registered fails with a reason rather than
+//            throwing a reflection error, and an EMPTY export payload is a success rather than a failure,
+//            preserving the legacy guard at L233 that wrote a content element only for non-empty content.
+//
 // MIGRATION: 10. THE DEFERRED-IMPORT EVENT-QUEUE PATH IS OMITTED. L422 tests a module's feature set against
-// MIGRATION: the legacy integer sentinel and, when the module was installed in the same request, parks the
-// MIGRATION: payload on a queue for replay after an application restart. That queue subsystem is excluded,
-// MIGRATION: and resolving behaviour from a closed registered set makes the capability discovery it existed
-// MIGRATION: to defer unnecessary. Import either succeeds or reports a reason; nothing is parked.
-// MIGRATION:
+//            the legacy integer sentinel and, when the module was installed in the same request, parks the
+//            payload on a queue for replay after an application restart. That queue subsystem is excluded,
+//            and resolving behaviour from a closed registered set makes the capability discovery it existed
+//            to defer unnecessary. Import either succeeds or reports a reason; nothing is parked.
+//
 // MIGRATION: 11. THE SEARCH READER IS NOT PORTED. The reader at L1032 collected the modules a crawler should
-// MIGRATION: visit; search is deferred entirely and the legacy searchable contract depended on the flattened
-// MIGRATION: entity and an untyped result collection, both eliminated. No search member appears here. The
-// MIGRATION: searchable CAPABILITY survives as ordinary data on the desktop-module record.
-// MIGRATION:
+//            visit; search is deferred entirely and the legacy searchable contract depended on the flattened
+//            entity and an untyped result collection, both eliminated. No search member appears here. The
+//            searchable CAPABILITY survives as ordinary data on the desktop-module record.
+//
 // MIGRATION: 12. BOTH LEGACY ROW-HYDRATION PATHS ARE GONE RATHER THAN TRANSLATED. The private hydrator at
-// MIGRATION: L53 assigns one property per line by wrapping each column read in the sentinel-substituting
-// MIGRATION: helper - the block the plan cites at L54 and L66 to L72 - and its two wrappers build an untyped
-// MIGRATION: sequence and an untyped dictionary over it. The framework's separate 729-line reflection-driven
-// MIGRATION: hydrator, with 21 in-scope call sites, is likewise not carried forward. The object-relational
-// MIGRATION: materialiser replaces both, so no hydration or fill member appears anywhere in the target and
-// MIGRATION: no sentinel-substituting column read survives.
-// MIGRATION:
+//            L53 assigns one property per line by wrapping each column read in the sentinel-substituting
+//            helper - the block the plan cites at L54 and L66 to L72 - and its two wrappers build an untyped
+//            sequence and an untyped dictionary over it. The framework's separate 729-line reflection-driven
+//            hydrator, with 21 in-scope call sites, is likewise not carried forward. The object-relational
+//            materialiser replaces both, so no hydration or fill member appears anywhere in the target and
+//            no sentinel-substituting column read survives.
+//
 // MIGRATION: 13. THE DEFINITION SURFACE IS READ-ONLY. DesktopModuleController.vb and
-// MIGRATION: ModuleDefinitionController.vb between them expose add, update and delete for desktop modules,
-// MIGRATION: portal grants and definitions (L32, L36, L40, L45, L70 and L32, L36, L53, L57). None is exposed
-// MIGRATION: here: the definition catalogue is installation-time reference data, and installing one is a
-// MIGRATION: module-loader concern that is excluded wholesale. The nine read members - L41, L45, L49 and
-// MIGRATION: L50, L54, L58, L62, L66, L80, L85 - collapse into the single definition lookup below, which
-// MIGRATION: applies the premium-module grant rule the legacy screens applied. Reported and not corrected:
-// MIGRATION: the plan cites the definition controller under a Definitions subfolder, but no such subfolder
-// MIGRATION: exists - the measured path is Library/Components/Modules/ModuleDefinitionController.vb.
-// MIGRATION:
+//            ModuleDefinitionController.vb between them expose add, update and delete for desktop modules,
+//            portal grants and definitions (L32, L36, L40, L45, L70 and L32, L36, L53, L57). None is exposed
+//            here: the definition catalogue is installation-time reference data, and installing one is a
+//            module-loader concern that is excluded wholesale. The ten read members - L41, L45, L49, L50,
+//            L54, L58, L62, L66, L80 and L85 - collapse into the single definition lookup below, which
+//            applies the premium-module grant rule the legacy screens applied. Reported and not corrected:
+//            the plan cites the definition controller under a Definitions subfolder, but no such subfolder
+//            exists - the measured path is Library/Components/Modules/ModuleDefinitionController.vb.
+//
 // MIGRATION: 14. UNTYPED COLLECTIONS BECOME READ-ONLY GENERIC ONES. Every legacy read returned the
-// MIGRATION: pre-generic untyped array-list type - L871, L915, L928, L941, L1020, L1223, L1423 - and the
-// MIGRATION: page reader at L1044 returned a map keyed by integer whose VALUES were entities. Reads here
-// MIGRATION: return a read-only generic list of DTOs or a page of them, no entity crosses the boundary in
-// MIGRATION: either direction, and that entity-valued map is not ported in any form. The eager-loading flag
-// MIGRATION: at L928 is likewise not carried across: a boolean that changes the shape of the result would
-// MIGRATION: make the caller decide something, and module permissions belong to the permission service.
-// MIGRATION: The two definition-keyed lookups at L955 and L1020 are not separate members either - the paged
-// MIGRATION: list below is the query surface, and its request contract carries no definition filter, so a
-// MIGRATION: filter parameter here would be a promise the implementation could not keep.
-// MIGRATION:
+//            pre-generic untyped array-list type - L871, L915, L928, L941, L1020, L1223, L1423 - and the
+//            page reader at L1044 returned a map keyed by integer whose VALUES were entities. Reads here
+//            return a read-only generic list of DTOs or a page of them, no entity crosses the boundary in
+//            either direction, and that entity-valued map is not ported in any form. The eager-loading flag
+//            at L928 is likewise not carried across: a boolean that changes the shape of the result would
+//            make the caller decide something, and module permissions belong to the permission service.
+//            The two definition-keyed lookups at L955 and L1020 are not separate members either - the paged
+//            list below is the query surface, and its request contract carries no definition filter, so a
+//            filter parameter here would be a promise the implementation could not keep.
+//
 // MIGRATION: 15. NO NUMERIC SENTINEL EVER MEANS ABSENT. The legacy sentinel for a missing integer is -1 and
-// MIGRATION: the legacy code passes it as a real argument to mean "any page". Both candidate sentinels are
-// MIGRATION: genuine keys in this schema: Modules.ModuleID is IDENTITY (0, 1) and Tabs.TabID is
-// MIGRATION: IDENTITY (0, 1), so 0 is a real module and a real page, while Portals.PortalID is
-// MIGRATION: IDENTITY (-1, 1), so -1 is a real portal and is simultaneously the sentinel. TabModuleID and
-// MIGRATION: ModuleDefID are both IDENTITY (1, 1). Every optional identifier below is therefore a nullable
-// MIGRATION: integer and absence is null. No implementation may coalesce 0 or -1 into absence.
-// MIGRATION:
+//            the legacy code passes it as a real argument to mean "any page". Both candidate sentinels are
+//            genuine keys in this schema: Modules.ModuleID is IDENTITY (0, 1) and Tabs.TabID is
+//            IDENTITY (0, 1), so 0 is a real module and a real page, while Portals.PortalID is
+//            IDENTITY (-1, 1), so -1 is its seed and first generated value and is simultaneously the
+//            sentinel, and the shipped default portal row carries an explicit 0. TabModuleID and
+//            ModuleDefID are both IDENTITY (1, 1). Every optional identifier below is therefore a nullable
+//            integer and absence is null. No implementation may coalesce 0 or -1 into absence.
+//
 // MIGRATION: 16. TWO FURTHER OMISSIONS, RECORDED SO THEY ARE NOT MISTAKEN FOR OVERSIGHTS. The two CopyModule
-// MIGRATION: overloads (L700, L743) and CopyTabModuleSettings (L764) have no member here: no endpoint and no
-// MIGRATION: administration screen in scope copies a module between pages, and adding one would be
-// MIGRATION: speculation rather than parity. The module-actions collection, whose Add at L151 of
-// MIGRATION: ModuleActionCollection.vb carries an optional-argument tail, is a Web Forms menu affordance
-// MIGRATION: over a pre-generic collection base and is not ported; had it been, that tail would have become
-// MIGRATION: an options object rather than a signature of defaults.
-// MIGRATION:
+//            overloads (L700, L743) and CopyTabModuleSettings (L764) have no member here: no endpoint and no
+//            administration screen in scope copies a module between pages, and adding one would be
+//            speculation rather than parity. The module-actions collection, whose Add at L151 of
+//            ModuleActionCollection.vb carries an optional-argument tail, is a Web Forms menu affordance
+//            over a pre-generic collection base and is not ported; had it been, that tail would have become
+//            an options object rather than a signature of defaults.
+//
 // MIGRATION: 17. STATUS NO LONGER TRAVELS THROUGH AN ARGUMENT. The legacy tree reports outcomes by mutating
-// MIGRATION: a ByRef argument alongside a return value. Every member below returns a result carrying both
-// MIGRATION: the value and the reason, so no out-parameter and no by-reference parameter appears in this
-// MIGRATION: contract, and Optional ByVal tails whose defaults were invisible at the call site are explicit.
+//            a ByRef argument alongside a return value. Every member below returns a result carrying both
+//            the value and the reason, so no out-parameter and no by-reference parameter appears in this
+//            contract, and Optional ByVal tails whose defaults were invisible at the call site are explicit.
 
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Module;
@@ -215,7 +212,7 @@ public interface IModuleService
     /// Lists one page of the modules in a portal.
     /// </summary>
     /// <param name="portalId">The portal to list within.</param>
-    /// <param name="request">Paging, sorting and free-text query, applied to the module title.</param>
+    /// <param name="request">Page coordinates and the free-text query, which is applied to the module title. The sort field must be absent: this listing has no caller-selectable ordering, for the reason given in the remarks, and naming one is a refusal rather than a value that is ignored.</param>
     /// <param name="tabId">Restrict to the modules placed on one page, or <see langword="null"/> for the whole portal. 0 is a genuine page.</param>
     /// <param name="includeDeleted">Whether to include modules in the recycle bin.</param>
     /// <param name="cancellationToken">Token that cancels the read.</param>
@@ -225,8 +222,22 @@ public interface IModuleService
     /// not exist, or <c>module.request_invalid</c> when the paging request is malformed.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// A module placed on every page contributes one row per placement, each with its own placement
-    /// identifier, so the total count is a count of placements rather than of modules.
+    /// identifier.
+    /// </para>
+    /// <para>
+    /// <b>The ordering is fixed and is not caller-selectable.</b> Modules are sequenced by title then
+    /// key, and within each module its placements by page, then position, then placement identifier. A
+    /// request that names a sort field is refused with <c>module.request_invalid</c>, not answered in
+    /// the default order - a listing that accepted the field and then ignored it would return a page
+    /// the caller believes was ordered and has no way to discover was not. The reason no ordering is
+    /// offered is structural, and it follows directly from the row-per-placement expansion above: the
+    /// page window is applied over MODULES while the response carries PLACEMENT rows, so an ordering
+    /// could only ever apply to the modules behind the rows rather than to the rows the caller receives.
+    /// <c>SortableFields.Modules</c> records the measurement and names every excluded member of the
+    /// projection. Reordering a page is a client-side projection over the answer.
+    /// </para>
     /// </remarks>
     Task<Result<PagedResult<ModuleListItemDto>>> ListModulesAsync(
         int portalId,
@@ -396,6 +407,65 @@ public interface IModuleService
     /// </remarks>
     Task<Result<IReadOnlyList<ModuleDefinitionDto>>> ListModuleDefinitionsAsync(
         int portalId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads one module definition, as it is available to a portal.
+    /// </summary>
+    /// <param name="portalId">The portal the definition must be available to.</param>
+    /// <param name="moduleDefinitionId">The definition wanted.</param>
+    /// <param name="cancellationToken">Token that cancels the read.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> carrying the definition, or whose value is
+    /// <see langword="null"/> when the portal has no such definition available - which lets the API layer
+    /// answer <c>404</c> without this member raising a failure for an ordinary "not there".
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces the legacy single-definition read <c>ModuleDefinitionController.GetModuleDefinition</c>,
+    /// which took the identifier alone and answered from the whole installation. This member takes the
+    /// portal as well, and that is deliberate: the same premium-module rule that narrows the catalogue
+    /// applies here, so a definition the portal has not been granted is reported as absent rather than
+    /// returned. Answering from the installation instead would let one tenant read the catalogue of
+    /// another by identifier, one row at a time.
+    /// </para>
+    /// <para>
+    /// The value is nullable rather than the absence being a failure code, which is the convention every
+    /// single-record read on this contract follows.
+    /// </para>
+    /// </remarks>
+    Task<Result<ModuleDefinitionDto?>> GetModuleDefinitionAsync(
+        int portalId,
+        int moduleDefinitionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists the definitions one desktop module declares, as they are available to a portal.
+    /// </summary>
+    /// <param name="portalId">The portal the definitions must be available to.</param>
+    /// <param name="desktopModuleId">The installed package whose definitions are wanted.</param>
+    /// <param name="cancellationToken">Token that cancels the read.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> carrying the definitions in the same stable
+    /// order the catalogue uses. An empty sequence is a legitimate answer - the package may declare none,
+    /// or may not be available to this portal - and is never reported as a failure.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Replaces <c>ModuleDefinitionController.GetModuleDefinitions(desktopModuleId)</c>. One installed
+    /// package commonly declares several definitions, and the legacy administration screens read them
+    /// this way when offering the definitions of a chosen package, so the grouping is a legacy shape
+    /// rather than a new one.
+    /// </para>
+    /// <para>
+    /// Narrowed by the same premium-module rule as the catalogue, for the reason given on the
+    /// single-definition read above: a package the portal has not been granted must not become readable
+    /// by naming it.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<ModuleDefinitionDto>>> ListDesktopModuleDefinitionsAsync(
+        int portalId,
+        int desktopModuleId,
         CancellationToken cancellationToken = default);
 
     /// <summary>

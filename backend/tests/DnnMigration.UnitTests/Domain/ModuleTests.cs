@@ -266,34 +266,94 @@ public class ModuleTests
     }
 
     /// <summary>
-    /// The three capability bits carry the exact legacy member values and compose additively.
+    /// Each capability bit carries the exact legacy member value, proved through the projection that
+    /// reads it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The values are persisted data rather than internal identifiers: they are the individual bits of
-    /// <c>DesktopModules.SupportedFeatures</c>, so renumbering one would reinterpret every existing
-    /// row. They are powers of two, which is what makes a combined field readable as a sum, and the
-    /// combinations asserted here are the four the truth table above exercises.
+    /// <c>DesktopModules.SupportedFeatures</c>, so renumbering one would reinterpret every existing row.
+    /// </para>
+    /// <para>
+    /// Every assertion therefore goes through the real projections rather than through the constants this
+    /// file declares. Storing the literal 1, 2 or 4 and asking which capability the entity then reports is
+    /// the only form of this test that can detect a production mask being renumbered — an earlier revision
+    /// compared the test's own constants to one another and to plain bit arithmetic, so it would have
+    /// stayed green through exactly the regression it existed to catch. The masks are private to the
+    /// entity, which is why they are reached through their consequences and not read directly.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy <c>DesktopModuleSupportedFeature</c> enumeration (DesktopModuleInfo.vb lines
+    /// 30-34) is deliberately not recreated as a Domain type. It was a flags enumeration in everything but
+    /// declaration — it carried no <c>&lt;Flags&gt;</c> attribute — and its members were only ever used as
+    /// masks over one integer column, so promoting it would publish a persistence detail as domain
+    /// vocabulary. The bit values themselves are load-bearing, which is what this test pins.
+    /// </para>
     /// </remarks>
-    [Fact]
-    public void SupportedFeatures_BitsCarryTheLegacyMemberValuesAndComposeAdditively()
+    /// <param name="storedValue">The single bit written to the persisted field.</param>
+    /// <param name="expectedPortable">Whether that bit must be read as the export capability.</param>
+    /// <param name="expectedSearchable">Whether it must be read as the indexing capability.</param>
+    /// <param name="expectedUpgradeable">Whether it must be read as the content-upgrade capability.</param>
+    [Theory]
+    [InlineData(1, true, false, false)]
+    [InlineData(2, false, true, false)]
+    [InlineData(4, false, false, true)]
+    public void SupportedFeatures_EachBitValueIsReadAsExactlyOneCapability(
+        int storedValue,
+        bool expectedPortable,
+        bool expectedSearchable,
+        bool expectedUpgradeable)
     {
-        // MIGRATION: the legacy DesktopModuleSupportedFeature enumeration (DesktopModuleInfo.vb lines
-        // 30-34) is deliberately not recreated as a Domain type. It was a flags enumeration in
-        // everything but declaration — it carried no <Flags> attribute — and its members were only ever
-        // used as masks over one integer column, so promoting it would publish a persistence detail as
-        // domain vocabulary. The bit values themselves are load-bearing and are pinned here instead.
-        PortableFeatureBit.Should().Be(1);
-        SearchableFeatureBit.Should().Be(2);
-        UpgradeableFeatureBit.Should().Be(4);
+        DesktopModule package = NewPackage(storedValue);
 
-        (PortableFeatureBit | SearchableFeatureBit).Should().Be(3);
-        (PortableFeatureBit | UpgradeableFeatureBit).Should().Be(5);
-        (SearchableFeatureBit | UpgradeableFeatureBit).Should().Be(6);
-        (PortableFeatureBit | SearchableFeatureBit | UpgradeableFeatureBit).Should().Be(7);
+        package.IsPortable.Should().Be(
+            expectedPortable,
+            $"the persisted value {storedValue} is read by the entity's own export mask");
+        package.IsSearchable.Should().Be(
+            expectedSearchable,
+            $"the persisted value {storedValue} is read by the entity's own indexing mask");
+        package.IsUpgradeable.Should().Be(
+            expectedUpgradeable,
+            $"the persisted value {storedValue} is read by the entity's own content-upgrade mask");
+    }
 
-        // Powers of two, so the combined field reads as a sum as well as a union. That is what lets the
-        // truth table above be written as the plain integers 0 through 7.
-        (PortableFeatureBit + SearchableFeatureBit + UpgradeableFeatureBit).Should().Be(7);
+    /// <summary>
+    /// The bits compose additively, so a combined field confers exactly the capabilities it sums.
+    /// </summary>
+    /// <remarks>
+    /// The values are powers of two, which is what makes a combined field readable as a sum as well as a
+    /// union — and it is why the truth table above can be written as the plain integers 0 through 7. The
+    /// combinations are asserted through the entity as well, so a production mask that stopped being a
+    /// distinct power of two would surface here as a capability bleeding into a value that never claimed
+    /// it, rather than as arithmetic the test performed on itself.
+    /// </remarks>
+    /// <param name="storedValue">The combined bit field written to the persisted field.</param>
+    /// <param name="expectedPortable">Whether the export capability must be reported.</param>
+    /// <param name="expectedSearchable">Whether the indexing capability must be reported.</param>
+    /// <param name="expectedUpgradeable">Whether the content-upgrade capability must be reported.</param>
+    [Theory]
+    [InlineData(PortableFeatureBit + SearchableFeatureBit, true, true, false)]
+    [InlineData(PortableFeatureBit + UpgradeableFeatureBit, true, false, true)]
+    [InlineData(SearchableFeatureBit + UpgradeableFeatureBit, false, true, true)]
+    [InlineData(PortableFeatureBit + SearchableFeatureBit + UpgradeableFeatureBit, true, true, true)]
+    public void SupportedFeatures_ComposeAdditivelyThroughTheEntity(
+        int storedValue,
+        bool expectedPortable,
+        bool expectedSearchable,
+        bool expectedUpgradeable)
+    {
+        DesktopModule package = NewPackage(storedValue);
+
+        package.IsPortable.Should().Be(expectedPortable);
+        package.IsSearchable.Should().Be(expectedSearchable);
+        package.IsUpgradeable.Should().Be(expectedUpgradeable);
+
+        // The sum and the union agree, which is the property that lets a combined field be written either
+        // way. Asserted on the value the entity was actually handed rather than on the constants alone.
+        (PortableFeatureBit | SearchableFeatureBit | UpgradeableFeatureBit).Should().Be(
+            PortableFeatureBit + SearchableFeatureBit + UpgradeableFeatureBit,
+            "each bit is a distinct power of two, so no two of them overlap");
+        package.SupportedFeatures.Should().Be(storedValue, "the field is reported back exactly as written");
     }
 
     /// <summary>
@@ -1920,8 +1980,9 @@ public class ModuleTests
     /// </para>
     /// <para>
     /// The target resolves the asymmetry without adopting either convention: no entity carries a sentinel
-    /// initialiser, and existence is declared by the persistence layer through
-    /// <see cref="Entity{TId}.MarkIdentityPersisted"/>. That is why <c>default(int) == 0</c> is not
+    /// initialiser, and existence is declared through
+    /// <see cref="Entity{TId}.MarkIdentityPersisted"/> by code that already knows the row exists -
+    /// which these tests do explicitly, because nothing declares it automatically. That is why <c>default(int) == 0</c> is not
     /// interpretable as "no id" for either table, which is what this test asserts.
     /// </para>
     /// </remarks>

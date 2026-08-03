@@ -119,17 +119,24 @@ internal sealed class RoleGroupConfiguration : IEntityTypeConfiguration<RoleGrou
         builder.ToTable("RoleGroups", "dbo");
 
         // MIGRATION: PK_RoleGroups is declared NONCLUSTERED (04.00.04:L57-58, identical to
-        // 03.02.03:L24-25) and is never dropped. Clustering is physical storage metadata with no
-        // Entity Framework surface, so it is recorded here in comment form rather than expressed in
-        // code; the constraint NAME is carried into the model because that does have a surface.
-        builder.HasKey(g => g.RoleGroupId).HasName("PK_RoleGroups");
+        // 03.02.03:L24-25) and is never dropped. Both the constraint NAME and the CLUSTERING are
+        // carried into the model: the SQL Server provider defaults a primary key to CLUSTERED, so
+        // stating only the name would leave the model asserting a physical topology this table does not
+        // have, and the snapshot that assertion lands in is what every future migration is diffed
+        // against.
+        builder.HasKey(g => g.RoleGroupId).HasName("PK_RoleGroups").IsClustered(false);
 
         // MIGRATION: RoleGroupID is int IDENTITY(0,1) NOT NULL (04.00.04:L51, identical to
         // 03.02.03:L18). THE SEED IS ZERO, so RoleGroupId 0 is a real, valid, saved group and must
         // never be read as "absent", "unset", "default" or "not yet persisted". Nothing may test
         // `RoleGroupId == 0`, `<= 0` or `== default`, and no IsNew or IsTransient notion may be
         // inferred from the key: whether a row exists is DECLARED through
-        // Entity<int>.MarkIdentityPersisted and read back through IdentityIsPersisted.
+        // Entity<int>.MarkIdentityPersisted by code that already knows it, and read back through
+        // IdentityIsPersisted. This configuration wires no such declaration - no materialisation
+        // interceptor and no post-save hook is registered anywhere in persistence - so a group read
+        // through this mapping reports IdentityIsPersisted as false and compares by object reference.
+        // That is stated because the alternative reading, that materialisation declares it, would
+        // license exactly the key-value heuristics the paragraph above forbids.
         //
         // This is the schema-wide hazard, not a quirk of one table. Roles.RoleID, Modules.ModuleID
         // and Tabs.TabID are all IDENTITY(0,1), and Portals.PortalID is IDENTITY(-1,1) - so BOTH of

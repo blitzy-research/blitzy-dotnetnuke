@@ -1,54 +1,54 @@
 // MIGRATION: FormsAuthentication.SignOut has no stateless counterpart, so logout now means
-// MIGRATION: access-token expiry plus a client-side discard, backed by server-side revocation of
-// MIGRATION: the presented refresh token's whole family — which is what this file provides.
+// access-token expiry plus a client-side discard, backed by server-side revocation of
+// the presented refresh token's whole family — which is what this file provides.
 //
 // MIGRATION: The measured legacy site is Library/Components/Security/PortalSecurity.vb:L77-L95.
-// MIGRATION: Its SignOut calls System.Web.Security.FormsAuthentication.SignOut() at L79, blanks
-// MIGRATION: the "language" and "authentication" cookies at L82 and L85, and back-dates the
-// MIGRATION: "portalaliasid" and "portalroles" cookies by thirty years at L88-L94. Read that list
-// MIGRATION: again and note what is absent from it: every statement targets the response, so the
-// MIGRATION: legacy sign-off invalidated NOTHING on the server. A ticket already copied from the
-// MIGRATION: browser stayed valid for the whole of its remaining window, because the only thing
-// MIGRATION: that sign-off could reach was the copy it asked the browser to drop. Family
-// MIGRATION: revocation below is therefore added strengthening rather than a translation, and
-// MIGRATION: nothing in the legacy tree was removed to make room for it.
+// Its SignOut calls System.Web.Security.FormsAuthentication.SignOut() at L79, blanks
+// the "language" and "authentication" cookies at L82 and L85, and back-dates the
+// "portalaliasid" and "portalroles" cookies by thirty years at L88-L94. Read that list
+// again and note what is absent from it: every statement targets the response, so the
+// legacy sign-off invalidated NOTHING on the server. A ticket already copied from the
+// browser stayed valid for the whole of its remaining window, because the only thing
+// that sign-off could reach was the copy it asked the browser to drop. Family
+// revocation below is therefore added strengthening rather than a translation, and
+// nothing in the legacy tree was removed to make room for it.
 //
 // MIGRATION: The credential this replaces is the forms ticket established at
-// MIGRATION: Library/Components/Users/UserController.vb:L1024-L1055 — SetAuthCookie at L1033,
-// MIGRATION: with an optional long-lived variant at L1036-L1052 driven by the
-// MIGRATION: PersistentCookieTimeout setting at Website/release.config:L51. That ticket was a
-// MIGRATION: bearer credential with no rotation and no server-side record, so a single capture
-// MIGRATION: yielded unlimited reuse until it elapsed. Single-use rotation with replay detection
-// MIGRATION: is the replacement.
+// Library/Components/Users/UserController.vb:L1024-L1055 — SetAuthCookie at L1033,
+// with an optional long-lived variant at L1036-L1052 driven by the
+// PersistentCookieTimeout setting at Website/release.config:L51. That ticket was a
+// bearer credential with no rotation and no server-side record, so a single capture
+// yielded unlimited reuse until it elapsed. Single-use rotation with replay detection
+// is the replacement.
 //
 // MIGRATION: DIVERGENCE, reversible protection to a one-way digest. The legacy ticket was
-// MIGRATION: protected by a reversible cipher whose key was held in source control, so anything
-// MIGRATION: holding both the stored material and that key could recover a usable ticket. This
-// MIGRATION: store keeps only a one-way digest of each token, never the token, so a dump of its
-// MIGRATION: state cannot be turned back into a credential. The same file's Encrypt and Decrypt
-// MIGRATION: pair (PortalSecurity.vb:L138 and L175, CreateEncryptor at L161 and CreateDecryptor
-// MIGRATION: at L209) is the reversible idiom being retired; no equivalent appears here, by
-// MIGRATION: design.
+// protected by a reversible cipher whose key was held in source control, so anything
+// holding both the stored material and that key could recover a usable ticket. This
+// store keeps only a one-way digest of each token, never the token, so a dump of its
+// state cannot be turned back into a credential. The same file's Encrypt and Decrypt
+// pair (PortalSecurity.vb:L138 and L175, CreateEncryptor at L161 and CreateDecryptor
+// at L209) is the reversible idiom being retired; no equivalent appears here, by
+// design.
 //
 // MIGRATION: The secure-generation lineage is genuine and worth naming: PortalSecurity.CreateKey
-// MIGRATION: at L564-L571 already drew from a cryptographic generator and rendered the bytes as
-// MIGRATION: hex through BytesToHexString at L585-L594. That intent is preserved. Only the
-// MIGRATION: mechanism moves on — the obsolete generator type gives way to the modern static
-// MIGRATION: factory, and hex gives way to unpadded URL-safe Base64, which carries the same
-// MIGRATION: entropy in fewer characters and travels safely in a header, a body or a query
-// MIGRATION: string.
+// at L564-L571 already drew from a cryptographic generator and rendered the bytes as
+// hex through BytesToHexString at L585-L594. That intent is preserved. Only the
+// mechanism moves on — the obsolete generator type gives way to the modern static
+// factory, and hex gives way to unpadded URL-safe Base64, which carries the same
+// entropy in fewer characters and travels safely in a header, a body or a query
+// string.
 //
 // MIGRATION: There is no legacy refresh mechanism to port. DotNetNuke 4.9.0 renewed access by
-// MIGRATION: sliding the forms ticket configured at Website/release.config:L146-L147, so the
-// MIGRATION: browser never held a token, never learned when its own window closed and never
-// MIGRATION: called a renewal endpoint. Every rotation, replay and revocation rule below is new
-// MIGRATION: behaviour introduced by this migration, documented as such, and traceable to no
-// MIGRATION: predecessor.
+// sliding the forms ticket configured at Website/release.config:L146-L147, so the
+// browser never held a token, never learned when its own window closed and never
+// called a renewal endpoint. Every rotation, replay and revocation rule below is new
+// behaviour introduced by this migration, documented as such, and traceable to no
+// predecessor.
 //
 // MIGRATION: The ByRef status channel is gone. Library/Components/Users/UserController.vb:L1110
-// MIGRATION: and L1132 reported their result by mutating a caller-supplied status argument. Every
-// MIGRATION: operation here reports its result through an immutable return value instead, so no
-// MIGRATION: member below takes a by-reference argument of any kind.
+// and L1132 reported their result by mutating a caller-supplied status argument. Every
+// operation here reports its result through an immutable return value instead, so no
+// member below takes a by-reference argument of any kind.
 
 using System.Security.Cryptography;
 using System.Text;
@@ -97,12 +97,20 @@ namespace DnnMigration.Infrastructure.Security;
 /// an immutable snapshot of the non-secret facts needed to re-mint an access token, an absolute
 /// expiry instant, a family identifier, a generation number and two lifecycle flags. The token
 /// itself is never stored, so it exists only as the return value handed to the caller once. No
-/// access token, no credential and no signing material is read, derived or retained here — the
-/// only setting this type reads from its options is the refresh lifetime.
+/// access token, no credential and no signing material is read, derived or retained here. Exactly
+/// two settings are read from the options, both of them lifetimes and neither of them secret:
+/// <see cref="JwtOptions.RefreshTokenExpirationDays"/>, which becomes each token's own sliding
+/// expiry, and <see cref="JwtOptions.RefreshTokenAbsoluteExpirationDays"/>, which becomes the
+/// per-family ceiling described below. Every other member of the options is ignored here.
 /// </para>
 /// <para>
 /// Synchronisation. Every read and every mutation happens inside a single <c>lock</c> over one
-/// private gate object, guarding two ordinary dictionaries. That is a deliberate choice over a
+/// private gate object. That gate guards all of the mutable state, which is five members rather
+/// than two: the digest-keyed record dictionary, the family-to-digest-list dictionary, the
+/// user-to-family-set dictionary, the creation-order family queue that makes pruning ordered, and
+/// the counter from which the next family identifier is drawn. All five are ordinary,
+/// non-thread-safe collections precisely because the gate — not the collection — is the
+/// synchronisation mechanism. That is a deliberate choice over a
 /// lock-free collection: family rotation has to re-check a token's state and then, only if that
 /// check passed, consume it and insert its replacement, and a sequence of individually atomic
 /// operations gives no guarantee across the sequence. With one gate the whole transition is
@@ -219,15 +227,71 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     private const int MaximumStoredEntries = 100_000;
 
     /// <summary>
+    /// Largest number of generations - the live one plus its retained history - that one family keeps.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// M-14: this bound is what makes a rotating session cost a FIXED amount of memory instead of an
+    /// amount proportional to how often it rotates. An earlier revision had no such bound and stated
+    /// that growth along the rotation path was "bounded by the ceiling divided by the rotation cadence,
+    /// per authenticated session". The premise was wrong, and the way it was wrong matters: nothing
+    /// bounds the cadence. Rotation is driven by the caller, so the caller chooses it, and a single
+    /// authenticated session redeeming in a tight loop added one permanently retained entry per
+    /// exchange - every one of them surviving until the family's absolute ceiling elapsed, which is
+    /// measured in days. One account could therefore consume the host's memory, which is precisely the
+    /// uncontrolled-consumption defect the bound closes.
+    /// </para>
+    /// <para>
+    /// THE SAME DEFECT IS REACHED WITHOUT ANY ABUSE AT ALL, and the arithmetic is worth recording
+    /// because it shows <see cref="MaximumStoredEntries"/> could never have held the line on its own. A
+    /// client rotates when its sixty-minute access token lapses and a family's ceiling is thirty days,
+    /// so one continuously rotating session accumulated about <b>720</b> entries; a hundred thousand
+    /// divided by 720 is about <b>139</b>, so fewer than a hundred and forty ordinary long-lived
+    /// sessions were enough to fill the store, after which <see cref="Issue"/> refused EVERY new
+    /// sign-in in the installation. The store-wide cap is a backstop against exhaustion; this bound is
+    /// what stops rotation reaching it.
+    /// </para>
+    /// <para>
+    /// Why a retention window rather than a limit on how many times a family may rotate: a rotation
+    /// limit would eventually end a session that had done nothing wrong, and any limit high enough to
+    /// avoid that is high enough to leave the consumption problem standing. A window bounds the cost
+    /// without bounding the behaviour - a well-behaved session may rotate indefinitely and never grow
+    /// past this many entries, because each exchange releases the oldest history as it adds the new
+    /// generation.
+    /// </para>
+    /// <para>
+    /// Why eight. A retained generation exists solely to recognise a replay, and a replay is a race:
+    /// the copy is presented while it is still worth presenting, which is within a generation or two of
+    /// being redeemed. Once the legitimate client has rotated past it, the copy is refused by every
+    /// path whether history remembers it or not. Eight is therefore several times the window in which
+    /// detection can matter, with headroom for a client holding concurrent requests, and it is the
+    /// exact and only cost of the trade recorded below. THIS IS THE ONE RETENTION BOUND IN THIS STORE:
+    /// a second, looser per-family bound counted only spent generations against sixty-four and could
+    /// therefore never bind behind this one, so it is not carried alongside it - two retention rules
+    /// that can disagree about the same family are a liability, and the tighter of the two subsumes the
+    /// looser exactly.
+    /// </para>
+    /// <para>
+    /// What the trade costs: a replay of material older than this many generations is reported as
+    /// <see cref="RefreshTokenOutcome.Unknown"/> rather than as
+    /// <see cref="RefreshTokenOutcome.AlreadyUsed"/>, so it refuses the caller without also revoking
+    /// the family. Detection is narrowed, never redemption - no evicted entry was redeemable, so
+    /// nothing that could have been used is being forgotten, and the family-wide revocation that a
+    /// recent replay still triggers is a leak signal rather than a gate.
+    /// </para>
+    /// </remarks>
+    private const int RetainedGenerationsPerFamily = 8;
+
+    /// <summary>
     /// Largest configured refresh lifetime, in days, that this store will accept for either the
     /// sliding lifetime or the absolute family ceiling.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A POLICY bound, and deliberately not a representational one. An earlier revision took the
-    /// interval type's own limit, on the reasoning that the constructor's only job was to refuse a
-    /// setting it could not convert. That limit is over ten million days, so in practice it refused
-    /// nothing: a deployment could configure an absolute ceiling of a century and the store would
+    /// A POLICY bound, and deliberately not a representational one. Deferring instead to the
+    /// interval type's own limit - on the reasoning that the constructor need only refuse a setting
+    /// it cannot convert - would refuse nothing in practice, because that limit is over ten million
+    /// days: a deployment could configure an absolute ceiling of a century and the store would
     /// accept it, which turns the one setting that is supposed to end a session into a setting that
     /// never does. Two guarantees are derived from the ceiling - how long a family stays redeemable,
     /// and how long a family that has passed its deadline is retained so a late presentation is still
@@ -236,19 +300,28 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <para>
     /// One year is chosen because it is the point past which a renewable session is a permanent
     /// credential in all but name, and because it is far above any lifetime a deployment has cause to
-    /// set: the shipped configuration is thirty days. It bounds BOTH settings the constructor reads,
-    /// which matters most for the absolute ceiling, since that is the setting with no bound of its own
-    /// in <see cref="JwtOptions"/>. The sliding lifetime additionally has the stricter
-    /// <see cref="JwtOptions.MaximumRefreshTokenExpirationDays"/> applied to it at start-up, so this
-    /// figure is the backstop for a store constructed directly rather than the operative limit on that
-    /// setting.
+    /// set: the shipped configuration is thirty days. It bounds BOTH settings the constructor reads.
+    /// </para>
+    /// <para>
+    /// IT IS NOW A BACKSTOP FOR BOTH RATHER THAN THE OPERATIVE LIMIT FOR EITHER, and the change is worth
+    /// recording because this remark previously described the absolute ceiling as "the setting with no
+    /// bound of its own in JwtOptions". It has one:
+    /// <see cref="JwtOptions.MaximumRefreshTokenAbsoluteExpirationDays"/> is thirty days and is enforced
+    /// by <see cref="JwtOptions.Validate"/>, alongside
+    /// <see cref="JwtOptions.MaximumRefreshTokenExpirationDays"/> for the sliding lifetime. A deployment
+    /// that configures a year is therefore refused at start-up rather than accepted here, and this figure
+    /// applies only to a store constructed directly - in a test, or by a future caller that bypasses the
+    /// bound options - where no start-up validation has run. Keeping it is deliberate: a limit that is
+    /// unreachable through the normal path is exactly what a backstop is.
     /// </para>
     /// </remarks>
     private const int MaximumLifetimeDays = 365;
 
     /// <summary>
-    /// The single gate guarding <see cref="_recordsByDigest"/>, <see cref="_digestsByFamily"/>
-    /// and <see cref="_lastFamilyId"/>, and guarding the lifecycle flags of every stored entry.
+    /// The single gate guarding every piece of mutable state on this type:
+    /// <see cref="_recordsByDigest"/>, <see cref="_digestsByFamily"/>,
+    /// <see cref="_familiesByUser"/>, <see cref="_familiesInCreationOrder"/> and
+    /// <see cref="_lastFamilyId"/>, together with the lifecycle flags of every stored entry.
     /// </summary>
     /// <remarks>
     /// One gate for all mutable state, held for the whole of each operation. Two gates, or a
@@ -261,16 +334,18 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// Stored entries keyed by the one-way digest of their token.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The key is the digest, so the token itself appears nowhere in this dictionary — neither as
     /// a key nor on a value. Ordinal comparison is used because the key is fixed-case hexadecimal
     /// and its interpretation must not vary with the culture the process happens to be running
     /// under.
-    /// </remarks>
-    /// <remarks>
+    /// </para>
+    /// <para>
     /// Holds both redeemable and spent entries, and the difference is visible on the entry rather
     /// than in which dictionary it sits: a spent one has discarded its snapshot and kept its family,
     /// generation and flags. Keeping one dictionary is what lets a replay be recognised by a single
     /// probe, with no possibility of the two containers disagreeing about a digest.
+    /// </para>
     /// </remarks>
     private readonly Dictionary<string, RefreshTokenRecord> _recordsByDigest =
         new(StringComparer.Ordinal);
@@ -381,8 +456,9 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <paramref name="clock"/> or <paramref name="jwtOptions"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Either configured lifetime is not a positive number of days or is too large to be represented
-    /// as an interval, or the absolute ceiling is shorter than the per-token lifetime.
+    /// Either configured lifetime is not a positive number of days or exceeds the policy ceiling of
+    /// <see cref="MaximumLifetimeDays"/> days, or the absolute ceiling is shorter than the per-token
+    /// lifetime.
     /// </exception>
     /// <remarks>
     /// Failing here fails at startup, while the host can still refuse to serve traffic. A
@@ -565,6 +641,19 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             var stored = _recordsByDigest.GetValueOrDefault(digest);
             var outcome = Classify(stored, asOfUtc);
 
+            // L-05: an entry past its own expiry can never be redeemed again, so the snapshot it still
+            // holds - the sign-in name, the role list and the permission keys - has no remaining purpose
+            // and is released here. Redemption already did exactly this; inspection did not, which meant
+            // whether an abandoned session's personal data was retained until its family was pruned
+            // depended on which of the two operations the caller happened to have called. Reading is the
+            // more common of the two and, for a session nobody returns to, often the ONLY one, so the
+            // gap covered the majority case. The entry itself is kept: its family, generation and flags
+            // are what recognise a later replay, and those carry no personal data.
+            if (stored is not null && outcome == RefreshTokenOutcome.Expired)
+            {
+                stored.DiscardSubject();
+            }
+
             // The property pattern, rather than a null-forgiving operator, is what makes the
             // released-snapshot case safe by construction: a redeemable entry always still holds its
             // snapshot, so this test can never fail for a genuinely redeemable entry, and if it ever
@@ -638,15 +727,27 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             // Rotation prunes as well as issuing, because rotation is the operation that actually
             // grows a long-lived session: the redeemed entry is retained for replay detection and a
             // replacement is added beside it, so a session left rotating adds an entry each time
-            // while creating no new family. Pruning here keeps that growth bounded by the ceiling
-            // rather than by however long the process happens to run.
+            // while creating no new family.
             //
-            // Unlike issuing, rotation never refuses on capacity. Refusing to issue declines a new
-            // session, which is recoverable by signing in again; refusing to rotate would destroy a
-            // live one. Rotation also cannot create a family, so it cannot be used to escape the
-            // family bound, and it cannot be driven at all without a valid unredeemed token — which
-            // means growth along this path is bounded by the ceiling divided by the rotation cadence,
-            // per authenticated session, and is not reachable by an unauthenticated party.
+            // M-14: rotation is bounded two ways, and the ordering below is deliberate. First the
+            // family's retained history is trimmed to RetainedGenerationsPerFamily, which is what makes
+            // a rotating session's cost fixed rather than proportional to its rotation count. Then the
+            // store-wide cap is honoured here as it is on issuing, because an earlier revision exempted
+            // this path on the stated grounds that growth was "bounded by the ceiling divided by the
+            // rotation cadence" - a bound that does not exist, since the caller sets the cadence. The
+            // exemption was quantitatively wrong as well as structurally wrong: under the shipped
+            // configuration one continuously rotating session accumulated about 720 entries, so roughly
+            // 139 ordinary sessions filled the store and every new sign-in in the installation was then
+            // refused. RetainedGenerationsPerFamily records that arithmetic.
+            //
+            // The concern that exemption was protecting is real and is preserved: refusing to issue
+            // declines a new session, which signing in again recovers, whereas refusing to rotate ends a
+            // live one. Two things keep that from happening to an innocent session. The trim runs first,
+            // so a session is never refused for space it was about to release; and a refusal leaves the
+            // presented token unconsumed and the family untouched, so it is a retryable condition rather
+            // than a lost session. With the window in place, rotation reaches a steady state where it
+            // adds nothing at all, so this cap can effectively only be met through genuine exhaustion by
+            // new families - which issuing already governs - and declining is then the safer outcome.
             Prune(asOfUtc);
 
             var stored = _recordsByDigest.GetValueOrDefault(digest);
@@ -699,6 +800,21 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
                     "The supplied subject does not belong to the user the presented refresh token "
                     + "was issued to. Re-read the caller's roles and permission keys for the user "
                     + "recorded against the token before redeeming it.");
+            }
+
+            // Trimmed BEFORE capacity is judged and before anything is consumed, so that the space this
+            // family is about to release is already released when the cap is tested, and so that a
+            // refusal below leaves the family exactly as it was found.
+            TrimFamilyHistory(stored.FamilyId);
+
+            if (_recordsByDigest.Count >= MaximumStoredEntries)
+            {
+                // Deliberately NOT accompanied by revoking the family. The presented token is still
+                // unconsumed and still live, so a caller that meets a transient exhaustion can redeem it
+                // once space frees; revoking here would turn a passing capacity event into permanent
+                // session loss for a caller that did nothing wrong, and it would not deny an attacker
+                // anything, since a family at its retention window adds no entries to begin with.
+                return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.CapacityExhausted);
             }
 
             stored.MarkConsumed();
@@ -945,6 +1061,70 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         }
 
         return revokedAny;
+    }
+
+    /// <summary>
+    /// Releases one family's oldest non-redeemable generations, keeping its retained history within
+    /// <see cref="RetainedGenerationsPerFamily"/>.
+    /// </summary>
+    /// <param name="familyId">The family whose history is being trimmed.</param>
+    /// <remarks>
+    /// <para>
+    /// M-14: this is the whole of what bounds a rotating session's footprint. Redemption retains the
+    /// entry it consumed so a later replay is recognisable, and adds a replacement beside it, so without
+    /// this a session that rotated often enough held one entry per exchange until its family's ceiling
+    /// elapsed. Trimming here converts that into a steady state: past the window, each exchange releases
+    /// as much as it adds.
+    /// </para>
+    /// <para>
+    /// Only entries that can no longer be redeemed are released - consumed, revoked, or already gone.
+    /// A redeemable entry is skipped wherever it appears, so this can never end a session or invalidate
+    /// material a caller is holding, which is why it is safe to run on the redemption path itself.
+    /// </para>
+    /// <para>
+    /// A family always keeps at least its live generation, because this runs while the presented token
+    /// is still unconsumed and the window is greater than one. That matters beyond tidiness: an empty
+    /// family reports no ceiling and would be treated as unconditionally prunable by
+    /// <see cref="Prune"/>, so emptying one here would drop a live session's family from both indexes.
+    /// </para>
+    /// <para>
+    /// Must be called while holding <see cref="_gate"/>: it mutates the entry store and the family index.
+    /// </para>
+    /// </remarks>
+    private void TrimFamilyHistory(long familyId)
+    {
+        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
+        if (familyDigests is null || familyDigests.Count <= RetainedGenerationsPerFamily)
+        {
+            return;
+        }
+
+        var removable = familyDigests.Count - RetainedGenerationsPerFamily;
+        var removed = 0;
+        var index = 0;
+
+        // The list is in generation order, so walking from the front releases the oldest history first
+        // and leaves the most recent generations - the only ones a replay could plausibly present - in
+        // place.
+        while (index < familyDigests.Count && removed < removable)
+        {
+            var candidate = familyDigests[index];
+            var member = _recordsByDigest.GetValueOrDefault(candidate);
+
+            // Only history is released. An entry that could still be redeemed is passed over wherever it
+            // sits in the order, so trimming can never end a live session or discard the generation the
+            // legitimate caller is holding. A digest whose record has already gone is dropped from the
+            // index too, so the index cannot outlive what it points at.
+            if (member is null || member.IsConsumed || member.IsRevoked)
+            {
+                _recordsByDigest.Remove(candidate);
+                familyDigests.RemoveAt(index);
+                removed++;
+                continue;
+            }
+
+            index++;
+        }
     }
 
     /// <summary>

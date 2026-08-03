@@ -128,6 +128,24 @@
 // this functional rather than decorative. The radius and the elevation scales it
 // draws on are themselves net additions: the legacy stylesheets declare a corner
 // radius and a shadow zero times each, and the legacy design is square-cornered.
+//
+// THE BOUNDARY COLOUR IS THE BRAND TOKEN, AND THAT FOLLOWS FROM THE SENTENCE
+// ABOVE. This edge is the only thing telling a reader that the grid continues
+// past the visible area, so it is a FUNCTIONAL non-text indicator and WCAG binds
+// it at 3:1 against what sits behind it. An earlier revision used the hairline
+// token, whose own annotation in the vocabulary measures it at 1.37 to 1 on this
+// surface and restricts it to decorative use, and the stronger hairline is only
+// 1.61 to 1 - so both fail, and the file was drawing a functional cue with a
+// value documented as unable to carry one. The brand token measures 12.61 to 1
+// here, and the vocabulary already directs a consumer to it or to the stronger
+// hairline "wherever a boundary must be perceivable"; only one of those two
+// actually clears the threshold. No eleventh colour is invented for this: the
+// palette stays closed at ten, and the radius and surface tokens are unchanged.
+//
+// It reads as a deliberate frame rather than as an emphasis, because it is one
+// hairline wide - the boundary's WEIGHT comes from the border-width token, not
+// from its colour - and because the heading text inside it already carries the
+// same brand hue, so the panel and its contents remain one visual family.
 .data-table__container {
   overflow-x: auto;
 
@@ -135,7 +153,7 @@
   // into the page or into the browser's own back gesture.
   overscroll-behavior-x: contain;
 
-  border: var(--border-width) var(--border-style) var(--color-border);
+  border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
 }
@@ -166,14 +184,18 @@
 // minimum resolves against the containing block, which under a fixed layout with
 // percentage tracks collapses to approximately nothing — it was tried, and
 // heading pairs were still measured physically overlapping on a narrow viewport.
-// A token-composed floor is a real length, so the region scrolls instead of
-// crushing every column into an unreadable sliver. The cost is that a single-word
+// The floor is a real length, so the region scrolls instead of crushing every
+// column into an unreadable sliver. It resolves to `--table-min-inline-size`
+// rather than to a multiple of a spacing step: the spacing scale rhythms the gaps
+// between things, and borrowing a sixteen-times multiplier from it would tie this
+// measure to a number with no relationship to it, so retuning a spacing step
+// would silently move the floor. The cost is that a single-word
 // heading in a marginally narrow track can break mid-word, which is cosmetic,
 // leaves the accessible name intact, and is strictly better than two illegible
 // headings.
 .data-table {
   table-layout: fixed;
-  min-inline-size: calc(var(--space-8) * 16);
+  min-inline-size: var(--table-min-inline-size);
 }
 
 // =============================================================================
@@ -201,12 +223,12 @@
 // element selector for size. The partial resolves the final step and this file
 // consumes that resolution rather than re-opening it.
 //
-// AND IT RESOLVES A LIVE ACCESSIBILITY DEFECT AT ITS ROOT. An earlier revision of
-// this stylesheet painted the heading band with the brand token and reversed the
-// text onto it. Because the shared focus ring also resolves its colour from that
-// same brand token, the sort control's ring then painted brand-on-brand at a
+// AND IT RESOLVES A LIVE ACCESSIBILITY DEFECT AT ITS ROOT. Painting the heading band
+// with the brand token and reversing the text onto it is what must not be done here.
+// Because the shared focus ring also resolves its colour from that
+// same brand token, the sort control's ring would then paint brand-on-brand at a
 // contrast ratio of one to one — invisible, and geometrically unable to escape the
-// cell, which a pixel census of the ring annulus confirmed. The template carries a
+// cell, as a pixel census of the ring annulus confirmed. The template carries a
 // standing flag for it and correctly states that the fix must live outside the
 // markup. Not painting the band IS that fix, and it needs no new token and no
 // second ring: the ring now falls on the page surface, the alternating surface or
@@ -220,9 +242,9 @@
 // grids declare their grid lines off, without exception, and the entire legacy
 // grid vocabulary contains no dimensional CSS whatsoever: the only literals in
 // that whole block are four type sizes, and there is no padding, border, width,
-// height or margin anywhere in it. An earlier revision of this stylesheet drew a
-// hairline above every body cell, which is exactly the "improvement" the global
-// partial warns against in its own opening rule; it is removed. The alternating
+// height or margin anywhere in it. Drawing a
+// hairline above every body cell is exactly the "improvement" the global
+// partial warns against in its own opening rule, so none is drawn. The alternating
 // surface is the row separation, as it was. Stated prominently so that nobody
 // reintroduces grid lines later believing they were merely forgotten.
 //
@@ -274,18 +296,81 @@
 // activation keys work with no key handling. Only the two cases below are left
 // open by that reset.
 
-// The control is disabled while an ordering request is in flight. The pointer must
-// stop promising an interaction the control will refuse; the default arrow says
-// exactly that.
+// THE FULL INTERACTION-STATE SET, and it is declared HERE rather than inherited
+// because the shared reset above makes inheritance impossible. That reset gives the
+// control the heading's own ink with `th[aria-sort] > button { color: inherit }`,
+// which weighs one attribute plus two type selectors — and the global button
+// vocabulary's own disabled ink weighs one type plus one pseudo-class, so it LOSES
+// the cascade outright. The consequence measured before this block existed: an
+// unavailable sort control kept full-strength heading ink and announced its state
+// through nothing but a cursor, which a keyboard or touch reader never sees. Every
+// rule below is a class selector, which Angular scopes with a further attribute, so
+// each one outranks both the reset and the global vocabulary deterministically and
+// no ordering convention is relied on.
 //
-// REPORTED GAP, NOT PAPERED OVER: there is no opacity token and no disabled-text
-// token in the design vocabulary — the muted token carries the disabled role for
-// text, but the control inherits the heading colour by design and dimming it here
-// would fight that inheritance rather than express a state. So the disabled state
-// is conveyed by the cursor and by the element's own disabled property, which
-// assistive technology announces, and no dimming is invented.
+// The values are the vocabulary's OWN state signals, not new ones invented for this
+// component: the hover companion to the brand ink, the selection tint as the press
+// fill, and the muted ink for the unavailable state. The same three carry hover,
+// press and disabled on the shared search and dialogue controls and on the global
+// button rule, so a reader meets one interaction language across the application.
+
+// Hover and press are scoped to `:enabled`, which is the house convention and is
+// structural rather than defensive: `:enabled` cannot match a disabled button at
+// all, so an unavailable control can never be painted as interactive whatever the
+// source order.
+.data-table__sort:enabled {
+  // Guarded by the shared hover-capability mixin. A bare hover rule is applied on
+  // tap on a touch device and then LEFT applied until something else is tapped, so a
+  // heading a reader merely touched would keep reading as hovered — and in a heading
+  // row where the active sort column is itself tinted, a stuck hover is genuinely
+  // misleading. This component previously recorded the absence of that guard as a
+  // reported gap and named the mixins partial as the place to close it; the mixin now
+  // exists there and this is its first consumer.
+  //
+  // The underline is the NON-COLOUR cue, so the state survives a colour-vision
+  // deficiency and a monochrome rendering alike — the same pairing the application
+  // chrome uses for its own links.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  // Press is a genuinely distinct third state rather than a repeat of hover, and it
+  // is distinct BY CHANNEL: hover moves the ink and adds the underline, press adds
+  // the fill and leaves both standing, so the two compose visibly instead of one
+  // masking the other. The radius is needed because the shared reset strips the
+  // control's own edge, so without it the fill would meet the heading text with a
+  // square corner the rest of the application does not use.
+  &:active {
+    color: var(--color-primary-hover);
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+}
+
+// The control is disabled while an ordering request is in flight, and the state is
+// now VISIBLE rather than pointer-only. The muted ink is the vocabulary's own
+// disabled role, and the vocabulary measures it at 5.49 to 1 on the page
+// background - which is what sits behind this control, the heading cell being
+// unfilled on every column except the sorted one - and at 4.73 to 1 on the neutral
+// surface it would sit on there. Both clear the text threshold, so the state carries
+// on its own wherever the control appears; colour is never the sole indicator
+// either, because the native disabled property accompanies it and assistive
+// technology announces that independently of any contrast.
+//
+// THE DISABLED FILL IS DELIBERATELY NOT RESTATED, and this is the one place this
+// component departs from the global disabled rule. That rule pairs its muted ink
+// with the neutral surface — but the shared table conventions already paint the
+// ACTIVE SORT COLUMN's heading with that exact surface, so a filled disabled control
+// would read as "this column is currently sorted" on every column that is not. The
+// ink and the cursor carry the state; the fill would contradict a different one.
+//
+// The cursor is the vocabulary's own refusal cursor rather than the default arrow, so
+// a pointer user gets the same signal here as on every other unavailable control.
 .data-table__sort:disabled {
-  cursor: default;
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  text-decoration: none;
 }
 
 // The direction indicator is a text glyph rather than an asset, and this component
@@ -353,6 +438,52 @@
   &:focus-visible {
     outline-offset: calc(-1 * var(--focus-ring-offset));
   }
+
+  // HOVER AND PRESS, giving a selectable row the same interaction feedback the sort
+  // control above has. The shared table conventions already put the pointer and the
+  // ring on these rows; those tell a reader that the row is operable, but neither
+  // responds to the pointer being over THIS row rather than another, which is what a
+  // hover state is for in a grid of near-identical lines.
+  //
+  // THE INK MOVES, NOT THE SURFACE, and that choice is forced by the zebra stripe. A
+  // hover surface would have to differ from BOTH row backgrounds at once — the page
+  // surface on odd rows and the neutral surface on even ones — and the only palette
+  // members that do are the selection tint, which would make hover indistinguishable
+  // from selection, and the two hairline values, which the vocabulary documents as
+  // decorative and which measure under 1.7 to 1 against either row. Moving the ink is
+  // independent of the stripe entirely, so it reads identically on every row. It is
+  // also the closer parallel to the legacy grid, which expressed row state by
+  // recolouring text rather than by filling a row.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+
+  // Press previews its own outcome: the fill is the selection tint, and pressing a
+  // row is what selects it, so the press state and the state it produces agree. On a
+  // row that is already selected the fill is already there and the press is a no-op,
+  // which is correct — there is nothing new to signal.
+  &:active {
+    background-color: var(--color-selected);
+  }
+
+  // A SELECTED ROW HOVERS TO THE BRAND INK INSTEAD, and the reason is measured
+  // contrast rather than taste. A selected row is painted with the selection tint,
+  // against which the two candidate inks measure very differently: the hover ink above
+  // reaches 4.77 to 1, and the brand ink the vocabulary documents on that same tint
+  // reaches 8.24 to 1. Both clear the 4.5 to 1 threshold for text, so this is a choice
+  // between two passing values rather than a repair of a failing one — but the margin
+  // is the whole point. Hovering necessarily lowers the contrast of a selected row,
+  // whose resting ink measures 13.72 to 1 on that tint, and the hover ink would leave
+  // only 0.27 of headroom above the floor on the one row the reader is currently
+  // acting on, where the brand ink leaves 3.74. The darker ink is also the more
+  // perceivable of the two against a tint that is itself blue, so the state change
+  // reads as a change. Nested rather than declared as a sibling rule so it outranks
+  // the hover above by specificity and not by source order.
+  &.data-table__row--selected {
+    @include mx.hover {
+      color: var(--color-primary);
+    }
+  }
 }
 
 // MIGRATION: the selected row diverges from the legacy rendering over FOUR
@@ -381,8 +512,9 @@
 // The weight is the NON-COLOUR CUE, and choosing it preserves the one legacy
 // property that was not semantically wrong: the legacy selected row was bold, and
 // it stays bold. Colour is therefore never the sole indicator of selection — the
-// template independently publishes both the selection state and the current-item
-// state, and the vocabulary's own contract for this tint requires exactly that.
+// template publishes the selection state programmatically, which is what the
+// vocabulary's own contract for this tint requires, and the bold weight carries the
+// state for a reader who perceives neither the tint nor the announcement.
 //
 // No motion accompanies the change of state. REPORTED GAP: the design vocabulary
 // declares no duration and no easing token, and the mixins partial exports no
@@ -522,16 +654,21 @@
 // net addition, and this component needs no step of its own. The shared scale
 // remains available should a genuine step ever be identified.
 //
-// NO HOVER TREATMENT, AND THE OMISSION IS PRINCIPLED. A hover rule sticks to the
-// last-tapped element on a touch device until something else is tapped, so it needs
-// a hover-capability guard — and the mixins partial, the only file in the workspace
-// permitted a media feature query, closes its exported surface without one and
-// instructs a consumer that needs another at-rule to report the gap and degrade.
-// An earlier revision of this stylesheet wrote that query directly, and a second
-// unguarded hover rule besides; both are removed. REPORTED GAP: emitting no rule
-// beats emitting an unguarded one, and the pointer the global partial already puts
-// on selectable rows and sortable headings, together with the focus ring, tells the
-// reader which of them are interactive.
+// HOVER IS PRESENT AND GUARDED — the gap this section used to report is CLOSED.
+// A hover rule sticks to the last-tapped element on a touch device until something
+// else is tapped, so it needs a hover-capability guard, and the mixins partial is the
+// only file in the workspace permitted a media feature query. Its exported surface
+// previously had no such member, and this file, the shared table conventions, the
+// global form vocabulary and the pagination component each recorded that absence as a
+// reported gap. The guard mixin now exists there and both hover rules in this file go
+// through it, so no query is written here and no rule can stick on a touch device.
+// An earlier revision of this stylesheet wrote the query directly and added a second
+// unguarded hover rule besides; neither of those forms returns.
+//
+// The hover states are additive decoration only. Nothing an interaction depends on
+// lives inside the guard: the pointer the global partial puts on selectable rows and
+// sortable headings, the focus ring, the programmatic selection state and the native
+// disabled property all carry the affordance for a reader whose device cannot hover.
 //
 // NO REDUCED-MOTION QUERY, for the same structural reason and with the same
 // resolution. That partial exports no reduced-motion guard either, and design-system

@@ -165,9 +165,14 @@ public class CreateUserRequestValidatorTests
     /// <returns>The shipped policy.</returns>
     /// <remarks>
     /// <para>
-    /// Every value that drives a rule in this validator is stated rather than left to the type's
-    /// defaults, so that a change to those defaults is caught here instead of silently redefining what
-    /// "the legacy policy" means.
+    /// The options type is instantiated and NOT written to. That is the whole point: the shipped policy is
+    /// whatever <see cref="PasswordPolicyOptions"/> ships with, so a change to those defaults surfaces in
+    /// <see cref="TheShippedPolicy_IsTheLegacyPolicyAndIsCoherent"/> instead of being absorbed. An earlier
+    /// revision assigned the five measured values here by hand and then asserted them again below, which
+    /// made that test an oracle of itself — every value it checked was a value this method had just
+    /// supplied, so the production defaults could drift to anything at all and nothing would fail. The
+    /// assignments are removed rather than merely reduced, and a test that needs a deviation from the
+    /// shipped policy states that one deviation at its own call site.
     /// </para>
     /// <para>
     /// Three legacy attributes are deliberately absent, and are cited by line rather than quoted so that
@@ -180,14 +185,7 @@ public class CreateUserRequestValidatorTests
     /// configure and nothing to assert beyond the request shape itself.
     /// </para>
     /// </remarks>
-    private static PasswordPolicyOptions ShippedPolicy() => new()
-    {
-        MinRequiredPasswordLength = 7,
-        MinRequiredNonAlphanumericCharacters = 0,
-        RequiresUniqueEmail = false,
-        PasswordResetEnabled = true,
-        PasswordStrengthRegularExpression = string.Empty,
-    };
+    private static PasswordPolicyOptions ShippedPolicy() => new();
 
     /// <summary>
     /// Builds a request that satisfies every rule under the shipped policy.
@@ -312,9 +310,17 @@ public class CreateUserRequestValidatorTests
     /// The shipped policy is the measured legacy one, and it is coherent.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the anchor for every anti-hardening assertion below. If any of these four values were to
     /// drift, the rules they drive would silently start rejecting registrations the legacy installation
     /// accepted, and the failure would surface as a puzzling rejection rather than as a broken test.
+    /// </para>
+    /// <para>
+    /// The subject is the production type's own defaults — <see cref="ShippedPolicy"/> constructs
+    /// <see cref="PasswordPolicyOptions"/> and writes nothing to it — so this test is an oracle for
+    /// production rather than for itself. The distinction is not academic: while the values were assigned
+    /// here, a change to those defaults would have left every assertion below green.
+    /// </para>
     /// </remarks>
     [Fact]
     public void TheShippedPolicy_IsTheLegacyPolicyAndIsCoherent()
@@ -1147,16 +1153,26 @@ public class CreateUserRequestValidatorTests
     }
 
     /// <summary>
-    /// A credential that both falls short of the minimum and fails the configured pattern reports the
-    /// refusal rather than being rescued by either rule.
+    /// A credential that both falls short of the minimum and fails the configured pattern is refused by
+    /// each rule independently, and both refusals reach the caller.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the positive statement of the correction described above: the accumulated outcome
     /// survives. It asserts the corrected behaviour and says nothing whatsoever about what the legacy
     /// overwrite at <c>UserController.vb:L1086</c> would have returned.
+    /// </para>
+    /// <para>
+    /// The COUNT is the assertion that matters here, and it is why this test is not merely a third
+    /// wording check. Both rules emit the same sentence, because the legacy resource entry is one
+    /// sentence covering every credential failure, so a test satisfied by "some failure carries this
+    /// message" would pass with either rule deleted — the surviving one would supply the message on its
+    /// own. Requiring exactly two failures is what makes the accumulation observable, and the two
+    /// single-rule tests immediately above remain the proof that each rule fires on its own.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task Password_FailingBothLengthAndPattern_IsStillRefused()
+    public async Task Password_FailingBothLengthAndPattern_ReportsBothRefusals()
     {
         PasswordPolicyOptions patterned = ShippedPolicy();
         patterned.PasswordStrengthRegularExpression = "^[A-Za-z]+$";
@@ -1169,6 +1185,36 @@ public class CreateUserRequestValidatorTests
         ValidationResult result = await validator.ValidateAsync(request);
 
         ShouldReport(result, nameof(CreateUserRequest.Password), InvalidPasswordFor(patterned));
+
+        result.Errors
+            .Where(failure => failure.PropertyName == nameof(CreateUserRequest.Password))
+            .Should().HaveCount(
+                2,
+                "the credential is four characters against a minimum of seven AND carries digits against "
+                + "a letters-only pattern, so both rules must fire; with only one failure this input "
+                + "could not tell a working pair of rules from a single surviving one, because the two "
+                + "share the legacy wording. The result was {0}",
+                Render(result));
+
+        // Each rule alone produces exactly one failure, which is what makes two above an accumulation
+        // rather than a coincidence of this particular value.
+        CreateUserRequest tooShortOnly = ValidRequest();
+        tooShortOnly.Password = "abcdef";
+        tooShortOnly.ConfirmPassword = "abcdef";
+
+        ValidationResult lengthOnly = await validator.ValidateAsync(tooShortOnly);
+        lengthOnly.Errors
+            .Where(failure => failure.PropertyName == nameof(CreateUserRequest.Password))
+            .Should().HaveCount(1, "six letters satisfy the pattern and fail only the minimum length");
+
+        CreateUserRequest patternOnly = ValidRequest();
+        patternOnly.Password = "abc1234";
+        patternOnly.ConfirmPassword = "abc1234";
+
+        ValidationResult patternFailure = await validator.ValidateAsync(patternOnly);
+        patternFailure.Errors
+            .Where(failure => failure.PropertyName == nameof(CreateUserRequest.Password))
+            .Should().HaveCount(1, "seven characters satisfy the minimum and fail only the pattern");
     }
 
     // ------------------------------------------------------------------------

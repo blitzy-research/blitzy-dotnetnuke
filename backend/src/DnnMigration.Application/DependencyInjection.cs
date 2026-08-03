@@ -110,15 +110,20 @@ public static class DependencyInjection
             lifetime: ServiceLifetime.Scoped,
             includeInternalTypes: false);
 
-        // PagedRequestValidator has four sealed derivations, each narrowing the sortable set
-        // for one list endpoint. All five validate PagedRequest, so the scan above leaves five
-        // descriptors registered against IValidator<PagedRequest> and the container answers a
-        // request for that contract with whichever one metadata order happened to put last -
-        // that is, a bare PagedRequest could be judged against another endpoint's sortable set.
-        // Re-registering the base validator last makes the unspecialised contract resolve to
-        // the unspecialised rules. The derivations remain reachable by their own concrete types,
-        // which the scan also registers, and that is how an endpoint asks for its own rules.
-        services.AddScoped<IValidator<PagedRequest>, PagedRequestValidator>();
+        // PagedRequestValidator NOW HAS the four sealed derivations this comment used to claim it
+        // had. It did not: the derivations did not exist, the narrow per-collection sortable sets
+        // they were supposed to apply had no consumer anywhere, and every list endpoint bound the
+        // one shared PagedRequest - so a single validator was resolved for all of them and the only
+        // bound it could apply was the UNION of every collection's field names. The account listing
+        // accepted a portal field name, answered 200, and ordered by something else entirely.
+        //
+        // Each collection now binds its own derived request type - PortalPagedRequest and the three
+        // siblings - so the scan above registers exactly one descriptor per contract:
+        // IValidator<PortalPagedRequest> resolves PortalPagedRequestValidator and applies
+        // SortableFields.Portals alone. There is consequently nothing left to disambiguate, and the
+        // defensive re-registration that used to stand here has been removed rather than left as a
+        // statement about a problem that no longer exists. IValidator<PagedRequest> resolves the
+        // unspecialised base, which applies the union to the bare contract no endpoint binds.
 
         return services;
     }

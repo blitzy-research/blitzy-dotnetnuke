@@ -159,10 +159,10 @@ public static class ModuleMappings
     /// <see cref="ModuleSettingsDto"/> rather than absorbed here.
     /// </para>
     /// <para>
-    /// MIGRATION: this projection carries the two identifiers and the two maps, and nothing else. An
-    /// earlier revision also copied eighteen module and placement columns onto the settings contract,
-    /// which duplicated <see cref="ModuleDetailDto"/> and reintroduced the very ambiguity about which
-    /// scope a value belonged to that separating the two maps exists to remove. The placement's appearance
+    /// MIGRATION: this projection carries the two identifiers and the two maps, and nothing else.
+    /// Copying the module and placement columns onto the settings contract as well would duplicate
+    /// <see cref="ModuleDetailDto"/> and reintroduce the very ambiguity about which
+    /// scope a value belongs to that separating the two maps exists to remove. The placement's appearance
     /// columns - pane, alignment, colour, border and the print and syndication flags - are consequently
     /// WRITE-ONLY in the target: <see cref="UpdateModuleRequest"/> still accepts every one of them, so an
     /// operator can still set them and <c>ApplyUpdate</c> still stores them, but no response contract
@@ -271,6 +271,13 @@ public static class ModuleMappings
     //   caller asked not to cache. A definition whose default cache period is -1 means "caching not
     //   applicable"; that is metadata a client reads from the definition contract, never a
     //   server-side substitution applied here.
+    //
+    // MIGRATION: THE POSITION IS CARRIED THROUGH UNRESOLVED, AND THAT IS DELIBERATE. The submitted value
+    //   may be the append instruction rather than a position, and resolving it requires reading the pane
+    //   it is being appended to - a database read this layer neither has nor should acquire. The
+    //   application service overwrites this member immediately after calling here, so the instruction
+    //   never reaches a column; a projection that tried to be helpful about it would either need a
+    //   repository or would have to guess.
     public static TabModule ToNewPlacement(CreateModuleRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -280,7 +287,18 @@ public static class ModuleMappings
             TabId = request.TabId,
             PaneName = DefaultPaneName,
             ModuleOrder = request.ModuleOrder,
-            CacheTime = Math.Max(request.CacheTime, 0),
+
+            // MIGRATION: 5.5 - THE SUBMITTED CACHE PERIOD IS STORED VERBATIM AND IS NOT CLAMPED. An earlier
+            // revision wrote Math.Max(request.CacheTime, 0) here on the stated ground that the store would
+            // refuse to interpret a negative; that ground is false. The column is a plain int NOT NULL
+            // across the whole DDL chain with NO check constraint - the only constraint bearing a cache name
+            // anywhere is DF_ModuleDefinitions_DefaultCacheTime, a DEFAULT on a different table's column -
+            // and the legacy screen stored whatever parsed, Int32.Parse(txtCacheTime.Text) at
+            // ModuleSettings.ascx.vb L349-L350, with no comparison of any kind. Clamping therefore accepted
+            // the caller's value and then silently rewrote it, so the record read back afterwards was not
+            // the record submitted and the caller had no way to detect the substitution. Zero remains the
+            // real value "do not cache", reached both by an explicit zero and by an omitted property.
+            CacheTime = request.CacheTime,
             IconFile = request.IconFile,
             Visibility = request.Visibility,
             DisplayTitle = request.DisplayTitle,
@@ -317,8 +335,12 @@ public static class ModuleMappings
         module.IsDeleted = request.IsDeleted;
 
         // Placement scope: the six surviving value arguments of the legacy second provider call.
+        //
+        // The position is assigned unresolved, exactly as on the creation projection above: the submitted
+        // value may be the append instruction, and the service overwrites this member immediately after
+        // this call returns so that the instruction never reaches a column.
         placement.ModuleOrder = request.ModuleOrder;
-        placement.CacheTime = Math.Max(request.CacheTime, 0);
+        placement.CacheTime = request.CacheTime;
         placement.IconFile = request.IconFile;
         placement.Visibility = request.Visibility;
         placement.DisplayTitle = request.DisplayTitle;
@@ -341,8 +363,9 @@ public static class ModuleMappings
         //
         // MIGRATION: 5.5 - CacheTime is a non-nullable integer and zero is a REAL value meaning "do not
         // cache", so there is no coalesce to a stored value here: a blank legacy field wrote literally zero
-        // rather than a sentinel. The clamp to zero guards only against a negative, which the store would
-        // refuse to interpret.
+        // rather than a sentinel. The submitted value is stored VERBATIM, with no clamp - the reasoning is
+        // recorded in full on the creation projection above, and the same removal is annotated on both
+        // module request validators.
     }
 
     /// <summary>

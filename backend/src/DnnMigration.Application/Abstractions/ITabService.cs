@@ -97,8 +97,10 @@
 // declares Tabs.TabID as IDENTITY (0, 1) at L140, so ZERO is a legitimate,
 // persisted page identifier and the first page ever created carries it; and it
 // declares Portals.PortalID as IDENTITY (-1, 1) at L77, so minus one is
-// simultaneously the legacy "absent" marker AND the identifier of the first real
-// portal. Roles.RoleID at L115 and Modules.ModuleID at L221 also seed at zero.
+// simultaneously the legacy "absent" marker AND a real portal identifier - it is
+// that column's seed and first generated value, while the shipped default portal
+// row is inserted explicitly with PortalID zero, so both are real keys.
+// Roles.RoleID at L115 and Modules.ModuleID at L221 also seed at zero.
 // Consequently a root-level page's parent is null, never minus one and never
 // zero, and no member here accepts or returns a magic number meaning "absent".
 // The legacy reordering routine's local markers of minus one and minus two are
@@ -244,6 +246,27 @@ public interface ITabService
     /// projection over a complete answer.
     /// </para>
     /// <para>
+    /// <b>Pages in the recycle bin are included, and no filter suppresses them.</b>
+    /// "Every page" is literal. The terminal legacy read this member replaces -
+    /// <c>GetTabs</c> as rewritten at <c>04.04.00.SqlDataProvider</c> L440-L448,
+    /// selecting every column of <c>vw_Tabs</c> under a portal predicate alone, over
+    /// a view whose terminal definition at <c>04.05.04.SqlDataProvider</c> carries no
+    /// deletion predicate either - returns soft-deleted rows and projects
+    /// <c>IsDeleted</c> as one of its columns. It projects that flag precisely so the
+    /// reader decides, and the legacy readers did decide differently: the
+    /// page-management grid hid recycled pages while the recycle-bin screen listed
+    /// nothing else. Both were call-site policy over one complete read. This contract
+    /// therefore returns the complete read and carries <c>IsDeleted</c> on every row,
+    /// which is the same argument made just above for declining a parent filter.
+    /// Hard-coding either legacy screen's policy here would contradict the
+    /// completeness this member promises, would put the recycle-bin view of the data
+    /// out of reach of the only page listing this migration exposes, and would do so
+    /// silently - a caller cannot distinguish a portal with no recycled pages from a
+    /// portal whose recycled pages were removed on its behalf. No boolean argument is
+    /// added for it: the deliberately narrow surface stated above still applies, and a
+    /// filter over a field every row already carries earns nothing.
+    /// </para>
+    /// <para>
     /// A portal that exists but has no pages is a <em>success</em> carrying an empty
     /// sequence. It is never reported as a failure, and the returned sequence is
     /// never <see langword="null"/>.
@@ -251,10 +274,12 @@ public interface ITabService
     /// </remarks>
     /// <param name="portalId">
     /// Identifier of the portal whose pages are requested, taken from the route.
-    /// Every value is meaningful: <c>0</c> is the first portal ever created and
-    /// <c>-1</c> is also a real portal identifier, because
-    /// <c>Portals.PortalID</c> is declared <c>IDENTITY(-1, 1)</c>. Neither may be
-    /// treated as "unspecified".
+    /// Every value is meaningful: <c>Portals.PortalID</c> is declared
+    /// <c>IDENTITY(-1, 1)</c>, so the seed and first generated value is <c>-1</c>,
+    /// while the shipped default portal row is inserted explicitly with
+    /// <c>PortalID</c> <c>0</c>. Both are real portal identifiers, and neither may
+    /// be treated as "unspecified" - even though <c>-1</c> is also the legacy
+    /// absent-integer marker.
     /// </param>
     /// <param name="cancellationToken">Token observed while the read is in flight.</param>
     /// <returns>

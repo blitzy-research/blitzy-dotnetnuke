@@ -99,7 +99,12 @@ internal sealed class PortalConfiguration : IEntityTypeConfiguration<Portal>
 
         // PK_Portals PRIMARY KEY NONCLUSTERED (PortalID) - declared at 01.00.00:L471 and re-added
         // after the Tmp_Portals rebuild at 01.00.05:L1456-L1461.
-        builder.HasKey(p => p.PortalId).HasName("PK_Portals");
+        //
+        // MIGRATION: NONCLUSTERED is expressed rather than left to the provider, whose default for a
+        // primary key is CLUSTERED. The model snapshot is diffed against by every future migration, so
+        // a snapshot that claimed a clustered key here would be a false description of the tenant table
+        // and the first scaffold to touch it would propose a key rebuild.
+        builder.HasKey(p => p.PortalId).HasName("PK_Portals").IsClustered(false);
 
         // MIGRATION: PortalID is IDENTITY(-1, 1) [01.00.00:L77], so the first row a fresh install
         // creates is identified by -1 and the second by 0. -1 is simultaneously the legacy

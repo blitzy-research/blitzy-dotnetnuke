@@ -824,6 +824,10 @@ public static class ServiceCollectionExtensions
     /// Zero is accepted, and that is the interesting part: it is the legacy-sanctioned
     /// way to disable caching, so the floor is zero rather than one. A negative value
     /// is refused because it yields a negative expiry, which no cache entry can carry.
+    /// That negative-value rule is enforced by calling
+    /// <see cref="CachingOptions.Validate"/> rather than by restating it, so the
+    /// contract remains the single source of the rules it owns; this validator adds only
+    /// the upper bound, which is a host decision.
     /// </remarks>
     private sealed class CachingOptionsValidator : IValidateOptions<CachingOptions>
     {
@@ -840,14 +844,30 @@ public static class ServiceCollectionExtensions
         {
             ArgumentNullException.ThrowIfNull(options);
 
-            if (options.PerformanceMultiplier is >= CachingOptions.MinimumPerformanceMultiplier
-                and <= CachingOptions.MaximumPerformanceMultiplier)
+            List<string> failures = [];
+
+            // The contract's own Validate() is the canonical statement of the rules the options type
+            // can judge alone - here, that the multiplier is not negative. This validator is what
+            // WIRES it into the host's ValidateOnStart and then adds the rule only a host can decide:
+            // the upper bound. Without this call the contract's own rule would be declared and never
+            // enforced, and the two halves could drift into disagreeing about the same setting.
+            //
+            // A defect both halves cover is reported twice, in each half's own wording. That is
+            // deliberate, for the reason given on the password-policy validator above: the report is
+            // a start-up abort listing every problem found, and naming one setting twice is not
+            // misleading, whereas dropping a rule to keep the list tidy is.
+            failures.AddRange(options.Validate());
+
+            if (options.PerformanceMultiplier is < CachingOptions.MinimumPerformanceMultiplier
+                or > CachingOptions.MaximumPerformanceMultiplier)
             {
-                return ValidateOptionsResult.Success;
+                failures.Add(
+                    $"'{CachingOptions.SectionName}:{nameof(CachingOptions.PerformanceMultiplier)}' is {options.PerformanceMultiplier}; it must be between {CachingOptions.MinimumPerformanceMultiplier} and {CachingOptions.MaximumPerformanceMultiplier} inclusive. Zero is permitted and disables caching.");
             }
 
-            return ValidateOptionsResult.Fail(
-                $"'{CachingOptions.SectionName}:{nameof(CachingOptions.PerformanceMultiplier)}' is {options.PerformanceMultiplier}; it must be between {CachingOptions.MinimumPerformanceMultiplier} and {CachingOptions.MaximumPerformanceMultiplier} inclusive. Zero is permitted and disables caching.");
+            return failures.Count == 0
+                ? ValidateOptionsResult.Success
+                : ValidateOptionsResult.Fail(failures);
         }
     }
 }

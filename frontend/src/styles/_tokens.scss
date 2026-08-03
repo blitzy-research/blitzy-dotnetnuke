@@ -37,9 +37,9 @@
   // only surface in the legacy stylesheet that marks a region as advisory rather
   // than as content, and `.Help` is genuinely live — 7 references across the
   // in-scope admin markup plus the structural one in
-  // Website/controls/labelcontrol.ascx. An earlier revision of this file mapped
-  // it onto --color-surface to hold the colour vocabulary at nine members; that
-  // traded a measured, in-scope value for vocabulary economy, and the value wins.
+  // Website/controls/labelcontrol.ascx. Mapping it onto --color-surface to hold the
+  // colour vocabulary at nine members would trade a measured, in-scope value for
+  // vocabulary economy, and the value wins.
   // Contrast is unharmed and in fact better: inherited black measures 20.02:1 on
   // #FFFF99 against 18.10:1 on #EEEEEE. Legacy casing #ffff99.
   //
@@ -47,9 +47,9 @@
   // plan's nine-colour table. It is admitted here rather than hardcoded at the
   // point of use because this file is the sole legitimate literal site in the
   // workspace: the alternative is `#ffff99` written into _forms.scss, which the
-  // zero-hardcoded-values rule forbids outright. The three colours argued for
-  // alongside it in that earlier revision — a base text black, a heading grey and
-  // a disabled silver — remain absent, and the reasoning for each is set out in
+  // zero-hardcoded-values rule forbids outright. The three colours most often argued
+  // for alongside it — a base text black, a heading grey and
+  // a disabled silver — are deliberately absent, and the reasoning for each is set out in
   // the text-colour section below.
   --color-surface-hint: #FFFF99;
 
@@ -106,14 +106,13 @@
   //  ONE token, and the reasoning for the three that are deliberately absent.
   //
   //  The colour vocabulary is CLOSED at the ten members declared above: the
-  //  plan's nine, plus the informational hint surface --color-surface-hint. An
-  //  earlier revision of this file declared four beyond the nine — a base text
+  //  plan's nine, plus the informational hint surface --color-surface-hint. Four
+  //  candidates beyond the nine each have a legacy-fidelity argument — a base text
   //  black, a heading grey, a disabled silver and the pale-yellow hint surface —
-  //  each argued for individually on legacy-fidelity grounds, and all four were
-  //  then removed together on the reasoning that four well-argued exceptions
-  //  defeat a closed vocabulary as completely as forty careless ones would. Three
-  //  of those removals stand, and their individual arguments are answered below
-  //  rather than deleted, because each one raised a real question. The fourth is
+  //  and admitting all four would defeat a closed vocabulary as completely as forty
+  //  careless additions would. Three are therefore refused, and their individual
+  //  arguments are answered below rather than ignored, because each one raises a real
+  //  question. The fourth is
   //  reinstated: the hint surface is a measured, in-scope value with no vocabulary
   //  member that can carry its meaning, and the annotation on the token itself
   //  records why. Ten is therefore the closed count — a downstream author still
@@ -279,6 +278,15 @@
   --radius-md: 4px;
   --radius-lg: 8px;
 
+  // Fully rounded. A proportion rather than a length, which is what distinguishes
+  // it from the three steps above: it turns a square box into a circle at any
+  // size, so a primitive that must stay circular cannot be broken by a caller
+  // resizing it. Named here rather than written inline for the reason the whole
+  // file exists — a bare `50%` at a call site is indistinguishable from an
+  // arbitrary choice, and a second circular affordance must agree with this one
+  // instead of restating it.
+  --radius-round: 50%;
+
   //  ELEVATION
 
   --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.08);
@@ -327,8 +335,12 @@
   // to be the only place a shared dimension is defined, so a second form surface
   // agrees with the first instead of picking its own width.
   //
-  // It is a maximum, not a fixed width: the field's own rule pairs it with
-  // `minmax(0, …)` so the column still yields when the viewport cannot afford it.
+  // It is a maximum, not a fixed width, and it is consumed through
+  // `--grid-track-label` below rather than directly: that token pairs it with a zero
+  // minimum so the column still yields when the viewport cannot afford it, and taking
+  // the track rather than the width is what stops two form surfaces clamping it
+  // differently. The width stays a separate token because it is the measured value
+  // with the provenance, while the track is the layout decision built from it.
   //
   // MIGRATION: measured, not invented. The legacy screens laid a field out as a
   // two-cell table row, and the cell that hosted the label control carried the
@@ -340,6 +352,128 @@
   // declared once here rather than repeated at every call site, which is how the
   // same alignment survives without a table.
   --field-label-inline-size: 9.375rem;
+
+  //  PROPORTIONAL SIZING
+  //
+  //  The one proportion the layout vocabulary needs: the whole of whatever the
+  //  property resolves against. It is deliberately a single token rather than a
+  //  scale, because a partial proportion is a layout decision that belongs to a
+  //  grid track or a flex basis below, not to a hand-written percentage.
+  //
+  //  It also carries the one non-size use of the value. `text-size-adjust` takes a
+  //  proportion of the author's computed size, where the full proportion means
+  //  "leave it exactly as authored" — which is what the reset needs, and is not the
+  //  same thing as `none`: `none` switches the adjustment off altogether and
+  //  removes a reader's ability to enlarge text in some engines.
+
+  --size-full: 100%;
+
+  //  VIEWPORT EXTENT
+  //
+  //  The full block extent of the window, for the application shell, which must
+  //  reach the bottom of the viewport even when its content does not fill it.
+  //
+  //  Two tokens rather than one, because the pair is a progressive enhancement and
+  //  not a choice: the dynamic unit accounts for a mobile browser's collapsing
+  //  address bar, and the static unit is declared first so an engine that does not
+  //  understand the dynamic one keeps a working value instead of dropping the
+  //  declaration. Both are named here for the same reason the dialog caps above
+  //  are — a viewport literal at a call site records no intent.
+  //
+  //  Physical units are used deliberately rather than the logical `vi`/`vb` pair,
+  //  matching the dialog caps: the consuming properties are logical, so the shell
+  //  still reads correctly under a right-to-left or vertical writing mode.
+
+  --size-viewport-block: 100vh;
+  --size-viewport-block-dynamic: 100dvh;
+
+  //  GRID TRACKS
+  //
+  //  A grid track is a design value like any other, and these are the four the
+  //  workspace uses. Naming them does more than satisfy the vocabulary rule: the
+  //  fluid track is the single most repeated value in the layout, and its `0`
+  //  minimum is load-bearing rather than decorative — without it a track refuses to
+  //  shrink below the intrinsic width of its content, so one long unbroken string
+  //  pushes the grid wider than its container and the page scrolls sideways. Every
+  //  fluid track in the workspace resolves here, so that guarantee cannot be lost
+  //  by one call site omitting the minimum.
+
+  // One track that takes the free space and yields completely when asked.
+  --grid-track-fluid: minmax(0, 1fr);
+
+  // The label column of a horizontally laid-out form, as a track. It is the measured
+  // label width above, clamped to a zero minimum so the column yields rather than
+  // overflowing on a narrow viewport.
+  //
+  // It exists as a track in its own right, and not merely as the width token used
+  // inline, because two separate form surfaces lay a field out this way and they
+  // must clamp it identically. Naming the width alone had already let them diverge
+  // once — one clamped it and the other did not — which is a difference nobody sees
+  // until a long label meets a narrow viewport on exactly one of the two screens.
+  --grid-track-label: minmax(0, var(--field-label-inline-size));
+
+  // The row that absorbs whatever block space the fixed rows around it leave. It
+  // has no `0` minimum on purpose: the shell's main region must be allowed to grow
+  // past the viewport when its content is taller, and a zero minimum would let it
+  // be crushed instead.
+  --grid-track-remainder: 1fr;
+
+  // A term-and-detail pair, in the 2:7 proportion the profile screen reads best at.
+  // Named as a pair because that is what they are — either used without the other
+  // is meaningless — and expressed as a proportion rather than a fixed label width
+  // because, unlike a form's label column, a term here has no measured legacy
+  // width to preserve.
+  --grid-track-term: minmax(0, 2fr);
+  --grid-track-detail: minmax(0, 7fr);
+
+  //  FLEX BASIS
+  //
+  //  Two named growth behaviours, which is the whole of what the workspace needs.
+  //  The distinction between them is the third component and it is significant:
+  //  growing from the content's own size keeps a region at least as wide as what it
+  //  holds, while growing from zero permits the item to shrink below that — which
+  //  is what stops a long value pushing a sibling control out of its row. Choosing
+  //  the wrong one of the two produces a layout that looks correct until somebody
+  //  types something long, so the pair is named and documented rather than left as
+  //  two similar-looking shorthands at scattered call sites.
+
+  --flex-fill: 1 1 auto;
+  --flex-fill-from-zero: 1 1 0;
+
+  //  GEOMETRY
+  //
+  //  Values that reorient or collapse a box rather than size it. Both are geometric
+  //  rather than aesthetic, and an earlier revision of the two call sites argued
+  //  from that fact that neither needed a token. The argument does not hold: being
+  //  geometric makes a value no less of a value, and the vocabulary rule admits
+  //  only `0`, `none`, `auto`, `inherit`, `currentColor` and `transparent`. It is
+  //  also the same argument that was correctly rejected for the dialog caps above,
+  //  which are equally geometric and are named anyway.
+
+  // Collapses a box to its own centre, leaving nothing painted. This is the clip
+  // that hides a visually-hidden element from sight while leaving it in the
+  // accessibility tree; it supersedes the deprecated rectangle form.
+  --clip-collapsed: inset(50%);
+
+  // A quarter turn, for a disclosure affordance that reorients the same glyph
+  // rather than swapping it for a second one.
+  --rotate-quarter-turn: 90deg;
+
+  //  TABULAR MEASURE
+  //
+  //  The floor below which a data table scrolls horizontally instead of narrowing
+  //  further. It exists because a fixed table layout resolves a percentage track
+  //  against its containing block, so on a narrow viewport the tracks collapse
+  //  toward nothing and adjacent headings were measured physically overlapping. A
+  //  real length makes the region scroll instead.
+  //
+  //  Stated as one length rather than as a multiple of a spacing step: the spacing
+  //  scale exists to rhythm the gaps between things, and reaching into it for a
+  //  sixteen-times multiplier borrows a number that has no relationship to the
+  //  measure being expressed. If a spacing step were ever retuned, this floor would
+  //  move with it for no reason.
+
+  --table-min-inline-size: 40rem;
 
   //  LAYERING
   //  Four widely spaced steps, so a new layer can be inserted between two of

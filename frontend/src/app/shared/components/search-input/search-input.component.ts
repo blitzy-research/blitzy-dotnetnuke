@@ -26,26 +26,32 @@ const DEFAULT_DEBOUNCE_MS = 300;
 /**
  * Default placeholder wording.
  *
- * Deliberately neutral: never "contains", "anywhere" or "fuzzy", because the match
- * is starts-with and a placeholder that promised otherwise would mislead.
+ * Deliberately neutral, because this control is shared and the match semantics belong to
+ * whichever endpoint the emitted term reaches. Those semantics differ: the general-purpose
+ * `query` filter is a SUBSTRING match server-side, while the named username, email and
+ * profile-value filters are PREFIX matches. A placeholder promising either one specifically
+ * would be wrong for the other, so it promises neither.
  */
 const DEFAULT_PLACEHOLDER = 'Search';
 
 /**
  * The greatest number of UTF-16 code units this control will ever emit as a term.
  *
- * MIGRATION: 13 of 13 — this bound is a NET ADDITION. The legacy text box declared no
+ * MIGRATION: this bound is a NET ADDITION. The legacy text box declared no
  * `MaxLength` at all (`Website/admin/Users/users.ascx` L8), so an arbitrarily long value
  * could be posted and concatenated straight into the query predicate.
  *
- * The figure is derived from the schema rather than chosen: the widest column any legacy
- * search predicate ever matched against is `nvarchar(256)` — the terminal `UserName` and
- * `Email` columns — while `PortalName`, the other searched column, is only
- * `nvarchar(128)`. Because the predicate is starts-with (`LIKE 'term%'`), a prefix longer
- * than the widest column it is compared against cannot match any row by construction. So
- * 256 is not a policy ceiling picked for safety, it is the exact point beyond which a
- * longer term carries no additional meaning, and truncating there cannot change which
- * rows match.
+ * The figure is taken from the widest column any search predicate compares against: the
+ * terminal `Email` column, `nvarchar(256)`. It is NOT the width of every searched column —
+ * `Username` is `nvarchar(100)` and `PortalName` is `nvarchar(128)` — so 256 is the
+ * ceiling of that set rather than a shared width.
+ *
+ * IT IS A POLICY CEILING, AND IT IS NOT BEHAVIOUR-PRESERVING. Do not describe it as the
+ * point beyond which a longer term carries no additional meaning: that argument holds only
+ * for a prefix predicate, and the general-purpose filter is a SUBSTRING predicate, where a
+ * term longer than the column can still be meaningful and truncating it can produce a match
+ * the untruncated term would not have produced. The bound exists to cap the size of an
+ * unauthenticated request, and its cost is accepted rather than argued away.
  *
  * @see boundSearchTerm - applies this bound.
  */
@@ -56,8 +62,10 @@ const MAX_TERM_LENGTH = 256;
  *
  * `\u0000`-`\u001F` is the C0 range (including tab, and the carriage return and line feed
  * that a single-line control should never carry), and `\u007F`-`\u009F` covers delete plus
- * the C1 range. None of them is typeable as part of a meaningful search prefix, and none
- * exists in any searched column's data.
+ * the C1 range. None of them is typeable as part of a meaningful search term. No claim is
+ * made about the stored data: no schema constraint forbids a control character in any
+ * searched column, so stripping them here is an input-hygiene rule for this control and not
+ * a statement about what the columns contain.
  *
  * Declared at module scope rather than inside the function so the pattern is compiled once.
  * It carries no `g`-flag state hazard because it is used only with
@@ -76,8 +84,9 @@ const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
  * `term.setValue(...)`, which is subject to neither the field's own `maxlength` attribute
  * nor the browser's value-sanitisation of a single-line control.
  *
- * Stripping happens before truncating, so the retained prefix is 256 units of *meaningful*
- * text rather than 256 units that a run of control characters could have consumed.
+ * Stripping happens before truncating, so the retained leading portion is 256 units of
+ * *meaningful* text rather than 256 units that a run of control characters could have
+ * consumed.
  *
  * @param term The term as held by the control.
  * @returns The bounded term, ready to emit.
@@ -179,10 +188,11 @@ export class SearchInputComponent implements OnInit {
    *
    * The payload is the raw term exactly as typed - never trimmed, case-folded,
    * Unicode-normalised, URL-encoded or wildcard-suffixed, because every one of
-   * those would change which rows match. The predicate is `LIKE 'term%'`, so the
-   * match is starts-with and never a contains match; composing that wildcard
-   * belongs to the repository that owns the predicate, and query-string
-   * composition to the shared HTTP parameter utility.
+   * those would change which rows match. This control states NOTHING about the
+   * predicate: the endpoint the term reaches decides whether it is matched as a
+   * substring or as a prefix, composing any wildcard belongs to the repository that
+   * owns that predicate, and query-string composition belongs to the shared HTTP
+   * parameter utility.
    *
    * Two bounds are applied, and they are the only respects in which the payload can differ
    * from the control's value: control characters are removed, and the term is truncated to
@@ -424,8 +434,8 @@ export class SearchInputComponent implements OnInit {
    *
    * It is applied *before* the duplicate guard, not after, so the guard compares the values
    * that are actually emitted. Bounding after the guard would let two different over-long
-   * terms that share a bounded prefix each pass the guard and emit the identical term twice,
-   * reintroducing the duplicate query this funnel exists to prevent.
+   * terms sharing the same first 256 units each pass the guard and emit the identical term
+   * twice, reintroducing the duplicate query this funnel exists to prevent.
    *
    * For every term a user can type the bound is a strict no-op, so the verbatim contract on
    * {@link SearchInputComponent.search} is unaffected: nothing is trimmed, case-folded,

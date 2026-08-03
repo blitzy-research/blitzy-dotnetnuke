@@ -41,10 +41,15 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// date member is carried at all, so no date sentinel decision arises.
 /// </para>
 /// <para>
-/// Serialisation must be left at its defaults. A "when writing null" or "when
-/// writing default" ignore condition would erase a legitimate
-/// <see langword="false"/> and turn a legitimate empty string into an absent
-/// field, silently changing the contract clients bind to.
+/// Serialisation, as actually configured, cannot weaken this contract. The host
+/// sets a "when writing null" ignore condition
+/// (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a property only
+/// when its value is <see langword="null"/>. No member declared here is nullable,
+/// so nothing on this type is ever omitted: a legitimate
+/// <see langword="false"/>, a legitimate empty string and an empty collection all
+/// reach the wire. A "when writing default" condition, by contrast, WOULD erase
+/// exactly those three and must never be configured, because it would turn a real
+/// value into an absent field and silently change the contract clients bind to.
 /// </para>
 /// </remarks>
 public sealed class CurrentUserDto
@@ -70,11 +75,12 @@ public sealed class CurrentUserDto
     /// IDENTIFIER TRAP: do not test this value for absence, and do not let a
     /// consumer do so either. <c>Portals.PortalID</c> is declared
     /// <c>[int] IDENTITY (-1, 1) NOT NULL</c> (01.00.00.SqlDataProvider L77),
-    /// so the first portal ever created is numbered minus one and the second
-    /// zero - and the second is not hypothetical, because the baseline data
-    /// seeds roles against portal zero (L7192, L7194). Minus one is
-    /// simultaneously the legacy encoding for a missing integer, so a single
-    /// value means both "the first portal" and "no portal at all". A guard that
+    /// so the seed and first generated value is minus one, while the shipped
+    /// default portal row is inserted explicitly with identifier zero under
+    /// <c>IDENTITY_INSERT</c> (L7125) - and zero is not hypothetical, because the
+    /// baseline data seeds roles against it (L7192, L7194). Both are valid keys.
+    /// Minus one is simultaneously the legacy encoding for a missing integer, so a
+    /// single value means both a real portal and "no portal at all". A guard that
     /// rejects a non-positive identifier therefore rejects two real tenants.
     /// Role, tab and module keys are seeded from zero for the same reason
     /// (L115, L140, L221).

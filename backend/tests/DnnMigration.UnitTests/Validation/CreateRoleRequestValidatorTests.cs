@@ -459,17 +459,27 @@ public class CreateRoleRequestValidatorTests
     /// migrated rule refuses the empty case identically and leaves padding to the caller.
     /// </remarks>
     [Theory]
+    [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("\t")]
-    public async Task RoleName_IsRequired(string roleName)
+    public async Task RoleName_IsRequired(string? roleName)
     {
         CreateRoleRequest request = ValidRequest();
-        request.RoleName = roleName;
+        request.RoleName = roleName!;
 
         ValidationResult result = await _validator.ValidateAsync(request);
 
         ShouldReport(result, nameof(CreateRoleRequest.RoleName), RoleNameRequired);
+
+        // One omission, one message. The rule chains a presence check and a width check, and the
+        // rule-level cascade stops at the first failure, so a missing name must not also be reported as
+        // an over-long one - a caller reading two messages about one blank field cannot tell which
+        // describes the fault. This assertion also fixes the cascade: switching it to continue would
+        // start reporting both.
+        result.Errors
+            .Where(failure => failure.PropertyName == nameof(CreateRoleRequest.RoleName))
+            .Should().ContainSingle(Render(result));
     }
 
     /// <summary>

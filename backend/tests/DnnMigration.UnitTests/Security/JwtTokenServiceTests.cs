@@ -7,6 +7,7 @@ using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Application.Dtos.Portal;
 using DnnMigration.Application.Dtos.Role;
+using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
@@ -14,6 +15,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 using FluentAssertions;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -130,6 +132,73 @@ public class JwtTokenServiceTests
     }
 
     /// <summary>
+    /// The session ceiling has a maximum of its own, and a configuration above it fails validation.
+    /// </summary>
+    /// <remarks>
+    /// The finding this covers: start-up bounded the SLIDING per-token lifetime at thirty days but accepted
+    /// an absolute FAMILY ceiling of anything up to a year, which is the setting that actually governs how
+    /// long a session may be renewed without the caller ever presenting a credential again. Since
+    /// authenticating again is the only moment a credential, an approval state and a lockout state are
+    /// examined from scratch, an unbounded ceiling extends by its own length the window in which an account
+    /// disabled after sign-in keeps renewing. The two are asserted together below because a test that only
+    /// checked the sliding bound is precisely what allowed this through.
+    /// </remarks>
+    [Fact]
+    public void TokenOptions_BoundBothTheSlidingLifetimeAndTheSessionCeiling()
+    {
+        JwtOptions.MaximumRefreshTokenExpirationDays.Should().Be(30);
+        JwtOptions.MaximumRefreshTokenAbsoluteExpirationDays.Should().Be(30);
+
+        JwtOptions shipped = new() { Secret = new string('k', 48) };
+
+        shipped.RefreshTokenAbsoluteExpirationDays.Should().Be(
+            JwtOptions.MaximumRefreshTokenAbsoluteExpirationDays,
+            "the shipped default sits exactly at the bound, so introducing it refuses nothing legitimate");
+        shipped.Validate().Should().BeEmpty();
+
+        JwtOptions aYear = new()
+        {
+            Secret = new string('k', 48),
+            RefreshTokenAbsoluteExpirationDays = 365,
+        };
+
+        aYear.Validate().Should().ContainSingle()
+            .Which.Should().Contain(nameof(JwtOptions.RefreshTokenAbsoluteExpirationDays));
+
+        JwtOptions oneDayOver = new()
+        {
+            Secret = new string('k', 48),
+            RefreshTokenAbsoluteExpirationDays = JwtOptions.MaximumRefreshTokenAbsoluteExpirationDays + 1,
+        };
+
+        oneDayOver.Validate().Should().ContainSingle(
+            "the bound is inclusive, so thirty-one days is the first refused value");
+    }
+
+    /// <summary>
+    /// A ceiling below the sliding lifetime is still refused, and refused for its own reason rather than
+    /// for exceeding the new maximum.
+    /// </summary>
+    /// <remarks>
+    /// Asserted because the two rules share a branch: adding the maximum must not shadow the coherence
+    /// rule that was already there. A ceiling shorter than a single token's life would truncate every token
+    /// to the ceiling and make the per-token setting unreachable.
+    /// </remarks>
+    [Fact]
+    public void TokenOptions_StillRefuseACeilingBelowTheSlidingLifetime()
+    {
+        JwtOptions options = new()
+        {
+            Secret = new string('k', 48),
+            RefreshTokenExpirationDays = 14,
+            RefreshTokenAbsoluteExpirationDays = 7,
+        };
+
+        options.Validate().Should().ContainSingle()
+            .Which.Should().Contain("less than");
+    }
+
+    /// <summary>
     /// The claim vocabulary is the measured set of wire names.
     /// </summary>
     /// <remarks>
@@ -201,9 +270,9 @@ public class JwtTokenServiceTests
     /// <para>
     /// The distinction being drawn is between a <em>credential</em> or a <em>cryptographic key</em>, neither
     /// of which may cross this boundary, and a <em>permission key</em>, which is simply the name of an
-    /// entitlement and is one of the things issuance exists to carry. An earlier draft of this suite treated
-    /// the bare substring "key" as disqualifying and failed on the <c>permissionKeys</c> parameter; the
-    /// contract was right and the assertion was wrong, so the rule is stated precisely here rather than
+    /// entitlement and is one of the things issuance exists to carry. Treating the bare substring "key" as
+    /// disqualifying would fail on the <c>permissionKeys</c> parameter, and the contract - not the
+    /// assertion - would be the thing wrongly blamed, so the rule is stated precisely here rather than
     /// loosened.
     /// </para>
     /// <para>
@@ -315,11 +384,16 @@ public class JwtTokenServiceTests
         // MIGRATION: this pins the SHAPE of the registered set rather than its size. An earlier
         // revision asserted a descriptor count, which measured the validator scan's registration
         // arithmetic instead of the property under test: AddValidatorsFromAssemblyContaining registers
-        // every validator twice, once under IValidator<T> and once under its own concrete type, and
-        // PagedRequestValidator has four sealed derivations the scan finds as well, so the number moves
-        // whenever a validator is added or the scan's strategy changes while the property this test
-        // exists to state - that this layer registers its own service contracts and its request
-        // validators, and nothing else - does not.
+        // every validator twice, once under IValidator<T> and once under its own concrete type, so the
+        // number moves whenever a validator is added or the scan's strategy changes while the property
+        // this test exists to state - that this layer registers its own service contracts and its
+        // request validators, and nothing else - does not.
+        //
+        // M-11: this comment also used to claim "PagedRequestValidator has four sealed derivations the
+        // scan finds as well". No such derivations existed, and they could not have worked - every paged
+        // action binds one shared PagedRequest and is validated through IValidator<PagedRequest>, so
+        // nothing would ever have resolved one. Narrowing per endpoint happens inside the single
+        // validator instead.
         Type[] applicationServices =
         [
             typeof(IPortalService),
@@ -338,8 +412,25 @@ public class JwtTokenServiceTests
             + "and nothing else");
 
         // The validator inventory is stated by name, because which requests carry a validator is the
-        // substance of the registration and a count would not say it. All four derivations of
-        // PagedRequestValidator validate PagedRequest, so the set names that request once.
+        // substance of the registration and a count would not say it. Every request type an endpoint
+        // binds appears below, and the list is therefore the inventory a reviewer checks a new endpoint
+        // against.
+        //
+        // Twenty-two entries. Four are the paging requests: the generic PagedRequestValidator has one
+        // sealed derivation per listed collection, each closed over a derived request type so that the
+        // sort-field allowlist can be the one that collection actually honours rather than the union of
+        // all of them. The base PagedRequest keeps its own registration, because the non-generic
+        // PagedRequestValidator still exists for any endpoint that binds the base type. The remainder are
+        // body shapes, several of which were added because their write actions advertised a field-error
+        // response while no validator resolved for them at all.
+        //
+        // The list is a SET, and it is stated once per request type. Two separate audits of the write
+        // surface reached three of these names independently - the role update, the role assignment and
+        // the page update - and for a while the list named each of them twice. That is not a harmless
+        // duplication: the comparison below is order-insensitive but not multiplicity-insensitive, so a
+        // repeated expectation demands a repeated registration, and the assembly scan correctly produces
+        // exactly one. Each name therefore appears exactly once, and the reason it was added is recorded
+        // beside it rather than by repeating the entry.
         services
             .Select(descriptor => descriptor.ServiceType)
             .Where(serviceType => serviceType.IsGenericType
@@ -360,7 +451,30 @@ public class JwtTokenServiceTests
                     typeof(UpdatePortalRequest),
                     typeof(CreatePortalAliasRequest),
                     typeof(UpdatePortalAliasRequest),
+                    typeof(UpdateRoleRequest),
+                    typeof(RoleGroupDto),
+                    typeof(RoleAssignmentRequest),
+                    typeof(ProfilePropertyDefinitionDto),
+
+                    // The page-update validator. Added when the page-edit endpoint was found to be judging
+                    // nothing at all - an overlong value travelled to SQL Server and surfaced as a 500 naming
+                    // no field, and a blank page name was stored as given. This inventory is the reason the
+                    // gap was visible at all, and naming the request here is what keeps it closed: the
+                    // endpoint binds it, so it must appear.
+                    typeof(UpdateTabRequest),
                     typeof(PagedRequest),
+                    typeof(PortalPagedRequest),
+                    typeof(RolePagedRequest),
+                    typeof(UserPagedRequest),
+                    typeof(ModulePagedRequest),
+
+                    // Added when the write surface was audited for missing bounds. This request was bound
+                    // by an endpoint while carrying NO validator at all, so every field on it reached the
+                    // provider unbounded. Its presence here is what proves the assembly scan picks a new
+                    // validator up with no registration edit, which is the property the scan exists to
+                    // provide. The same audit reached the role update, the role assignment and the page
+                    // update, each of which is already named above.
+                    typeof(ModuleSettingsDto),
                 },
                 "every request an endpoint binds has a registered validator");
     }
@@ -387,7 +501,6 @@ public class JwtTokenServiceTests
 
         response.MustChangePassword.Should().BeFalse("false means no advisory was raised");
         response.PasswordExpiring.Should().BeFalse("false means no advisory was raised");
-        response.MustUpdateProfile.Should().BeFalse("false means no advisory was raised");
 
         response.User.Should().NotBeNull(
             "the snapshot is always present, so a caller never has to null-check the identity it just "
@@ -477,13 +590,15 @@ public class JwtTokenServiceTests
     }
 
     /// <summary>
-    /// A refused issuance is a fault, not a denial.
+    /// A refused issuance is a fault, not a denial, and it is reported as the signer's own typed reason.
     /// </summary>
     /// <remarks>
     /// Everything the sign-in path could legitimately refuse has already been checked by the time a token
     /// is requested, so a signer that declines is reporting a defect in the deployment. Turning that into a
     /// credential refusal would leave an unusable installation looking like a site full of people typing
-    /// the wrong password.
+    /// the wrong password. The reason travels VERBATIM rather than being converted into an exception: the
+    /// token service has already classified the fault, and re-classifying it as an unhandled exception
+    /// would discard that classification and answer 500 for something the caller can be told about.
     /// </remarks>
     [Fact]
     public async Task SignIn_FailsLoudlyWhenTheSignerDeclines()
@@ -500,16 +615,24 @@ public class JwtTokenServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<LoginResponse>.Failure("token.signing_key_missing", "No signing key."));
 
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.LoginAsync());
+        Result<LoginResponse> result = await harness.LoginAsync();
 
-        failure.Message.Should().Contain("declined to issue");
-        failure.Message.Should().Contain("token.signing_key_missing");
+        result.IsFailure.Should().BeTrue("an installation that cannot mint a token cannot sign anybody in");
+        result.Reason!.Code.Should().Be(
+            "token.signing_key_missing",
+            "the signer's own reason travels unchanged, so the deployment fault is nameable by the caller "
+            + "and by whatever logs the response");
+        result.Reason!.Message.Should().Be("No signing key.");
     }
 
     /// <summary>
-    /// An unavailable token store fails loudly on the issuing path.
+    /// An unavailable token store is reported unchanged on the issuing path.
     /// </summary>
+    /// <remarks>
+    /// The credential was accepted and only the session could not be recorded, so the caller must not be
+    /// told its credential was wrong. IAuthService documents this one code as propagating unchanged, and the
+    /// Api layer's status mapper recognises the store-outage marker inside it and answers 503.
+    /// </remarks>
     [Fact]
     public async Task SignIn_FailsLoudlyWhenTheTokenStoreIsUnavailable()
     {
@@ -525,10 +648,10 @@ public class JwtTokenServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<LoginResponse>.Failure(TokenStoreUnavailableCode, "The store is down."));
 
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.LoginAsync());
+        Result<LoginResponse> result = await harness.LoginAsync();
 
-        failure.Message.Should().Contain("token store is unavailable");
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(TokenStoreUnavailableCode);
     }
 
     /// <summary>
@@ -604,13 +727,16 @@ public class JwtTokenServiceTests
             .Setup(tokens => tokens.RefreshAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<LoginResponse>.Failure(TokenStoreUnavailableCode, "The store is down."));
 
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.RefreshAsync(SuppliedRefreshToken));
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
 
-        failure.Message.Should().Contain(
-            "token store is unavailable",
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(
+            TokenStoreUnavailableCode,
             "an outage must not be reported as a bad token, or a whole estate of valid sessions looks "
             + "like a replay attack");
+        result.Reason!.Code.Should().NotBe(
+            InvalidRefreshTokenCode,
+            "the four rotation rejections collapse into one code; an outage is not one of them");
     }
 
     /// <summary>
@@ -696,6 +822,177 @@ public class JwtTokenServiceTests
 
         result.IsFailure.Should().BeTrue();
         result.Reason!.Code.Should().Be(InvalidRefreshTokenCode);
+    }
+
+    /// <summary>
+    /// A rotation is refused, and the whole refresh family is revoked, when the account has been locked
+    /// since the session began.
+    /// </summary>
+    /// <remarks>
+    /// The finding this covers: rotation reloaded the account and re-read its authority but never re-read
+    /// whether the account was still ALLOWED to authenticate, so an account locked or disabled after
+    /// sign-in kept minting access tokens for the whole life of its refresh family. Both halves are
+    /// asserted, and the second is the operative one - a refusal that left the family intact would simply
+    /// be retried, and the successor the exchange has already minted would still be alive in the store.
+    /// </remarks>
+    [Fact]
+    public async Task Refresh_IsRefusedAndTheFamilyRevokedWhenTheAccountIsLockedOut()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Users
+            .Setup(users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((true, (string?)StoredHash, true, true));
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(InvalidRefreshTokenCode);
+        result.Reason.Message.Should().Be(
+            InvalidTokenMessage,
+            "the caller is told its token is not valid and nothing about the account's state");
+
+        harness.Tokens.Verify(
+            tokens => tokens.RevokeAllRefreshTokensAsync(UserId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A rotation is refused, and the family revoked, when approval has been withdrawn since the session
+    /// began.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_IsRefusedAndTheFamilyRevokedWhenApprovalHasBeenWithdrawn()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Users
+            .Setup(users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((true, (string?)StoredHash, false, false));
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(InvalidRefreshTokenCode);
+
+        harness.Tokens.Verify(
+            tokens => tokens.RevokeAllRefreshTokensAsync(UserId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A rotation is refused, and the family revoked, when the account no longer holds a usable credential.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_IsRefusedAndTheFamilyRevokedWhenTheCredentialHasGone()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Users
+            .Setup(users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((false, (string?)null, true, false));
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsFailure.Should().BeTrue();
+
+        harness.Tokens.Verify(
+            tokens => tokens.RevokeAllRefreshTokensAsync(UserId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// An unapproved HOST account still refreshes, because a host account has no tenant to be approved
+    /// into.
+    /// </summary>
+    /// <remarks>
+    /// The exemption is measured rather than invented: <c>AspNetMembershipProvider.vb</c> L1465-L1477
+    /// exempted a super user from the approval gate at sign-in, because such an account is created by the
+    /// installer and has no verification code to present. The re-read applies the SAME ladder as the
+    /// sign-in, so it must carry the same exemption - otherwise a host account could sign in and then be
+    /// refused its first renewal, which would be a new failure introduced by the fix rather than by the
+    /// defect.
+    /// </remarks>
+    [Fact]
+    public async Task Refresh_AllowsAnUnapprovedHostAccount()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Account.IsSuperUser = true;
+        harness.Users
+            .Setup(users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((true, (string?)StoredHash, false, false));
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsSuccess.Should().BeTrue();
+
+        harness.Tokens.Verify(
+            tokens => tokens.RevokeAllRefreshTokensAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The family is revoked when the tenant or the account behind a presented token can no longer be
+    /// resolved at all.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_RevokesTheFamilyWhenTheAccountCannotBeResolved()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Users
+            .Setup(users => users.GetAsync(
+                It.IsAny<int?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsFailure.Should().BeTrue();
+
+        harness.Tokens.Verify(
+            tokens => tokens.RevokeAllRefreshTokensAsync(UserId, It.IsAny<CancellationToken>()),
+            Times.Once());
+    }
+
+    /// <summary>
+    /// A refused rotation is recorded under the net-new session-refused event name, carrying which
+    /// eligibility question closed - which the caller is never told.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_RecordsARefusalNamingTheQuestionThatClosed()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+        harness.Users
+            .Setup(users => users.GetCredentialStateAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((true, (string?)StoredHash, true, true));
+
+        _ = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+
+        record.EventName.Should().Be("SESSION_REFUSED");
+        record.Outcome.Should().Be(AuditOutcome.Denied);
+        record.ActorUserId.Should().Be(UserId);
+        record.FailureCode.Should().Be(
+            "auth.locked_out",
+            "the trail names the question that closed, which is exactly what the response withholds");
+    }
+
+    /// <summary>An accepted rotation is recorded under the net-new session-renewed event name.</summary>
+    [Fact]
+    public async Task Refresh_RecordsARenewal()
+    {
+        Harness harness = Harness.SignedInSuccessfully();
+
+        Result<LoginResponse> result = await harness.RefreshAsync(SuppliedRefreshToken);
+
+        result.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+
+        record.EventName.Should().Be("SESSION_RENEWED");
+        record.Outcome.Should().Be(AuditOutcome.Succeeded);
+        record.ActorUserId.Should().Be(UserId);
+        record.PortalId.Should().Be(PortalId);
+        record.FailureCode.Should().BeNull();
     }
 
     /// <summary>
@@ -859,7 +1156,9 @@ public class JwtTokenServiceTests
     /// </summary>
     /// <remarks>
     /// This is the one revocation failure that must not be absorbed. Reporting success while the token
-    /// remains usable would tell the caller their session had ended when it had not.
+    /// remains usable would tell the caller their session had ended when it had not. It is reported as the
+    /// documented code rather than as an exception, which is also what keeps sign-out idempotent during an
+    /// outage: a client that cannot complete one is likely to keep the token it was trying to surrender.
     /// </remarks>
     [Fact]
     public async Task Logout_FailsLoudlyWhenTheTokenStoreIsUnavailable()
@@ -871,10 +1170,10 @@ public class JwtTokenServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure(TokenStoreUnavailableCode, "The store is down."));
 
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.LogoutAsync(SuppliedRefreshToken));
+        Result result = await harness.LogoutAsync(SuppliedRefreshToken);
 
-        failure.Message.Should().Contain("token store is unavailable");
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(TokenStoreUnavailableCode);
     }
 
     /// <summary>
@@ -1082,27 +1381,53 @@ public class JwtTokenServiceTests
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             PermissionService = new Mock<IPermissionService>(MockBehavior.Loose);
+            Accounts = new Mock<IUserService>(MockBehavior.Loose);
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
             HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
+            Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+
+            AuditRecords = [];
+            Audit
+                .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
+                .Callback<AuditEvent>(AuditRecords.Add);
+
+            Accounts
+                .Setup(a => a.RequiresProfileCompletionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(false));
+
+            Diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Loose);
 
             Service = new AuthService(
                 Users.Object,
                 Portals.Object,
                 PermissionService.Object,
+                Accounts.Object,
                 Tokens.Object,
                 PasswordHasher.Object,
                 Clock.Object,
                 HostSettings.Object,
                 UnitOfWork.Object,
                 CurrentUser.Object,
-                Policy);
+                Audit.Object,
+                Policy,
+                Diagnostics.Object);
         }
 
+        /// <summary>
+        /// Receives anomalies the service absorbs rather than reports.
+        /// </summary>
+        public Mock<ISecurityDiagnostics> Diagnostics { get; }
+
         public Portal Portal { get; }
+
+        public Mock<IUserService> Accounts { get; }
 
         public User Account { get; }
 
@@ -1133,6 +1458,12 @@ public class JwtTokenServiceTests
         public Mock<IUnitOfWork> UnitOfWork { get; }
 
         public Mock<ICurrentUser> CurrentUser { get; }
+
+        /// <summary>The audit sink the service records sign-in outcomes through.</summary>
+        public Mock<IAuditSink> Audit { get; }
+
+        /// <summary>Every audit event the service emitted, in the order it emitted them.</summary>
+        public List<AuditEvent> AuditRecords { get; }
 
         public AuthService Service { get; }
 
@@ -1173,12 +1504,22 @@ public class JwtTokenServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync((true, (string?)StoredHash, true, false));
 
+            // Rotation refuses by ending the whole refresh family, so every refusal path reaches this
+            // member. Set up unconditionally rather than per test: an unmocked Task-returning member on a
+            // loose mock hands back a null task, and awaiting it fails with a reference error that says
+            // nothing about the behaviour under test.
+            harness.Tokens
+                .Setup(tokens => tokens.RevokeAllRefreshTokensAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success());
+
             harness.Users
                 .Setup(users => users.RecordSuccessfulLoginAsync(
                     It.IsAny<int>(),
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(true);
+                .ReturnsAsync(MembershipWriteOutcome.Recorded);
 
             harness.Users
                 .Setup(users => users.ListRoleNamesAsync(

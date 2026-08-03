@@ -216,6 +216,61 @@ describe('PageHeaderComponent', () => {
       expect(fixture.componentInstance.subtitle).toBeUndefined();
     });
 
+    // A BLANK SUBTITLE IS THE SAME STATE AS AN ABSENT ONE. The two cases below are
+    // separate specs rather than one loop because they fail for different reasons and
+    // a shared one would hide that: the empty string is falsy, so the template guard
+    // alone rejects it, whereas a whitespace-only value is TRUTHY in JavaScript and
+    // reaches the guard already satisfying it. Only the input transform stops that
+    // second case, so only the second case pins the transform. Collapsing them into
+    // one parameterised spec would let the transform be deleted while the empty case
+    // kept the spec green.
+    //
+    // The state is asserted on both sides of the boundary - no paragraph in the DOM,
+    // and `undefined` on the instance - because the DOM assertion alone would still
+    // hold if the value were stored verbatim and merely skipped at the read site,
+    // which is the arrangement being replaced.
+
+    it('renders nothing in place of an empty subtitle', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.componentRef.setInput('subtitle', '');
+      fixture.detectChanges();
+
+      const root: HTMLElement = fixture.nativeElement;
+
+      expect(root.querySelector('p')).toBeNull();
+      expect(fixture.componentInstance.subtitle).toBeUndefined();
+    });
+
+    it('renders nothing in place of a whitespace-only subtitle', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.componentRef.setInput('subtitle', ' \t\n ');
+      fixture.detectChanges();
+
+      const root: HTMLElement = fixture.nativeElement;
+
+      // The premise, stated so the assertion below cannot be mistaken for a
+      // consequence of falsiness: this value is truthy, so a bare truthiness guard
+      // would have rendered a paragraph for it.
+      expect(Boolean(' \t\n ')).toBe(true);
+
+      expect(root.querySelector('p')).toBeNull();
+      expect(fixture.componentInstance.subtitle).toBeUndefined();
+    });
+
+    it('keeps a subtitle that is non-blank once its padding is discounted', () => {
+      fixture.componentRef.setInput('title', TITLE_PORTALS);
+      fixture.componentRef.setInput('subtitle', `  ${SUBTITLE_BASIC_SETTINGS}  `);
+      fixture.detectChanges();
+
+      const root: HTMLElement = fixture.nativeElement;
+      const supporting = root.querySelector('p');
+
+      // The complement of the two refusals above: normalising blankness away must not
+      // become discarding anything that merely arrived padded.
+      expect(supporting).not.toBeNull();
+      expect(fixture.componentInstance.subtitle).toBe(SUBTITLE_BASIC_SETTINGS);
+    });
+
     it('renders a supplied subtitle as supporting text', () => {
       fixture.componentRef.setInput('title', TITLE_EDIT_SECURITY_ROLES);
       fixture.componentRef.setInput('subtitle', SUBTITLE_BASIC_SETTINGS);

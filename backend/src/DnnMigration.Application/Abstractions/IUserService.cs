@@ -55,8 +55,8 @@
 //
 // MIGRATION: (08) THIS CONTRACT OWNS THE WHOLE OF THE CREDENTIAL MIGRATION PATH, NOT HALF OF IT.
 // MIGRATION:      AAP 0.7.5.5 prescribes re-hashing on first successful sign-in with administrative
-// MIGRATION:      reset as the fallback, and an earlier revision of this note therefore described
-// MIGRATION:      the reset as one half of a two-part path. THE OTHER HALF DOES NOT EXIST AND
+// MIGRATION:      reset as the fallback, which invites reading the reset as one half of a two-part
+// MIGRATION:      path. IT IS NOT. THE OTHER HALF DOES NOT EXIST AND
 // MIGRATION:      CANNOT BE BUILT WITHIN THIS PLAN: re-hashing on first sign-in requires verifying
 // MIGRATION:      a credential held under the legacy reversible scheme, which means mapping the
 // MIGRATION:      legacy membership store and decrypting it with the key committed at
@@ -206,9 +206,14 @@ namespace DnnMigration.Application.Abstractions;
 /// </para>
 /// <para>
 /// <b>Signing in is not asked here either.</b> Credential verification, token issue, refresh
-/// rotation, session termination and the re-hash-on-first-sign-in half of the credential
-/// migration belong to the sibling authentication and token contracts in this folder. This
-/// covers administrative credential changes and the administrative reset only. Nothing from
+/// rotation and session termination belong to the sibling authentication and token contracts in
+/// this folder, as does the work-factor upgrade a successful sign-in performs on a value the
+/// current scheme itself produced. That upgrade is <em>not</em> a half of the credential migration,
+/// and an earlier revision of this paragraph called it one: there is no re-hash-on-first-sign-in
+/// tier anywhere in this solution, because verifying a legacy value is the step such a tier would
+/// have to begin with and nothing here can perform it. The whole of the credential migration is the
+/// administrative reset declared below - see migration note (08) at the head of this file. This
+/// contract covers administrative credential changes and that reset only. Nothing from
 /// the HTTP stack appears on this surface: this project declares one project reference, to the
 /// domain layer, and no web framework reference at all, so reaching for a transport type here
 /// does not compile.
@@ -349,12 +354,19 @@ public interface IUserService
     /// through the list projection rather than through a filter.
     /// </para>
     /// <para>
-    /// The page coordinates, the sort field and the paging contract's own free-text filter are
-    /// bounded by <c>UserListPagedRequestValidator</c>, whose sortable set is the set of columns
-    /// the legacy account grid bound. Three of that grid's header names differ from the
-    /// projection's property names and the projection's are authoritative, because they are what
-    /// a caller reads back. The four filter arguments declared on this member are distinct from
-    /// that free-text filter and are bounded by this member's own implementation.
+    /// The page coordinates and the paging contract's own free-text filter are bounded by the
+    /// shared <c>PagedRequestValidator</c>. The sort field is bounded HERE, and for this one
+    /// collection the permitted set is EMPTY: a named ordering is refused with
+    /// <c>user.list.sort-unsupported</c>. The page is selected by the database under a fixed order,
+    /// and three of the ten columns the legacy account grid bound - the creation date, the
+    /// last-login date and the approval flag - are not columns of this database at all but values
+    /// read from the external membership store after the page has been chosen, so no consistent
+    /// caller-chosen ordering exists to offer. <c>SortableFields.Users</c> records the measurement,
+    /// and a caller that must order accounts asks for an unpaged answer and orders it client-side.
+    /// Three of the grid's header names also differ from the projection's property names and the
+    /// projection's are authoritative, because they are what a caller reads back. The four filter
+    /// arguments declared on this member are distinct from that free-text filter and are bounded by
+    /// this member's own implementation.
     /// </para>
     /// </remarks>
     Task<Result<PagedResult<UserListItemDto>>> ListUsersAsync(
@@ -578,12 +590,21 @@ public interface IUserService
     /// </para>
     /// <para>
     /// <b>Deletion must also revoke every refresh token the account held</b>, through
-    /// <see cref="ITokenService.RevokeAllRefreshTokensAsync"/>, within the same unit of work as the
-    /// rest of the cascade. A refresh token outliving the account it names is the worst of the three
-    /// cases this obligation covers: the account is gone, so nothing remains that an administrator
-    /// could inspect or disable, and yet the token would still be exchanged for access tokens
-    /// asserting an identity that no longer exists. Revoking is therefore part of deleting rather
-    /// than a follow-up to it.
+    /// <see cref="ITokenService.RevokeAllRefreshTokensAsync"/>, as part of the same request. A refresh
+    /// token outliving the account it names is the worst of the three cases this obligation covers:
+    /// the account is gone, so nothing remains that an administrator could inspect or disable, and yet
+    /// the token would still be exchanged for access tokens asserting an identity that no longer
+    /// exists. Revoking is therefore part of deleting rather than a follow-up to it.
+    /// </para>
+    /// <para>
+    /// <b>It is the FIRST destructive step, and it cannot be enrolled in the unit of work.</b> The
+    /// session store is not a relational participant, so no transaction spans it and the cascade
+    /// together; an implementation that treated it as one would be describing a guarantee it does not
+    /// have. What is achievable is ordering, and it is required: the revocation is attempted once every
+    /// guard has passed and before anything has been removed, so a revocation that cannot be written
+    /// abandons the deletion with the account wholly intact rather than half dismantled. Reversing the
+    /// order would mean reporting failure over an account whose grants, assignments and credential had
+    /// already gone.
     /// </para>
     /// <para>
     /// There is deliberately no bulk counterpart. The legacy surface offered three of them plus
@@ -598,16 +619,17 @@ public interface IUserService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Changes an account's credential, either as a self-service change that presents the
-    /// current credential or as an administrative reset that does not.
+    /// Changes an account's credential as a self-service change, presenting and verifying the
+    /// current credential.
     /// </summary>
     /// <param name="portalId">Identifier of the tenant that owns the account.</param>
     /// <param name="userId">Identifier of the account whose credential is changing.</param>
     /// <param name="request">
-    /// The credential change. Its operation discriminator selects the self-service change from
-    /// the administrative reset, and the preserved policy - minimum length seven, no required
-    /// non-alphanumeric character - is applied declaratively by the matching validator before
-    /// this member is reached.
+    /// The credential change. The preserved policy - minimum length seven, no required
+    /// non-alphanumeric character - is applied declaratively by the matching validator before this
+    /// member is reached. Its operation discriminator no longer SELECTS anything: the two operations
+    /// are two members with two endpoints and two authorisation policies, so a discriminator naming
+    /// the other operation is refused rather than honoured.
     /// </param>
     /// <param name="cancellationToken">Token observed while the credential is changed.</param>
     /// <returns>
@@ -641,7 +663,17 @@ public interface IUserService
     /// surface.
     /// </para>
     /// <para>
-    /// This member owns THE WHOLE of the credential migration path rather than half of it.
+    /// <b>THIS MEMBER NO LONGER PERFORMS AN ADMINISTRATIVE RESET.</b> One member serving both operations
+    /// meant the caller's own request body chose whether the current credential was verified, on an
+    /// endpoint that required nothing beyond authentication - so any bearer token could overwrite any
+    /// account's credential in any tenant. The reset now lives on
+    /// <see cref="ResetPasswordAsync"/>, whose endpoint requires administration of the account's own
+    /// portal, while this member is reachable only by the account holder and always verifies the
+    /// credential presented. <c>user.password.reset-not-enabled</c> is consequently unreachable here.
+    /// </para>
+    /// <para>
+    /// <see cref="ResetPasswordAsync"/> owns THE WHOLE of the credential migration path rather than half of
+    /// it.
     /// Legacy credentials were held reversibly and cannot be verified against a one-way hash,
     /// and no component in this solution can verify one - so the first-sign-in re-hash that
     /// AAP 0.7.5.5 envisages has no implementation and, per that same section, may not be given
@@ -665,6 +697,15 @@ public interface IUserService
     /// bounded by their own short lifetime, and no successor follows them.
     /// </para>
     /// <para>
+    /// <b>It precedes the credential write, and its failure abandons the operation.</b> Ending the
+    /// sessions first and then failing costs the holder an inconvenience it can undo by signing in
+    /// again; writing the credential first and then failing to end them would report the operation as
+    /// failed while the credential had in fact been replaced and every session was still exchangeable -
+    /// a falsehood to the caller as well as the exposure the revocation exists to close. The reported
+    /// failure is a dependency failure rather than a bad request, because nothing about the submission
+    /// was wrong and a caller may retry it.
+    /// </para>
+    /// <para>
     /// This has no legacy counterpart, because the legacy credential change had nothing to revoke.
     /// <c>UserController.vb</c> L103 changed the stored credential and returned, leaving the forms
     /// ticket the browser already held entirely untouched and valid for the remainder of its
@@ -679,6 +720,48 @@ public interface IUserService
     /// </para>
     /// </remarks>
     Task<Result> ChangePasswordAsync(
+        int portalId,
+        int userId,
+        ChangePasswordRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resets an account's credential administratively, without presenting the current one.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that owns the account.</param>
+    /// <param name="userId">Identifier of the account whose credential is being reset.</param>
+    /// <param name="request">
+    /// The new credential. The current credential is neither required nor consulted, which is the whole
+    /// point of a reset; the same declarative policy applies to the new value as for a change.
+    /// </param>
+    /// <param name="cancellationToken">Token observed while the credential is written.</param>
+    /// <returns>
+    /// A successful result with no value. <b>It never carries a credential.</b> Documented failure codes are
+    /// those of <see cref="ChangePasswordAsync"/> less <c>user.password.current-incorrect</c>, which cannot
+    /// arise, plus <c>user.password.reset-not-enabled</c> when the deployment has reset switched off.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>WHY THIS IS A SEPARATE MEMBER.</b> Skipping the current-credential check is exactly what a reset
+    /// is for, and it is safe only while something else establishes that the caller is entitled to perform
+    /// one. When the two operations shared a member, that something was a discriminator in the caller's own
+    /// request body on an endpoint requiring only authentication - so the check was skipped on the caller's
+    /// instruction. Separating them lets the endpoint carrying this member require administration of the
+    /// account's portal, which is the compensating control the absence of a credential check depends on.
+    /// </para>
+    /// <para>
+    /// <b>The new credential is never returned.</b> The legacy reset at <c>UserController.vb</c> L906
+    /// assigned the provider's answer onto the account and returned it, so the credential travelled back to
+    /// the caller in clear text. That is not reproduced in any form, and there is no retrieval member at all.
+    /// </para>
+    /// <para>
+    /// This member owns THE WHOLE of the credential migration path: legacy credentials were held reversibly
+    /// and cannot be verified against a one-way hash, so an administrative reset is the only way a
+    /// pre-existing account regains access. That is why the shipped default keeps reset enabled, faithfully
+    /// to <c>Website/release.config</c> L240.
+    /// </para>
+    /// </remarks>
+    Task<Result> ResetPasswordAsync(
         int portalId,
         int userId,
         ChangePasswordRequest request,
@@ -758,6 +841,12 @@ public interface IUserService
     /// to keep obtaining access tokens: a refresh token issued while the approval stood would go on
     /// yielding them, so the withdrawal would take effect for new sign-ins and not for the session
     /// already running. Granting an approval revokes nothing, because it takes nothing away.
+    /// </para>
+    /// <para>
+    /// <b>The revocation precedes the withdrawal, and its failure leaves the approval standing.</b> The
+    /// same ordering rule the credential change follows, for the same reason: an account recorded as
+    /// unapproved while every session it holds remains exchangeable is the outcome this obligation
+    /// exists to prevent, so the withdrawal is not attempted until the sessions have ended.
     /// </para>
     /// <para>
     /// This too is net-new. <c>Website/admin/Users/Membership.ascx.vb</c> L243 cleared the flag and
@@ -875,6 +964,51 @@ public interface IUserService
     Task<Result> UpdateMembershipSettingsAsync(
         int portalId,
         MembershipSettingsDto settings,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reports whether the named account must complete or correct its profile before it may continue.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant the account is signing in to.</param>
+    /// <param name="userId">Identifier of the account being admitted.</param>
+    /// <param name="cancellationToken">Token observed while the two reads are made.</param>
+    /// <returns>
+    /// A successful result carrying <see langword="true"/> when the tenant requires a valid profile at
+    /// sign-in AND the account leaves at least one required property empty; <see langword="false"/> in
+    /// every other case, including a tenant with no settings source and an account that does not exist.
+    /// This member reports a FACT rather than adjudicating a request, so it declares no failure code -
+    /// an unanswerable question is answered <see langword="false"/>, which is the legacy outcome for it.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// C-03: this member exists so that the sign-in path can evaluate the legacy profile-completeness
+    /// gate WITHOUT the completeness rule acquiring a second implementation. The gate is
+    /// <c>UserController.vb</c> L1189-L1193: while the accumulated outcome was still the valid member,
+    /// the legacy read the per-tenant setting <c>Security_RequireValidProfileAtLogin</c> through
+    /// <c>UserModuleBase.GetSetting</c> and, if it was set, called
+    /// <c>ProfileController.ValidateProfile</c> (L305-L319), which walked the tenant's property
+    /// definitions and reported invalid at the first definition that was required and whose value was
+    /// empty. Both halves are reproduced here.
+    /// </para>
+    /// <para>
+    /// The member lives on THIS contract rather than on the sign-in contract because both halves belong
+    /// to the account-administration vertical: the setting is a module setting on the tenant's User
+    /// Accounts module instance, which this service already reads, and the definitions are this
+    /// service's own reference data. An earlier revision recorded that as the reason for leaving the gate
+    /// unevaluated; the reason was sound but the conclusion was not, because the owning vertical can
+    /// expose the QUESTION without the sign-in path acquiring the RULE. That is what this member does,
+    /// and it is why the rule still has exactly one implementation.
+    /// </para>
+    /// <para>
+    /// A required property whose stored value is present but whitespace counts as empty, because
+    /// <c>Null.NullString</c> is the empty string (Rule T7) and the legacy comparison against it could
+    /// not distinguish the two; treating whitespace as an answer would let a space satisfy a required
+    /// property.
+    /// </para>
+    /// </remarks>
+    Task<Result<bool>> RequiresProfileCompletionAsync(
+        int portalId,
+        int userId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -1084,7 +1218,9 @@ public interface IUserService
     /// <param name="cancellationToken">Token observed while the definition is removed.</param>
     /// <returns>
     /// A successful result with no value, which is what lets the API layer answer 204 No Content.
-    /// The documented failure code is <c>profile-definition.not-found</c>.
+    /// Documented failure codes are <c>profile-definition.not-found</c>, when the tenant declares no
+    /// such definition, and <c>persistence.conflict</c>, when a concurrent request removed or changed
+    /// the declaration between the read and the commit.
     /// </returns>
     /// <remarks>
     /// Replaces the two legacy delete paths, both of which called the same underlying operation:

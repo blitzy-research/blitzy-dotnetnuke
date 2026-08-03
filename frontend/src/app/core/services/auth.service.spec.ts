@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { AUTH_ENDPOINTS } from '../config/api-endpoints';
 import { AuthSession, CurrentUser, LoginResponse } from '../models/auth.model';
+import { ApiResponse } from '../models/paged-result.model';
 import { AuthService } from './auth.service';
 import { TokenStorageService } from './token-storage.service';
 
@@ -20,16 +21,30 @@ const USER: CurrentUser = {
   permissions: ['VIEW'],
 };
 
-/** A successful token response, varying only the two token values. */
-function loginResponse(accessToken: string, refreshToken: string): LoginResponse {
+/**
+ * A successful token response BODY, varying only the two token values.
+ *
+ * Returns the payload inside the shared success envelope, because that is what the
+ * server writes: every action that answers with a payload wraps it, so a spec that
+ * flushed the payload bare would be testing a body the server never sends. The failure
+ * is worth naming, because it is silent rather than loud - the service would map an
+ * envelope-shaped object with no `accessToken`, and the stored session would be a
+ * shape-correct blank rather than an error.
+ *
+ * The metadata companion is deliberately absent. It describes a page, and a token
+ * response has none; asserting its absence is asserting a real property of the
+ * contract.
+ */
+function loginResponse(accessToken: string, refreshToken: string): ApiResponse<LoginResponse> {
   return {
-    accessToken,
-    expiresAtUtc: '2100-01-01T00:00:00.000Z',
-    refreshToken,
-    mustChangePassword: false,
-    passwordExpiring: false,
-    mustUpdateProfile: false,
-    user: USER,
+    data: {
+      accessToken,
+      expiresAtUtc: '2100-01-01T00:00:00.000Z',
+      refreshToken,
+      mustChangePassword: false,
+      passwordExpiring: false,
+      user: USER,
+    },
   };
 }
 
@@ -41,7 +56,6 @@ function existingSession(): AuthSession {
     refreshToken: 'refresh-old',
     mustChangePassword: false,
     passwordExpiring: false,
-    mustUpdateProfile: false,
     user: USER,
   };
 }

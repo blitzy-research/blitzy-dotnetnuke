@@ -14,12 +14,20 @@ namespace DnnMigration.Application.Dtos.Auth;
 // and neither is any other legacy status enumeration. That enumeration is declared at L23-L29 of its
 // own source file under Library/Components/Users/Membership/ (namespace
 // DotNetNuke.Security.Membership) and is returned by UserController.vb:L1171. Its five values map
-// onto the three advisory flags below, value by value:
-//     value 0, valid                 -> no flag set; all three flags stay false
-//     value 1, password-expired      -> MustChangePassword   (legacy behaviour was blocking)
+// onto the two advisory flags below, value by value:
+//     value 0, valid                  -> no flag set; both flags stay false
+//     value 1, password-expired       -> MustChangePassword   (legacy behaviour was blocking)
 //     value 2, password-expiring      -> PasswordExpiring     (legacy behaviour was NON-blocking)
-//     value 3, update-profile-needed -> MustUpdateProfile     (legacy behaviour was blocking)
+//     value 3, update-profile-needed  -> NOT REPRESENTED; see the reduction recorded below
 //     value 4, password-update-forced -> MustChangePassword   (legacy behaviour was blocking)
+// ALL THREE FLAGS ARE POPULATED, and an earlier revision of this note said only two were. AuthService
+// assigns MustChangePassword and PasswordExpiring on both the sign-in and the rotation path, from
+// EvaluateCredentialAdvisoriesAsync, and assigns MustUpdateProfile on both paths from
+// MustUpdateProfileAsync, which asks IUserService.RequiresProfileCompletionAsync - the one
+// implementation of the legacy per-tenant gate and profile-completeness walk. The claim that no
+// production path assigned it described the tree before that producer existed; a flag that can only
+// ever answer one way is a false capability signal, which is precisely why the member is carried only
+// now that an authoritative producer stands behind it. See its own remarks.
 // The blocking distinction is measured, not inferred: Website/admin/Authentication/Login.ascx.vb
 // renders the same interstitial for values 1, 2 and 4 (PageNo = 2) but enables its proceed panel for
 // value 2 alone (L544, against L539 and L548), and sends value 3 to a different step (L552).
@@ -30,8 +38,8 @@ namespace DnnMigration.Application.Dtos.Auth;
 // enumeration was SINGLE-VALUED WITH PRECEDENCE - UserController.vb:L1175-L1194 assigns the forced
 // update first, then the expired and expiring cases, then tests the profile case only while the
 // value is still the valid one - so exactly one condition could ever be reported and the others were
-// masked. Three independent booleans can therefore express combinations the legacy could not, such
-// as a credential that must change AND a profile that must be completed. That is strictly more
+// masked. Two independent booleans can therefore express a combination the legacy could not, namely a
+// credential that has expired and one that is also inside its reminder window. That is strictly more
 // information, never less, and a client that handles the flags independently cannot regress.
 //
 // MIGRATION: no legacy status enumeration reaches the wire, and this is a correctness requirement
@@ -79,8 +87,12 @@ namespace DnnMigration.Application.Dtos.Auth;
 // (the field at L91, the cipher named at L92) - material that is read as historical fact and is
 // never reproduced, rotated or redacted by this migration. Retrieval is therefore not carried
 // forward to any endpoint or screen, unlike the legacy flow that decrypted and mailed the stored
-// credential outright. Existing stored values are re-hashed on the first successful sign-in, with an
-// administrative reset as the fallback. No credential material appears on this contract.
+// credential outright. AN ADMINISTRATIVE RESET IS THE ONLY WAY AN EXISTING STORED VALUE BECOMES
+// USABLE: an earlier revision of this note said existing values are re-hashed on the first successful
+// sign-in with reset as the fallback, and that was false - re-hashing requires first verifying the
+// submitted password against the legacy value, which nothing in this solution can do. What a sign-in
+// does upgrade is the COST of a value this scheme itself produced, which is a different operation and
+// rescues no legacy credential. No credential material appears on this contract either way.
 //
 // MIGRATION: the expiry is published as one absolute instant in UTC rather than as a remaining
 // number of seconds. A relative lifetime is only correct at the moment the response is written and
@@ -97,7 +109,7 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// <summary>
 /// The successful payload of both <c>POST /api/v1/auth/login</c> and <c>POST /api/v1/auth/refresh</c>:
 /// the bearer credential pair the client uses from that point on, the moment the access token lapses,
-/// three advisory flags, and a snapshot of who the caller is.
+/// two advisory flags, and a snapshot of who the caller is.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -137,7 +149,7 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// rotation counter and no server-side rotation state of any kind.
 /// </para>
 /// <para>
-/// The three advisory flags are the boundary expression of a successful sign-in that nevertheless
+/// The two advisory flags are the boundary expression of a successful sign-in that nevertheless
 /// carries a caveat. Each is a plain non-nullable boolean whose <see langword="false"/> value means
 /// "no advisory", and each is written on the wire even when false, so an absent advisory is stated
 /// rather than inferred from a missing field. A nullable form would be wrong rather than merely
@@ -274,10 +286,24 @@ public sealed class LoginResponse
     /// recorded above.
     /// </para>
     /// <para>
-    /// The legacy condition combined a per-portal setting with a profile completeness check
-    /// (<c>UserController.vb</c> L1190-L1193). That setting is not part of the migrated configuration
-    /// surface, so this flag is carried by the contract and set by the server where the check applies;
-    /// no setting is invented here.
+    /// The legacy condition combined a per-tenant setting with a profile-completeness check
+    /// (<c>UserController.vb</c> L1190-L1193), and BOTH are reproduced. The gate,
+    /// <c>Security_RequireValidProfileAtLogin</c>, is read from the tenant's membership settings and the
+    /// completeness check walks the tenant's required profile-property definitions against the caller's
+    /// stored values, exactly as <c>ProfileController.vb</c> L305-L319 did. Neither is evaluated here:
+    /// the rule has ONE implementation, <c>IUserService.RequiresProfileCompletionAsync</c>, which lives
+    /// in the account-administration vertical that owns the definitions, and the sign-in path asks it the
+    /// question rather than re-deriving the answer.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an earlier revision of this contract advertised this member with no production code
+    /// able to set it, so every client read a permanent <see langword="false"/> and would conclude the
+    /// installation never requires profile completion - a FALSE CAPABILITY SIGNAL, which is worse than an
+    /// absent member because a flag that can only answer one way is indistinguishable from one that is
+    /// answering correctly. The member is carried here only because that producer now exists and is
+    /// authoritative; the two extra reads it performs land on an ALREADY-AUTHENTICATED path, after the
+    /// credential has been accepted, never on the anonymous one, and a read that fails is treated as "no
+    /// advisory" so that an advisory outage can never become a sign-in outage.
     /// </para>
     /// </remarks>
     public bool MustUpdateProfile { get; set; }

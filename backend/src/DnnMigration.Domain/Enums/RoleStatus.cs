@@ -40,14 +40,26 @@ namespace DnnMigration.Domain.Enums;
 /// is <c>Active</c>, which is also the answer when both dates are unset.
 /// </para>
 /// <para>
-/// Two subtleties the classifier must honour. "Now" means the value read from the <c>IClock</c>
+/// One subtlety the classifier must honour. "Now" means the value read from the <c>IClock</c>
 /// abstraction in this project, injected into whichever type performs the classification; never call
 /// <c>DateTime.Now</c> or <c>DateTime.UtcNow</c> directly, because the legacy code read the ambient
-/// clock inline and that is exactly why its date handling could not be tested. And "no date set" is
-/// two values, not one: the legacy columns are nullable but the legacy properties were not, so
-/// absence was carried as the <c>DateTime.MinValue</c> sentinel, and the legacy emptiness test
-/// compared only the date part. A migrated row will classify differently from its legacy self unless
-/// both a null and <c>DateTime.MinValue</c> are treated as unset, comparing the date part.
+/// clock inline and that is exactly why its date handling could not be tested.
+/// </para>
+/// <para>
+/// "NO DATE SET" IS ONE VALUE, AND IT IS <see langword="null"/>. The legacy columns are nullable but
+/// the legacy properties were not, so absence travelled in memory as the <c>Null.NullDate</c>
+/// sentinel - <c>Date.MinValue</c> - and the legacy emptiness test compared only the date part. That
+/// marker is nevertheless NOT a second spelling of absence a classifier has to accept, for two
+/// measured reasons. It never reached the store: the legacy write path passed both bounds through
+/// <c>Null.GetNull</c> (<c>Null.vb</c> lines 183-186), which substitutes <c>DBNull</c> for it, and
+/// both members that wrote them did so on every call (<c>AddUserRole</c> and <c>UpdateUserRole</c>,
+/// membership <c>DataProvider/SqlDataProvider.vb</c> lines 280-286). And it could not have reached the
+/// store even had that conversion been omitted, because both columns are SQL Server <c>datetime</c>,
+/// whose range begins at 1753-01-01 and which refuses 0001-01-01 outright. Under Rule T7 the marker is
+/// therefore normalised to <see langword="null"/> at the write boundary that owns it - the repository
+/// members that stand in for those two legacy members - and the Domain classifier speaks nullable CLR
+/// semantics alone. Accepting the marker here as well would place sentinel knowledge in the Domain,
+/// where Rule T7 forbids it, in order to recognise a value the schema cannot hold.
 /// </para>
 /// <para>
 /// The trial flag is deliberately not folded in. <c>IsTrialUsed</c> is an orthogonal nullable bit on

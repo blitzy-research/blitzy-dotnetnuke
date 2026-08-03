@@ -2,7 +2,7 @@ namespace DnnMigration.Application.Dtos.User;
 
 /// <summary>
 /// Inbound contract for user creation: the request body bound by
-/// <c>UsersController</c> on <c>POST /api/v1/users</c>, which answers
+/// <c>UsersController</c> on <c>POST /api/v1/portals/{portalId}/users</c>, which answers
 /// <c>201 Created</c> with a <c>UserDetailDto</c>.
 /// </summary>
 /// <remarks>
@@ -39,12 +39,12 @@ namespace DnnMigration.Application.Dtos.User;
 /// <c>IUserService</c> records that the recovery pair has no counterpart and that
 /// no member declares a question or answer parameter, that the generation members
 /// are absent because a generated credential has to be transmitted to be useful,
-/// and that the notify switch is dropped with the excluded mail subsystem. An
-/// earlier revision of this type declared all four anyway, so the wire contract
-/// advertised four operations that nothing behind it could perform - a caller
+/// and that the notify switch is dropped with the excluded mail subsystem.
+/// Declaring all four anyway would make the wire contract
+/// advertise four operations that nothing behind it can perform - a caller
 /// could set the generation flag and receive an account whose credential no
 /// endpoint would ever disclose, or set the notify flag and be told a message was
-/// sent that no subsystem exists to send. The four members are therefore removed
+/// sent that no subsystem exists to send. None of the four is declared
 /// rather than left inert, because an inert member on a published contract is
 /// indistinguishable from a supported one.
 /// </para>
@@ -71,11 +71,11 @@ namespace DnnMigration.Application.Dtos.User;
 /// schema, corroborating the provider setting above. No length rule and no
 /// uniqueness rule is expressed on this type. The email width is 256 and not the
 /// baseline 100 because the column was dropped and re-added wider; the chain is
-/// cited in full on the <c>Email</c> member below, and an earlier revision of
-/// this paragraph read only the baseline.
+/// cited in full on the <c>Email</c> member below. Reading only the baseline
+/// script is what yields the wrong figure.
 /// </para>
 /// <para>
-/// THE EMAIL WIDTH IS 256, AND AN EARLIER REVISION OF THIS PARAGRAPH SAID 100.
+/// THE EMAIL WIDTH IS 256, NOT 100.
 /// The column has two lives and only the second exists today: an original
 /// <c>Email nvarchar(100) NOT NULL</c> from <c>01.00.00:L107</c> was REMOVED by
 /// the nine-column drop at <c>02.02.01:L50-51</c>, and a replacement
@@ -189,9 +189,9 @@ public sealed class CreateUserRequest
     // this layer by project reference.
     //
     // MIGRATION: CREDENTIALS THAT ALREADY EXIST ARE MIGRATED BY ADMINISTRATIVE
-    // RESET, AND BY NOTHING ELSE. An earlier revision of the note above claimed
-    // re-hashing on first successful login with administrative reset as a mere
-    // fallback. THAT CLAIM WAS FALSE and is removed rather than softened: the
+    // RESET, AND BY NOTHING ELSE. It must not be described as re-hashing on first
+    // successful login with administrative reset as a mere
+    // fallback, because no such path can run: the
     // hasher verifies BCrypt digests only, no legacy credential column is mapped
     // by the persistence layer, and no service in this solution can check a
     // submitted password against a value held under the legacy reversible scheme -
@@ -303,10 +303,10 @@ public sealed class CreateUserRequest
     /// CONSEQUENCE: the validator MUST treat this member as required. If it is
     /// left optional, an insert will violate a NOT NULL constraint at run time.
     /// MIGRATION: this member is non-nullable, matching FirstName, which is the
-    /// same shape against the same width with the same requiredness. An earlier
-    /// revision typed it nullable to express "wire optionality", so that an
-    /// omitted field and an explicitly blank one could be reported differently.
-    /// That distinction was never realised and cannot be: the rule applied is
+    /// same shape against the same width with the same requiredness. Typing it
+    /// nullable to express "wire optionality" - so that an
+    /// omitted field and an explicitly blank one could be reported differently -
+    /// does not work and must not be attempted: the rule applied is
     /// NotEmpty, which treats a null and an empty string identically and emits
     /// one message either way, and the legacy absent-string sentinel IS the empty
     /// string, so an omitted value and a blank value already mean the same thing
@@ -341,8 +341,8 @@ public sealed class CreateUserRequest
     /// one. The schema is authoritative, so the validator's length rule is 256.
     /// SCHEMA-WINS RECONCILIATION, CORRECTED: the legacy user object's
     /// maximum-length editor attribute of 256 AGREES with the terminal column; it
-    /// was the superseded 100 that disagreed, and an earlier revision of this
-    /// remark enforced that superseded value.
+    /// is the superseded 100 that disagrees, and that superseded value must not be
+    /// enforced here.
     /// REQUIREDNESS IS AN API-LEVEL RULE, NOT THE COLUMN'S NULLABILITY: the column
     /// permits an absent address and the legacy creation screen did not, declaring
     /// <c>Required(True)</c>; the screen's rule is what a create request must
@@ -357,10 +357,11 @@ public sealed class CreateUserRequest
     /// </remarks>
     public string Email { get; set; } = string.Empty;
 
-    // MIGRATION: the credential members below became UNCONDITIONALLY required when the
-    // random-password branch was removed. An earlier revision declared both nullable and
-    // guarded every credential rule with "when generation was not requested", which was the
-    // only reason either could be legitimately absent. With that branch gone there is exactly
+    // MIGRATION: the credential members below are UNCONDITIONALLY required, because the
+    // random-password branch is not part of this contract. Declaring both nullable and
+    // guarding every credential rule with "when generation was not requested" would be the
+    // shape that branch demands, and it is the only thing that could make either legitimately
+    // absent. Without it there is exactly
     // one creation path and it always carries a credential, so both members are non-nullable
     // and seeded with the empty string like every other required member of this type. Two
     // consequences follow and are deliberate: the validator no longer needs a null-forgiving
@@ -422,10 +423,10 @@ public sealed class CreateUserRequest
     // MIGRATION: THE NOTIFY FLAG IS NOT A MEMBER OF THIS CONTRACT. The legacy page read a
     // pre-checked notify checkbox when it raised its created event, but the mail subsystem
     // that switch drove is excluded from this migration, and the owning service contract
-    // states the switch is dropped with it. An earlier revision declared the flag anyway,
-    // which meant a caller could ask for a notification, receive a 201, and never learn that
+    // states the switch is dropped with it. Declaring the flag anyway would let
+    // a caller ask for a notification, receive a 201, and never learn that
     // nothing was sent - a silent failure with no observable symptom, because the wire
-    // contract advertised a capability nothing behind it implements. Removing the member
+    // contract would advertise a capability nothing behind it implements. Omitting the member
     // makes the absence visible in the contract itself, which is the only place a client can
     // discover it. Should outbound mail ever come into scope, the flag returns together with
     // a service member that can honour it, not before.
@@ -436,9 +437,9 @@ public sealed class CreateUserRequest
     // them, and the provider is registered with the pair not required. The owning service
     // contract records that the pair has no counterpart at all and that no member declares a
     // question or answer parameter, because the pair's only real purpose was to guard
-    // credential retrieval - which is dropped outright. An earlier revision declared both
-    // members and its validator asserted them whenever the bound policy flag was set, so a
-    // deployment that switched the flag on would have collected a question and an answer that
+    // credential retrieval - which is dropped outright. Declaring both
+    // members and asserting them whenever the bound policy flag is set would mean a
+    // deployment that switched the flag on collected a question and an answer that
     // nothing stores and nothing can ever check. The policy flag itself is consequently
     // unsatisfiable in the target, and PasswordPolicyOptions.Validate rejects it at start-up
     // rather than letting it look enforced.
@@ -448,9 +449,9 @@ public sealed class CreateUserRequest
     // controller's generator, which produced a credential of the configured minimum length
     // plus four characters. The generator is not carried forward: a generated credential has
     // to be transmitted to be useful, the mail subsystem that would transmit it is excluded,
-    // and no endpoint in the target returns, echoes or reconstructs a credential. An earlier
-    // revision declared the flag and made both credential members conditional on it, so a
-    // caller could create an account with a credential that no one - including the account's
+    // and no endpoint in the target returns, echoes or reconstructs a credential. Declaring the
+    // flag and making both credential members conditional on it would let a
+    // caller create an account with a credential that no one - including the account's
     // own holder - could ever learn. Creation therefore always carries an explicit
     // credential, and the administrative-reset path on the password sub-resource is where an
     // administrator sets one on a caller's behalf.

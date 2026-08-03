@@ -76,8 +76,9 @@ internal sealed class PortalAliasConfiguration : IEntityTypeConfiguration<Portal
         // alias keys are always positive. The seed is still recorded rather than defaulted, because
         // the model is now the only machine-readable description of the real table's identity
         // specification. It is not a licence to read a non-positive key as "unsaved" either:
-        // persisted state is declared through Entity<int>.MarkIdentityPersisted, never inferred from
-        // the value of a key.
+        // persisted state is declared through Entity<int>.MarkIdentityPersisted by code that already
+        // knows the row exists, never inferred from the value of a key. Persistence declares nothing
+        // automatically, so an alias read through this mapping reports IdentityIsPersisted as false.
         builder.Property(a => a.PortalAliasId)
             .HasColumnName("PortalAliasID")
             .HasColumnType("int")
@@ -170,8 +171,18 @@ internal sealed class PortalAliasConfiguration : IEntityTypeConfiguration<Portal
         // The physical index name is preserved; the object qualifier is empty on this installation,
         // so the unqualified name is the real one. This is the only index on the table besides the
         // clustered primary key, and the chain creates no other at any version.
+        //
+        // MIGRATION: THE FILTER IS EXPLICITLY SUPPRESSED. HTTPAlias is nullable - the column is
+        // declared without a NOT NULL clause at 02.02.02:L3807 - and the SQL Server provider attaches a
+        // "HTTPAlias IS NOT NULL" predicate to a unique index over a nullable column unless told
+        // otherwise. The terminal object is a plain UNIQUE NONCLUSTERED table constraint with no
+        // predicate, which admits exactly one host-name-less row installation-wide; a filtered index
+        // would admit any number of them. Because installation-wide uniqueness of the host name is the
+        // property exact-match tenant resolution depends on, weakening it here would weaken tenant
+        // isolation. Passing null as the filter removes the predicate.
         builder.HasIndex(a => a.HttpAlias)
             .IsUnique()
+            .HasFilter(null)
             .HasDatabaseName("IX_PortalAlias");
 
         // Entity<int>.Identity is not ignored explicitly: it is a get-only expression-bodied property

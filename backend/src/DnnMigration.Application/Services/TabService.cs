@@ -129,6 +129,9 @@ public sealed class TabService : ITabService
     /// <summary>Reason code reported when the page name is a reserved device name.</summary>
     private const string NameReservedCode = "tab.name_reserved";
 
+    /// <summary>Resource type recorded on every page audit event.</summary>
+    private const string TabResourceType = "Tab";
+
     /// <summary>
     /// Legacy cache key shape for a portal's page collection, preserved verbatim from
     /// <c>DataCache.TabCacheKey</c> (L50).
@@ -184,6 +187,19 @@ public sealed class TabService : ITabService
     private const int RootLevel = 0;
 
     /// <summary>
+    /// Deepest page hierarchy the stored path can represent, counted in levels including the root.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: read from the column rather than chosen. <c>Tabs.TabPath</c> holds 255 characters and
+    /// every level contributes at least the two-character separator to the assembled path, so 127 levels
+    /// is the deepest hierarchy whose path is storable at all, whatever the page names are. A limit set
+    /// here therefore refuses nothing that could ever have been written, which is what makes it safe to
+    /// state; a lower figure would have been a new restriction on callers, and a higher one would have
+    /// permitted a path the column cannot hold.
+    /// </remarks>
+    private const int MaximumTabDepth = 127;
+
+    /// <summary>
     /// Device names the legacy page-management screen refused, reproduced from
     /// <c>Website/admin/Tabs/ManageTabs.ascx.vb</c> line 272. The legacy pattern listed
     /// <c>^CON$</c> twice, which is redundant and is therefore stated once here.
@@ -199,6 +215,8 @@ public sealed class TabService : ITabService
     private readonly IPortalRepository _portals;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
+    private readonly ICurrentUser _currentUser;
+    private readonly IAuditSink _audit;
     private readonly CachingOptions _caching;
 
     /// <summary>
@@ -212,6 +230,14 @@ public sealed class TabService : ITabService
     /// </param>
     /// <param name="unitOfWork">Commits the page tree in a single transaction.</param>
     /// <param name="cache">Absorbs the legacy page-collection cache.</param>
+    /// <param name="currentUser">
+    /// Identifies the caller, so an audit record names the account that changed the page rather than
+    /// repeating a value the request supplied.
+    /// </param>
+    /// <param name="audit">
+    /// Records the page change under the legacy event name. Package-neutral by construction, which is what
+    /// allows a trail to be kept from a project that can name no logging package.
+    /// </param>
     /// <param name="caching">
     /// Bound caching configuration. This is a plain settings object rather than a wrapped options
     /// accessor: the application layer deliberately takes no dependency on the options package, and
@@ -222,12 +248,16 @@ public sealed class TabService : ITabService
         IPortalRepository portals,
         IUnitOfWork unitOfWork,
         ICacheService cache,
+        ICurrentUser currentUser,
+        IAuditSink audit,
         CachingOptions caching)
     {
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _audit = audit ?? throw new ArgumentNullException(nameof(audit));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
     }
 
@@ -301,21 +331,42 @@ public sealed class TabService : ITabService
             return Result<TabDetailDto>.Failure(NotFoundCode, $"No page bears identifier {tabId}.");
         }
 
-        // MIGRATION: this reproduces the legacy screen's own required-name rejection, which lived in
-        // the markup rather than the code-behind - Website/admin/Tabs/managetabs.ascx L36-L37 declares
-        // a required-field validator over the page-name box carrying the message "Tab Name Is
-        // Required" - so an absent name never reached the legacy controller at all. It is behaviour
-        // preserved, not behaviour invented, and it is enforced here because this is the last layer in
-        // the target that can still see the submitted value: a request body may state the member as
-        // null even though the contract and the aggregate both declare it non-nullable, since that
-        // declaration is not enforced during deserialisation. The terminal schema declares the column
-        // NOT NULL, so the condition is an invariant violation rather than a handleable outcome, which
-        // is why it is thrown for translation at the API edge instead of being given a reason code
-        // this contract does not declare. The EMPTY string is deliberately still accepted: that is the
-        // legacy "no text" value arriving explicitly, and it is stored as given.
-        if (request.TabName is null)
+        // MIGRATION: this reproduces the legacy screen's own required-name rejection, which lived in the
+        // markup rather than the code-behind - Website/admin/Tabs/managetabs.ascx L36-L37 declares a
+        // required-field validator over the page-name box, whose markup literal reads "<br>Tab Name Is
+        // Required" and whose rendered text is the localised override "<br>Page Name Is Required"
+        // (App_LocalResources/ManageTabs.ascx.resx, valTabName.ErrorMessage) - so an absent name never
+        // reached the legacy controller at all. It is behaviour preserved, not behaviour invented. The
+        // declarative counterpart is Application/Validation/UpdateTabRequestValidator.cs, which is where
+        // that rule and the widths the same screen declared now live, and which reports them as an
+        // RFC 7807 validation response naming the offending member.
+        //
+        // THIS GUARD REMAINS AS DEFENCE IN DEPTH and is deliberately NOT removed now that the validator
+        // exists. Two reasons. The validator runs in the request pipeline, so it protects the HTTP path and
+        // nothing else - any other caller of this service, including a test and any future background
+        // worker, reaches this member directly. And the member is declared non-nullable on the contract and
+        // on the aggregate while deserialisation enforces neither, so null is reachable however carefully
+        // the caller is written. The terminal schema declares the column NOT NULL, so a null here is an
+        // invariant violation rather than a handleable outcome, which is why it is thrown for translation at
+        // the API edge instead of being given a reason code this contract does not declare.
+        //
+        // MIGRATION: the EMPTY and WHITE-SPACE cases are refused too, and doing so RESTORES the legacy
+        // behaviour rather than narrowing it. An earlier revision accepted them, reasoning that an empty
+        // name was "the legacy no-text value arriving explicitly" - but that is not what the validator it
+        // cites did. valTabName declares no InitialValue, so its initial value is the empty string, and a
+        // RequiredFieldValidator fails precisely when the trimmed control value equals that: the empty
+        // string was the ONE value the legacy screen refused, and because the comparison is made after
+        // trimming, a name of spaces was refused with it. The only InitialValue anywhere in the legacy
+        // administration markup is on an unrelated dropdown, so the default was in force here.
+        //
+        // MIGRATION: accepting a blank name was also actively harmful, which is why it is corrected rather
+        // than merely annotated. A page's stored path is composed from its name, so a blank name yields a
+        // blank path segment - and every blank-named page under one parent composes the same path, making
+        // them indistinguishable to anything that addresses a page by path, and unfindable in a navigation
+        // menu or a page list.
+        if (string.IsNullOrWhiteSpace(request.TabName))
         {
-            throw new DomainException("UpdateTabRequest.TabName was null; the page name is required.")
+            throw new DomainException("UpdateTabRequest.TabName was blank; the page name is required.")
             {
                 PublicDetail = "A page name is required.",
             };
@@ -341,6 +392,12 @@ public sealed class TabService : ITabService
         {
             return parentRejection;
         }
+
+        // Read BEFORE the update is applied, because the mapper writes onto the tracked aggregate and the
+        // former values are unrecoverable afterwards. They are carried on the audit record only when they
+        // actually changed, so a record never asserts a rename that did not happen.
+        string previousTabName = tab.TabName;
+        int? previousParentId = tab.ParentId;
 
         TabMappings.ApplyUpdate(tab, request);
 
@@ -415,6 +472,47 @@ public sealed class TabService : ITabService
             _cache.InvalidateHost();
         }
 
+        // MIGRATION: the legacy page change was recorded on the event log as EventLogType.TAB_UPDATED
+        // (Library/Components/Providers/Logging/Event Logging/EventLogController.vb, among the forty-three
+        // members declared at L38-L77), and that record is what told an operator who had moved or renamed a
+        // page. The store behind it is out of scope, so the record is emitted through IAuditSink instead.
+        //
+        // Recorded AFTER the commit, so no record can describe a change that was rolled back, and only the
+        // facts an operator needs in order to recognise the page: its name, its tenant and the ancestry
+        // change, which is the one that moves other pages as a side effect. The page's DESCRIPTION, keywords
+        // and head text are deliberately NOT carried - they are free-text a caller supplies, they can be
+        // long, and the trail is not a change log of every field. The rename is carried explicitly, because
+        // a record naming only the new value cannot answer "what was this page called yesterday".
+        Dictionary<string, string?> pageFacts = new(StringComparer.Ordinal)
+        {
+            ["TabName"] = tab.TabName,
+            ["ParentId"] = tab.ParentId?.ToString(CultureInfo.InvariantCulture),
+            ["IsVisible"] = tab.IsVisible.ToString(),
+            ["IsDeleted"] = tab.IsDeleted.ToString(),
+        };
+
+        if (!string.Equals(previousTabName, tab.TabName, StringComparison.Ordinal))
+        {
+            pageFacts["PreviousTabName"] = previousTabName;
+        }
+
+        if (previousParentId != tab.ParentId)
+        {
+            pageFacts["PreviousParentId"] = previousParentId?.ToString(CultureInfo.InvariantCulture);
+        }
+
+        AuditEvent record = new(AuditEventNames.TabUpdated)
+        {
+            PortalId = tab.PortalId,
+            ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
+            ActorUserName = _currentUser.IsAuthenticated ? _currentUser.UserName : null,
+            ResourceType = TabResourceType,
+            ResourceId = tab.TabId.ToString(CultureInfo.InvariantCulture),
+            Properties = pageFacts,
+        };
+
+        _audit.Record(record);
+
         bool hasChildren = await HasChildrenAsync(tab, cancellationToken).ConfigureAwait(false);
         return Result<TabDetailDto>.Success(TabMappings.ToDetail(tab, hasChildren));
     }
@@ -425,21 +523,38 @@ public sealed class TabService : ITabService
     /// </summary>
     /// <param name="portalId">The portal whose pages are read.</param>
     /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
-    /// <returns>The portal's pages as list rows, in the hierarchy order the repository guarantees.</returns>
+    /// <returns>
+    /// The portal's pages as list rows, in the hierarchy order the repository guarantees. <b>Every
+    /// page is projected, including pages in the recycle bin</b>, each carrying its own
+    /// <c>IsDeleted</c> flag; no row is withheld here. The reasoning is recorded inline below.
+    /// </returns>
     private async Task<IReadOnlyList<TabListItemDto>> ReadPortalTabsAsync(
         int portalId,
         CancellationToken cancellationToken)
     {
-        // Pages in the recycle bin are excluded: this listing exists so that a caller can build the
-        // navigation tree and so that the module screens can offer a placement target, and neither
-        // use admits a deleted page. The repository returns recycled pages because the legacy read
-        // did, so excluding them is this caller's policy and is applied here rather than asked of the
-        // contract.
-        IReadOnlyList<Tab> stored = await _tabs
+        // MIGRATION: PAGES IN THE RECYCLE BIN ARE INCLUDED, and that is the authoritative answer
+        // rather than a relaxation. The terminal read this member replaces - GetTabs, rewritten at
+        // 04.04.00.SqlDataProvider L440-L448 to select every column of vw_Tabs under a portal
+        // predicate alone, over a view whose terminal definition at 04.05.04.SqlDataProvider carries
+        // no IsDeleted predicate either - returns soft-deleted rows and PROJECTS IsDeleted as one of
+        // its columns. It projects the flag precisely so that the reader decides; the legacy stack
+        // had several readers and they disagreed, the page-management grid hiding recycled pages while
+        // the recycle-bin screen listed nothing else. Both were call-site policy over one complete
+        // read, not properties of the read.
+        //
+        // Reproducing only the first reader's policy here would have made this listing contradict its
+        // own published contract, which states that the sequence carries every page of the portal so
+        // that one response is sufficient to rebuild the tree, and would have made the recycle-bin
+        // view of the data unreachable through the only page-listing endpoint this migration exposes.
+        // It would also have been silent: a caller cannot tell a portal with no recycled pages from a
+        // portal whose recycled pages were removed on its behalf. TabListItemDto therefore carries
+        // IsDeleted on every row - it is documented there as surfaced rather than suppressed for
+        // exactly this reason - and filtering recycled pages out is a client-side projection over a
+        // complete answer, which is the same argument this contract already makes for declining a
+        // parent filter.
+        IReadOnlyList<Tab> tabs = await _tabs
             .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
-
-        List<Tab> tabs = stored.Where(candidate => !candidate.IsDeleted).ToList();
 
         IReadOnlyCollection<int> parentIds = await _tabs
             .ListParentTabIdsAsync(portalId, cancellationToken)
@@ -713,8 +828,49 @@ public sealed class TabService : ITabService
         int desktopOrder = DesktopTabOrderSeed;
         int adminOrder = AdminTabOrderSeed;
 
-        void Walk(Tab tab, int level, string parentPath)
+        // MIGRATION: the traversal is ITERATIVE, and the recursion it replaces was a denial-of-service
+        // vector rather than a style preference. The walk descended once per level of a hierarchy whose
+        // depth is set by stored data, and a portal administrator can lengthen that chain one page at a
+        // time with ordinary create calls, so a deep enough hierarchy exhausted the call stack. A stack
+        // overflow cannot be caught: the process terminates, taking every other tenant's in-flight
+        // request with it, which is why an unbounded recursion over tenant-controlled depth had to go
+        // rather than merely acquire a limit.
+        //
+        // MIGRATION: the visitation ORDER is preserved exactly, because it is not cosmetic - the two
+        // running counters below assign TabOrder in visitation sequence, so any reordering of the walk
+        // silently renumbers every page. Children are pushed in REVERSE so that they pop in sorted
+        // order, which makes this stack traversal emit the identical depth-first pre-order sequence the
+        // nested calls did. The roots are pushed in reverse for the same reason.
+        var pending = new Stack<(Tab Tab, int Level, string ParentPath)>();
+
+        for (int index = roots.Count - 1; index >= 0; index--)
         {
+            pending.Push((roots[index], RootLevel, string.Empty));
+        }
+
+        while (pending.Count > 0)
+        {
+            (Tab tab, int level, string parentPath) = pending.Pop();
+
+            // The depth limit is now a policy bound rather than a crash guard, since the traversal above
+            // no longer consumes stack per level. It is stated because a hierarchy past this depth
+            // cannot be STORED: the path assembled below gains at least the two-character separator per
+            // level and the column holds 255 characters, so beyond this many levels the value is
+            // unstorable whatever its names are. Refusing here therefore rejects nothing that could ever
+            // have been written, and it aborts before the unit of work commits, so a caller receives an
+            // answer instead of a provider truncation or a half-renumbered tree.
+            if (level - RootLevel >= MaximumTabDepth)
+            {
+                throw new DomainException(
+                    FormattableString.Invariant(
+                        $"Page hierarchy depth exceeds {MaximumTabDepth}; TabPath cannot be stored."))
+                {
+                    PublicDetail = FormattableString.Invariant(
+                        $"The page hierarchy is deeper than {MaximumTabDepth} levels.")
+                        + " That is more than a stored page path can express.",
+                };
+            }
+
             tab.Level = level;
 
             bool inAdminBand = adminTabId is int adminId
@@ -736,16 +892,11 @@ public sealed class TabService : ITabService
 
             if (childrenByParent.TryGetValue(tab.TabId, out List<Tab>? children))
             {
-                foreach (Tab child in children)
+                for (int index = children.Count - 1; index >= 0; index--)
                 {
-                    Walk(child, level + 1, path);
+                    pending.Push((children[index], level + 1, path));
                 }
             }
-        }
-
-        foreach (Tab root in roots)
-        {
-            Walk(root, RootLevel, string.Empty);
         }
     }
 

@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { AUTH_ENDPOINTS, apiUrl } from '../config/api-endpoints';
 import { AuthSession, CurrentUser, LoginResponse } from '../models/auth.model';
+import { ApiResponse } from '../models/paged-result.model';
 import { TokenStorageService } from '../services/token-storage.service';
 import { authInterceptor } from './auth.interceptor';
 
@@ -35,20 +36,29 @@ function session(accessToken: string, refreshToken: string): AuthSession {
     refreshToken,
     mustChangePassword: false,
     passwordExpiring: false,
-    mustUpdateProfile: false,
     user: USER,
   };
 }
 
-function loginResponse(accessToken: string, refreshToken: string): LoginResponse {
+/**
+ * A successful token-renewal BODY, varying only the two token values.
+ *
+ * Wrapped in the shared success envelope because that is what the server writes for any
+ * payload-bearing response, the renewal included. The interceptor never sees this shape
+ * itself - it delegates the renewal to the auth service, which unwraps - but the fake
+ * transport must still answer with the body the real server sends, or the spec proves
+ * the retry works against a body that does not exist.
+ */
+function loginResponse(accessToken: string, refreshToken: string): ApiResponse<LoginResponse> {
   return {
-    accessToken,
-    expiresAtUtc: '2100-01-01T00:00:00.000Z',
-    refreshToken,
-    mustChangePassword: false,
-    passwordExpiring: false,
-    mustUpdateProfile: false,
-    user: USER,
+    data: {
+      accessToken,
+      expiresAtUtc: '2100-01-01T00:00:00.000Z',
+      refreshToken,
+      mustChangePassword: false,
+      passwordExpiring: false,
+      user: USER,
+    },
   };
 }
 

@@ -400,7 +400,7 @@ public sealed class UserTests
     }
 
     /// <summary>
-    /// Equality is decided by object reference until the persistence layer declares the key real.
+    /// Equality is decided by object reference until a caller declares the key real.
     /// </summary>
     /// <remarks>
     /// This is what makes the identity-seed collisions in this schema harmless. The base class never
@@ -512,11 +512,12 @@ public sealed class UserTests
     /// <para>
     /// MIGRATION: this is the dangerous half of the same collision, and the pair of tests is the point.
     /// <c>dbo.Portals.PortalID</c> is <c>int IDENTITY(-1, 1) NOT NULL</c>
-    /// (<c>01.00.00.SqlDataProvider</c> line 77), so the first portal ever created is identified by -1
-    /// and the second by 0. Both numbers are ordinary identifiers on this side of the boundary while
+    /// (<c>01.00.00.SqlDataProvider</c> line 77), so the seed and first generated value is -1 while the
+    /// shipped default portal row is inserted explicitly with 0. Both numbers are ordinary identifiers on
+    /// this side of the boundary while
     /// -1 is the legacy absence marker on the other, and the legacy account constructor seeded its
     /// tenant field to precisely that marker (<c>UserInfo.vb</c> line 67) - meaning a freshly
-    /// constructed account claimed membership of the first real portal.
+    /// constructed account claimed membership of a real portal.
     /// </para>
     /// <para>
     /// Zero is not hypothetical either: the shipped baseline inserts

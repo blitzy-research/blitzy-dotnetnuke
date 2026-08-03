@@ -2,8 +2,8 @@ namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
 /// The two key-value setting stores of one module, carried as the response body of
-/// <c>GET /api/v1/modules/{id}/settings</c> and as the request body of
-/// <c>PUT /api/v1/modules/{id}/settings</c>. A boundary contract and nothing more: no navigation
+/// <c>GET /api/v1/portals/{portalId}/modules/{moduleId}/settings</c> and as the request body of
+/// <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c>. A boundary contract and nothing more: no navigation
 /// property, no tracked state, no behaviour and no domain entity, in either direction.
 /// </summary>
 /// <remarks>
@@ -32,13 +32,18 @@ namespace DnnMigration.Application.Dtos.Module;
 /// module-scoped bag but many distinct placement-scoped bags.
 /// </para>
 /// <para>
-/// WRITES ARE AN UPSERT PER KEY, NOT A WHOLE-BAG REPLACE, AND THIS CONTRADICTS THE NAIVE READING OF
-/// <c>PUT</c>. Submitting this contract adds or updates each key it carries. Omitting a key does NOT delete
-/// that key, and submitting a key whose value is the empty string does NOT delete it either - it stores an
-/// empty string. Callers that assume replace semantics will silently accumulate settings they believe they
-/// removed. Removal is a separate operation, exactly as it was in the legacy layer, where four dedicated
-/// members deleted a single module setting, all settings of a module, a single placement setting and all
-/// settings of a placement.
+/// WRITES REPLACE THE WHOLE BAG: A KEY THE REQUEST OMITS IS DELETED. This is the naive reading of
+/// <c>PUT</c> and it is the implemented one. <c>ModuleService.UpdateModuleSettingsAsync</c> reads the
+/// stored rows for each scope, deletes every stored key the submitted map does not contain, updates the
+/// ones whose value differs, inserts the ones that are new, and commits the lot as one unit of work.
+/// Two consequences a caller must plan for. A partial submission is destructive: to change one setting,
+/// read the current bag, modify it and send it back whole. And an empty map is not a no-op - it clears
+/// that scope. Submitting a key whose value is the empty string is NOT a deletion; it stores an empty
+/// string, which is a real stored setting. This is a DIVERGENCE from the legacy layer, where writing was
+/// per key and removal needed one of four dedicated delete members, and it is recorded as one rather than
+/// absorbed: the legacy screen always posted every field it displayed, so a whole-bag write reproduces
+/// what that screen actually did while giving a programmatic caller one round trip instead of a
+/// difference calculation of its own.
 /// </para>
 /// <para>
 /// KEY ABSENCE IS NOT THE SAME AS AN EMPTY VALUE. Because a stored SQL <c>NULL</c> surfaces as the empty
@@ -50,14 +55,14 @@ namespace DnnMigration.Application.Dtos.Module;
 /// KEY COMPARISON: THIS TYPE'S OWN DEFAULT IS ORDINAL AND CASE-SENSITIVE, WHICH IS WHAT THE LEGACY
 /// IN-MEMORY COLLECTION DID. Both maps below are initialised with an explicit ordinal comparer, so an
 /// instance this type constructs for itself draws exactly the distinctions the legacy collection drew.
-/// The comparer of a POPULATED instance belongs to whichever layer populated it, and the projection layer
-/// deliberately matches names case-insensitively instead - not as a relaxation, but because it is
-/// faithful to the STORE: both setting-name columns are declared under a case-insensitive collation and
-/// participate in their table's primary key, so two names differing only in case cannot coexist as rows
-/// and a case-sensitive projection would draw a distinction the database cannot express. The two
-/// positions are therefore both correct for what they describe, and the divergence between the legacy
-/// in-memory collection and the store is recorded here rather than absorbed silently. Consumers must not
-/// rely on a lookup that differs from a stored name only in case.
+/// The comparer of a POPULATED instance belongs to whichever layer populated it, and the service
+/// reconciles submitted names case-INsensitively. That is the conservative choice rather than a claim
+/// about the schema: NO upgrade script assigns a collation to either setting-name column, so comparison
+/// and primary-key uniqueness follow the database's own collation, which on a default SQL Server
+/// installation is case-insensitive but is a deployment property rather than a guarantee of this model.
+/// Reconciling case-insensitively is correct under either collation, whereas relying on case-distinct
+/// rows would be wrong under one of them. Consumers must therefore not rely on two keys that differ only
+/// in case being two settings, nor on a lookup that differs from a stored name only in case.
 /// </para>
 /// <para>
 /// KEYS ARE DATA, NOT IDENTIFIERS, SO NO SERIALISATION NAMING POLICY MAY TRANSFORM THEM. The wire casing
@@ -107,29 +112,31 @@ namespace DnnMigration.Application.Dtos.Module;
 //   now read-only maps of string to string: the key and value types are stated once, no cast is required,
 //   and the reflection-driven row hydrator that filled the legacy collections is gone with it.
 //
-// MIGRATION: 5.3 - THE LEGACY WRITE MEMBERS DOCUMENTED A REMOVAL BEHAVIOUR THEY DO NOT IMPLEMENT, AND THIS
-//   IS THE HIGHEST-CONSEQUENCE FINDING ON THIS CONTRACT. The documentation on the module-setting writer
-//   promised "empty SettingValue will remove the setting, if not preserveIfEmpty is true", and the
-//   placement-setting writer promised the same (spelling "remove" as "relove"). Neither body does it:
-//   each reads the existing row and then updates it if present or inserts it if absent, with no removal
-//   branch and no parameter of that name anywhere in either signature. Removal was only ever reachable
-//   through the four dedicated delete members. This contract therefore documents the behaviour that was
-//   MEASURED, not the behaviour that was DOCUMENTED: an upsert per key. The discrepancy is a legacy defect,
-//   annotated here and deliberately NOT fixed, and no removal, replace or merge flag has been invented to
-//   paper over it - inventing one would add a capability the legacy contract never had.
+// MIGRATION: 5.3 - THE WRITE PATH REPLACES EACH SCOPE WHOLE, WHICH IS NEITHER OF THE TWO LEGACY
+//   BEHAVIOURS. Three readings have to be kept apart. The legacy documentation on both per-key writers
+//   promised "empty SettingValue will remove the setting, if not preserveIfEmpty is true" (the placement
+//   writer spelling "remove" as "relove"). Neither legacy BODY did it: each read the existing row and then
+//   updated it if present or inserted it if absent, with no removal branch and no parameter of that name in
+//   either signature, so legacy removal was reachable only through four dedicated delete members. The
+//   TARGET does something different again: ModuleService.UpdateModuleSettingsAsync deletes every stored key
+//   the submitted map omits, updates the changed ones, inserts the new ones and commits once. The four
+//   delete members therefore have no counterpart on this contract - omission IS the deletion - and the
+//   divergence from the legacy per-key write is recorded here rather than absorbed. An empty value is still
+//   an empty value and not a deletion, so the legacy documented-but-unimplemented behaviour is not
+//   resurrected either.
 //
 // MIGRATION: 5.4 - THE LEGACY IN-MEMORY COLLECTION WAS CASE-SENSITIVE, AND THIS TYPE'S OWN DEFAULT SAYS SO
 //   EXPLICITLY. Both legacy readers constructed a plain hash table with NO comparer argument, which for
 //   string keys compares ordinally and case-sensitively; neither used a case-insensitive variant, and this
 //   was verified by execution rather than assumed. Both initialisers below therefore name
 //   StringComparer.Ordinal explicitly, so the guarantee is stated rather than inherited from whatever a
-//   dictionary's default happens to be. The wider picture is deliberately recorded because the two layers
-//   answer to different authorities: the STORE bounds what can exist, and its setting-name columns are
-//   case-insensitively collated primary-key members, so two names differing only in case cannot be two
-//   rows. The projection layer matches names case-insensitively for that reason, which means a populated
-//   instance can be more permissive on lookup than this type's own default. That is a divergence between
-//   the legacy in-memory semantics and the storage semantics, not a defect in either layer, and it is
-//   documented here instead of being resolved by silently changing one of them.
+//   dictionary's default happens to be. What the STORE does is a separate question and is deliberately
+//   left to the store: no upgrade script assigns a collation to either setting-name column, so equality
+//   and primary-key uniqueness there follow the database collation, which a default SQL Server
+//   installation makes case-insensitive. The service therefore reconciles submitted names
+//   case-insensitively, which is correct under either collation and means a populated instance can be more
+//   permissive on lookup than this type's own default. The asymmetry is documented rather than resolved by
+//   silently changing one side.
 //
 // MIGRATION: 5.5 - A STORED SQL NULL SURFACES AS THE EMPTY STRING, NEVER AS NULL. Both legacy readers
 //   tested the value column for database null and substituted an empty string when it was, which is the
@@ -192,7 +199,9 @@ public sealed class ModuleSettingsDto
     /// <remarks>
     /// The column is an identity seeded at zero, so <c>0</c> is a legitimate module and must never be read
     /// as an absent or unsaved one. Neither a "less than or equal to zero" test nor a comparison against
-    /// the legacy absent-integer sentinel of -1 is a valid emptiness check for this member.
+    /// the legacy absent-integer sentinel of -1 is a valid emptiness check for this member - and -1 is
+    /// itself a real key elsewhere in this schema, being the seed of <c>Portals.PortalID</c>, whose shipped
+    /// default row additionally carries an explicit 0.
     /// </remarks>
     public int ModuleId { get; set; }
 
@@ -227,9 +236,10 @@ public sealed class ModuleSettingsDto
     /// <see cref="TabModuleSettings"/>. Values are never <see langword="null"/>: a stored SQL <c>NULL</c>
     /// surfaces as the empty string, so a key present with an empty value is a real setting and differs
     /// from a key that is absent. This map is initialised with an ordinal, case-sensitive comparer, matching
-    /// the legacy in-memory collection; because <c>SettingName</c> is a case-insensitively collated member
-    /// of the table's primary key, no two stored names can differ only in case, so a lookup must never rely
-    /// on such a difference. The value bound of 2000 here matches the 2000 permitted for
+    /// the legacy in-memory collection; because no upgrade script assigns a collation to
+    /// <c>SettingName</c>, whether two stored names differing only in case can coexist follows the
+    /// database collation - case-insensitively on a default installation - so a lookup must never rely on
+    /// such a difference in either direction. The value bound of 2000 here matches the 2000 permitted for
     /// <see cref="TabModuleSettings"/>; the 256 of the baseline column was superseded when the upgrade
     /// chain rebuilt this table, so the two stores are symmetric at the terminal schema.
     /// </remarks>
@@ -248,9 +258,10 @@ public sealed class ModuleSettingsDto
     /// <see langword="null"/>, because there is then no placement to read. Values are never
     /// <see langword="null"/>: a stored SQL <c>NULL</c> surfaces as the empty string, so a key present with
     /// an empty value is a real setting and differs from a key that is absent. This map is initialised with
-    /// an ordinal, case-sensitive comparer, matching the legacy in-memory collection; because
-    /// <c>SettingName</c> is a case-insensitively collated member of the table's primary key, no two stored
-    /// names can differ only in case, so a lookup must never rely on such a difference. Note that the value
+    /// an ordinal, case-sensitive comparer, matching the legacy in-memory collection; because no upgrade
+    /// script assigns a collation to <c>SettingName</c>, whether two stored names differing only in case
+    /// can coexist follows the database collation, so a lookup must never rely on such a difference in
+    /// either direction. Note that the value
     /// bound of 2000 here is the same as the 2000 permitted for <see cref="ModuleSettings"/> once the
     /// upgrade chain has rebuilt that table; the two stores are symmetric at the terminal schema.
     /// </remarks>

@@ -140,9 +140,8 @@
 //
 //  MIGRATION: two further legacy values are deliberately NOT tokenised, and their
 //  reasons are entirely different from one another, so they are recorded separately
-//  rather than as one bullet. Conflating them was an error in an earlier revision of
-//  this header, which attributed both to excluded features; only the second belongs
-//  there, and the measurement below is what corrected it.
+//  rather than as one bullet. Do not conflate them by attributing both to excluded
+//  features: only the second belongs there, as the measurement below shows.
 //
 //    * A SYMBOL FONT FAMILY, used four times. Every one of those four uses is on a
 //      menu-arrow selector of the two out-of-scope legacy menu families, which have

@@ -84,7 +84,7 @@ public sealed class UserApiTests
             .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
 
         page.Should().NotBeNull();
-        page!.TotalCount.Should().BeGreaterThanOrEqualTo(2);
+        page!.Meta.TotalCount.Should().BeGreaterThanOrEqualTo(2);
 
         IReadOnlyList<string> names = page.Items.Select(item => item.Username).ToList();
         names.Should().Contain(IntegrationSeed.AdminUserName)
@@ -556,15 +556,34 @@ public sealed class UserApiTests
     /// proved by signing in with it and by the stored hash having moved.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The acting caller is THE ACCOUNT ITSELF, minted for the account the administrator just created, because
+    /// the self-service change endpoint now requires the caller to be the account holder. This suite used to
+    /// drive it as the host account operating on somebody else's credential, which is the shape the split
+    /// closed: a caller who is not the holder must go through the administrative reset, which is separately
+    /// authorised.
+    /// </remarks>
     [Fact]
     public async Task ChangePassword_ReturnsNoContentAndReplacesTheCredential()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        UserDetailDto created = await CreateUserAsync(client);
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient client = ClientForAccount(created);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
 
-        using HttpResponseMessage response = await client.PostAsJsonAsync(
+        // The CHANGE operation is self-service, so it is driven as the account itself. An earlier revision of
+        // this test drove it as the host account, which the service now refuses: presenting the current
+        // credential is proof of possession rather than of authority, so a caller acting on somebody else's
+        // account uses the RESET operation, which is audited as an administrative act. The reset path has its
+        // own test immediately below.
+        using HttpClient owner = _fixture.CreateClientFor(
+            created.UserId,
+            created.Username,
+            _fixture.Seed.PortalId);
+
+        using HttpResponseMessage response = await owner.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
             new ChangePasswordRequest
             {
@@ -599,16 +618,19 @@ public sealed class UserApiTests
         refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
-    /// <summary>An administrative reset needs no current credential and answers <c>204 No Content</c>.</summary>
+    /// <summary>
+    /// An administrative reset needs no current credential and answers <c>204 No Content</c> - on its own
+    /// address, reached by a caller that administers the account's portal.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ChangePassword_WithResetOperation_ReturnsNoContent()
+    public async Task ResetPassword_AsAdministrator_ReturnsNoContent()
     {
         using HttpClient client = _fixture.CreateHostClient();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            PasswordRoute(_fixture.Seed.PortalId, created.UserId),
+            PasswordResetRoute(_fixture.Seed.PortalId, created.UserId),
             new ChangePasswordRequest
             {
                 Operation = ChangePasswordRequest.OperationReset,
@@ -619,15 +641,65 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
+    /// <summary>
+    /// A reset requires the administrators role, not merely a token, and a refused reset leaves the stored
+    /// credential exactly as it was.
+    /// </summary>
+    /// <remarks>
+    /// This is the load-bearing test for the split between the two operations. A change proves possession by
+    /// quoting the current credential; a reset quotes nothing, so the only thing standing between an
+    /// authenticated caller and another account's credential is the portal-administrator policy. The stored
+    /// hash is compared before and after because a refusal that still wrote would be a silent takeover.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ChangePassword_WithResetOperation_AsPlainMember_ReturnsForbidden()
+    {
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        string before = (await ReadStoredHashAsync(created.Username))!;
+
+        using HttpClient member = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        using HttpResponseMessage response = await member.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, created.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        string after = (await ReadStoredHashAsync(created.Username))!;
+        after.Should().Be(before, "a refused reset must not touch the credential store");
+    }
+
     /// <summary>A change quoting the wrong current credential is refused.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ChangePassword_WithWrongCurrentCredential_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        UserDetailDto created = await CreateUserAsync(client);
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
 
-        using HttpResponseMessage response = await client.PostAsJsonAsync(
+        using HttpClient client = ClientForAccount(created);
+
+        // Driven as the account itself, because the change operation is self-service; see the note on the
+        // successful-change test above.
+        using HttpClient owner = _fixture.CreateClientFor(
+            created.UserId,
+            created.Username,
+            _fixture.Seed.PortalId);
+
+        using HttpResponseMessage response = await owner.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
             new ChangePasswordRequest
             {
@@ -659,8 +731,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WhenSelfServiceResubmitsTheSameCredential_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        UserDetailDto created = await CreateUserAsync(client);
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient client = ClientForAccount(created);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -689,13 +763,13 @@ public sealed class UserApiTests
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ChangePassword_WhenResetSubmitsTheStoredCredential_ReturnsConflict()
+    public async Task ResetPassword_WhenItSubmitsTheStoredCredential_ReturnsConflict()
     {
         using HttpClient client = _fixture.CreateHostClient();
         UserDetailDto created = await CreateUserAsync(client);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
-            PasswordRoute(_fixture.Seed.PortalId, created.UserId),
+            PasswordResetRoute(_fixture.Seed.PortalId, created.UserId),
             new ChangePasswordRequest
             {
                 Operation = ChangePasswordRequest.OperationReset,
@@ -714,8 +788,10 @@ public sealed class UserApiTests
     [Fact]
     public async Task ChangePassword_WithUnrecognisedOperation_ReturnsBadRequest()
     {
-        using HttpClient client = _fixture.CreateHostClient();
-        UserDetailDto created = await CreateUserAsync(client);
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient client = ClientForAccount(created);
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             PasswordRoute(_fixture.Seed.PortalId, created.UserId),
@@ -729,7 +805,137 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    /// <summary>
+    /// THE CENTRAL SECURITY FACT OF THE CREDENTIAL SPLIT. Naming the reset operation on the SELF-SERVICE
+    /// address is refused, so the current-credential check cannot be skipped by an instruction in the caller's
+    /// own request body. Before the split, this exact request succeeded and rewrote the account's credential
+    /// without proving anything: any bearer token that could reach the endpoint was enough.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ChangePassword_NamingTheResetOperation_IsRefusedAndChangesNothing()
+    {
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient client = ClientForAccount(created);
+
+        string before = (await ReadStoredHashAsync(created.Username))!;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, created.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string after = (await ReadStoredHashAsync(created.Username))!;
+        after.Should().Be(before, "a refused credential write must leave the stored credential untouched");
+    }
+
+    /// <summary>
+    /// One account may not change another's credential, even inside the same tenant. The route names the
+    /// account, so the policy compares it against the subject the token carries.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ChangePassword_ByAnAccountOtherThanTheHolder_ReturnsForbidden()
+    {
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        string before = (await ReadStoredHashAsync(created.Username))!;
+
+        using HttpClient other = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        using HttpResponseMessage response = await other.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, created.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = ReplacementPassword,
+                ConfirmPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        string after = (await ReadStoredHashAsync(created.Username))!;
+        after.Should().Be(before);
+    }
+
+    /// <summary>
+    /// An account may not reset its OWN credential through the administrative address, because doing so would
+    /// be a credential write with no proof of the current value and no administrator involved - which is
+    /// exactly the escape the split exists to remove.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ResetPassword_ByTheAccountItself_ReturnsForbidden()
+    {
+        using HttpClient administrator = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        string before = (await ReadStoredHashAsync(created.Username))!;
+
+        using HttpClient client = ClientForAccount(created);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            PasswordResetRoute(_fixture.Seed.PortalId, created.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        string after = (await ReadStoredHashAsync(created.Username))!;
+        after.Should().Be(before);
+    }
+
+    /// <summary>
+    /// Naming the change operation on the ADMINISTRATIVE address is refused, which is the mirror image of the
+    /// self-service refusal: neither operation can be reached through the other's endpoint.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ResetPassword_NamingTheChangeOperation_IsRefused()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        UserDetailDto created = await CreateUserAsync(client);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            PasswordResetRoute(_fixture.Seed.PortalId, created.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = ReplacementPassword,
+                ConfirmPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
     /// <summary>Approval can be withdrawn and restored, and each write answers <c>204 No Content</c>.</summary>
+    /// <remarks>
+    /// The refused sign-in answers <c>400 Bad Request</c> rather than <c>401 Unauthorized</c>: the credential
+    /// is verified before the approval gate, so a caller reaching the refusal has proved its credential and
+    /// is not unauthenticated - its account is simply not authorised for this portal.
+    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task SetApproval_TogglesApprovalAndBlocksSignIn()
@@ -756,7 +962,17 @@ public sealed class UserApiTests
             new { username = created.Username, password = ApiTestFixture.KnownPassword },
             ApiTestFixture.Json);
 
+        // The approval outcomes are UNAUTHORIZED, not bad-request. Each names an account state that refused
+        // a sign-in the credential itself did not refuse, so the request was correct and the account was
+        // not yet admissible - telling a client its request was at fault would be the wrong answer. The
+        // outcome is still NAMED in the body, which is the property this fact exists to assert: the caller
+        // has proved its credential, so it is entitled to know which gate refused.
         refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        (await refused.Content.ReadAsStringAsync()).Should().Contain(
+            "auth.account_not_approved",
+            "the credential was accepted and only the approval is missing, so the answer names the approval "
+            + "outcome instead of implying the credential was wrong");
 
         using HttpResponseMessage restored = await client.PutAsync(
             ApprovalRoute(_fixture.Seed.PortalId, created.UserId, isApproved: true),
@@ -941,7 +1157,7 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
         UserProfileDto? profile = await response.Content
-            .ReadFromJsonAsync<UserProfileDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<UserProfileDto>();
 
         profile.Should().NotBeNull();
         profile!.UserId.Should().Be(_fixture.Seed.MemberUserId);
@@ -1000,7 +1216,7 @@ public sealed class UserApiTests
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
 
         UserProfileDto? profile = await reread.Content
-            .ReadFromJsonAsync<UserProfileDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<UserProfileDto>();
 
         profile.Should().NotBeNull();
 
@@ -1093,7 +1309,7 @@ public sealed class UserApiTests
         read.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ProfilePropertyDefinitionDto? fetched = await read.Content
-            .ReadFromJsonAsync<ProfilePropertyDefinitionDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
 
         fetched.Should().NotBeNull();
         fetched!.PropertyName.Should().Be(created.PropertyName);
@@ -1103,8 +1319,11 @@ public sealed class UserApiTests
 
         listed.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        IReadOnlyList<ProfilePropertyDefinitionDto>? all = await listed.Content
-            .ReadFromJsonAsync<IReadOnlyList<ProfilePropertyDefinitionDto>>(ApiTestFixture.Json);
+        CollectionEnvelope<ProfilePropertyDefinitionDto>? allEnvelope = await listed.Content
+            .ReadFromJsonAsync<CollectionEnvelope<ProfilePropertyDefinitionDto>>(ApiTestFixture.Json);
+
+        allEnvelope.Should().NotBeNull();
+        IReadOnlyList<ProfilePropertyDefinitionDto>? all = allEnvelope!.Data;
 
         all.Should().NotBeNull();
         all!.Select(item => item.PropertyDefinitionId).Should().Contain(created.PropertyDefinitionId);
@@ -1117,7 +1336,7 @@ public sealed class UserApiTests
         updated.StatusCode.Should().Be(HttpStatusCode.OK);
 
         ProfilePropertyDefinitionDto? afterUpdate = await updated.Content
-            .ReadFromJsonAsync<ProfilePropertyDefinitionDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
 
         afterUpdate.Should().NotBeNull();
         afterUpdate!.PropertyCategory.Should().Be("Contact");
@@ -1147,6 +1366,187 @@ public sealed class UserApiTests
             new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative),
             NewProfileDefinition(required: false),
             ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// The definition write path is validated at the BOUNDARY, and identically at both of its addresses.
+    /// </summary>
+    /// <param name="useFlatAddress">Whether the request is sent to the flat address or the nested one.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The name carries a space, which the legacy pattern
+    /// <c>^[a-zA-Z0-9._%\-+']+$</c> - rendered by the reflective property editor from the attribute on
+    /// <c>Library/Components/Users/Profile/ProfilePropertyDefinition.vb:L228</c> - refused. Rule-for-rule
+    /// parity is proved by the validator's own unit suite; what this fact proves is different and cannot be
+    /// proved there: that the validator is ATTACHED, by the globally registered filter, to this action.
+    /// </para>
+    /// <para>
+    /// Both addresses are exercised because the resource is reachable at two and the filter resolves a
+    /// validator from the bound argument's type rather than from a route. A rule attached to one address and
+    /// not the other would be a hole shaped exactly like the address a client happened not to use.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateProfileDefinition_WithANameTheLegacyPatternRefused_ReturnsBadRequest(
+        bool useFlatAddress)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        ProfilePropertyDefinitionDto definition = NewProfileDefinition(required: false);
+        definition.PropertyName = "Home City";
+
+        Uri route = useFlatAddress
+            ? new Uri("/api/v1/profile-definitions", UriKind.Relative)
+            : new Uri(
+                $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions",
+                UriKind.Relative);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            route,
+            definition,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        // The offending field must be named: a response that says only "bad request" gives the caller
+        // nothing to correct.
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain(nameof(ProfilePropertyDefinitionDto.PropertyName));
+
+        // The refusal must be a refusal: nothing may reach the store.
+        int stored = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ProfilePropertyDefinition] WHERE [PropertyName] = @name;",
+            new Dictionary<string, object?> { ["name"] = definition.PropertyName });
+
+        stored.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The specified FLAT definition address serves the whole action set against the tenant the request
+    /// resolved to.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>/api/v1/profile-definitions</c> is the address the contract froze, and every action is reachable
+    /// through it: create, read the member, read the collection, update and remove. The nested form appears
+    /// once, to establish the fact that matters most about the flat form - that it acted on the RESOLVED
+    /// tenant rather than on a default - by finding the created definition through the seeded portal's own
+    /// address.
+    /// </para>
+    /// <para>
+    /// The definition is removed at the end. Definitions are portal schema, so leaving one behind would
+    /// change what every other profile fact in this suite sees.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task FlatProfileDefinitionAddress_ServesTheResolvedTenantAcrossItsActionSet()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        var collection = new Uri("/api/v1/profile-definitions", UriKind.Relative);
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            collection,
+            NewProfileDefinition(required: false),
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // Read through the ENVELOPE, which is what every payload-bearing success in this API publishes.
+        // Deserialising an envelope directly as its payload type yields a non-null object with every
+        // member unset, so a raw read here would compare defaults and pass or fail for the wrong reason.
+        ProfilePropertyDefinitionDto? definition = await created.Content
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+        definition.Should().NotBeNull();
+        definition!.PortalId.Should().Be(_fixture.Seed.PortalId,
+            "the flat address declares the definition for the tenant the request resolved to");
+
+        created.Headers.Location.Should().NotBeNull();
+        created.Headers.Location!.OriginalString
+            .Should().Be($"/api/v1/profile-definitions/{Route(definition.PropertyDefinitionId)}",
+                "the location is built from the address the caller used, so a flat create must not answer a nested one");
+
+        var itemRoute = new Uri(
+            $"/api/v1/profile-definitions/{Route(definition.PropertyDefinitionId)}",
+            UriKind.Relative);
+
+        using HttpResponseMessage read = await client.GetAsync(itemRoute);
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage listed = await client.GetAsync(collection);
+        listed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CollectionEnvelope<ProfilePropertyDefinitionDto>? all = await listed.Content
+            .ReadFromJsonAsync<CollectionEnvelope<ProfilePropertyDefinitionDto>>(ApiTestFixture.Json);
+
+        all.Should().NotBeNull();
+        all!.Data.Should().NotBeNull();
+        all.Data!.Select(item => item.PropertyDefinitionId)
+            .Should().Contain(definition.PropertyDefinitionId);
+
+        definition.PropertyCategory = "Contact";
+
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(
+            itemRoute,
+            definition,
+            ApiTestFixture.Json);
+
+        updated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ProfilePropertyDefinitionDto? afterUpdate = await updated.Content
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+        afterUpdate.Should().NotBeNull();
+        afterUpdate!.PropertyCategory.Should().Be("Contact");
+
+        // The decisive check: the row the flat address created is the seeded portal's row.
+        using HttpResponseMessage throughNested = await client.GetAsync(
+            ProfileDefinitionRoute(_fixture.Seed.PortalId, definition.PropertyDefinitionId));
+
+        throughNested.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage removed = await client.DeleteAsync(itemRoute);
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage gone = await client.GetAsync(itemRoute);
+        gone.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// The definition collection of another tenant is refused a portal administrator, while its own is
+    /// served. The pair is what makes the refusal attributable to the routed tenant rather than to the
+    /// caller's standing.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The tenant a request runs under is resolved from its host header rather than from its route, so a
+    /// route naming a different portal must be reconciled against the resolved tenant before the service is
+    /// reached. The legacy screen reconciled it by substituting the ambient tenant unless the caller was a
+    /// super user (<c>Website/admin/Portal/SiteSettings.ascx.vb:L235</c>); a REST route cannot substitute,
+    /// because the identifier is the resource, so the request is refused.
+    /// </remarks>
+    [Fact]
+    public async Task ListProfileDefinitions_AsAdministratorOfAnotherTenant_ReturnsForbidden()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        int otherPortalId = await CreateIsolatedPortalAsync(host);
+
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        using HttpResponseMessage own = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/profile-definitions", UriKind.Relative));
+
+        own.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(otherPortalId)}/profile-definitions", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -1216,7 +1616,7 @@ public sealed class UserApiTests
         read.StatusCode.Should().Be(HttpStatusCode.OK);
 
         MembershipSettingsDto? defaults = await read.Content
-            .ReadFromJsonAsync<MembershipSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<MembershipSettingsDto>();
 
         defaults.Should().NotBeNull();
 
@@ -1239,7 +1639,7 @@ public sealed class UserApiTests
         reread.StatusCode.Should().Be(HttpStatusCode.OK);
 
         MembershipSettingsDto? persisted = await reread.Content
-            .ReadFromJsonAsync<MembershipSettingsDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<MembershipSettingsDto>();
 
         persisted.Should().NotBeNull();
         persisted!.RecordsPerPage.Should().Be(25);
@@ -1268,6 +1668,26 @@ public sealed class UserApiTests
         return await ReadDetailAsync(response);
     }
 
+    /// <summary>Mints a client authenticated as one account, for the self-service paths.</summary>
+    /// <param name="account">The account to act as.</param>
+    /// <returns>A client whose subject claim names that account.</returns>
+    /// <remarks>
+    /// Carries the registered-users role only. The self-service credential and profile endpoints are gated on
+    /// SUBJECT-versus-ROUTE equality rather than on a role, so no role would admit this caller and no role is
+    /// needed to.
+    /// </remarks>
+    private HttpClient ClientForAccount(UserDetailDto account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        return _fixture.CreateClientFor(
+            account.UserId,
+            account.Username ?? string.Empty,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+    }
+
     /// <summary>Creates a profile property definition through the API.</summary>
     /// <param name="client">A client holding the administrators role.</param>
     /// <param name="required">Whether the property must be supplied.</param>
@@ -1282,7 +1702,7 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Created);
 
         ProfilePropertyDefinitionDto? created = await response.Content
-            .ReadFromJsonAsync<ProfilePropertyDefinitionDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
 
         created.Should().NotBeNull();
         return created!;
@@ -1406,7 +1826,13 @@ public sealed class UserApiTests
         using System.Text.Json.JsonDocument document =
             System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        return document.RootElement.GetProperty("portalId").GetInt32();
+        // The created representation travels inside the shared success envelope, so the identifier is one
+        // level down under "data". Read as raw JSON rather than through a typed envelope because only the
+        // one member is wanted, and naming it here proves the envelope member name as a side effect.
+        return document.RootElement
+            .GetProperty("data")
+            .GetProperty("portalId")
+            .GetInt32();
     }
 
     /// <summary>Counts the credential rows held for one login name in the external store.</summary>
@@ -1479,7 +1905,7 @@ public sealed class UserApiTests
     private static async Task<UserDetailDto> ReadDetailAsync(HttpResponseMessage response)
     {
         UserDetailDto? detail = await response.Content
-            .ReadFromJsonAsync<UserDetailDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<UserDetailDto>();
 
         detail.Should().NotBeNull();
         return detail!;
@@ -1504,6 +1930,18 @@ public sealed class UserApiTests
     /// <returns>A relative route.</returns>
     private static Uri PasswordRoute(int portalId, int userId) =>
         new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/password", UriKind.Relative);
+
+    /// <summary>Builds the ADMINISTRATIVE credential-reset route for one account.</summary>
+    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    /// <remarks>
+    /// A separate address from <see cref="PasswordRoute"/> because it is a separate operation with a separate
+    /// authorisation policy. The two used to share one address and were told apart by a discriminator in the
+    /// request body, which let the caller choose whether the current credential had to be proved.
+    /// </remarks>
+    private static Uri PasswordResetRoute(int portalId, int userId) =>
+        new($"/api/v1/portals/{Route(portalId)}/users/{Route(userId)}/password-reset", UriKind.Relative);
 
     /// <summary>Builds the unlock route for one account.</summary>
     /// <param name="portalId">The tenant identifier.</param>
@@ -1565,4 +2003,154 @@ public sealed class UserApiTests
     /// <summary>Produces a short random suffix for values that reach a unique constraint.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
+
+    /// <summary>
+    /// An ordinary authenticated member holds none of the administrative account operations, however many of
+    /// them it addresses at its own tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the account-takeover surface in one assertion. An earlier revision gated all thirteen user
+    /// routes on the class-level authentication attribute alone, so every operation below succeeded for any
+    /// authenticated caller: enumerating a tenant's accounts and their personal data, creating and deleting
+    /// accounts, unlocking and approving them, forcing credential changes, and rewriting the tenant's
+    /// membership settings. The member here is a real seeded account that holds no administrator role.
+    /// </remarks>
+    [Fact]
+    public async Task AdministrativeUserRoutes_AreRefusedToAnOrdinaryMember()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        UserDetailDto victim = await CreateUserAsync(host);
+
+        using HttpClient member = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId);
+
+        int portalId = _fixture.Seed.PortalId;
+
+        using HttpResponseMessage listed = await member.GetAsync(UsersRoute(portalId));
+        listed.StatusCode.Should().Be(HttpStatusCode.Forbidden, "enumerating a tenant's accounts is administrative");
+
+        using HttpResponseMessage unlocked = await member.PostAsync(
+            UnlockRoute(portalId, victim.UserId),
+            content: null);
+        unlocked.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage approved = await member.PutAsync(
+            ApprovalRoute(portalId, victim.UserId, isApproved: false),
+            content: null);
+        approved.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage forced = await member.PostAsync(
+            RequirePasswordChangeRoute(portalId, victim.UserId),
+            content: null);
+        forced.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage settings = await member.GetAsync(MembershipSettingsRoute(portalId));
+        settings.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage removed = await member.DeleteAsync(UserRoute(portalId, victim.UserId));
+        removed.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // The victim survives every refusal, which is what distinguishes a refusal from a report of one.
+        using HttpResponseMessage stillThere = await host.GetAsync(UserRoute(portalId, victim.UserId));
+        stillThere.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// An ordinary member cannot read, update or set the credential of an account that is not its own, and
+    /// cannot use the administrative reset operation on itself to sidestep presenting its current credential.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The second half is the subtler defect and the reason the service performs its own check. Account access
+    /// legitimately admits the account itself, so the route policy alone would let an account choose RESET -
+    /// which presents no current credential by design - and thereby set a new one without proving it knew the
+    /// old. That turns a stolen access token into a permanent takeover, so the reset operation requires
+    /// administrative authority regardless of who the account belongs to.
+    /// </remarks>
+    [Fact]
+    public async Task SelfServiceUserRoutes_AreConfinedToTheCallersOwnAccountAndOperation()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        UserDetailDto victim = await CreateUserAsync(host);
+
+        using HttpClient member = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId);
+
+        int portalId = _fixture.Seed.PortalId;
+
+        using HttpResponseMessage read = await member.GetAsync(UserRoute(portalId, victim.UserId));
+        read.StatusCode.Should().Be(HttpStatusCode.Forbidden, "another account's record is not self-service");
+
+        using HttpResponseMessage profile = await member.GetAsync(ProfileRoute(portalId, victim.UserId));
+        profile.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using HttpResponseMessage takeover = await member.PostAsJsonAsync(
+            PasswordRoute(portalId, victim.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        takeover.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "setting another account's credential is an administrative reset, not self-service");
+
+        // A self-targeted RESET is refused at the reset endpoint itself, which is where the property lives:
+        // that route carries the portal-administrator policy, so the account cannot reach it even for itself.
+        // This is what stops a stolen access token from becoming a permanent takeover - were the reset
+        // operation available to the account, the owner could set a new credential without presenting the
+        // current one, which would make the change endpoint's verification optional.
+        using HttpResponseMessage selfReset = await member.PostAsJsonAsync(
+            PasswordResetRoute(portalId, _fixture.Seed.MemberUserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        selfReset.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "reset presents no current credential, so it must not be reachable by the account itself");
+
+        // And the reset operation cannot be smuggled into the CHANGE endpoint either, which is the second
+        // half of the same guarantee: whether the current credential is verified is the endpoint's answer and
+        // never the caller's, so a discriminator naming the other operation is refused rather than obeyed.
+        // The refusal is a bad request rather than a forbidding, because the caller may legitimately use this
+        // endpoint - it named the wrong operation on it.
+        using HttpResponseMessage smuggledReset = await member.PostAsJsonAsync(
+            PasswordRoute(portalId, _fixture.Seed.MemberUserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationReset,
+                NewPassword = ReplacementPassword,
+            },
+            ApiTestFixture.Json);
+
+        smuggledReset.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "the endpoint performs a change, and the discriminator that names a reset is refused rather "
+            + "than silently performing the operation the caller did not ask for");
+        // The published reason token spells the separator as an underscore: the document's type URN normalises
+        // the code, so the wire form is not character-for-character the constant the service declares.
+        (await smuggledReset.Content.ReadAsStringAsync())
+            .Should().Contain("urn:dnnmigration:error:user.password.unsupported_operation");
+
+        // The victim's credential is unchanged: it can still sign in with the value it was created with.
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage signedIn = await anonymous.PostAsJsonAsync(
+            LoginRoute(portalId),
+            new { username = victim.Username, password = ApiTestFixture.KnownPassword },
+            ApiTestFixture.Json);
+
+        signedIn.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
 }

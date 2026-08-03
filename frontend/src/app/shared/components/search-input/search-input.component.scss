@@ -38,10 +38,13 @@
 // diverge from it silently the first time either side changed.
 .search-input__field {
   // Take the free space in the row and — the load-bearing half of this pair —
-  // permit shrinking below the intrinsic width of the value being typed. A flex
-  // item's minimum size resolves to `auto`, which would let a long value push
-  // the submit control out of the row instead of scrolling inside the field.
-  flex: 1 1 0;
+  // permit shrinking below the intrinsic width of the value being typed. The
+  // from-zero basis is what buys the second half: a basis of `auto` would keep the
+  // field at least as wide as the value it holds, letting a long value push the
+  // submit control out of the row instead of scrolling inside the field. The two
+  // growth behaviours are named in the shared vocabulary precisely because they
+  // look almost identical and behave differently.
+  flex: var(--flex-fill-from-zero);
   min-inline-size: 0;
 
   // Deliberately NOT `appearance: none`. A native search field paints its own

@@ -2,6 +2,7 @@ using Asp.Versioning;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Filters;
+using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Tab;
@@ -33,6 +34,14 @@ namespace DnnMigration.Api.Controllers;
 /// - so the segment name is part of the contract with the authorisation handler and cannot be renamed here
 /// alone.
 /// </para>
+/// <para>
+/// <strong>The collection listing is tenant-bound administration, not bare authentication.</strong> It returns
+/// a tenant's entire page hierarchy, which is its navigation structure - including pages in the recycle bin and
+/// pages an ordinary visitor is not permitted to see. An earlier revision required only that the caller be
+/// authenticated, so any member of any tenant could enumerate any other tenant's site map by changing the
+/// <c>portalId</c> segment. It cannot use the tab view policy, because that policy is evaluated against one
+/// page and this route names none; the tenant the route DOES name is what binds it.
+/// </para>
 /// </remarks>
 [ApiController]
 [ApiVersion("1.0")]
@@ -40,6 +49,20 @@ namespace DnnMigration.Api.Controllers;
 [Produces("application/json")]
 public sealed class TabsController : ControllerBase
 {
+    /// <summary>
+    /// Why the identifier-only page actions may be served without a resolved tenant.
+    /// </summary>
+    /// <remarks>
+    /// THE TENANT COMES FROM THE TOKEN, WHICH IS STRONGER THAN THE HOST NAME. A page named by identifier alone
+    /// is authorised by the page view and page edit policies, which take the tenant from the caller's portal
+    /// claim when the route names none. That claim was fixed when the token was issued and is signed, whereas a
+    /// Host header is unauthenticated caller-supplied text; and the permission service verifies that the page
+    /// actually belongs to that portal before answering, so a token for one tenant cannot reach another's page.
+    /// </remarks>
+    private const string TokenScopedJustification =
+        "The page is authorised against the portal claim on the caller's signed token, and the permission "
+        + "service verifies the page belongs to that portal, so the host name is not the source of the tenant.";
+
     private readonly ITabService _tabs;
 
     /// <summary>Initialises a new instance of the <see cref="TabsController"/> class.</summary>
@@ -59,11 +82,19 @@ public sealed class TabsController : ControllerBase
     /// look harmless and would break the hierarchy, because a child's position is meaningful only relative
     /// to the parent that precedes it.
     /// </remarks>
+    // TENANT-BOUND, NOT MERELY AUTHENTICATED. A bare authentication requirement let any bearer token name
+    // any portal in the route and enumerate that tenant's whole page hierarchy - titles, parentage and
+    // ordering - which is tenant data even though nothing is mutated. The portal-administrator policy is
+    // anchored to the portal this route names, so an administrator of another tenant is refused. The
+    // single-page endpoints below stay on the page-scoped permission policies, which were already
+    // route-anchored and are the finer-grained answer where a page identifier exists to evaluate.
     [HttpGet("portals/{portalId:int}/tabs")]
-    [Authorize]
-    [ProducesResponseType(typeof(IReadOnlyList<TabListItemDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<IReadOnlyList<TabListItemDto>>> ListAsync(
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<TabListItemDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<TabListItemDto>>>> ListAsync(
         int portalId,
         CancellationToken cancellationToken)
     {
@@ -80,10 +111,14 @@ public sealed class TabsController : ControllerBase
     /// <returns>The tab, or <c>404 Not Found</c> when it does not exist.</returns>
     [HttpGet("tabs/{tabId:int}")]
     [Authorize(Policy = PolicyNames.TabView)]
-    [ProducesResponseType(typeof(TabDetailDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<TabDetailDto?>> GetAsync(int tabId, CancellationToken cancellationToken)
+    [TenantOptional(TokenScopedJustification)]
+    [ProducesResponseType(typeof(ApiResponse<TabDetailDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<TabDetailDto?>>> GetAsync(
+        int tabId,
+        CancellationToken cancellationToken)
     {
         Result<TabDetailDto?> outcome = await _tabs
             .GetTabAsync(tabId, cancellationToken)
@@ -99,11 +134,13 @@ public sealed class TabsController : ControllerBase
     /// <returns>The updated tab.</returns>
     [HttpPut("tabs/{tabId:int}")]
     [Authorize(Policy = PolicyNames.TabEdit)]
-    [ProducesResponseType(typeof(TabDetailDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<TabDetailDto>> UpdateAsync(
+    [TenantOptional(TokenScopedJustification)]
+    [ProducesResponseType(typeof(ApiResponse<TabDetailDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<TabDetailDto>>> UpdateAsync(
         int tabId,
         [FromBody] UpdateTabRequest request,
         CancellationToken cancellationToken)

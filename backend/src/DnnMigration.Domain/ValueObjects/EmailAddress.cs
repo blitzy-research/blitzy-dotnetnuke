@@ -67,11 +67,10 @@ namespace DnnMigration.Domain.ValueObjects;
 // label must be 2 to 63 characters and must be letters only, and the whole domain must be no
 // more than 253 characters (the fully-qualified-name limit of the same standard).
 //
-// An earlier revision of this comment argued the opposite, on the grounds that Minimal Change
-// Clause item 1 forbids opportunistic fixes and item 3 requires identical inputs to produce
-// identical outcomes. The reasoning was internally consistent and is nevertheless overturned,
-// for a reason those two items do not cover: the limit does not merely differ from a modern
-// standard, it REFUSES ADDRESSES THE TARGET SYSTEM MUST ACCEPT. Every generic top-level
+// The contrary argument - that Minimal Change Clause item 1 forbids opportunistic fixes and item 3
+// requires identical inputs to produce identical outcomes - is internally consistent and is
+// nevertheless overridden here, for a reason those two items do not cover: the limit does not merely
+// differ from a modern standard, it REFUSES ADDRESSES THE TARGET SYSTEM MUST ACCEPT. Every generic top-level
 // domain longer than four letters is excluded, so a user whose address ends .online, .agency,
 // .museum or .travel could not register, could not have their address corrected, and could
 // not be created by an administrator. Carrying that into new code would be carrying a defect,
@@ -117,8 +116,8 @@ namespace DnnMigration.Domain.ValueObjects;
 // minimum introduced in MIGRATION 3. That tightening is deliberate and is recorded there and
 // in MIGRATION_NOTES.md.
 //
-// MIGRATION 5 - 256 IS THE OPERATIVE MAXIMUM LENGTH, AND 100 IS A SUPERSEDED WIDTH THAT AN
-// EARLIER REVISION OF THIS FILE ENFORCED IN ERROR.
+// MIGRATION 5 - 256 IS THE OPERATIVE MAXIMUM LENGTH, AND 100 IS A SUPERSEDED WIDTH THAT MUST
+// NOT BE ENFORCED HERE.
 // Rule T4 makes the schema authoritative, and the schema in question is the TERMINAL state of
 // the 88-script upgrade chain rather than its baseline. The Email column has two distinct
 // lives, and only the second one exists today:
@@ -126,7 +125,7 @@ namespace DnnMigration.Domain.ValueObjects;
 //   1. An original [Email] [nvarchar] (100) NOT NULL, introduced at
 //      Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L107 and
 //      carried at that same width through both table rebuilds, at 01.00.05:L25 and
-//      01.00.06:L193. This is the column an earlier revision of this note cited, and its
+//      01.00.06:L193. This is the column that a width of 100 is mistakenly derived from, and its
 //      corroborating @Email nvarchar(100) parameter on the AddPortal family in 02.00.00 dates
 //      from the same era.
 //

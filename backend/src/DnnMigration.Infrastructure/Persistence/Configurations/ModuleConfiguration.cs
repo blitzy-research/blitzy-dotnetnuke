@@ -80,10 +80,19 @@ internal sealed class ModuleConfiguration : IEntityTypeConfiguration<Module>
         // 01.00.00:L514-518 - ALTER TABLE dbo.Modules WITH NOCHECK ADD CONSTRAINT PK_Modules PRIMARY
         // KEY NONCLUSTERED (ModuleID), the constraint name at line 515. Named explicitly so the
         // model carries the name the database already has rather than one invented by convention.
-        // NONCLUSTERED is a physical storage choice with no counterpart in the model and is left
-        // unrepresented, here and across this folder.
+        //
+        // MIGRATION: NONCLUSTERED is expressed, not merely recorded. The SQL Server provider defaults
+        // a primary key to CLUSTERED, so leaving the declaration bare would describe a physical
+        // topology this table does not have. That matters because the model snapshot is what a future
+        // migration is diffed against: a snapshot claiming a clustered key over a genuinely
+        // non-clustered one is a false starting point, and the first scaffold to touch this table
+        // would propose rebuilding the key. Seven of the twenty-one keys in this folder are
+        // non-clustered in the terminal schema - Modules, ModuleDefinitions, Portals, Roles,
+        // RoleGroups, Tabs and UserProfile - and each of the seven says so; the other fourteen are
+        // clustered and are left at the provider default, which is already correct for them.
         builder.HasKey(m => m.ModuleId)
-            .HasName("PK_Modules");
+            .HasName("PK_Modules")
+            .IsClustered(false);
 
         // 01.00.00:L221 - ModuleID int IDENTITY (0, 1) NOT NULL. The seed is recorded so that a
         // model-generated script would continue the existing sequence rather than restart it.

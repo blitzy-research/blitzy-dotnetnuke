@@ -71,9 +71,9 @@
       whose key was committed to the legacy configuration. Existing credentials
       cannot be verified against a one-way hash and this solution contains no
       legacy verifier, so the migration path is an ADMINISTRATIVE RESET ONLY.
-      An earlier revision of this comment claimed a re-hash on first successful
-      login; THAT CLAIM WAS FALSE - no code path could perform it - and it has
-      been removed rather than softened.
+      Do not describe it as a re-hash on first successful login: no code path can
+      perform that, because verifying the legacy credential is the very step that
+      is missing.
       Security/BcryptPasswordHasher.cs uses this package's ENHANCED hash and
       verify pair, which pre-digests the credential and so removes the plain
       algorithm's 72-byte input-equivalence behaviour; the two halves must always
@@ -111,6 +111,44 @@
   <ItemGroup>
     <ProjectReference Include="..\DnnMigration.Domain\DnnMigration.Domain.csproj" />
     <ProjectReference Include="..\DnnMigration.Application\DnnMigration.Application.csproj" />
+  </ItemGroup>
+
+  <!--
+    ONE friend assembly, and one only: the unit test project.
+
+    Why it is needed. Security/BcryptPasswordHasher.cs and Security/PermissionEvaluator.cs
+    are the two places in this solution where a credential is turned into a stored digest
+    and where a grant is turned into an access decision. AAP 0.5.1.5 names
+    Infrastructure/Security/*.cs as the source of
+    tests/DnnMigration.UnitTests/Security/{BcryptPasswordHasher,JwtTokenService,
+    PermissionEvaluator}Tests.cs, with "Hash round-trip, token claims, permission
+    resolution" as what those suites are for, and AAP 0.2.1.1 places the
+    permission-evaluator tests in that same project. Both types are internal sealed, so
+    without this item the suites can only assert the shape of the abstractions and a
+    stand-in of their documented behaviour - which is exactly the false-green coverage a
+    review found: the real enhanced-BCrypt pair, the policy and byte-ceiling guards, the
+    malformed-digest handlers, the work-factor replacement signal and the whole
+    allow-and-deny reduction could all regress with a green suite. Proving them needs the
+    concrete types, and the concrete types are here.
+
+    What it does NOT weaken, which is the point. The production dependency graph is
+    untouched: Domain still declares zero project references and zero package references,
+    DnnMigration.Application still cannot see this assembly, and an accidental
+    infrastructure dependency in Application or Domain is still a compile error rather
+    than a review comment. That guarantee comes from what the PRODUCTION project files
+    reference, and a test project is not one of them - it sits outside the layered graph
+    as its outermost consumer. AAP Rules T1 and T3 order the four production layers; they
+    say nothing about a test assembly, and reading them as if they did is what left these
+    two components unproven.
+
+    Bounds. Add no second friend assembly. In particular DnnMigration.IntegrationTests is
+    deliberately absent: it reaches this layer legitimately through Api and the container,
+    resolving the public registrations, and naming an internal type from there would let
+    an integration test bypass the composition it exists to exercise. And no production
+    project may be added, ever - that is not what this mechanism is for.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DnnMigration.UnitTests" />
   </ItemGroup>
 
 </Project>

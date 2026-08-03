@@ -9,15 +9,16 @@
  * assembled from `div` elements discards them and no amount of ARIA restores them as
  * faithfully as the native element supplies them.
  *
- * It is presentational and nothing else. It performs no sorting, no paging, no
- * filtering and no input or output of its own: it renders what it was handed and
- * reports what the reader asked for. Nothing is injected into it.
+ * It is presentational and nothing else. It performs no sorting, no paging and no
+ * filtering, and it reaches no data source of any kind: no service, no HTTP client and no
+ * store. It renders what it was handed through its inputs and reports what the reader asked
+ * for through its outputs. Nothing is injected into it.
  *
  * ## The five inputs and two outputs are closed
  *
  * `columns`, `rows`, `sortBy`, `sortDir` and `loading` in; `sortChange` and
  * `rowSelect` out. Every further affordance is delivered by content projection or by
- * a {@link DataTableColumn.cellTemplate}, never by widening this surface. The reason
+ * a {@link DataTableTemplateColumn.cellTemplate}, never by widening this surface. The reason
  * is measured rather than stylistic and is set out on {@link DataTableColumn} and in
  * the migration notes below.
  *
@@ -36,7 +37,7 @@
  * call per cell across a page of rows that is the single most likely performance
  * defect in a grid, and it defeats the point of `OnPush`. The template therefore reads
  * pre-projected view models — {@link DataTableHeaderCell}, {@link DataTableBodyRow}
- * and {@link DataTableBodyCell} — in which every {@link DataTableColumn.value}
+ * and {@link DataTableBodyCell} — in which every {@link DataTableFormattedColumn.value}
  * formatter has already been invoked exactly once. The only methods the template
  * calls are event handlers, which run on interaction rather than on redraw.
  *
@@ -61,9 +62,30 @@
  * either. Row commands are projected by the consuming feature as controls that own
  * their own accessible names; this component references no image asset.
  *
+ * ## The exported surface is three types, and the rest are module-private
+ *
+ * L-04: a consumer of this component needs exactly three names - {@link DataTableColumn}
+ * to declare its columns, {@link DataTableCellContext} to type a cell template's
+ * implicit context, and {@link DataTableSortChange} to receive the sort event. Those
+ * three are exported. The seven remaining declarations are the projected view models
+ * and the small unions they are built from, and they exist only so the template can
+ * read pre-projected data rather than call functions during change detection: no
+ * consumer constructs one, receives one or names one. They are therefore declared
+ * without `export`, which states that fact in the code instead of leaving a reader to
+ * infer it from the absence of imports elsewhere. Narrowing them restricts nothing a
+ * consumer could do - content projection and {@link DataTableColumn.cellTemplate}
+ * deliver every further affordance, as set out above - it states which names are
+ * contract and which are mechanism.
+ *
+ * L-04 also reports the third standalone import, `NgTemplateOutlet`. It is retained and
+ * explicitly authorised; the reasoning, with the legacy template columns it carries, is
+ * recorded once in the migration note at the foot of this file rather than restated here.
+ * In short: it is what renders {@link DataTableColumn.cellTemplate}, so removing it would
+ * force the input surface to WIDEN rather than narrow.
+ *
  * @typeParam TRow The row contract carried on the current page - always a transfer
  *   contract off the wire, never a persisted entity. Deliberately unconstrained so a
- *   grid of any row shape is expressible. {@link DataTableColumn.field} is meaningful
+ *   grid of any row shape is expressible. {@link DataTableTextColumn.field} is meaningful
  *   only for object-shaped rows, which is every row this application renders.
  */
 
@@ -82,11 +104,11 @@ import {
 // sibling. It is emphatically NOT the umbrella common-directives module, which is
 // imported nowhere in this workspace; it is the single tree-shakeable directive by which a
 // caller's
-// {@link DataTableColumn.cellTemplate} is rendered, and there is no other mechanism in
+// {@link DataTableTemplateColumn.cellTemplate} is rendered, and there is no other mechanism in
 // Angular for rendering a `TemplateRef` from a template. Without it `cellTemplate` and
 // the whole `actions` column kind would be declared members that could never render -
-// stubs - and the four legacy template columns and two inline-editable checkbox columns
-// they exist to carry would have no target at all. It is imported individually rather
+// stubs - and the legacy template columns and inline-editable checkbox columns they exist
+// to carry would have no target at all. It is imported individually rather
 // than as part of a module precisely so nothing unused comes with it.
 import { NgTemplateOutlet } from '@angular/common';
 
@@ -104,7 +126,7 @@ import { LoadingSpinnerComponent } from '../loading-spinner/loading-spinner.comp
  * representation, and `isolatedModules` is enabled, which rules out the `const` form
  * of an enumeration that would otherwise avoid the emit.
  */
-export type DataTableAlign = 'start' | 'center' | 'end';
+type DataTableAlign = 'start' | 'center' | 'end';
 
 /**
  * What a column puts in its body cells.
@@ -118,13 +140,55 @@ export type DataTableAlign = 'start' | 'center' | 'end';
  *   not about where the content came from: an actions cell suppresses row activation
  *   so that pressing Edit never doubles as selecting the row.
  */
-export type DataTableColumnKind = 'text' | 'template' | 'actions';
+type DataTableColumnKind = 'text' | 'template' | 'actions';
 
 /** The `aria-sort` states a sortable heading can report. */
-export type DataTableAriaSort = 'ascending' | 'descending' | 'none';
+type DataTableAriaSort = 'ascending' | 'descending' | 'none';
 
 /**
- * The context a {@link DataTableColumn.cellTemplate} is rendered against.
+ * A track size a column may declare, closed at the four forms that are BOTH valid
+ * CSS for `inline-size` on a `col` element AND permitted by the design system.
+ *
+ * ## Why this is a closed union and not a string
+ *
+ * Two independent defects follow from accepting arbitrary text, and neither produces
+ * an error anywhere:
+ *
+ * - A PIXEL LITERAL is forbidden by the token vocabulary and would be applied
+ *   faithfully. Every legacy width was a fixed literal — five identical ones in the
+ *   profile-property listing alone, a hairline command column, and two unitless
+ *   numbers — and each is replaced by an intrinsic measure or a token so the grid
+ *   reflows and honours a reader's font size. A type that admits `'100px'` re-opens
+ *   every one of them.
+ * - A GRID TRACK KEYWORD is silently DISCARDED. `fr` and `minmax()` are grid track
+ *   sizing syntax and are not valid values for `inline-size`, so the browser drops
+ *   the declaration and the column takes its share as though nothing had been
+ *   declared. An earlier revision of this member documented both as permitted, which
+ *   is worse than not documenting them at all: a caller follows the guidance, sees no
+ *   error, and gets no width.
+ *
+ * The four admitted forms:
+ *
+ * - `'42%'` — a percentage of the table's inline size. This is the form six of the
+ *   eight legacy grids used at grid level, and it is what a proportional column wants.
+ * - `'min-content'` / `'max-content'` — intrinsic measures, and the correct choice for
+ *   a column of row commands, which must never be given a track narrower than the
+ *   controls it carries.
+ * - `'var(--…)'` — a design-token reference, for a column sized from the spacing
+ *   scale. The token itself resolves to a real length, so the grammar stays valid.
+ *
+ * `fit-content()`, `calc()`, a bare length and a keyword outside this list are all
+ * deliberately absent. Each would either bypass the token vocabulary or need its own
+ * validation for a case no legacy grid presents.
+ */
+export type DataTableWidth =
+  | `${number}%`
+  | 'min-content'
+  | 'max-content'
+  | `var(--${string})`;
+
+/**
+ * The context a {@link DataTableTemplateColumn.cellTemplate} is rendered against.
  *
  * `$implicit` is the row, so a caller may write `let-row` and receive it without
  * naming a member. The row is repeated under `row` for callers that prefer to be
@@ -158,7 +222,7 @@ export interface DataTableCellContext<TRow> {
  * decided, and a component that could rewrite it would be describing something the
  * caller never asked for.
  *
- * ## Why {@link key} is separate from {@link label}
+ * ## Why {@link DataTableColumnCommon.key} is separate from {@link DataTableColumnCommon.label}
  *
  * Because a label-keyed column model is provably impossible against this codebase.
  * The role list declares twelve columns in one grid, and among them `HeaderText`
@@ -185,11 +249,41 @@ export interface DataTableCellContext<TRow> {
  * key. The descriptor must not therefore INSIST on a field, because derived columns
  * have none at all: one composes a portal's alias list from its identifier, another
  * formats an expiry date, and one composes a postal address from SIX separate profile
- * members. That is why {@link key} is a plain `string` and not `keyof TRow`.
+ * members. That is why {@link DataTableColumnCommon.key} is a plain `string` and not
+ * `keyof TRow`.
+ *
+ * ## Why this is a UNION and not one interface with optional members
+ *
+ * Because an interface whose kind, bound member, formatter and cell template are all
+ * independently optional makes every INVALID configuration representable, and none of
+ * them produces an error. A column with a kind and no payload renders a blank cell on
+ * every row; a text column carrying a cell template silently ignores it; a template
+ * column carrying a bound member silently ignores that instead. Each compiles, each
+ * renders, and each looks like missing data rather than a mis-declared column.
+ *
+ * The union closes all of it at compile time: a text column must state EXACTLY ONE
+ * text source, and a template or actions column must state a cell template and may
+ * state neither text source. A sortable heading that hides its label is unrepresentable
+ * too, for the reason given on {@link DataTableColumnHeading}. The invariants a type
+ * cannot express alone - uniqueness of the key across a set, a non-blank key, and a width
+ * composed at run time rather than written as a literal - are rejected when the set is
+ * bound, which is documented on {@link DataTableComponent.columns}.
  *
  * @typeParam TRow The row contract this column reads.
  */
-export interface DataTableColumn<TRow> {
+export type DataTableColumn<TRow> = DataTableColumnCommon &
+  DataTableColumnHeading &
+  DataTableColumnBody<TRow>;
+
+/**
+ * The members every column carries, whatever it puts in its body cells.
+ *
+ * Never a complete column on its own: a column is always the full intersection declared
+ * by {@link DataTableColumn}, and this fragment exists so that the shared members are
+ * written once rather than repeated in each arm of the union. It is exported only so that
+ * a consumer and a documentation reader can reach these members by name.
+ */
+export interface DataTableColumnCommon {
   /**
    * Stable identity of the column, unique within one column set.
    *
@@ -197,6 +291,11 @@ export interface DataTableColumn<TRow> {
    * reported as {@link DataTableSortChange.key}, so for a sortable column it must be
    * the sort name the collection endpoint accepts. Never the label - see the note on
    * this interface for why that is not a preference.
+   *
+   * Uniqueness is enforced when the set is bound, because no type can compare two
+   * members of an array: a duplicate key would make two headings and two cells share
+   * one `track` value, and the framework would reuse one column's DOM for the other
+   * with no error anywhere.
    */
   readonly key: string;
 
@@ -204,72 +303,23 @@ export interface DataTableColumn<TRow> {
    * Visible heading text.
    *
    * Free to duplicate another column's label, and in the role list it genuinely does.
-   * Suppress it with {@link headerHidden} without losing it: the heading stays in the
-   * accessibility tree either way, so a cell is still announced with its column name.
+   * Suppress it with {@link DataTableColumnHeading.headerHidden} without losing it:
+   * the heading stays in the accessibility tree either way, so a cell is still
+   * announced with its column name.
    */
   readonly label: string;
 
   /**
-   * What the body cells contain. Defaults to `template` when a
-   * {@link cellTemplate} is supplied and to `text` otherwise.
-   *
-   * Set `actions` explicitly for a column of projected row controls. Only that value
-   * makes the cell suppress row activation, and no inference can supply it.
-   */
-  readonly kind?: DataTableColumnKind;
-
-  /**
-   * Row member to render as plain text.
-   *
-   * Typed as a key of the row, so a mistyped member name is a compile error rather
-   * than a blank column. For TEXT-SHAPED values only - a string, a number or a large
-   * integer. A boolean, a date object or a nested object must go through
-   * {@link value} or {@link cellTemplate} instead, and that is not an arbitrary
-   * restriction: no legacy grid ever bound a boolean as text either. All four legacy
-   * boolean columns were template columns - two rendered a checked or unchecked
-   * image, two rendered a checkbox that posted back on change.
-   *
-   * Ignored when {@link value} is also supplied, which takes precedence.
-   */
-  readonly field?: keyof TRow & string;
-
-  /**
-   * PURE formatter producing the cell's text.
-   *
-   * Covers the formatted and derived columns: prices, periods, expiry dates, an
-   * alias list composed from an identifier, a postal address composed from six
-   * profile members. Invoked exactly once per row per redraw, inside the projection,
-   * and never from the template.
-   *
-   * Must be pure and must not throw. It runs during a `computed()` evaluation, so a
-   * side effect here would fire at an unpredictable point in change detection.
-   *
-   * @param row The row being rendered.
-   * @returns The text to display. Return the empty string for an absent value; never
-   *   return `null` or `undefined`, and never the words `null` or `undefined`.
-   */
-  readonly value?: (row: TRow) => string;
-
-  /**
-   * Caller-supplied cell content, for anything richer than text.
-   *
-   * Compiled in the CALLER's template context, not this component's, which is why
-   * this component imports no directive and no pipe: a permission directive or a
-   * display pipe used inside the template belongs to the feature that wrote it.
-   */
-  readonly cellTemplate?: TemplateRef<DataTableCellContext<TRow>>;
-
-  /**
    * Inline alignment of the HEADING. Defaults to `start`.
    *
-   * Independent of {@link bodyAlign} by necessity - see that member.
+   * Independent of {@link DataTableColumnCommon.bodyAlign} by necessity - see that member.
    */
   readonly headerAlign?: DataTableAlign;
 
   /**
    * Inline alignment of the BODY cells. Defaults to `start`.
    *
-   * ## Why this is independent of {@link headerAlign}
+   * ## Why this is independent of {@link DataTableColumnCommon.headerAlign}
    *
    * Because the legacy markup separates them, at two levels at once, and deriving one
    * from the other would misrender most of the eight grids.
@@ -297,27 +347,17 @@ export interface DataTableColumn<TRow> {
   readonly bodyAlign?: DataTableAlign;
 
   /**
-   * Whether the heading offers sorting. Defaults to absent, meaning not sortable.
-   *
-   * Opt-in per column because the endpoint decides which names it accepts and answers
-   * an unrecognised one with a field-level `400`. Offering a control that produces a
-   * rejected request is worse than offering none.
-   */
-  readonly sortable?: boolean;
-
-  /**
    * Track width of the column, applied through a `col` element in the table's
    * `colgroup` so that no cell rule carries a size.
    *
-   * INTRINSIC UNITS OR A TOKEN ONLY - a percentage, a fraction, `minmax()`,
-   * `min-content`, `max-content`, or `var(--…)`. NEVER a pixel literal. Every legacy
-   * width was a fixed literal - five of them in the profile-property list alone, plus
-   * a fifteen-pixel command column and two unitless numbers - and each is replaced by
-   * an intrinsic measure or a spacing token so the grid reflows and honours a
-   * reader's font size.
+   * Closed at the four forms {@link DataTableWidth} admits, each of which is valid
+   * CSS for `inline-size` on a `col` element. A pixel literal is not expressible and
+   * neither is a grid track keyword; the reasoning for both, and what replaced the
+   * legacy fixed widths, is on that type.
    *
-   * Blank text and omission mean the same thing: the column takes its share
-   * automatically.
+   * Omission means the column takes its share automatically. A value produced at run
+   * time rather than written as a literal is validated when the set is bound, so a
+   * malformed one is reported rather than silently discarded by the browser.
    *
    * Sizing the columns here rather than from cell content is also what makes the
    * render-virtualisation strategy safe - see {@link DataTableComponent}.
@@ -332,23 +372,200 @@ export interface DataTableColumn<TRow> {
    * hide a control rather than reveal a layout problem. A content-sized track cannot express
    * that mistake at all, which is why it is the documented contract rather than a suggestion.
    */
-  readonly width?: string;
+  readonly width?: DataTableWidth;
+}
+
+/**
+ * The heading policy of a column: whether it offers sorting, and whether its label is
+ * painted.
+ *
+ * A UNION rather than two independent optional members, because the two combinations
+ * are not independent. A SORTABLE HEADING WHOSE LABEL IS HIDDEN RENDERS AN EMPTY
+ * BUTTON: the label is clipped out of the painted output and the direction glyph
+ * appears only once the column is the active sort, so a reader meets a focusable
+ * control with nothing visible in it and no way to guess what activating it would
+ * order by. The union makes that combination unrepresentable while leaving every
+ * legitimate one available - a sortable column with a visible label, a hidden label on
+ * a column that offers no sorting, or neither.
+ */
+export type DataTableColumnHeading =
+  | {
+      /**
+       * Whether the heading offers sorting. Absent or `false` means it does not.
+       *
+       * Opt-in per column because the endpoint decides which names it accepts and
+       * answers an unrecognised one with a field-level `400`. Offering a control that
+       * produces a rejected request is worse than offering none.
+       */
+      readonly sortable?: false;
+
+      /**
+       * Whether to hide the heading text visually while keeping it announced.
+       *
+       * For columns whose heading would be noise - a column of row commands, or an
+       * indicator with no meaningful name. The text stays in the accessibility tree,
+       * so a cell is still announced with its column name and nothing is lost.
+       *
+       * Legacy practice here was inconsistent, which is why this is normalised rather
+       * than reproduced: of the eight grids, exactly one labelled its command columns,
+       * as `Edit`, `Del`, `Dn` and `Up`; the portal, role and account lists supplied
+       * no heading text for theirs at all; and the page-module grid suppressed its
+       * entire heading row. Every column here therefore carries a label and this
+       * member decides whether it is painted.
+       */
+      readonly headerHidden?: boolean;
+    }
+  | {
+      /** Whether the heading offers sorting. See the companion arm of this union. */
+      readonly sortable: true;
+
+      /**
+       * Not available on a sortable column: hiding the label of a sortable heading
+       * leaves an empty, unlabelled button. See {@link DataTableColumnHeading}.
+       */
+      readonly headerHidden?: false;
+    };
+
+/**
+ * What a column puts in its body cells, and the payload that kind requires.
+ *
+ * Discriminated on {@link DataTableColumnKind}, with `text` as the default arm so that
+ * the overwhelmingly common bound-text column stays terse. Every arm names the members
+ * the other arms forbid, so a payload declared under the wrong kind is a compile error
+ * rather than a value the projection quietly ignores.
+ *
+ * @typeParam TRow The row contract this column reads.
+ */
+export type DataTableColumnBody<TRow> =
+  | DataTableTextColumn<TRow>
+  | DataTableFormattedColumn<TRow>
+  | DataTableTemplateColumn<TRow>
+  | DataTableActionsColumn<TRow>;
+
+/**
+ * A column rendering one member of the row as plain text - the legacy `dnn:textcolumn`
+ * and `asp:BoundColumn`.
+ *
+ * @typeParam TRow The row contract this column reads.
+ */
+export interface DataTableTextColumn<TRow> {
+  /** The default kind, so it may be omitted entirely. */
+  readonly kind?: 'text';
 
   /**
-   * Whether to hide the heading text visually while keeping it announced.
+   * Row member to render as plain text.
    *
-   * For columns whose heading would be noise - a column of row commands, or an
-   * indicator with no meaningful name. The text stays in the accessibility tree, so a
-   * cell is still announced with its column name and nothing is lost.
-   *
-   * Legacy practice here was inconsistent, which is why this is normalised rather
-   * than reproduced: of the eight grids, exactly one labelled its command columns, as
-   * `Edit`, `Del`, `Dn` and `Up`; the portal, role and account lists supplied no
-   * heading text for theirs at all; and the page-module grid suppressed its entire
-   * heading row. Every column here therefore carries a label and this member decides
-   * whether it is painted.
+   * Typed as a key of the row, so a mistyped member name is a compile error rather
+   * than a blank column. For TEXT-SHAPED values only - a string, a number or a large
+   * integer. A boolean, a date object or a nested object must go through
+   * {@link DataTableFormattedColumn.value} or a template column instead, and that is
+   * not an arbitrary restriction: no legacy grid ever bound a boolean as text either.
+   * All four legacy boolean columns were template columns - two rendered a checked or
+   * unchecked image, two rendered a checkbox that posted back on change.
    */
-  readonly headerHidden?: boolean;
+  readonly field: keyof TRow & string;
+
+  /** Not available on a bound column: state a formatter or a member, never both. */
+  readonly value?: never;
+
+  /** Not available on a text column: a text column renders no template. */
+  readonly cellTemplate?: never;
+}
+
+/**
+ * A column whose text is computed from the row - the legacy formatted and derived
+ * columns.
+ *
+ * @typeParam TRow The row contract this column reads.
+ */
+export interface DataTableFormattedColumn<TRow> {
+  /** The default kind, so it may be omitted entirely. */
+  readonly kind?: 'text';
+
+  /** Not available on a formatted column: state a formatter or a member, never both. */
+  readonly field?: never;
+
+  /**
+   * PURE formatter producing the cell's text.
+   *
+   * Covers the formatted and derived columns: prices, periods, expiry dates, an
+   * alias list composed from an identifier, a postal address composed from six
+   * profile members. Invoked exactly once per row per redraw, inside the projection,
+   * and never from the template.
+   *
+   * Must be pure and must not throw. It runs during a `computed()` evaluation, so a
+   * side effect here would fire at an unpredictable point in change detection.
+   *
+   * DECLARING BOTH THIS AND A BOUND MEMBER IS A COMPILE ERROR, deliberately. An
+   * earlier revision accepted both and resolved the ambiguity with a precedence rule,
+   * which meant a column that named the wrong member alongside a formatter looked
+   * correct and rendered correctly - until the formatter was removed and the wrong
+   * member surfaced. One text source per column removes the ambiguity instead of
+   * documenting a way through it.
+   *
+   * @param row The row being rendered.
+   * @returns The text to display. Return the empty string for an absent value; never
+   *   return `null` or `undefined`, and never the words `null` or `undefined`.
+   */
+  readonly value: (row: TRow) => string;
+
+  /** Not available on a text column: a text column renders no template. */
+  readonly cellTemplate?: never;
+}
+
+/**
+ * A column rendering caller-supplied content - the legacy `asp:TemplateColumn`,
+ * including the two inline-editable checkbox cells that posted back on change.
+ *
+ * @typeParam TRow The row contract this column reads.
+ */
+export interface DataTableTemplateColumn<TRow> {
+  /** Declared explicitly: a template column is never inferred. */
+  readonly kind: 'template';
+
+  /** Not available: a template column renders its template, never bound text. */
+  readonly field?: never;
+
+  /** Not available: a template column renders its template, never formatted text. */
+  readonly value?: never;
+
+  /**
+   * Caller-supplied cell content, for anything richer than text. REQUIRED, because a
+   * template column with no template is a blank column on every row.
+   *
+   * Compiled in the CALLER's template context, not this component's, which is why
+   * this component imports no directive and no pipe: a permission directive or a
+   * display pipe used inside the template belongs to the feature that wrote it.
+   */
+  readonly cellTemplate: TemplateRef<DataTableCellContext<TRow>>;
+}
+
+/**
+ * A column of projected row commands - the legacy `dnn:imagecommandcolumn`.
+ *
+ * Declared as its own kind rather than inferred, because it is a statement about
+ * semantics and not about where the content came from: an actions cell suppresses row
+ * activation so that pressing Edit never doubles as selecting the row.
+ *
+ * @typeParam TRow The row contract this column reads.
+ */
+export interface DataTableActionsColumn<TRow> {
+  /** Declared explicitly: no inference can supply this. */
+  readonly kind: 'actions';
+
+  /** Not available: an actions column renders its template, never bound text. */
+  readonly field?: never;
+
+  /** Not available: an actions column renders its template, never formatted text. */
+  readonly value?: never;
+
+  /**
+   * The row commands, as a template the caller supplies. REQUIRED: a commands column
+   * with no commands is an empty column, and a per-row command can only be expressed
+   * as a template - two legacy grids make a command conditional per row, and one
+   * derives both a command's LABEL and its very identity from the row.
+   */
+  readonly cellTemplate: TemplateRef<DataTableCellContext<TRow>>;
 }
 
 /**
@@ -358,7 +575,7 @@ export interface DataTableColumn<TRow> {
  * it last asked for in order to interpret the next request.
  */
 export interface DataTableSortChange {
-  /** The {@link DataTableColumn.key} to order by, which is the endpoint's sort name. */
+  /** The {@link DataTableColumnCommon.key} to order by, which is the endpoint's sort name. */
   readonly key: string;
 
   /** The direction to order in, in the server's own spelling. */
@@ -370,14 +587,14 @@ export interface DataTableSortChange {
  *
  * @typeParam TRow The row contract.
  */
-export interface DataTableHeaderCell<TRow> {
+interface DataTableHeaderCell<TRow> {
   /** The column this heading describes, for callers that need the descriptor itself. */
   readonly column: DataTableColumn<TRow>;
 
-  /** {@link DataTableColumn.key}, and the `track` expression of the heading loop. */
+  /** {@link DataTableColumnCommon.key}, and the `track` expression of the heading loop. */
   readonly key: string;
 
-  /** {@link DataTableColumn.label}. */
+  /** {@link DataTableColumnCommon.label}. */
   readonly label: string;
 
   /** Whether the label is painted, or announced only. */
@@ -398,7 +615,7 @@ export interface DataTableHeaderCell<TRow> {
    */
   readonly ariaSort: DataTableAriaSort | null;
 
-  /** Resolved {@link DataTableColumn.headerAlign}. */
+  /** Resolved {@link DataTableColumnCommon.headerAlign}. */
   readonly align: DataTableAlign;
 }
 
@@ -409,10 +626,10 @@ export interface DataTableHeaderCell<TRow> {
  * @typeParam TRow The row contract.
  */
 export interface DataTableBodyCell<TRow> {
-  /** {@link DataTableColumn.key}, and the `track` expression of the cell loop. */
+  /** {@link DataTableColumnCommon.key}, and the `track` expression of the cell loop. */
   readonly key: string;
 
-  /** Resolved {@link DataTableColumn.kind}, deciding which branch the template takes. */
+  /** Resolved {@link DataTableActionsColumn.kind}, deciding which branch the template takes. */
   readonly kind: DataTableColumnKind;
 
   /**
@@ -432,7 +649,7 @@ export interface DataTableBodyCell<TRow> {
   /** The context to render {@link template} against, `null` when there is none. */
   readonly context: DataTableCellContext<TRow> | null;
 
-  /** Resolved {@link DataTableColumn.bodyAlign}. */
+  /** Resolved {@link DataTableColumnCommon.bodyAlign}. */
   readonly align: DataTableAlign;
 }
 
@@ -441,7 +658,7 @@ export interface DataTableBodyCell<TRow> {
  *
  * @typeParam TRow The row contract.
  */
-export interface DataTableBodyRow<TRow> {
+interface DataTableBodyRow<TRow> {
   /**
    * The row itself, and its own identity.
    *
@@ -470,7 +687,7 @@ export interface DataTableBodyRow<TRow> {
  * @see DataTableColumn.width
  */
 export interface DataTableColumnWidth {
-  /** {@link DataTableColumn.key}, and the `track` expression of the `colgroup` loop. */
+  /** {@link DataTableColumnCommon.key}, and the `track` expression of the `colgroup` loop. */
   readonly key: string;
 
   /** The resolved width, or `null` to let the column take its share automatically. */
@@ -556,10 +773,14 @@ const SPACE_KEY = ' ';
  * ## Selection
  *
  * There is no `selectedRow` input, so selection is held internally, exposed
- * programmatically through `aria-current` rather than by styling alone, and reported
- * through `rowSelect`. It is deliberately kept OUT of the row projection: were it a
+ * programmatically through `aria-selected` rather than by styling alone, and reported
+ * through `rowSelect`. That one attribute is the whole announcement: the current-item
+ * state is deliberately NOT published alongside it, because it denotes a reader's
+ * position within a set of related items - a concept this component does not model
+ * separately from selection - so emitting both stated one state twice, once in a
+ * vocabulary the component could not substantiate. It is deliberately kept OUT of the row projection: were it a
  * member of {@link DataTableBodyRow}, selecting a row would re-run every
- * {@link DataTableColumn.value} formatter on the page to recompute text that had not
+ * {@link DataTableFormattedColumn.value} formatter on the page to recompute text that had not
  * changed. The template compares the reference instead, which is a pointer test.
  *
  * ## Render virtualisation, without a scrolling package
@@ -579,7 +800,7 @@ const SPACE_KEY = ' ';
  *
  * - Skipping a row's layout is only safe when column widths do not depend on that
  *   row's content, because otherwise the columns would shift as rows entered and left
- *   the viewport. {@link DataTableColumn.width} applied through the `colgroup`, with a
+ *   the viewport. {@link DataTableColumnCommon.width} applied through the `colgroup`, with a
  *   fixed table layout, supplies exactly that guarantee. The width member and the
  *   virtualisation strategy are two halves of one design.
  * - The placeholder size is composed ENTIRELY from existing design tokens - the base
@@ -604,7 +825,7 @@ const SPACE_KEY = ' ';
   styleUrl: './data-table.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class DataTableComponent<TRow> {
+export class DataTableComponent<TRow extends object> {
   private readonly columnsSignal = signal<readonly DataTableColumn<TRow>[]>([]);
 
   private readonly rowsSignal = signal<readonly TRow[]>([]);
@@ -626,11 +847,48 @@ export class DataTableComponent<TRow> {
    * here keeps those call sites honest instead of pushing an assertion onto the
    * caller. An absent set renders as no columns rather than throwing.
    *
+   * ## The invariants checked HERE, and why they are not checked by a type
+   *
+   * {@link DataTableColumn} closes every per-column combination at compile time - a
+   * kind without its payload, a payload under the wrong kind, two text sources at
+   * once, and a sortable heading whose label is hidden are all unrepresentable. Four
+   * invariants remain that a type cannot carry ALONE, and all four are checked the
+   * moment a set is bound rather than later inside a projection, so the defect is
+   * reported at the call site that caused it, once per binding, before a single cell is
+   * rendered:
+   *
+   * - A DUPLICATE KEY. Comparing two members of an array is beyond a type. A duplicate
+   *   makes two headings and two cells share one `track` value and the framework
+   *   reuses one column's DOM for the other, with no error anywhere - the worst class
+   *   of defect this component can have, because it looks like a rendering glitch.
+   * - A BLANK KEY. The key is a sort name, a `track` value and an accessibility
+   *   anchor; blank text satisfies `string` and satisfies none of those.
+   * - A MALFORMED WIDTH. {@link DataTableWidth} rejects a literal, but a value
+   *   composed at run time - a percentage assembled from a number, a token name read
+   *   from configuration - satisfies the type and can still be invalid CSS, which the
+   *   browser discards in silence.
+   * - A SORTABLE HEADING WITH A HIDDEN LABEL, restated at run time even though the
+   *   type forbids it, because this one renders a FOCUSABLE CONTROL WITH NOTHING
+   *   VISIBLE IN IT. A caller reaching this component from JavaScript, or through a
+   *   cast, would otherwise plant an unlabelled tab stop in the heading row.
+   *
+   * Each throws rather than being absorbed, and that choice is deliberate. A column set
+   * is a STRUCTURE the feature authors, not data a user supplies, so every one of these
+   * is a programming defect; dropping a malformed width silently is exactly the
+   * behaviour this validation exists to end, and there is no logging channel in this
+   * component to report it through. Throwing is also the only form that a test can
+   * assert on.
+   *
    * @param value The column descriptors, or an absent value for none.
+   * @throws Error when two columns share a key, when a key is blank, when a width is
+   *   not one of the forms {@link DataTableWidth} admits, or when a sortable heading
+   *   also hides its label.
    */
   @Input()
   public set columns(value: readonly DataTableColumn<TRow>[] | null | undefined) {
-    this.columnsSignal.set(value ?? []);
+    const next = value ?? [];
+    assertColumnsAreValid(next);
+    this.columnsSignal.set(next);
   }
 
   public get columns(): readonly DataTableColumn<TRow>[] {
@@ -666,7 +924,7 @@ export class DataTableComponent<TRow> {
   }
 
   /**
-   * Sets the {@link DataTableColumn.key} the rows are currently ordered by, or an
+   * Sets the {@link DataTableColumnCommon.key} the rows are currently ordered by, or an
    * absent value when the server's own ordering applies.
    *
    * Blank text and omission mean the same thing, matching the paging contract, so a
@@ -841,7 +1099,7 @@ export class DataTableComponent<TRow> {
   /**
    * The body rows with every cell projected.
    *
-   * This is where each {@link DataTableColumn.value} formatter is invoked, exactly
+   * This is where each {@link DataTableFormattedColumn.value} formatter is invoked, exactly
    * once per row per redraw. It depends on the columns and the rows ONLY: selection and
    * the sort inputs are deliberately not read here, so neither selecting a row nor
    * rebinding a sort re-runs a single formatter.
@@ -887,16 +1145,40 @@ export class DataTableComponent<TRow> {
   }
 
   /**
-   * Activates a row from the keyboard.
+   * Selects a row from a pointer press, unless the press landed on a control.
+   *
+   * @param row The row that was pressed.
+   * @param event The pointer event.
+   */
+  protected activateRowFromPointer(row: TRow, event: Event): void {
+    if (originatesFromControl(event)) {
+      return;
+    }
+
+    this.activateRow(row);
+  }
+
+  /**
+   * Activates a row from the keyboard, unless the key landed on a control.
    *
    * Both activation keys are honoured, and the space bar's default page scroll is
    * suppressed so activating a row does not also jump the viewport. Every other key is
    * left alone, so type-ahead and caret navigation still work.
    *
+   * THE ORDER OF THE TWO GUARDS IS LOAD-BEARING. The control test comes FIRST, so a key
+   * pressed on a projected control returns before the default is suppressed. Reversed,
+   * a space bar pressed on an inline-editable checkbox inside a cell would have its
+   * default cancelled here and the checkbox would refuse to toggle - the row would
+   * quietly disable the very control the cell exists to offer.
+   *
    * @param row The row the key was pressed on.
    * @param event The keyboard event.
    */
   protected activateRowFromKeyboard(row: TRow, event: KeyboardEvent): void {
+    if (originatesFromControl(event)) {
+      return;
+    }
+
     if (event.key !== ENTER_KEY && event.key !== SPACE_KEY) {
       return;
     }
@@ -906,13 +1188,30 @@ export class DataTableComponent<TRow> {
   }
 
   /**
-   * Stops an interaction inside an `actions` cell from also selecting the row.
+   * Stops any interaction inside an `actions` cell from reaching the row, whether or
+   * not it came from a control.
    *
    * THE HAZARD THIS EXISTS FOR. Row commands are projected content, so they are
-   * interactive elements sitting INSIDE an activatable row. Without this, clicking
+   * interactive elements sitting INSIDE an activatable row. Without a boundary, clicking
    * Edit or Delete would bubble to the row handler and fire `rowSelect` as well, so
    * every command would silently double as a selection - and on a delete command that
    * is the worst possible pairing.
+   *
+   * ## Two layers, and why BOTH are needed
+   *
+   * This is the CELL-WIDE layer, and it is the coarser of the two: it declares the whole
+   * commands cell to be outside the row's activation area, so a press on the padding
+   * beside a command, or on a label or wrapper the feature put between its commands,
+   * does not select the row either. That is the right behaviour for a cell whose entire
+   * purpose is to carry controls.
+   *
+   * The finer layer is `originatesFromControl`, applied by the row handlers themselves,
+   * and it covers what this one cannot: an ORDINARY template cell. Those legitimately
+   * host interactive content - the two legacy inline-editable checkbox cells posted back
+   * on change - while the rest of the cell is still row content a reader may click to
+   * select. A cell-wide boundary there would take away row activation from most of the
+   * grid; a per-event control test takes away only the part that belongs to the control.
+   * Neither layer subsumes the other, so both are declared.
    *
    * THE TRADE-OFF, stated rather than hidden. Nesting interactive content inside an
    * activatable row is not ideal in the abstract; the alternative is to forbid row
@@ -920,11 +1219,11 @@ export class DataTableComponent<TRow> {
    * from every grid because one grid has commands. Suppressing propagation at the
    * boundary is the narrower fix: it changes nothing about the commands themselves,
    * each of which keeps its own accessible name, its own focus behaviour and its own
-   * native keyboard activation. Only the bubbling to the row is cut, and only from
-   * this one cell.
+   * native keyboard activation. Only the bubbling to the row is cut.
    *
    * Both event families are stopped, because a command activated by keyboard raises a
-   * key event that would bubble just as a click does.
+   * key event that would bubble just as a click does. Propagation is stopped and the
+   * default is NOT prevented, so every control inside keeps its own native activation.
    *
    * @param event The click or key event raised inside the actions cell.
    */
@@ -935,22 +1234,173 @@ export class DataTableComponent<TRow> {
 
 
 /**
- * Normalises a column's declared track width.
+ * Elements that own their own activation, and must therefore never have a press or a
+ * key stolen by the row around them.
+ *
+ * A single selector rather than a tag list, because three of these cases are attributes
+ * and not elements. Each entry earns its place:
+ *
+ * - `a[href]` - only a linked anchor is operable; a bare `a` is a text span.
+ * - `button`, `input`, `select`, `textarea`, `label` - the form controls a template cell
+ *   projects. `label` is included because a press on a label is FORWARDED to the control
+ *   it names, so treating the label as inert would let the row swallow a press that was
+ *   about to toggle a checkbox.
+ * - `summary` - the operable part of a disclosure element.
+ * - `audio[controls]`, `video[controls]` - media with its own transport controls.
+ * - `[contenteditable]:not([contenteditable='false'])` - an editable region, where a key
+ *   press is text entry.
+ * - `[tabindex]:not([tabindex='-1'])` - the catch-all for anything a feature has made
+ *   focusable itself. This is the entry that makes the row exclusion below necessary,
+ *   because the row is a tab stop and therefore matches it.
+ */
+const CONTROL_SELECTOR = [
+  'a[href]',
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  'summary',
+  'audio[controls]',
+  'video[controls]',
+  "[contenteditable]:not([contenteditable='false'])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(',');
+
+/**
+ * Whether an event began inside something that owns its own activation.
+ *
+ * THE DEFECT THIS CLOSES. Every press and every key inside a row bubbles to the row's
+ * own handlers, and a row is activatable. So a click on an inline-editable checkbox in
+ * an ordinary template cell also emitted a row selection, and a space bar pressed on
+ * that same checkbox reached the row handler, which cancelled the default and stopped
+ * the checkbox toggling - the row disabling the control the cell exists to offer. The
+ * commands cell was already fenced off wholesale, but an ordinary template cell was not,
+ * and it is precisely the cell that legitimately mixes controls with row content.
+ *
+ * The test walks OUTWARD from the element the event started on, using the nearest
+ * matching ancestor rather than the target alone, because a press very often lands on
+ * something inside a control - the text of a button, an icon within it - rather than on
+ * the control itself.
+ *
+ * THE ROW ITSELF IS EXCLUDED, and that exclusion is what makes the whole test work
+ * rather than disable the feature. The row carries a tab index so selection is reachable
+ * from the keyboard, which means it matches the focusable catch-all in the selector;
+ * without the exclusion, EVERY event would be reported as coming from a control and no
+ * row could ever be selected. The element the handler is attached to is the row, so it is
+ * the boundary the walk stops at: a match at or above it does not count.
+ *
+ * Read synchronously during dispatch, which is the only time the element the handler is
+ * attached to is available on the event.
+ *
+ * @param event The click or key event as it reached the row.
+ * @returns `true` when the event began inside a control the row must not steal from.
+ */
+function originatesFromControl(event: Event): boolean {
+  const { target, currentTarget } = event;
+
+  if (target instanceof Element === false) {
+    return false;
+  }
+
+  const control = target.closest(CONTROL_SELECTOR);
+
+  if (control === null) {
+    return false;
+  }
+
+  return currentTarget instanceof Element === false || control !== currentTarget;
+}
+
+/**
+ * The width forms {@link DataTableWidth} admits, as a pattern the run time can apply.
+ *
+ * Written as one expression so the compile-time type and the run-time test cannot drift
+ * apart: a percentage of one or more digits with an optional fractional part, either
+ * intrinsic keyword, or a reference to a custom property. Anchored at both ends, so a
+ * value that merely CONTAINS an admitted form - a calculation, a pair of values, a
+ * declaration with a trailing importance flag - is rejected rather than half-matched.
+ */
+const WIDTH_PATTERN = /^(?:\d+(?:\.\d+)?%|min-content|max-content|var\(--[^\s()]+\))$/;
+
+/**
+ * Rejects a column set that breaks an invariant no type can carry alone.
+ *
+ * Declared as a function so it is hoisted and can therefore be called from the input
+ * setter above without depending on declaration order in this module.
+ *
+ * The message names the offending key, because a set of a dozen columns gives a reader
+ * nowhere to start otherwise.
+ *
+ * @typeParam TRow The row contract the columns read.
+ * @param columns The set being bound.
+ * @throws Error on a blank key, a duplicate key, a malformed width, or a sortable
+ *   heading that also hides its label.
+ */
+function assertColumnsAreValid<TRow extends object>(
+  columns: readonly DataTableColumn<TRow>[],
+): void {
+  const seen = new Set<string>();
+
+  for (const column of columns) {
+    const key = column.key;
+
+    if (typeof key !== 'string' || key.trim().length === 0) {
+      throw new Error('A data-table column must declare a non-blank key.');
+    }
+
+    if (seen.has(key)) {
+      throw new Error(
+        `A data-table column set must not declare the key "${key}" twice: ` +
+          'the key is the tracking identity of the heading and of every cell in the column.',
+      );
+    }
+
+    seen.add(key);
+
+    if (column.width !== undefined && WIDTH_PATTERN.test(column.width) === false) {
+      throw new Error(
+        `The width "${column.width}" declared by the data-table column "${key}" is not a ` +
+          'supported track size. Use a percentage, min-content, max-content, or var(--token).',
+      );
+    }
+
+    // Read through a widened view of the two heading members, and that widening is
+    // required rather than stylistic: the descriptor already makes this pair
+    // unrepresentable, so reading them directly narrows the second test to a comparison
+    // the compiler proves can never be true and rejects. Widening restores the run-time
+    // check for the caller the type cannot reach - a JavaScript consumer, or one that has
+    // cast - without weakening the compile-time guarantee for everyone else.
+    const heading: { readonly sortable?: boolean; readonly headerHidden?: boolean } = column;
+
+    if (heading.sortable === true && heading.headerHidden === true) {
+      throw new Error(
+        `The data-table column "${key}" offers sorting and hides its label, which would ` +
+          'render a focusable control with nothing visible in it.',
+      );
+    }
+  }
+}
+
+/**
+ * Resolves a column's declared track width into the value bound to its `col` element.
+ *
+ * No normalisation happens here and none is wanted: the width has already been proved to
+ * be one of the four admitted forms when the set was bound, so trimming or repairing it
+ * at this point would be repairing something that cannot be broken. An earlier revision
+ * trimmed the text and accepted whatever remained, which is what let an invalid value
+ * reach the DOM and be discarded there in silence.
  *
  * Declared as a function rather than assigned to a constant so it is hoisted, and can
  * therefore be read by the field initialisers above without depending on the order of
  * declarations in this module.
  *
  * @param width The declared width, if any.
- * @returns The trimmed width, or `null` when absent or blank.
+ * @returns The width, or `null` when the column declared none, which leaves the column
+ *   to take its share automatically.
  */
-function resolveWidth(width: string | undefined): string | null {
-  if (typeof width !== 'string') {
-    return null;
-  }
-
-  const trimmed = width.trim();
-  return trimmed.length === 0 ? null : trimmed;
+function resolveWidth(width: DataTableWidth | undefined): string | null {
+  return width ?? null;
 }
 
 /**
@@ -993,19 +1443,17 @@ function flipDirection(direction: SortDirection): SortDirection {
 /**
  * Resolves what a column puts in its body cells.
  *
- * An explicit declaration always wins; otherwise the presence of a cell template
- * decides. `actions` is never inferred - see {@link DataTableColumn.kind}.
+ * A one-line resolution, and it is one line BECAUSE the descriptor is a discriminated
+ * union: `text` is the only kind that may be omitted, and both other kinds must declare
+ * themselves and must carry a template. An earlier revision inferred `template` from the
+ * presence of a cell template, which was the mechanism by which a mis-declared column
+ * became a rendering decision instead of a compile error. Nothing is inferred now.
  *
  * @param column The column being projected.
  * @returns The resolved kind.
  */
-function resolveKind<TRow>(column: DataTableColumn<TRow>): DataTableColumnKind {
-  const declared = column.kind;
-  if (declared !== undefined) {
-    return declared;
-  }
-
-  return column.cellTemplate === undefined ? 'text' : 'template';
+function resolveKind<TRow extends object>(column: DataTableColumn<TRow>): DataTableColumnKind {
+  return column.kind ?? 'text';
 }
 
 /**
@@ -1055,15 +1503,21 @@ function toDisplayText(value: unknown): string {
 /**
  * Reads a column's text for one row.
  *
- * A formatter takes precedence over a bound member, so a column may declare both and
- * have the formatter win. The formatter's result is normalised as well as the member's,
- * because a caller can return a non-string at run time whatever the declared type says.
+ * NO PRECEDENCE RULE, because the descriptor admits exactly one text source per column:
+ * a formatter or a bound member, never both. The two branches below are therefore the
+ * two arms of the union rather than a ranking, and the final fallthrough is unreachable
+ * for a column that satisfies the type - it is retained because this function is also
+ * reached for a column bound from JavaScript, where an empty cell is a better answer
+ * than a thrown error in the middle of a projection.
+ *
+ * The formatter's result is normalised as well as the member's, because a caller can
+ * return a non-string at run time whatever the declared type says.
  *
  * @param column The column being projected.
  * @param row The row being projected.
  * @returns The cell's text.
  */
-function cellText<TRow>(column: DataTableColumn<TRow>, row: TRow): string {
+function cellText<TRow extends object>(column: DataTableColumn<TRow>, row: TRow): string {
   const format = column.value;
   if (format !== undefined) {
     return toDisplayText(format(row));
@@ -1092,7 +1546,7 @@ function cellText<TRow>(column: DataTableColumn<TRow>, row: TRow): string {
  * @param rowIndex Zero-based position of the row within the current page.
  * @returns The projected cell.
  */
-function projectCell<TRow>(
+function projectCell<TRow extends object>(
   column: DataTableColumn<TRow>,
   row: TRow,
   rowIndex: number,
@@ -1104,6 +1558,12 @@ function projectCell<TRow>(
   // content, and `actions` for a column of row commands, which is a template too - it
   // must be, because a command is per-row. Only its propagation handling differs.
   // Gating on `kind === 'template'` alone would silently discard every actions column.
+  //
+  // The template is now REQUIRED on both of those kinds, so the second half of this test
+  // can no longer fail for a column that satisfies the type; it is kept because the
+  // projected cell's template member is nullable for the text kind and the template
+  // guards on it, and because a column bound from JavaScript must still render an empty
+  // cell rather than hand a null template to an outlet.
   const rendersTemplate = kind !== 'text' && declaredTemplate !== null;
 
   return {
@@ -1236,6 +1696,20 @@ function projectCell<TRow>(
 // the migration plan nonetheless mandates a caption element on every table. Projection
 // satisfies both: a feature writes an element carrying the dataTableCaption attribute and
 // the component renders it inside a real caption, announced and visually hidden.
+//
+// The projection slot carries a GENERIC FALLBACK name, and the reason is worth recording
+// because the earlier absence of one looked like a principled choice. Projection alone
+// left a consumer able to render the caption element EMPTY, which produces a table with
+// no accessible name - strictly worse than the legacy grids' inconsistency, since an
+// empty caption tells a reader nothing while occupying the slot that would have told them
+// something. A generic fallback names the kind of element reached without pretending to
+// know the screen, and a projected caption replaces it entirely, so the consumer's
+// obligation is unchanged and only the failure mode improves.
+//
+// No development-time assertion accompanies it, unlike the page header's non-blank title
+// check. That component validates an INPUT, which it can read; this one would have to
+// inspect projected DOM after render to discover an omission, and the fallback removes
+// the defect rather than merely reporting it, so the machinery would buy nothing.
 
 // MIGRATION: NgTemplateOutlet is imported as a THIRD entry alongside the two composed
 // siblings, and that is a deliberate, reported deviation from a strictly two-entry import
@@ -1276,4 +1750,3 @@ function projectCell<TRow>(
 // published anyway because they are accurate, valid on a native table without an
 // explicit role, visually free, and they stop a future switch to real windowing from
 // silently misreporting the table's size.
-

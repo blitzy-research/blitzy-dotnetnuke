@@ -26,16 +26,15 @@ namespace DnnMigration.Application.Dtos.Portal;
 /// update request describes only the desired state.
 /// </para>
 /// <para>
-/// The subject is carried by the route and by nothing else. The <c>{id}</c> segment of
-/// <c>PUT /api/v1/portals/{id}</c> identifies the portal being updated, and it is the sole source of
-/// that identifier: no member below carries a copy of it. An earlier revision did carry one, on the
-/// ground that the replacement of the legacy signature was one-for-one, and left the resulting
-/// route-versus-body disagreement to be resolved elsewhere. That is an authorisation risk whose
-/// safety depends on a comparison nobody is obliged to perform, so the duplicate was removed instead;
-/// the reasoning is recorded in full at the point where the member used to be declared, and the
-/// divergence is listed in <c>MIGRATION_NOTES.md</c>. There is consequently no identity comparison for
-/// <c>Application/Validation/UpdatePortalRequestValidator.cs</c> to make - the class of defect is
-/// closed by the shape of the contract rather than by a rule.
+/// The subject of the write is carried by the route. The <c>{id}</c> segment of
+/// <c>PUT /api/v1/portals/{id}</c> identifies the portal being updated and is the only value the
+/// service addresses; <see cref="PortalId"/> is the first of the twenty-seven members and must agree
+/// with it. The agreement is ENFORCED rather than assumed:
+/// <c>Application/Validation/UpdatePortalRequestValidator.cs</c> compares the two and refuses a
+/// mismatch with a 400 naming the field, reading the route value from the validation context's root
+/// data, which <c>Api/Filters/FluentValidationActionFilter.cs</c> populates for every request it
+/// validates. A body identifier that cannot disagree with the route cannot retarget the write, so the
+/// contract keeps its exact member count without acquiring a second authority.
 /// </para>
 /// <para>
 /// Deliberately not updatable. The legacy entity
@@ -226,37 +225,50 @@ public sealed class UpdatePortalRequest
     //   PortalService.UpdatePortalAsync and mirrored in the Angular portal-settings form. It is
     //   deliberately absent from this type, which validates nothing and authorises nothing.
 
-    // MIGRATION: LEGACY ARGUMENT 1, PortalId, IS DELIBERATELY NOT A MEMBER OF THIS CONTRACT, and its
-    // removal is a considered decision rather than an omission. The argument itself is preserved - it
-    // is the {id} segment of PUT /api/v1/portals/{id} and the first parameter of
-    // IPortalService.UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken) - so nothing about
-    // the operation is lost. What is removed is a SECOND, caller-controlled copy of the same key
-    // inside the body.
+    // MIGRATION: LEGACY ARGUMENT 1, PortalId, IS A MEMBER OF THIS CONTRACT, and it is declared FIRST so
+    // that the twenty-seven properties stand in the same order as the twenty-seven positional arguments
+    // they replace. The legacy call site is SiteSettings.ascx.vb:L772-L780 and the forwarding overload
+    // is PortalController.vb:L1524, which supplied this argument from the entity's own PortalID member;
+    // the backing column is Portals.PortalID, declared [int] IDENTITY (-1, 1) NOT NULL at
+    // 01.00.00.SqlDataProvider:L77.
     //
-    // An earlier revision carried the copy and documented that the route segment was authoritative,
-    // that the two could disagree, and that a comparison "belongs to the controller or the validator".
-    // That arrangement is the defect: a subject key supplied twice, with the mismatch handled by a
-    // rule declared somewhere else, is an authorisation risk that depends for its safety on a check
-    // nobody is forced to invoke. The two candidate fixes are enforcing equality or removing the
-    // duplicate, and removal is chosen because it is the only one that cannot be forgotten. Enforcing
-    // equality is mechanically possible - Api/Filters/FluentValidationActionFilter.cs publishes every
-    // route value into the validation context's root data, so a rule could read the route identifier -
-    // but a rule protects only the requests that actually reach it, and only for as long as nobody adds
-    // an entry point that binds the body without it. With no second copy in the body there is nothing
-    // to disagree on any path, and the class of defect is closed by construction rather than by
-    // vigilance.
+    // The identifier being present in the body does NOT make it a second authority. The {id} segment of
+    // PUT /api/v1/portals/{id} remains the sole subject of the write - IPortalService.UpdatePortalAsync
+    // receives it as a separate argument and the service addresses that portal and no other - and the
+    // body copy is required to AGREE with it. The agreement is enforced, not documented: the registered
+    // request validator compares this property against the route value that
+    // Api/Filters/FluentValidationActionFilter.cs publishes into the validation context's root data, and
+    // a disagreement is a 400 naming this field. Enforcement rather than removal is what keeps the
+    // contract at the exact twenty-seven members the operation has, while still closing the retargeting
+    // risk that a second, unchecked copy of a subject key would otherwise create.
     //
-    // Legacy provenance, retained because it explains where the argument came from: the column is
-    // Portals.PortalID, declared [int] IDENTITY (-1, 1) NOT NULL at 01.00.00.SqlDataProvider:L77; the
-    // legacy code-behind supplied the argument from page state rather than from a control, and the
-    // forwarding overload at PortalController.vb:L1524 supplied it from the entity's own PortalID
-    // member. The identity seed is the same negative value the legacy contract used as its
-    // absent-integer sentinel, and the stock _default portal occupies zero
-    // (01.00.00.SqlDataProvider:L7125), so both are real addressable identifiers and no route value
-    // may be rejected on the ground that it looks like an "absent" marker.
-    //
-    // This also makes the update contract consistent with CreatePortalRequest, which carries no
-    // identifier at all.
+    // MIGRATION: NEITHER -1 NOR 0 MAY BE READ AS "ABSENT" HERE. The identity seed is the same negative
+    // value the legacy contract used as its absent-integer sentinel (Null.vb:L41-L45), and the stock
+    // _default portal occupies the very next value, zero (01.00.00.SqlDataProvider:L7125), so both are
+    // real addressable identifiers. The property is therefore a non-nullable Int32 with no lower bound,
+    // no default that could be mistaken for a value, and no coercion: every integer that binds is
+    // forwarded, and only disagreement with the route is refused.
+
+    /// <summary>
+    /// Gets or sets the identifier of the portal being updated, which must equal the identifier in the
+    /// request path.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Legacy argument 1, <c>PortalId</c>, typed <c>Integer</c>, supplied from page state rather than
+    /// from a control and passed as the first argument at <c>SiteSettings.ascx.vb:L772</c>. The backing
+    /// column is <c>Portals.PortalID</c>, declared <c>[int] IDENTITY (-1, 1) NOT NULL</c> at
+    /// <c>01.00.00.SqlDataProvider:L77</c>.
+    /// </para>
+    /// <para>
+    /// Measured rules: the value must equal the <c>{portalId}</c> route segment. No lower bound applies,
+    /// because -1 is the first identifier the portal table issues and 0 is the shipped default portal,
+    /// so both are addressable rows rather than absent markers. The equality rule is declared by
+    /// <c>UpdatePortalRequestValidator</c> and is the only rule this member carries; the route remains
+    /// the subject of the write, so this property can never retarget it.
+    /// </para>
+    /// </remarks>
+    public int PortalId { get; set; }
 
     /// <summary>
     /// Gets or sets the display name of the portal.

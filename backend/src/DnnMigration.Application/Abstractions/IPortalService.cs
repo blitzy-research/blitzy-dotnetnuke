@@ -54,9 +54,9 @@
 // contract at Library/Components/Shared/Null.vb:L41 defines its absent-Integer marker as -1, and
 // CreatePortal at PortalController.vb:L980 documents that same value as its failure return,
 // tested at L990. But the schema declares Portals.PortalID as IDENTITY (-1, 1) at
-// Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77, so -1 is the
-// identifier of the first portal an installation creates, and the shipped default portal occupies
-// the next value, 0. Both are real, addressable identifiers. Every optional identifier on this
+// Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77, so -1 is the seed and
+// the first identifier the column generates, while the shipped default portal row is inserted with an
+// explicit 0 at L7125. Both are real, addressable identifiers. Every optional identifier on this
 // contract is therefore a nullable Integer whose null means "not supplied"; no implementation may
 // coalesce -1 or 0 to null, and no consumer may read either value as meaning absent.
 //
@@ -270,11 +270,14 @@ public interface IPortalService
     /// reported the grand total through a by-reference argument. Omitting
     /// <paramref name="nameFilter"/> reproduces the first; supplying it reproduces the second. An
     /// empty page is a success, not a failure - a filter that matches nothing is a legitimate
-    /// answer. The page coordinates, the sort field and the filter length are bounded by
-    /// <c>PortalListPagedRequestValidator</c>, whose sortable set is the set of columns the
-    /// legacy portal grid bound; an unrecognised sort field is a validation failure there and
-    /// never reaches an implementation, which is what keeps <c>portal.paging_invalid</c>
-    /// reserved for coordinates that are well formed yet still cannot be honoured.
+    /// answer. The page coordinates and the filter length are bounded by the shared
+    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
+    /// collection's sortable set because one request contract serves every listing. The sort field
+    /// is therefore bounded HERE, against <c>SortableFields.Portals</c> - exactly the set of arms
+    /// this listing's ordering expression honours - and an unrecognised field is reported as
+    /// <c>portal.paging_invalid</c>, alongside coordinates that are well formed yet still cannot be
+    /// honoured. Enforcing the narrow set at the point of dispatch rather than only at the API edge
+    /// binds every caller, including one that never passes through request validation.
     /// </remarks>
     Task<Result<PagedResult<PortalListItemDto>>> ListPortalsAsync(
         PagedRequest request,
@@ -460,22 +463,47 @@ public interface IPortalService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Reads one alias.
+    /// Reads one alias of one portal.
     /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against the
+    /// stored row's owner, for the reason set out in the remarks.
+    /// </param>
     /// <param name="portalAliasId">Identifier of the alias to read.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
     /// A successful outcome carrying the alias, or a successful outcome whose value is
-    /// <see langword="null"/> when no alias carries that identifier.
+    /// <see langword="null"/> when no alias carries that identifier within that portal.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Replaces <c>GetPortalAliasByPortalAliasID</c> (<c>PortalAliasController.vb:L63</c>) and
     /// serves the single-alias edit screen, whose legacy counterpart is
-    /// <c>Website/admin/Portal/EditPortalAlias.ascx.vb</c>. The alias identifier is a surrogate key
-    /// declared IDENTITY (1, 1), so it is unique across the installation and identifies the record
-    /// without a portal identifier alongside it.
+    /// <c>Website/admin/Portal/EditPortalAlias.ascx.vb</c>.
+    /// </para>
+    /// <para>
+    /// THE OWNING PORTAL IS REQUIRED EVEN THOUGH THE ALIAS KEY ALONE WOULD FIND THE ROW. The alias
+    /// identifier is a surrogate declared IDENTITY (1, 1), so it is unique across the installation and
+    /// a lookup by it needs nothing else - which is exactly the problem. Uniqueness makes the key
+    /// GUESSABLE across tenants: an earlier revision took the key alone, so a caller authorised over
+    /// one portal could read, rename and unbind any alias in the installation simply by counting
+    /// upwards, and renaming an alias re-points tenant resolution itself. The portal is therefore
+    /// supplied by the route and compared against the stored row's owner before anything is reported
+    /// or written. A mismatch reads as <c>portal.alias_not_found</c> rather than as a refusal, so the
+    /// member does not become an oracle for which alias keys exist in other tenants.
+    /// </para>
+    /// <para>
+    /// THE PORTAL IS OPTIONAL, AND WHAT ITS ABSENCE MEANS IS THE WHOLE OF THE RULE. Supplying it scopes the
+    /// read or the write to that tenant and is what every portal-nested route does; omitting it declares that
+    /// the caller holds INSTALLATION-WIDE authority, which the three host-only routes establish through the
+    /// host-administrator policy before this member is reached. Absence is therefore not "unscoped by
+    /// oversight" - it is the alias-repair surface a host administrator needs in order to correct a binding
+    /// without first knowing which tenant owns it, and it is the same idiom
+    /// <see cref="ListPortalAliasesAsync"/> already uses for the same reason.
+    /// </para>
     /// </remarks>
     Task<Result<PortalAliasDto?>> GetPortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         CancellationToken cancellationToken = default);
 
@@ -529,6 +557,12 @@ public interface IPortalService
     /// <summary>
     /// Modifies an existing alias.
     /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against
+    /// the stored row's owner before the write, so an alias bound to another tenant cannot be renamed
+    /// through this member. See <see cref="GetPortalAliasAsync"/> for why the alias key alone is not
+    /// sufficient, which matters most here: renaming an alias re-points tenant resolution.
+    /// </param>
     /// <param name="portalAliasId">
     /// Identifier of the alias to modify. It is supplied by the route and is the only place an alias
     /// is named on this call, so a caller cannot redirect the write onto a different alias.
@@ -540,8 +574,8 @@ public interface IPortalService
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
     /// A successful outcome when the alias was stored. Fails with <c>portal.alias_not_found</c> when
-    /// no alias carries that identifier, and with <c>portal.alias_duplicate</c> when the new host
-    /// name is already bound to another alias.
+    /// no alias carries that identifier <em>within that portal</em>, and with
+    /// <c>portal.alias_duplicate</c> when the new host name is already bound to another alias.
     /// </returns>
     /// <remarks>
     /// Replaces <c>UpdatePortalAliasInfo</c> (<c>PortalAliasController.vb:L94</c>). An alias cannot
@@ -554,6 +588,7 @@ public interface IPortalService
     // catching the exception the unique constraint raised, at EditPortalAlias.ascx.vb:L223-L228, so
     // an unchecked value reached the store on every edit.
     Task<Result> UpdatePortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         UpdatePortalAliasRequest request,
         CancellationToken cancellationToken = default);
@@ -561,11 +596,17 @@ public interface IPortalService
     /// <summary>
     /// Unbinds an alias from its portal.
     /// </summary>
+    /// <param name="portalId">
+    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against
+    /// the stored row's owner before the removal, so an alias bound to another tenant cannot be
+    /// unbound through this member - which would otherwise make that tenant unreachable.
+    /// </param>
     /// <param name="portalAliasId">Identifier of the alias to unbind.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
     /// A successful outcome when the alias was removed, which a caller answers as 204 No Content.
-    /// Fails with <c>portal.alias_not_found</c> when no alias carries that identifier.
+    /// Fails with <c>portal.alias_not_found</c> when no alias carries that identifier within that
+    /// portal.
     /// </returns>
     /// <remarks>
     /// Replaces <c>DeletePortalAlias</c> (<c>PortalAliasController.vb:L34</c>), which removed the
@@ -574,6 +615,7 @@ public interface IPortalService
     /// already happened.
     /// </remarks>
     Task<Result> DeletePortalAliasAsync(
+        int? portalId,
         int portalAliasId,
         CancellationToken cancellationToken = default);
 }

@@ -87,7 +87,11 @@ internal sealed class TabConfiguration : IEntityTypeConfiguration<Tab>
 
         // PK_Tabs PRIMARY KEY NONCLUSTERED (TabID), declared alongside DF_Tabs_IsVisible at
         // 01.00.00:L496-L502. The chain never drops or rebuilds it.
-        builder.HasKey(t => t.TabId).HasName("PK_Tabs");
+        //
+        // MIGRATION: NONCLUSTERED is expressed rather than left to the provider, whose default for a
+        // primary key is CLUSTERED. Without it the model snapshot - the artefact every future migration
+        // is diffed against - would describe a clustered key over a table that has never had one.
+        builder.HasKey(t => t.TabId).HasName("PK_Tabs").IsClustered(false);
 
         // MIGRATION: TabID is IDENTITY(0, 1) [01.00.00:L140], so the FIRST REAL TAB IS IDENTIFIED
         // BY ZERO. Zero is a legitimate, persisted page identifier and must never be read as

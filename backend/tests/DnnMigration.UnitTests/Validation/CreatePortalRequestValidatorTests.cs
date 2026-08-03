@@ -430,9 +430,20 @@ public class CreatePortalRequestValidatorTests
     /// the two character sets.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both halves are asserted together because they are one rule: the legacy code derived the
     /// measured segment at <c>Signup.ascx.vb:L202</c> and then widened the permitted set only when
     /// the portal was not a child (L207-L210). Testing either half alone would let the other regress.
+    /// </para>
+    /// <para>
+    /// The fourth case is the one this rule exists to serve and was previously untested. A BARE SEGMENT -
+    /// no separator at all - is what the legacy portal-page branch submitted
+    /// (<c>Signup.ascx.vb:L187-L197</c>), and the service composes it beneath the resolved parent's
+    /// authority. It must therefore be ACCEPTED here, and the third case shows why that is not vacuous:
+    /// a no-separator value is measured whole, so a bare segment passes and a host name typed into the
+    /// child field does not. Tightening this rule to demand a separator would make the composition
+    /// unreachable and silently reinstate the defect, which is what pins the case here.
+    /// </para>
     /// </remarks>
     [Fact]
     public void ChildAlias_IsMeasuredAfterTheFinalSeparatorAndAgainstTheNarrowerSet()
@@ -464,6 +475,17 @@ public class CreatePortalRequestValidatorTests
             _validator.Validate(noSeparator),
             nameof(CreatePortalRequest.PortalAlias),
             AliasCharacters);
+
+        CreatePortalRequest bareSegment = Valid();
+        bareSegment.IsChildPortal = true;
+        bareSegment.PortalAlias = "tenant-one";
+
+        ValidationResult segmentAccepted = _validator.Validate(bareSegment);
+
+        segmentAccepted.IsValid.Should().BeTrue(
+            "a bare segment is what the legacy portal-page branch submitted and what the service "
+            + "composes beneath the resolved parent authority, so it must be accepted: "
+            + Describe(segmentAccepted));
     }
 
     /// <summary>
@@ -832,6 +854,55 @@ public class CreatePortalRequestValidatorTests
             _validator.Validate(request),
             nameof(CreatePortalRequest.HomeDirectory),
             HomeFolderInvalid);
+    }
+
+    /// <summary>
+    /// A home directory carrying a control character is refused, with the same wording.
+    /// </summary>
+    /// <param name="homeDirectory">The submitted directory.</param>
+    /// <remarks>
+    /// <para>
+    /// This is a separate branch of the shape rule from the traversal cases above, and it is reachable by
+    /// an input none of them describes: every value below is an ORDINARY RELATIVE PATH — no leading
+    /// separator, no drive letter, no backslash, no <c>.</c> or <c>..</c> segment, no blank segment and no
+    /// wholly-blank value — so it clears every other clause and can only be refused by the
+    /// control-character test. Without these cases that test could be deleted and every other
+    /// home-directory assertion would stay green.
+    /// </para>
+    /// <para>
+    /// The values matter beyond coverage. A NUL byte truncates a path at the operating-system boundary,
+    /// where <c>content\0.txt</c> and <c>content</c> address different things to a validator and the same
+    /// thing to a file system. A newline or carriage return smuggles a second line into anything that
+    /// later writes the value out — a log entry or a configuration file — and a tab is refused for the same
+    /// reason a wholly blank value is: it is neither a directory name nor an omission. Refusing the whole
+    /// control range rather than enumerating the dangerous members is what makes the rule closed.
+    /// </para>
+    /// <para>
+    /// Both halves are asserted: the exact legacy message reaches the caller, and validation returns a
+    /// failure rather than throwing. The second half is not redundant — a path-handling routine that
+    /// threw on a NUL byte would turn a bad submission into a server fault, and the refusal is performed
+    /// by inspection precisely so that it cannot.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("cont\0ent")]
+    [InlineData("Portals/0\0")]
+    [InlineData("cont\nent")]
+    [InlineData("Portals/\r\n0")]
+    [InlineData("cont\tent")]
+    [InlineData("Portals\t/0")]
+    [InlineData("content\u007f")]
+    public void HomeDirectory_RefusesAControlCharacter(string homeDirectory)
+    {
+        CreatePortalRequest request = Valid();
+        request.HomeDirectory = homeDirectory;
+
+        Func<ValidationResult> validate = () => _validator.Validate(request);
+
+        ValidationResult result = validate.Should().NotThrow(
+            "a hostile value is a refusal, not a fault").Subject;
+
+        ShouldReport(result, nameof(CreatePortalRequest.HomeDirectory), HomeFolderInvalid);
     }
 
     /// <summary>

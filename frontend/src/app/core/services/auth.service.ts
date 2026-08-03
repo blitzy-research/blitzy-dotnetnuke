@@ -11,6 +11,7 @@ import {
   RefreshTokenRequest,
   sessionFromLoginResponse,
 } from '../models/auth.model';
+import { ApiResponse } from '../models/paged-result.model';
 import { TokenStorageService } from './token-storage.service';
 
 /**
@@ -65,8 +66,12 @@ export class AuthService {
   login(request: LoginRequest): Observable<CurrentUser> {
     this.tokenStorage.clear();
 
-    return this.http.post<LoginResponse>(AUTH_ENDPOINTS.login, request).pipe(
-      map(sessionFromLoginResponse),
+    // The payload arrives inside the shared success envelope, so it is unwrapped before
+    // anything reads it. Typing the call as the bare payload instead would compile and
+    // then fail at run time in the quietest possible way: every member of the session
+    // would read as undefined, and the stored session would be a shape-correct blank.
+    return this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.login, request).pipe(
+      map((envelope) => sessionFromLoginResponse(envelope.data)),
       tap((session) => this.tokenStorage.store(session)),
       map((session) => session.user),
     );
@@ -104,8 +109,8 @@ export class AuthService {
 
     const body: RefreshTokenRequest = { refreshToken };
 
-    const request = this.http.post<LoginResponse>(AUTH_ENDPOINTS.refresh, body).pipe(
-      map(sessionFromLoginResponse),
+    const request = this.http.post<ApiResponse<LoginResponse>>(AUTH_ENDPOINTS.refresh, body).pipe(
+      map((envelope) => sessionFromLoginResponse(envelope.data)),
       // Storing here rather than at the call site is what guarantees the rotated
       // refresh token replaces the consumed one exactly once, however many
       // subscribers are sharing this request.
@@ -160,6 +165,9 @@ export class AuthService {
 
     const body: RefreshTokenRequest = { refreshToken };
 
+    // No envelope here, and none is expected. Sign-out answers 204, which HTTP forbids
+    // from carrying a body, so there is nothing to unwrap - see the note on
+    // EmptyApiResponse, which is why that shape has no producer.
     return this.http.post<void>(AUTH_ENDPOINTS.logout, body).pipe(
       map(() => undefined),
       catchError(() => of(undefined)),

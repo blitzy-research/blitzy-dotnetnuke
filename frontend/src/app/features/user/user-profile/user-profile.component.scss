@@ -155,7 +155,7 @@
 // in the view-mode name/value list below, which this component owns outright.
 .user-profile__groups {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
   row-gap: var(--space-4);
 
   max-inline-size: mx.breakpoint('md');
@@ -191,7 +191,7 @@
 // a lone section is never underlined for no reason.
 .user-profile__group {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
   row-gap: var(--space-3);
 }
 
@@ -315,9 +315,11 @@
 
 // The state hook is `aria-expanded`, which is simultaneously what tells
 // assistive technology, so the affordance and the announcement can never
-// disagree. The quarter turn is geometric — it reorients the same glyph and is
-// not a design value with a token to resolve to, exactly as the shared
-// visually-hidden mixin's `inset(50%)` is geometric.
+// disagree. The quarter turn resolves to `--rotate-quarter-turn`: being geometric
+// — it reorients the same glyph rather than restyling it — makes it no less of a
+// value, and the vocabulary rule admits only `0`, `none`, `auto`, `inherit`,
+// `currentColor` and `transparent`. The shared visually-hidden mixin's collapsing
+// clip is named for exactly the same reason.
 //
 // MIGRATION: the turn is instantaneous. No motion member exists on the shared
 // mixin surface and a component may not author its own reduced-motion guard,
@@ -325,7 +327,7 @@
 // animated nothing, so the immediate change is the compliant behaviour and the
 // faithful one at once.
 .user-profile__toggle[aria-expanded='true'] .user-profile__toggle-icon {
-  transform: rotate(90deg);
+  transform: rotate(var(--rotate-quarter-turn));
 }
 
 // -----------------------------------------------------------------------------
@@ -353,7 +355,7 @@
 // the mapping so the correspondence is recorded somewhere it can be checked.
 .user-profile__fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
   row-gap: var(--space-3);
 }
 
@@ -399,11 +401,15 @@
 // written here.
 .user-profile__values {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-2);
 
+  // The term-and-detail pair from the shared vocabulary. The proportion is named
+  // there rather than written here because it is a design decision about this kind
+  // of list, and a second name/value surface has to agree with it rather than pick
+  // its own ratio.
   @include mx.respond-above('sm') {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 7fr);
+    grid-template-columns: var(--grid-track-term) var(--grid-track-detail);
     column-gap: var(--space-4);
     align-items: baseline;
   }

@@ -28,11 +28,15 @@ namespace DnnMigration.Api.Authorization;
 /// mismatch between registration and consumption cannot hide behind a differing string.
 /// </para>
 /// <para>
-/// <b>Why four permission policies and one role policy.</b> Only the view and edit keys are ever
+/// <b>Why four permission policies and four membership policies.</b> Only the view and edit keys are ever
 /// evaluated, and only the module and tab scopes can be decided, which bounds the permission group
 /// to two keys across two scopes. The read and write keys are the folder keys, and folder
-/// permissions are not carried across. The remaining member is the dominant legacy gate, which is
-/// not a permission key at all but portal administrator role membership.
+/// permissions are not carried across. The remaining four are not permission keys at all but membership
+/// questions, and they are four rather than one because the resources they gate ask four genuinely
+/// different questions: does the caller administer the portal in the route, is the caller a host account
+/// where no portal is in the route at all, is the caller the account in the route, and is the caller either
+/// that account or its portal's administrator. Collapsing any pair of them is what produced the cross-tenant
+/// and account-takeover paths this catalogue now closes.
 /// </para>
 /// <para>
 /// Each permission member must be registered against a <see cref="PermissionRequirement"/> built
@@ -108,14 +112,81 @@ public static class PolicyNames
     /// value into a tenant-agnostic catalogue.
     /// </para>
     /// <para>
+    /// <b>The portal decided is the one the ROUTE names.</b> A tenant-scoped route states which portal the
+    /// request is about, and that is the portal whose administrator role membership is verified - falling
+    /// back to the tenant the caller arrived through only where the route names no portal at all. Deciding
+    /// against the arrival tenant instead let an administrator of one portal act on any other, which is the
+    /// defect this wording now records.
+    /// </para>
+    /// <para>
     /// MIGRATION: the legacy gate tested membership imperatively and redirected to an access-denied
     /// view; the declarative equivalent is a 403 from the authorisation middleware, and the
     /// redirect is not reproduced. The legacy condition was also defective - joining the super-user
     /// test to the role test with <c>OrElse</c> redirected a super user away from the screen rather
-    /// than past it, the inverse of the evident intent - and that behaviour is not carried across.
-    /// This policy gates on portal administrator role membership alone; a super-user flag must
-    /// never serve as an authorisation short cut.
+    /// than past it, the inverse of the evident intent - and that INVERSION is not carried across. The
+    /// super-user arm itself is: a host account satisfies this policy, because the permission service
+    /// answers every permission question affirmatively for one and the portal service gates the hosting
+    /// charge and the quotas on being one, so a portal-administrator gate that refused a host account would
+    /// contradict the layer beneath it and would leave a host unable to administer a portal it had just
+    /// created. The flag is read from the store rather than from the token, so it is not a claim short cut.
     /// </para>
     /// </remarks>
     public const string PortalAdministrator = "PortalAdministrator";
+
+    /// <summary>
+    /// Grants an action when the caller is a host account: the gate for operations that address no single
+    /// portal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Only for operations with no portal binding of any kind.</b> The portal collection, portal creation,
+    /// and the alias resources addressed by their own global identifier. An action that names a portal in its
+    /// route must use <see cref="PortalAdministrator"/> instead, which admits a host account anyway; using
+    /// this policy there would needlessly refuse the tenant's own administrator.
+    /// </para>
+    /// <para>
+    /// <b>Why it is needed.</b> <see cref="PortalAdministrator"/> falls back to the arrival tenant when the
+    /// route names no portal, so for a global operation it asked a truthful but irrelevant question and an
+    /// administrator of one tenant could enumerate every tenant, create new ones, or reach another tenant's
+    /// alias by guessing its identifier.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is not the excluded host-administration feature, which is the super-user CONSOLE and
+    /// its screens. <c>Users.IsSuperUser</c> is an existing mapped column already emitted as a claim and
+    /// already consulted by the permission and portal services; this policy consumes it and adds no screen.
+    /// </para>
+    /// </remarks>
+    public const string HostAdministrator = "HostAdministrator";
+
+    /// <summary>
+    /// Grants an action when the caller is the account the route names, and nobody else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For the credential change alone. A change presents the current credential, so only its owner can
+    /// perform one; an administrator who must intervene uses the reset operation, which carries
+    /// <see cref="PortalAdministrator"/> and is recorded as its own administrative act. Admitting an
+    /// administrator here would collapse two operations into one whose effect depended on which fields were
+    /// populated - the shape that previously allowed a credential to be overwritten with no proof of
+    /// entitlement at all.
+    /// </para>
+    /// <para>
+    /// An action gated by this policy must carry an account identifier in its route template. One that does
+    /// not fails closed, because ownership cannot be proved without something to compare the subject claim
+    /// against.
+    /// </para>
+    /// </remarks>
+    public const string AccountOwner = "AccountOwner";
+
+    /// <summary>
+    /// Grants an action when the caller is the account the route names, or an administrator of the portal the
+    /// route names.
+    /// </summary>
+    /// <remarks>
+    /// For the account resources that both a holder and an administrator legitimately reach: the account's
+    /// own representation and its profile. Requires both an account identifier and a portal identifier in the
+    /// route template - the first to prove ownership, the second to scope the administrator arm - and fails
+    /// closed without them.
+    /// </remarks>
+    public const string AccountOwnerOrPortalAdministrator = "AccountOwnerOrPortalAdministrator";
 }

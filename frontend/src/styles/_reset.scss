@@ -19,7 +19,7 @@ html {
 
   // Stops mobile Safari inflating text when the device is turned to landscape.
   // The ramp is deliberately compact, so silent inflation would break it.
-  -webkit-text-size-adjust: 100%;
+  -webkit-text-size-adjust: var(--size-full);
 }
 
 *,
@@ -59,7 +59,7 @@ img,
 svg,
 video {
   display: block;
-  max-width: 100%;
+  max-width: var(--size-full);
   height: auto;
 }
 

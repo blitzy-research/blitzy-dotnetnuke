@@ -1,5 +1,6 @@
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Domain.Abstractions.Repositories;
 
@@ -69,8 +70,16 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 //            passwordFormat="Encrypted" and a 3DES decryption key committed to source control at
 //            Website/release.config:L89-L93 and L236-L246. Verification moves to IPasswordHasher
 //            and the Application AuthService, which loads the account through the by-name read
-//            below. Legacy credentials are re-hashed on first successful login, with an
-//            administrative reset as the fallback.
+//            below. AN ADMINISTRATIVE RESET IS THE ONLY WAY A LEGACY CREDENTIAL BECOMES USABLE.
+//            An earlier revision of this note claimed legacy credentials are re-hashed on first
+//            successful login with reset as a mere fallback; THAT CLAIM WAS FALSE and is removed
+//            rather than softened. Re-hashing on sign-in requires first verifying the submitted
+//            password against the legacy stored value, and nothing in this solution can: the
+//            hashing abstraction recognises BCrypt digests only, holds no legacy verifier, and no
+//            entity maps a legacy credential column. The path the claim described could therefore
+//            never run, so every pre-existing account requires a reset before its owner can sign
+//            in. That is a deliberate functional reduction recorded in MIGRATION_NOTES.md, and it
+//            must not be read as a fallback for a lazy upgrade that does not exist.
 //
 // MIGRATION: UserController.GetPassword(ByRef user, passwordAnswer) at L433 yields no member -
 //            password retrieval is deliberately not carried forward to any repository, service,
@@ -191,6 +200,11 @@ public interface IUserRepository
     /// <param name="isApproved">Restrict to approved or unapproved accounts, or <see langword="null"/> for both.</param>
     /// <param name="includeUnauthorised">Whether to include members whose portal membership is not authorised.</param>
     /// <param name="includeSuperUsers">Whether to include host super-users.</param>
+    /// <param name="sortBy">
+    /// Name of the property to order by, or <see langword="null"/> for the display-name order the
+    /// legacy grid presented. An unrecognised name falls back to that same default order.
+    /// </param>
+    /// <param name="descending">Whether <paramref name="sortBy"/> is applied in descending order.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// One page of fully composed accounts, carrying the total across all pages. Page indexing is
@@ -207,6 +221,18 @@ public interface IUserRepository
     /// <see cref="UserPortal.IsAuthorised"/>, which maps to the British-spelled <c>Authorised</c>
     /// column added to <c>UserPortals</c> in the 03.02.03 upgrade script; that column spelling is
     /// preserved deliberately.
+    /// </para>
+    /// <para>
+    /// The ordering is a request of this member, not a decision left to the caller after the fact. It
+    /// has to be, because paging is applied by the database: rows are ordered, then skipped, then
+    /// taken, so a caller that re-ordered the returned page would only be re-ordering the rows that
+    /// one arbitrary page happened to contain. That is why <paramref name="sortBy"/> is accepted here
+    /// rather than above - a listing whose sort field is honoured only within a page is a listing that
+    /// silently ignores the field, which is the defect this argument exists to close. The recognised
+    /// names are the ones the boundary admits for this collection, declared in
+    /// <c>Application/Validation/SortableFields.cs</c>; an ordering is applied unconditionally,
+    /// including for an absent or unrecognised name, and always ends on the primary key so the order
+    /// is total.
     /// </para>
     /// <para>
     /// MIGRATION: the username, email and profile-property filters are matched as prefixes, not as
@@ -233,6 +259,8 @@ public interface IUserRepository
         bool? isApproved,
         bool includeUnauthorised,
         bool includeSuperUsers,
+        string? sortBy = null,
+        bool descending = false,
         CancellationToken cancellationToken = default);
 
     /// <summary>Returns one user by key, or <see langword="null"/> when absent or not a member of the portal.</summary>
@@ -502,8 +530,23 @@ public interface IUserRepository
     /// <param name="userId">User identifier.</param>
     /// <param name="utcNow">The login instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a record was updated.</returns>
-    Task<bool> RecordSuccessfulLoginAsync(int userId, DateTime utcNow, CancellationToken cancellationToken = default);
+    /// <returns>
+    /// What happened. <see cref="MembershipWriteOutcome.Recorded"/> when the counters were cleared,
+    /// <see cref="MembershipWriteOutcome.NoRecord"/> when the account holds no credential record, and
+    /// <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store could not be reached.
+    /// <see cref="MembershipWriteOutcome.RecordedAndLocked"/> is never returned: clearing the counters is
+    /// what a successful sign-in does, so this member never leaves an account locked.
+    /// </returns>
+    /// <remarks>
+    /// The outcome is not decoration. Clearing the counters is half of the lock-out control - it is what stops
+    /// failures accumulated over days from eventually locking an account whose owner keeps signing in
+    /// successfully in between - so a caller that discards the answer cannot tell that the control has stopped
+    /// working.
+    /// </remarks>
+    Task<MembershipWriteOutcome> RecordSuccessfulLoginAsync(
+        int userId,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Increments the failed-attempt counter and locks the account once the threshold is reached.</summary>
     /// <param name="userId">User identifier.</param>
@@ -511,14 +554,31 @@ public interface IUserRepository
     /// <param name="attemptWindow">The window within which consecutive failures accumulate.</param>
     /// <param name="utcNow">The failure instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when the account is locked following this failure.</returns>
+    /// <returns>
+    /// What happened. <see cref="MembershipWriteOutcome.Recorded"/> when the failure was counted and the
+    /// account is not locked, <see cref="MembershipWriteOutcome.RecordedAndLocked"/> when it is now locked or
+    /// already was, <see cref="MembershipWriteOutcome.NoRecord"/> when the account holds no credential record,
+    /// and <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store could not be reached and the
+    /// failure was therefore NOT counted.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: preserves the failed-attempt and lockout bookkeeping that DotNetNuke itself grafted
     /// onto the external membership procedures in the 04.00.00 upgrade script, at lines 135 to 138.
     /// Dropping it would weaken a security behaviour the legacy installation actually had, so it is
     /// carried forward rather than discarded.
+    /// </para>
+    /// <para>
+    /// WHY THIS DOES NOT RETURN A BOOLEAN. An earlier revision returned <see langword="true"/> only when the
+    /// account had become locked, which made <see langword="false"/> mean three unrelated things at once:
+    /// counted and not yet at the threshold, no record to count against, and THE STORE COULD NOT BE REACHED SO
+    /// NOTHING WAS COUNTED. The third is the failure of the only control standing between an attacker and
+    /// unlimited credential guessing, and it was indistinguishable from the first - which is the ordinary
+    /// result of one mistyped password. A caller must be able to tell them apart, and
+    /// <see cref="MembershipWriteOutcome"/> is how; see that type for why its zero member is the worst case.
+    /// </para>
     /// </remarks>
-    Task<bool> RecordFailedLoginAsync(
+    Task<MembershipWriteOutcome> RecordFailedLoginAsync(
         int userId,
         int lockoutThreshold,
         TimeSpan attemptWindow,

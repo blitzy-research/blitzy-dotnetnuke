@@ -11,7 +11,7 @@ namespace DnnMigration.Application.Dtos.Module;
 // and the folder and file name remain as provenance the audit log records. Recorded as a deliberate
 // difference.
 //
-// MIGRATION: the target module is carried in the body because the endpoint is POST /api/v1/modules/import
+// MIGRATION: the target module is carried in the body because the endpoint is POST /api/v1/portals/{portalId}/modules/import
 // with no identifier in its route. That asymmetry with the export endpoint is intentional and follows the
 // planned endpoint surface; the service validates that the named module exists in the caller's portal
 // before importing, so the body-supplied identifier cannot reach another tenant's module.
@@ -22,7 +22,7 @@ namespace DnnMigration.Application.Dtos.Module;
 // than appearing to succeed.
 
 /// <summary>
-/// The state submitted to <c>POST /api/v1/modules/import</c> to load previously exported content into a
+/// The state submitted to <c>POST /api/v1/portals/{portalId}/modules/import</c> to load previously exported content into a
 /// module.
 /// </summary>
 /// <remarks>

@@ -18,24 +18,31 @@ namespace DnnMigration.Domain.Common;
 // declared IDENTITY(-1, 1), and dbo.Roles.RoleID, dbo.Tabs.TabID and dbo.Modules.ModuleID are each
 // declared IDENTITY(0, 1), in the baseline schema script
 // Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider at lines 77, 115, 140
-// and 221 respectively. The default value of TId is therefore a genuine persisted identity for
-// four in-scope aggregates, and -1 is simultaneously a real portal identity and the legacy
+// and 221 respectively. The seed - the first value the column generates - is therefore -1 for a
+// portal and 0 for a role, tab and module, the shipped default portal is inserted with an explicit
+// PortalID of 0, and every one of those values is a genuine key. -1 is additionally the legacy
 // Null.NullInteger marker for "no value" - a collision the domain deliberately does not resolve.
 //
-// MIGRATION: Persisted state is instead DECLARED, exactly once, by the layer that owns the answer.
+// MIGRATION: Persisted state is instead DECLARED by a caller that already knows the row exists.
 // MarkIdentityPersisted records the declaration and IdentityIsPersisted reads it back. That
 // inverts the usual arrangement on purpose: because this schema makes every candidate "not saved
-// yet" marker a real key, the only trustworthy source of the answer is the layer that actually read
-// or wrote the row. The persistence layer therefore carries an obligation - call
-// MarkIdentityPersisted on every entity it materialises from a row, and on every entity whose
-// generated key it has just written back after a save. Domain and application code must not call
-// it; they have no way of knowing.
+// yet" marker a real key, the only trustworthy source of the answer is code that actually read or
+// wrote the row.
 //
-// MIGRATION: Until that declaration is made, two separately constructed instances of the same
-// runtime type are two different entities, compared by object reference. Comparing their identity
-// values instead would report every freshly constructed role, tab and module as equal to every
-// other of its kind, because dbo.Roles, dbo.Tabs and dbo.Modules all seed at zero, and would make a
-// freshly constructed portal collide with the genuine portal identified by -1.
+// MIGRATION: NOTHING DECLARES IT AUTOMATICALLY. This solution registers no EF Core materialisation
+// interceptor and no post-save hook that calls MarkIdentityPersisted, so an entity the persistence
+// layer materialises arrives with the declaration unmade and is compared by object reference. The
+// declaration is consequently made only where a caller knows the answer and needs the identity rule -
+// today that is the Domain unit tests, which call it explicitly. Any code that wants identity-based
+// equality for materialised entities must either declare it or wire an Infrastructure-side hook that
+// does; until such a hook exists, no code may ASSUME identity-based equality holds for an entity that
+// came out of the database. What the absence costs is bounded and is the reason it is tolerable: no
+// production path in this solution compares two entity instances or uses one as a dictionary key.
+//
+// MIGRATION: Reference comparison is the correct fallback rather than a degradation. Comparing
+// identity values before the declaration would report every freshly constructed role, tab and module
+// as equal to every other of its kind, because dbo.Roles, dbo.Tabs and dbo.Modules all seed at zero,
+// and would make a freshly constructed portal collide with the genuine portal identified by -1.
 
 /// <summary>
 /// Identity-bearing base type for the domain entities of the DnnMigration model, supplying
@@ -72,8 +79,10 @@ namespace DnnMigration.Domain.Common;
 ///   <item>
 ///     <term>dbo.Portals.PortalID (script line 77)</term>
 ///     <description>
-///     IDENTITY(-1, 1). The first real portal row is identified by -1, which is simultaneously the
-///     legacy <c>Null.NullInteger</c> sentinel, so -1 may never be read as "absent".
+///     IDENTITY(-1, 1), so the seed - the first value the column generates - is -1, while the
+///     shipped default portal row is inserted with an explicit <c>PortalID</c> of 0. Both are real
+///     keys, and -1 is simultaneously the legacy <c>Null.NullInteger</c> sentinel, so -1 may never
+///     be read as "absent".
 ///     </description>
 ///   </item>
 ///   <item>
@@ -93,12 +102,18 @@ namespace DnnMigration.Domain.Common;
 /// Consequently this type compares <typeparamref name="TId"/> against no reserved value whatsoever
 /// and draws no conclusion from its default. Any predicate that did so would silently misclassify
 /// the first row of three aggregates and every portal identified by -1. What it does instead is take
-/// the answer from the only layer that holds it: the persistence layer calls
-/// <see cref="MarkIdentityPersisted"/> when it materialises a row, and again when it writes a
-/// generated key back after a save, and <see cref="IdentityIsPersisted"/> reports the result.
+/// the answer from a caller that holds it: <see cref="MarkIdentityPersisted"/> declares that the
+/// identity is the database's, and <see cref="IdentityIsPersisted"/> reports the declaration.
 /// </para>
 /// <para>
-/// Identity-based equality applies only once that declaration has been made on <b>both</b> operands.
+/// No automatic declaration exists in this solution. There is no materialisation interceptor and no
+/// post-save hook calling <see cref="MarkIdentityPersisted"/>, so an entity that the persistence
+/// layer materialised is compared by object reference until some caller declares it - which today
+/// happens only in the Domain unit tests. The consequence to hold on to is the negative one: code
+/// must not assume that two instances representing the same stored row will compare equal.
+/// </para>
+/// <para>
+/// Identity-based equality applies only once the declaration has been made on <b>both</b> operands.
 /// Before it, two separately constructed instances of the same runtime type are two different
 /// entities and are told apart by object reference, which is the only honest answer available while
 /// their identity values are still whatever the caller happened to leave in them. The alternative -
@@ -226,6 +241,12 @@ public abstract class Entity<TId> : IEquatable<Entity<TId>>
     /// real key belonging to a real row.
     /// </para>
     /// <para>
+    /// It reports <see langword="false"/> on an entity the persistence layer has just materialised,
+    /// because nothing in this solution declares the identity persisted automatically. Do not read
+    /// this member as "came from the database"; read it as "somebody has stated that the identity is
+    /// the database's".
+    /// </para>
+    /// <para>
     /// Read it to understand which equality rule applies, not to decide whether to insert or update
     /// - that decision belongs to the persistence layer's change tracker, which knows far more than
     /// this flag does.
@@ -240,10 +261,18 @@ public abstract class Entity<TId> : IEquatable<Entity<TId>>
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Called by the persistence layer at the two moments it knows the answer: immediately after
-    /// materialising an entity from a row, and immediately after writing a generated key back
-    /// following a save. Domain and application code must not call it, because neither can tell
-    /// whether a row exists.
+    /// Callable only by code that knows a row exists carrying this identity - which in practice means
+    /// code that has just read the row or just written it. No caller in the production solution does
+    /// so: no materialisation interceptor and no post-save hook is registered, so this method is
+    /// reached today only from the Domain unit tests, which declare the identity explicitly in order
+    /// to exercise the identity rule. That is the whole of its current use, and it is stated plainly
+    /// so that nobody infers identity-based equality for a materialised entity.
+    /// </para>
+    /// <para>
+    /// A persistence-side declaration is correct at exactly two moments and no others: immediately
+    /// after materialising an entity from a row, and immediately after writing a generated key back
+    /// following a save. Application and domain services are never among the correct callers -
+    /// neither can tell whether a row exists.
     /// </para>
     /// <para>
     /// One-way and idempotent. There is no counterpart that revokes the declaration: an entity does
@@ -256,8 +285,7 @@ public abstract class Entity<TId> : IEquatable<Entity<TId>>
     /// change that value, and consequently does not switch this instance over to identity-based
     /// equality either. That is deliberate: a hash code that changed under a live hash set would
     /// strand the entry, so the earlier answer wins and both operations stay consistent with it.
-    /// Materialise-then-declare, before anything hashes the entity, and the ordinary identity rule
-    /// applies throughout.
+    /// Declare first and hash afterwards and the ordinary identity rule applies throughout.
     /// </para>
     /// </remarks>
     public void MarkIdentityPersisted() => _identityIsPersisted = true;
@@ -368,8 +396,10 @@ public abstract class Entity<TId> : IEquatable<Entity<TId>>
     /// The object to compare with this entity, which may be <see langword="null"/>.
     /// </param>
     /// <returns>
-    /// <see langword="true"/> when <paramref name="obj"/> is an entity of exactly this runtime type
-    /// carrying an equal <see cref="Identity"/>; otherwise <see langword="false"/>.
+    /// <see langword="true"/> when <paramref name="obj"/> is the very same object, or an entity of
+    /// exactly this runtime type whose identity has been declared persisted on both sides and is
+    /// equal; otherwise <see langword="false"/>. An object of any other type, including one of a
+    /// different aggregate carrying the same identity value, is never equal.
     /// </returns>
     public override bool Equals(object? obj) => Equals(obj as Entity<TId>);
 
@@ -378,25 +408,26 @@ public abstract class Entity<TId> : IEquatable<Entity<TId>>
     /// </summary>
     /// <returns>
     /// A hash code combining this entity's runtime type with its <see cref="Identity"/> when the
-    /// identity has been declared persisted; otherwise the reference-based hash code of this object.
-    /// Either way, any two instances reported as equal always produce the same value.
+    /// identity has been declared persisted at the moment of the first call; otherwise the
+    /// reference-based hash code of this object - which, because nothing declares the identity
+    /// automatically, is what a materialised entity answers. Either way, any two instances reported as
+    /// equal always produce the same value.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// Latched on the first call and constant thereafter. Without that, an entity constructed in
-    /// memory, placed in a hash set, and only then given its generated key by the database would
-    /// answer with a different bucket than the one it was filed under, and would become unfindable in
-    /// a collection that still contains it. Latching costs one nullable field and removes the whole
-    /// failure mode.
+    /// Latched on the first call and constant thereafter. Without that, an entity that was hashed and
+    /// filed in a hash set before its identity was declared persisted would afterwards answer with a
+    /// different bucket than the one it was filed under, and would become unfindable in a collection
+    /// that still contains it. Latching costs one nullable field and removes the whole failure mode.
     /// </para>
     /// <para>
     /// Because the value is latched, the equality rule has to follow it rather than lead it: an
     /// instance that published a reference-based hash code keeps comparing by reference even after
     /// its identity is declared persisted, so it can never be reported equal to another instance
     /// whose hash code was derived from that same identity. The pair therefore never disagrees, which
-    /// is the invariant hash-based collections depend on. The straightforward ordering - materialise
-    /// the entity, declare its identity persisted, then hash it - takes the identity-based path
-    /// throughout and needs none of this care.
+    /// is the invariant hash-based collections depend on. Declaring the identity persisted before
+    /// anything hashes the entity takes the identity-based path throughout and needs none of this
+    /// care.
     /// </para>
     /// <para>
     /// Replacing the property behind <see cref="Identity"/> after the value has been latched does not

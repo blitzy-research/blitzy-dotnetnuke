@@ -51,6 +51,18 @@ public class UserServiceTests
 
     private const int AdministratorId = 9;
 
+    /// <summary>
+    /// The account that ACTS in a test, kept distinct from every account a test acts upon so that a caller and
+    /// a subject can never be confused for one another.
+    /// </summary>
+    private const int CallerId = 77;
+
+    /// <summary>
+    /// The role the tenant designates as conferring portal administration, which is what
+    /// <c>Portals.AdministratorRoleId</c> keys.
+    /// </summary>
+    private const int AdministratorRoleId = 78;
+
     private const int ModuleId = 4;
 
     private const int AccountsModuleDefinitionId = 11;
@@ -74,6 +86,8 @@ public class UserServiceTests
     private const string ListFilterInvalidCode = "user.list.filter-invalid";
 
     private const string ListUnknownProfilePropertyCode = "user.list.unknown-profile-property";
+
+    private const string ListSortUnsupportedCode = "user.list.sort-unsupported";
 
     private const string NotFoundCode = "user.not-found";
 
@@ -113,11 +127,33 @@ public class UserServiceTests
 
     private const string PasswordResetFailedCode = "user.password.reset-failed";
 
+    /// <summary>
+    /// Reported when an operation that must end an account's sessions could not, so the operation itself was
+    /// abandoned. Its reason token ends in <c>store_unavailable</c>, so the Api edge answers <c>503</c>.
+    /// </summary>
+    private const string SessionRevocationFailedCode = "user.session.revocation_store_unavailable";
+
+    /// <summary>
+    /// Reported when an account's credential could not be removed during deletion, so the deletion was
+    /// abandoned rather than committed with the credential left behind.
+    /// </summary>
+    private const string CredentialRemovalFailedCode = "user.credential.removal_store_unavailable";
+
     private const string PasswordCurrentIncorrectCode = "user.password.current-incorrect";
 
     private const string PasswordResetNotEnabledCode = "user.password.reset-not-enabled";
 
     private const string PasswordUnsupportedOperationCode = "user.password.unsupported-operation";
+
+    /// <summary>
+    /// The refusal a credential change carries when the caller is not the account that owns it.
+    /// </summary>
+    private const string PasswordChangeSelfOnlyForbiddenCode = "user.password.change-self-only-forbidden";
+
+    /// <summary>
+    /// The refusal an administrative reset carries when the caller does not administer the tenant.
+    /// </summary>
+    private const string PasswordResetForbiddenCode = "user.password.reset-forbidden";
 
     private const string UnlockNotLockedCode = "user.unlock.not-locked";
 
@@ -144,14 +180,55 @@ public class UserServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The account contract exposes eighteen asynchronous operations, every one of them scoped to a tenant.
+    /// The account contract exposes exactly twenty named asynchronous operations, every one of them scoped
+    /// to a tenant.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The inventory is asserted BY NAME rather than by count. A count fails identically for a correct
+    /// addition and an incorrect one and names neither, so it forces the next reader to work out which member
+    /// moved; a named set says exactly what the contract is and fails with the missing or surplus name in the
+    /// message.
+    /// </para>
+    /// <para>
+    /// Two of the twenty are recent and both are named deliberately.
+    /// <c>RequiresProfileCompletionAsync</c> lets the sign-in path evaluate the legacy profile gate without
+    /// the completeness rule acquiring a second implementation. <c>ResetPasswordAsync</c> exists because the
+    /// self-service credential change and the administrative reset were once a single member that chose
+    /// between them by reading a discriminator out of the caller's own request body, which let the caller
+    /// decide whether the current credential had to be proved; they are two members now precisely so the two
+    /// authorisation policies can differ, and this inventory asserts that the split is still in place.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public void UserContract_OffersExactlyEighteenTenantScopedOperations()
+    public void UserContract_OffersExactlyTwentyNamedTenantScopedOperations()
     {
         MethodInfo[] members = typeof(IUserService).GetMethods();
 
-        members.Should().HaveCount(18);
+        members.Select(member => member.Name).Should().BeEquivalentTo(
+        [
+            "ListUsersAsync",
+            "GetUserAsync",
+            "CreateUserAsync",
+            "UpdateUserAsync",
+            "DeleteUserAsync",
+            "ChangePasswordAsync",
+            "ResetPasswordAsync",
+            "UnlockUserAsync",
+            "SetUserApprovalAsync",
+            "RequirePasswordChangeAsync",
+            "GetMembershipSettingsAsync",
+            "UpdateMembershipSettingsAsync",
+            "RequiresProfileCompletionAsync",
+            "GetProfileAsync",
+            "UpdateProfileAsync",
+            "ListProfilePropertyDefinitionsAsync",
+            "GetProfilePropertyDefinitionAsync",
+            "CreateProfilePropertyDefinitionAsync",
+            "UpdateProfilePropertyDefinitionAsync",
+            "DeleteProfilePropertyDefinitionAsync",
+        ]);
+
         foreach (MethodInfo member in members)
         {
             member.Name.Should().EndWith("Async");
@@ -179,64 +256,74 @@ public class UserServiceTests
         var clock = new Mock<IClock>().Object;
         var cache = new Mock<ICacheService>().Object;
         var currentUser = new Mock<ICurrentUser>().Object;
+        var audit = new Mock<IAuditSink>().Object;
+        var tokens = new Mock<ITokenService>().Object;
         var policy = new PasswordPolicyOptions();
         var caching = new CachingOptions();
 
         Assert.Throws<ArgumentNullException>("users", () =>
         {
-            _ = new UserService(null!, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(null!, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
-            _ = new UserService(users, null!, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, null!, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
-            _ = new UserService(users, profiles, null!, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, null!, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
-            _ = new UserService(users, profiles, roles, null!, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, null!, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, null!, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, null!, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, null!, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, null!, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, null!, unitOfWork, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, null!, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, null!, hasher, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, null!, hasher, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, null!, clock, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, null!, clock, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, null!, cache, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, null!, cache, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, null!, currentUser, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, null!, currentUser, audit, tokens, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, null!, policy, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, null!, audit, tokens, policy, caching);
+        });
+        Assert.Throws<ArgumentNullException>("audit", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, null!, tokens, policy, caching);
+        });
+        Assert.Throws<ArgumentNullException>("tokens", () =>
+        {
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, null!, policy, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordPolicy", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, null!, caching);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, policy, null!);
+            _ = new UserService(users, profiles, roles, permissions, portals, modules, definitions, unitOfWork, hasher, clock, cache, currentUser, audit, tokens, policy, null!);
         });
     }
 
@@ -285,6 +372,163 @@ public class UserServiceTests
             () => harness.Service.ListUsersAsync(PortalId, page, cancellationToken: CancellationToken.None));
 
         failure.Message.Should().Be(expectedMessage);
+    }
+
+    /// <summary>
+    /// An ordering this listing cannot honour is refused, whichever collection the name belongs to.
+    /// </summary>
+    /// <param name="field">A field name a caller might reach for.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The shared request validator applies the union of every collection's sortable set, so each of
+    /// these names passes it. Each is nonetheless unhonourable HERE, and for a measured reason. The
+    /// creation instant, the last sign-in instant, the approval flag and the lock flag are read from the
+    /// external membership store AFTER the page has been taken, so ordering by one of them would sort
+    /// page two among itself and leave the collection order untouched - not an ordering at all. The
+    /// remaining names belong to other collections entirely. Refusing says so; accepting and then
+    /// ignoring would hand back a page the caller could not account for and could not detect.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this listing is NOT orderless, and an earlier revision of this fact said it was. The
+    /// mapped columns of the entity the query pages over can be ordered by the store, so they are
+    /// honoured rather than refused; the companion fact below asserts the accepted half of the same
+    /// vocabulary, so the declared set and the ordering the repository actually applies cannot drift
+    /// apart in either direction.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("CreatedDate")]
+    [InlineData("LastLoginDate")]
+    [InlineData("IsApproved")]
+    [InlineData("IsLockedOut")]
+    [InlineData("Address")]
+    [InlineData("Telephone")]
+    [InlineData("IsOnline")]
+    [InlineData("PortalName")]
+    [InlineData("RoleName")]
+    public async Task ListUsers_RefusesEveryNamedOrdering(string field)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { SortBy = field },
+            cancellationToken: CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ListSortUnsupportedCode);
+        outcome.Reason!.Message.Should().Be($"Accounts cannot be ordered by '{field}'.");
+        harness.Users.Verify(
+            u => u.ListAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool?>(),
+                It.IsAny<bool>(),
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Every ordering the store can honour is accepted and passed through to it verbatim.
+    /// </summary>
+    /// <param name="field">A mapped column of the entity the listing pages over.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The companion of the refusal above, and the reason the pair exists: the declared set and the
+    /// ordering the repository applies are two independently editable places, so widening one without the
+    /// other would either advertise an ordering that is silently discarded or refuse one that works.
+    /// Every name below is honoured by the repository's own ordering member, so each must reach it - which
+    /// is asserted by pinning the argument rather than merely by the call succeeding.
+    /// </remarks>
+    [Theory]
+    [InlineData("UserId")]
+    [InlineData("Username")]
+    [InlineData("FirstName")]
+    [InlineData("LastName")]
+    [InlineData("DisplayName")]
+    [InlineData("Email")]
+    [InlineData("IsSuperUser")]
+    public async Task ListUsers_AcceptsEveryOrderingTheStoreCanHonour(string field)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { SortBy = field },
+            cancellationToken: CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Users.Verify(
+            u => u.ListAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool?>(),
+                It.IsAny<bool>(),
+                It.IsAny<bool>(),
+                field,
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// A request that names no ordering is answered normally, so the refusal above is scoped to an
+    /// explicit preference and does not make the listing unusable.
+    /// </summary>
+    /// <param name="sortBy">The absent-or-blank sort field to submit.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The three spellings are the ones the request contract itself treats as "no preference expressed",
+    /// and the refusal is keyed to that same test rather than to a second interpretation of it - so a
+    /// caller who sends an empty sort parameter is not asked to justify a field it never named.
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ListUsers_AcceptsARequestThatNamesNoOrdering(string? sortBy)
+    {
+        Harness harness = Harness.Ready();
+
+        Result<PagedResult<UserListItemDto>> outcome = await harness.Service.ListUsersAsync(
+            PortalId,
+            new PagedRequest { SortBy = sortBy },
+            cancellationToken: CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Users.Verify(
+            u => u.ListAsync(
+                PortalId,
+                0,
+                10,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                true,
+                false,
+                null,
+                false,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>
@@ -418,6 +662,8 @@ public class UserServiceTests
                 null,
                 true,
                 false,
+                null,
+                false,
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -451,6 +697,8 @@ public class UserServiceTests
                 false,
                 true,
                 false,
+                null,
+                false,
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -481,6 +729,8 @@ public class UserServiceTests
                 null,
                 null,
                 true,
+                false,
+                null,
                 false,
                 It.IsAny<CancellationToken>()),
             Times.Once);
@@ -964,6 +1214,55 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// A committed creation is recorded on the audit trail under the legacy event name, with the operator as
+    /// the actor and the new account as the subject.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The event name is asserted as a LITERAL rather than through the published constant. The constant
+    /// exists so the wording cannot drift from the legacy event-log vocabulary at
+    /// <c>EventLogController.vb:L39</c>; comparing it against itself would let a rename pass unnoticed.
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_RecordsTheLegacyUserCreatedAuditEvent()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_CREATED");
+        record.Outcome.Should().Be(AuditOutcome.Succeeded);
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceType.Should().Be("User");
+        record.Properties["Username"].Should().Be(Username);
+        record.Properties.Should().NotContainKey(
+            "Password",
+            "no credential material of any kind may reach an audit record");
+    }
+
+    /// <summary>
+    /// A creation whose credential the store refuses records nothing, so a record never describes an account
+    /// that was withdrawn again.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CreateUser_RecordsNothingWhenTheCredentialIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialCreated = false;
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// A credential the store refuses withdraws the account row that had already committed, so no account is
     /// left that cannot sign in.
     /// </summary>
@@ -1322,6 +1621,35 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// A committed removal is recorded under the legacy event name, carrying the two facts the legacy record
+    /// carried - the account name and the account identifier - plus which arm of the removal ran.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy call site is <c>UserController.vb:L240</c>:
+    /// <c>AddLog("Username", objUser.Username, _portalSettings, objUser.UserID, EventLogType.USER_DELETED)</c>.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_RecordsTheLegacyUserDeletedAuditEvent()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_DELETED");
+        record.PortalId.Should().Be(PortalId);
+        record.SubjectUserId.Should().Be(UserId);
+        record.ResourceType.Should().Be("User");
+        record.Properties["Username"].Should().Be(Username);
+        record.Properties["AccountRemoved"].Should().Be(
+            "True",
+            "the account belonged to no other tenant, so the row itself went with the membership");
+    }
+
+    /// <summary>
     /// A membership row the store does not hold is not withdrawn, so the delete does not invent a row.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
@@ -1339,21 +1667,27 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Changing a credential requires a request, and an operation the service does not implement is refused
-    /// by name rather than silently treated as one of the two it does.
+    /// An operation this entry point does not perform is refused by name rather than silently treated as the
+    /// one it does. THE RESET DISCRIMINATOR IS AMONG THEM, and that is the security assertion of this fact:
+    /// the self-service change and the administrative reset were once one member that read this discriminator
+    /// to decide whether the current credential had to be proved, so a caller who could reach the endpoint
+    /// could skip that proof by naming the other operation in its own request body. Refusing it here means
+    /// the decision belongs to the endpoint - and therefore to the endpoint's authorisation policy - and can
+    /// no longer be chosen by the caller.
     /// </summary>
     /// <param name="operation">The operation to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
-    [InlineData(null)]
-    [InlineData("")]
+    [InlineData("reset")]
+    [InlineData("RESET")]
     [InlineData("delete")]
     [InlineData("change-question-and-answer")]
-    public async Task ChangePassword_RefusesAnUnsupportedOperation(string? operation)
+    public async Task ChangePassword_RefusesAnOperationItDoesNotPerform(string operation)
     {
         Harness harness = Harness.Ready();
         ChangePasswordRequest request = ValidChangeRequest();
         request.Operation = operation;
+        request.CurrentPassword = null;
 
         Result outcome = await harness.Service
             .ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
@@ -1361,27 +1695,99 @@ public class UserServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PasswordUnsupportedOperationCode);
         outcome.Reason!.Message.Should()
-            .Be($"Operation \"{operation}\" is not supported; use \"change\" or \"reset\".");
+            .Be($"Operation \"{operation}\" is not supported by this endpoint, which performs \"change\". "
+                + "Use the endpoint that performs the operation you intend.");
     }
 
     /// <summary>
-    /// The two supported operations are matched without regard to case.
+    /// The administrative reset refuses a change discriminator for the mirror-image reason, so neither
+    /// operation can be reached through the other's endpoint.
     /// </summary>
-    /// <param name="operation">The operation spelling to submit.</param>
+    /// <param name="operation">The operation to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
-    [InlineData("CHANGE")]
-    [InlineData("Reset")]
-    public async Task ChangePassword_MatchesTheSupportedOperationsWithoutRegardToCase(string operation)
+    [InlineData("change")]
+    [InlineData("Change")]
+    [InlineData("change-question-and-answer")]
+    public async Task ResetPassword_RefusesAnOperationItDoesNotPerform(string operation)
     {
         Harness harness = Harness.Ready();
+        ActAccordingToTheOperation(harness, operation);
         ChangePasswordRequest request = ValidChangeRequest();
         request.Operation = operation;
 
         Result outcome = await harness.Service
-            .ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
+            .ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None);
 
-        outcome.IsSuccess.Should().BeTrue();
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordUnsupportedOperationCode);
+        outcome.Reason!.Message.Should()
+            .Be($"Operation \"{operation}\" is not supported by this endpoint, which performs \"reset\". "
+                + "Use the endpoint that performs the operation you intend.");
+    }
+
+    /// <summary>
+    /// An absent discriminator is accepted on both entry points, because the endpoint the caller chose has
+    /// already stated which operation was meant and demanding they say it twice would refuse well-formed
+    /// requests.
+    /// </summary>
+    /// <param name="operation">The absent spelling to submit.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task CredentialWrite_AcceptsAnAbsentOperationOnBothEntryPoints(string? operation)
+    {
+        Harness change = Harness.Ready();
+        change.ActAsTheAccountOwner();
+        ChangePasswordRequest changeRequest = ValidChangeRequest();
+        changeRequest.Operation = operation;
+
+        Result changed = await change.Service
+            .ChangePasswordAsync(PortalId, UserId, changeRequest, CancellationToken.None);
+
+        changed.IsSuccess.Should().BeTrue(changed.Reason?.ToString());
+
+        Harness reset = Harness.Ready();
+        reset.ActAsAPortalAdministrator();
+        ChangePasswordRequest resetRequest = ValidChangeRequest();
+        resetRequest.Operation = operation;
+        resetRequest.CurrentPassword = null;
+
+        Result wasReset = await reset.Service
+            .ResetPasswordAsync(PortalId, UserId, resetRequest, CancellationToken.None);
+
+        wasReset.IsSuccess.Should().BeTrue(wasReset.Reason?.ToString());
+    }
+
+    /// <summary>
+    /// Each entry point matches its own operation without regard to case.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task CredentialWrite_MatchesItsOwnOperationWithoutRegardToCase()
+    {
+        Harness change = Harness.Ready();
+        change.ActAsTheAccountOwner();
+        ChangePasswordRequest changeRequest = ValidChangeRequest();
+        changeRequest.Operation = "CHANGE";
+
+        Result changed = await change.Service
+            .ChangePasswordAsync(PortalId, UserId, changeRequest, CancellationToken.None);
+
+        changed.IsSuccess.Should().BeTrue(changed.Reason?.ToString());
+
+        Harness reset = Harness.Ready();
+        reset.ActAsAPortalAdministrator();
+        ChangePasswordRequest resetRequest = ValidChangeRequest();
+        resetRequest.Operation = "Reset";
+        resetRequest.CurrentPassword = null;
+
+        Result wasReset = await reset.Service
+            .ResetPasswordAsync(PortalId, UserId, resetRequest, CancellationToken.None);
+
+        wasReset.IsSuccess.Should().BeTrue(wasReset.Reason?.ToString());
     }
 
     /// <summary>
@@ -1398,12 +1804,25 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// The administrative reset requires a payload for the same reason.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ResetPassword_RequiresARequest()
+    {
+        Harness harness = Harness.Ready();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => harness.Service.ResetPasswordAsync(PortalId, UserId, null!, CancellationToken.None));
+    }
+
+    /// <summary>
     /// An administrative reset is refused when the deployment switched resets off, and is refused before the
     /// account is even read.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task ChangePassword_RefusesAResetWhenResetsAreSwitchedOff()
+    public async Task ResetPassword_RefusesAResetWhenResetsAreSwitchedOff()
     {
         Harness harness = Harness.Ready();
         harness.PasswordPolicy.PasswordResetEnabled = false;
@@ -1411,7 +1830,7 @@ public class UserServiceTests
         request.Operation = ChangePasswordRequest.OperationReset;
 
         Result outcome = await harness.Service
-            .ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
+            .ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PasswordResetNotEnabledCode);
@@ -1431,6 +1850,7 @@ public class UserServiceTests
     public async Task ChangePassword_PermitsAChangeEvenWhenResetsAreSwitchedOff()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
         harness.PasswordPolicy.PasswordResetEnabled = false;
 
         Result outcome = await harness.Service
@@ -1448,6 +1868,7 @@ public class UserServiceTests
     public async Task ChangePassword_RefusesAnUnknownAccountAndAnAccountWithNoCredential()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
         harness.LookupUser = null;
 
         Result unknown = await harness.Service
@@ -1476,6 +1897,7 @@ public class UserServiceTests
     public async Task ChangePassword_RefusesAMissingUnconfirmedOrWeakNewCredential()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
 
         ChangePasswordRequest missing = ValidChangeRequest();
         missing.NewPassword = null;
@@ -1506,14 +1928,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A change requires the current credential and refuses an incorrect one; a reset does not ask for it at
-    /// all, which is what makes it administrative.
+    /// A change requires the current credential and refuses an incorrect one.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task ChangePassword_RequiresTheCurrentCredentialOnlyForAChange()
+    public async Task ChangePassword_RequiresTheCurrentCredential()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
 
         ChangePasswordRequest withoutCurrent = ValidChangeRequest();
         withoutCurrent.CurrentPassword = null;
@@ -1532,15 +1954,53 @@ public class UserServiceTests
 
         incorrect.Reason!.Code.Should().Be(PasswordCurrentIncorrectCode);
         incorrect.Reason!.Message.Should().Be("The current credential is not correct.");
+    }
 
+    /// <summary>
+    /// The administrative reset does not ask for the current credential at all, which is what makes it
+    /// administrative - and is precisely why its endpoint requires administration of the account's own portal
+    /// rather than mere authentication. The absent credential check is compensated by an authorisation check,
+    /// and this fact together with the refusal above is what proves the two can no longer be confused.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ResetPassword_DoesNotRequireTheCurrentCredential()
+    {
+        Harness harness = Harness.Ready();
         ChangePasswordRequest reset = ValidChangeRequest();
         reset.Operation = ChangePasswordRequest.OperationReset;
         reset.CurrentPassword = null;
 
+        // The reset half is administrative, so the acting caller becomes one; that the SAME caller could not
+        // have reached it a moment ago is the point of the two halves sitting in one test.
+        harness.ActAsAPortalAdministrator();
+
         Result administrative = await harness.Service
-            .ChangePasswordAsync(PortalId, UserId, reset, CancellationToken.None);
+            .ResetPasswordAsync(PortalId, UserId, reset, CancellationToken.None);
 
         administrative.IsSuccess.Should().BeTrue();
+        harness.SetPasswordHashes.Should().Equal(new[] { StoredHashFor(NewPassword) });
+    }
+
+    /// <summary>
+    /// An incorrect current credential submitted alongside a reset is IGNORED rather than honoured as a
+    /// verification, because the reset never consults it. Asserting this keeps a later change from
+    /// reintroducing a body-driven decision about whether the credential is checked.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ResetPassword_IgnoresAnIncorrectCurrentCredential()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsAPortalAdministrator();
+        ChangePasswordRequest reset = ValidChangeRequest();
+        reset.Operation = ChangePasswordRequest.OperationReset;
+        reset.CurrentPassword = "not-the-current-one";
+
+        Result administrative = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, reset, CancellationToken.None);
+
+        administrative.IsSuccess.Should().BeTrue(administrative.Reason?.ToString());
     }
 
     /// <summary>
@@ -1550,18 +2010,20 @@ public class UserServiceTests
     /// <param name="operation">The operation to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
-    [InlineData("change")]
-    [InlineData("reset")]
-    public async Task ChangePassword_RefusesANewCredentialThatMatchesTheStoredOne(string operation)
+    [InlineData(ChangePasswordRequest.OperationChange)]
+    [InlineData(ChangePasswordRequest.OperationReset)]
+    public async Task CredentialWrite_RefusesANewCredentialThatMatchesTheStoredOne(string operation)
     {
         Harness harness = Harness.Ready();
+        ActAccordingToTheOperation(harness, operation);
         ChangePasswordRequest request = ValidChangeRequest();
         request.Operation = operation;
         request.NewPassword = CurrentPassword;
         request.ConfirmPassword = CurrentPassword;
 
-        Result outcome = await harness.Service
-            .ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
+        Result outcome = operation == ChangePasswordRequest.OperationReset
+            ? await harness.Service.ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None)
+            : await harness.Service.ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PasswordNotDifferentCode);
@@ -1578,6 +2040,7 @@ public class UserServiceTests
     public async Task ChangePassword_ReportsAStoreThatRefusesTheWrite()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
         harness.PasswordWritten = false;
 
         Result outcome = await harness.Service
@@ -1597,6 +2060,7 @@ public class UserServiceTests
     public async Task ChangePassword_HashesRecordsAndDiscardsTheAccountCache()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
 
         Result outcome = await harness.Service
             .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
@@ -1616,6 +2080,7 @@ public class UserServiceTests
     public async Task ChangePassword_ClearsAStandingRequirementAndOtherwiseCommitsNothing()
     {
         Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
 
         await harness.Service.ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
 
@@ -1627,6 +2092,198 @@ public class UserServiceTests
 
         harness.LookupUser!.UpdatePassword.Should().BeFalse();
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// A credential change is refused to every caller but the account that owns it, and is refused before the
+    /// account is read.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Verifying the current credential, which the change branch does, is proof of POSSESSION and not of
+    /// AUTHORITY: it establishes that the caller knows the credential, so an administrator acting on somebody
+    /// else's account has no business submitting one and uses the reset operation instead.
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_RefusesAChangeAimedAtAnAccountThatIsNotTheCallers()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsAPortalAdministrator();
+
+        Result outcome = await harness.Service
+            .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordChangeSelfOnlyForbiddenCode);
+        outcome.Reason!.Message.Should().Contain("only be performed by the account that owns it");
+        harness.Users.Verify(
+            u => u.GetAsync(PortalId, UserId, It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.SetPasswordHashes.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A credential change is refused when the caller's token names a different tenant than the account it
+    /// addresses, even though the account key matches.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Account keys are allocated by a single installation-wide identity, so the same key names one account
+    /// across every tenant; the tenant must therefore agree as well, or a token minted for one portal would
+    /// carry self-service authority into another.
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_RefusesAChangeWhenTheCallersTokenNamesADifferentTenant()
+    {
+        Harness harness = Harness.Ready();
+        harness.CallerUserId = UserId;
+        harness.CallerPortalId = OtherPortalId;
+
+        Result outcome = await harness.Service
+            .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordChangeSelfOnlyForbiddenCode);
+    }
+
+    /// <summary>
+    /// An administrative reset is refused to the account that owns the credential, which is the defect that
+    /// made the change operation's current-credential requirement optional.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The route policy legitimately admits an account to its own record, so without this check the owner
+    /// could choose the operation that presents no current credential and set a new one without proving it
+    /// knew the old — turning a stolen access token into a permanent takeover.
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_RefusesAResetFromACallerWithNoAdministrativeAuthority()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = ChangePasswordRequest.OperationReset;
+        request.CurrentPassword = null;
+
+        Result outcome = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordResetForbiddenCode);
+        outcome.Reason!.Message.Should().Contain("administrative authority");
+        harness.SetPasswordHashes.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An administrative reset is refused to a caller whose assignment to the tenant's administrator role has
+    /// lapsed, and permitted to one whose assignment is in force.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Authority is judged at an instant against the tenant's own designated role, so a lapsed assignment
+    /// confers nothing — which a token minted while it was still in force could not have observed.
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_JudgesAResettersAuthorityAtTheCurrentInstant()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsAPortalAdministrator();
+        harness.UserAssignments.Single(assignment => assignment.UserId == CallerId).ExpiryDate =
+            Now.AddDays(-1);
+
+        ChangePasswordRequest lapsed = ValidChangeRequest();
+        lapsed.Operation = ChangePasswordRequest.OperationReset;
+        lapsed.CurrentPassword = null;
+
+        Result refused = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, lapsed, CancellationToken.None);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Reason!.Code.Should().Be(PasswordResetForbiddenCode);
+
+        harness.UserAssignments.Single(assignment => assignment.UserId == CallerId).ExpiryDate = null;
+
+        ChangePasswordRequest inForce = ValidChangeRequest();
+        inForce.Operation = ChangePasswordRequest.OperationReset;
+        inForce.CurrentPassword = null;
+
+        Result permitted = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, inForce, CancellationToken.None);
+
+        permitted.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// An administrative reset is refused when the tenant designates no administrator role, because an unset
+    /// designation is a configuration gap and a gap must not grant.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ChangePassword_RefusesAResetWhenTheTenantDesignatesNoAdministratorRole()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsAPortalAdministrator();
+        harness.PortalRow!.AdministratorRoleId = null;
+
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = ChangePasswordRequest.OperationReset;
+        request.CurrentPassword = null;
+
+        Result outcome = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordResetForbiddenCode);
+    }
+
+    /// <summary>
+    /// A host account may reset a credential in a tenant it holds no membership of, because installation-wide
+    /// authority is read from its own stored row rather than from a tenant assignment.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ChangePassword_PermitsAResetByAHostAccountHoldingNoTenantMembership()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsAHostAccount();
+        harness.PortalRow!.AdministratorRoleId = null;
+
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = ChangePasswordRequest.OperationReset;
+        request.CurrentPassword = null;
+
+        Result outcome = await harness.Service
+            .ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.SetPasswordHashes.Should().Equal(new[] { StoredHashFor(NewPassword) });
+    }
+
+    /// <summary>
+    /// Both credential operations are refused to a caller with no identity at all, so reaching the service
+    /// outside a route that establishes one grants nothing.
+    /// </summary>
+    /// <param name="operation">The operation to submit.</param>
+    /// <param name="expectedCode">The reason the refusal is expected to carry.</param>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData("change", PasswordChangeSelfOnlyForbiddenCode)]
+    [InlineData("reset", PasswordResetForbiddenCode)]
+    public async Task ChangePassword_RefusesBothOperationsToAnUnidentifiedCaller(
+        string operation,
+        string expectedCode)
+    {
+        Harness harness = Harness.Ready();
+        harness.CallerUserId = null;
+        harness.CallerPortalId = null;
+
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = operation;
+
+        Result outcome = await PerformCredentialWriteAsync(harness, operation, request);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(expectedCode);
     }
 
     /// <summary>
@@ -1784,6 +2441,225 @@ public class UserServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(ApprovalUnchangedCode);
         outcome.Reason!.Message.Should().Be($"Account {UserId} is already {expectedWording}.");
+    }
+
+    /// <summary>
+    /// A credential change ends every session the account holds, for both operations.
+    /// </summary>
+    /// <param name="operation">The operation named on the request.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The obligation is stated on the contract in terms rather than left to judgement: a credential changed
+    /// because it may have been compromised, or reset because its holder lost it, is of no use to whoever had
+    /// it - but a refresh token issued under the old credential keeps yielding fresh access tokens
+    /// indefinitely, so a change that left one exchangeable would not end the session it was performed to
+    /// end. The reset case matters most: it ends the sessions of the account being reset, not the
+    /// administrator's own.
+    /// </remarks>
+    [Theory]
+    [InlineData(ChangePasswordRequest.OperationChange)]
+    [InlineData("reset")]
+    public async Task ChangePassword_EndsEverySessionTheAccountHolds(string operation)
+    {
+        Harness harness = Harness.Ready();
+        ActAccordingToTheOperation(harness, operation);
+
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = operation;
+
+        Result outcome = await PerformCredentialWriteAsync(harness, operation, request);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RevokedSessionUserIds.Should().Equal(new[] { UserId });
+    }
+
+    /// <summary>
+    /// A credential change whose sessions cannot be ended is abandoned, and the stored credential is left
+    /// exactly as it was.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The ordering assertion is the substance of this test, not the failure code. Ending the sessions first
+    /// and failing leaves an account signed out of sessions it may simply re-establish, which costs its holder
+    /// an inconvenience; writing the credential first and then failing to end them would report the operation
+    /// as failed while the credential had in fact been replaced and every session was still live - a
+    /// falsehood to the caller and the exact exposure the revocation exists to close.
+    /// </para>
+    /// <para>
+    /// The empty hash list is what proves the order, because it can only be empty if the write was never
+    /// reached.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_WhenTheSessionsCannotBeEnded_LeavesTheCredentialUnchanged()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
+        harness.SessionsRevoked = false;
+
+        Result outcome = await harness.Service
+            .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(SessionRevocationFailedCode);
+        harness.SetPasswordHashes.Should().BeEmpty(
+            "the credential write sits after the revocation, so a refused revocation must not reach it");
+    }
+
+    /// <summary>
+    /// Withdrawing an approval ends every session the account holds; granting one ends none.
+    /// </summary>
+    /// <param name="isApproved">The approval state requested.</param>
+    /// <param name="expectedRevocations">How many accounts should have their sessions ended.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The asymmetry is deliberate and is stated on the contract: withdrawal ends the account's right to sign
+    /// in, so leaving it holding exchangeable refresh tokens would let it keep obtaining access tokens after
+    /// the withdrawal; granting takes nothing away, so ending a session because an account gained a right
+    /// would be gratuitous.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async Task SetUserApproval_EndsSessionsOnlyWhenWithdrawing(bool isApproved, int expectedRevocations)
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialApproved = !isApproved;
+
+        Result outcome = await harness.Service
+            .SetUserApprovalAsync(PortalId, UserId, isApproved, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RevokedSessionUserIds.Should().HaveCount(expectedRevocations);
+    }
+
+    /// <summary>
+    /// A withdrawal whose sessions cannot be ended is abandoned, and the approval is left standing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The same ordering rule as the credential change, and the empty write list proves it the same way: an
+    /// account recorded as unapproved while every session it holds remains exchangeable is the worst of the
+    /// available outcomes, because the operation would have reported failure while the account had in fact
+    /// lost its approval and kept its sessions.
+    /// </remarks>
+    [Fact]
+    public async Task SetUserApproval_WhenTheSessionsCannotBeEnded_LeavesTheApprovalStanding()
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialApproved = true;
+        harness.SessionsRevoked = false;
+
+        Result outcome = await harness.Service
+            .SetUserApprovalAsync(PortalId, UserId, isApproved: false, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(SessionRevocationFailedCode);
+        harness.ApprovalWrites.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Deleting an account ends every session it held, before anything is removed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A refresh token outliving the account it names is the worst of the three cases the obligation covers:
+    /// the account is gone, so nothing remains for an administrator to inspect or disable, and yet the token
+    /// would still be exchanged for access tokens asserting an identity that no longer exists.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_EndsEverySessionTheAccountHeld()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RevokedSessionUserIds.Should().Equal(new[] { UserId });
+    }
+
+    /// <summary>
+    /// A deletion whose sessions cannot be ended removes nothing at all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The revocation is the first destructive step precisely so that this is possible: every guard has
+    /// passed, so the deletion was going to be attempted, and nothing has yet been removed, so a refusal
+    /// leaves the account wholly intact rather than half dismantled. Placing it after the cascade would mean
+    /// reporting failure over an account whose grants, assignments and credential had already gone.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenTheSessionsCannotBeEnded_RemovesNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.SessionsRevoked = false;
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(SessionRevocationFailedCode);
+        harness.DeletedModulePermissions.Should().BeEmpty();
+        harness.DeletedTabPermissions.Should().BeEmpty();
+        harness.RemovedAssignments.Should().BeEmpty();
+        harness.RemovedMemberships.Should().BeEmpty();
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A deletion whose credential removal is refused leaves the account intact and commits nothing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The credential is the one write in the cascade that leaves the unit of work, so it is the one whose
+    /// refusal cannot be undone by simply not committing. Discarding its answer made an unreachable
+    /// membership store look exactly like a completed removal, and the account row was then removed anyway -
+    /// leaving a credential no administrative screen can reach and no later deletion will revisit. Refusing
+    /// before the removal is committed is what keeps the two consistent.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenTheCredentialCannotBeRemoved_LeavesTheAccountIntact()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.CredentialRemoved = false;
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(CredentialRemovalFailedCode);
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Requiring a credential change ends no session, which is a deliberate omission rather than an oversight.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This operation demands a new credential at the next sign-in without replacing the current one, so
+    /// nothing an existing session holds has been invalidated and the account may still sign in. The standing
+    /// requirement travels on every subsequent exchange, because the sign-in service re-reads the credential
+    /// advisories on each one, so the client is told to act on it without being signed out first. The three
+    /// operations that DO end sessions are the ones the token contract names, and this is not among them.
+    /// </remarks>
+    [Fact]
+    public async Task RequirePasswordChange_EndsNoSession()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service
+            .RequirePasswordChangeAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RevokedSessionUserIds.Should().BeEmpty();
     }
 
     /// <summary>
@@ -2025,6 +2901,151 @@ public class UserServiceTests
         harness.Portals.Verify(
             p => p.CountUsersAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// C-03: a required declaration the account has not answered makes the profile incomplete.
+    /// </summary>
+    /// <remarks>
+    /// This is <c>ProfileController.ValidateProfile</c> (L305-L319): the walk reports invalid at the first
+    /// declaration that is required and whose value is empty. An account with NO stored answers at all is the
+    /// case a newly created account presents, and it must be reported incomplete rather than complete.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_ReportsTrueWhenARequiredAnswerIsMissing()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        ProfilePropertyDefinition street = Definition(StreetPropertyId, "Street");
+        street.IsRequired = true;
+        harness.Definitions.Add(street);
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// C-03: a required declaration answered with whitespace is still unanswered.
+    /// </summary>
+    /// <remarks>
+    /// The legacy compared the value against <c>Null.NullString</c>, which is the EMPTY STRING rather than a
+    /// null reference (Rule T7), so it could not distinguish a blank from an absent answer. Treating whitespace
+    /// as an answer would let a single space satisfy a required property.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_TreatsWhitespaceAsUnanswered()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        ProfilePropertyDefinition street = Definition(StreetPropertyId, "Street");
+        street.IsRequired = true;
+        harness.Definitions.Add(street);
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "   ")];
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// C-03: an answered required declaration makes the profile complete.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_ReportsFalseWhenEveryRequiredAnswerIsPresent()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        ProfilePropertyDefinition street = Definition(StreetPropertyId, "Street");
+        street.IsRequired = true;
+        harness.Definitions.Add(street);
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "Fleet Street")];
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// C-03: an unanswered declaration that is NOT required leaves the profile complete.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_IgnoresDeclarationsThatAreNotRequired()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.Definitions.Add(Definition(StreetPropertyId, "Street"));
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value.Should().BeFalse();
+        harness.Profiles.Verify(
+            p => p.GetProfileValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "with nothing required there is nothing the stored answers could change");
+    }
+
+    /// <summary>
+    /// C-03: a tenant that does not require a valid profile at sign-in is not asked about completeness at all.
+    /// </summary>
+    /// <remarks>
+    /// The setting is consulted FIRST and short-circuits, which is what keeps a tenant that has switched the
+    /// gate off from paying for the declaration read on every sign-in.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_ShortCircuitsWhenTheTenantDoesNotRequireIt()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting("Security_RequireValidProfileAtLogin", bool.FalseString);
+        ProfilePropertyDefinition street = Definition(StreetPropertyId, "Street");
+        street.IsRequired = true;
+        harness.Definitions.Add(street);
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value.Should().BeFalse("the tenant has switched the gate off");
+        harness.Profiles.Verify(
+            p => p.GetDefinitionsByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the setting is consulted first and short-circuits");
+    }
+
+    /// <summary>
+    /// C-03: a tenant with no settings source falls back to the measured default, which requires the profile.
+    /// </summary>
+    /// <remarks>
+    /// Measured rather than guessed: <c>GetUserSettings</c> returned nothing for such a tenant,
+    /// <c>UserModuleBase.GetSetting</c> therefore yielded the key's own default, and that default is
+    /// <see langword="true"/> (<c>UserModuleBase.vb</c> L175-L177). Skipping the gate instead would silently
+    /// disable it for exactly the tenants whose configuration is least complete.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task RequiresProfileCompletion_AppliesTheDefaultWhenTheTenantHasNoSettingsSource()
+    {
+        Harness harness = Harness.Ready();
+        ProfilePropertyDefinition street = Definition(StreetPropertyId, "Street");
+        street.IsRequired = true;
+        harness.Definitions.Add(street);
+
+        Result<bool> outcome = await harness.Service
+            .RequiresProfileCompletionAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.Value.Should().BeTrue();
+        MembershipSettingsDto.DefaultRequireValidProfileAtLogin.Should().BeTrue(
+            "the fallback above is only correct while the measured default is true");
     }
 
     /// <summary>
@@ -2996,6 +4017,53 @@ public class UserServiceTests
     };
 
     /// <summary>
+    /// Gives the harness the caller the named operation is available to, so a theory that exercises both
+    /// operations states the authority each one needs instead of quietly relying on one caller passing both.
+    /// </summary>
+    /// <param name="harness">The harness to configure.</param>
+    /// <param name="operation">The operation the theory case submits, in whatever spelling it submits it.</param>
+    /// <remarks>
+    /// The two operations are not available to the same caller and that asymmetry is the security property
+    /// under test: a change is proof of possession and is the owner's to make, while a reset presents no
+    /// current credential and is therefore administrative.
+    /// </remarks>
+    private static void ActAccordingToTheOperation(Harness harness, string? operation)
+    {
+        if (string.Equals(operation, ChangePasswordRequest.OperationReset, StringComparison.OrdinalIgnoreCase))
+        {
+            harness.ActAsAPortalAdministrator();
+        }
+        else
+        {
+            harness.ActAsTheAccountOwner();
+        }
+    }
+
+    /// <summary>
+    /// Invokes the entry point that PERFORMS the named operation, so a theory covering both operations
+    /// exercises each one through its own member.
+    /// </summary>
+    /// <param name="harness">The harness whose service is invoked.</param>
+    /// <param name="operation">The operation the theory case submits, in whatever spelling it submits it.</param>
+    /// <param name="request">The submitted credential change.</param>
+    /// <returns>The outcome the entry point reported.</returns>
+    /// <remarks>
+    /// MIGRATION: the two operations are two MEMBERS, not one member switching on the submitted
+    /// discriminator. Whether the current credential is verified is now the entry point's answer rather than
+    /// the caller's, which is what stops a caller from selecting the branch that skips verification; the
+    /// discriminator survives only as a cross-check, and naming the operation the other member performs is
+    /// refused rather than obeyed. A theory that submitted "reset" to the change member would therefore be
+    /// asserting the cross-check rather than the reset behaviour it means to assert, so it dispatches here.
+    /// </remarks>
+    private static Task<Result> PerformCredentialWriteAsync(
+        Harness harness,
+        string? operation,
+        ChangePasswordRequest request) =>
+        string.Equals(operation, ChangePasswordRequest.OperationReset, StringComparison.OrdinalIgnoreCase)
+            ? harness.Service.ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None)
+            : harness.Service.ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
+
+    /// <summary>
     /// Builds a declaration payload.
     /// </summary>
     /// <param name="propertyName">The declared name.</param>
@@ -3095,6 +4163,7 @@ public class UserServiceTests
             HashedSecrets = [];
             CreatedCredentials = [];
             DeletedCredentialUserIds = [];
+            RevokedSessionUserIds = [];
             SetPasswordHashes = [];
             ApprovalWrites = [];
             DeletedModulePermissions = [];
@@ -3115,6 +4184,14 @@ public class UserServiceTests
             Clock = new Mock<IClock>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
             CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
+            Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+
+            AuditRecords = [];
+            Audit
+                .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
+                .Callback<AuditEvent>(AuditRecords.Add);
+
+            Tokens = new Mock<ITokenService>(MockBehavior.Loose);
 
             Service = new UserService(
                 Users.Object,
@@ -3129,6 +4206,8 @@ public class UserServiceTests
                 Clock.Object,
                 Cache.Object,
                 CurrentUser.Object,
+                Audit.Object,
+                Tokens.Object,
                 PasswordPolicy,
                 Caching);
         }
@@ -3158,6 +4237,27 @@ public class UserServiceTests
         public Mock<ICacheService> Cache { get; }
 
         public Mock<ICurrentUser> CurrentUser { get; }
+
+        public Mock<IAuditSink> Audit { get; }
+
+        /// <summary>Every audit record the service emitted, in the order it emitted them.</summary>
+        public List<AuditEvent> AuditRecords { get; }
+        public Mock<ITokenService> Tokens { get; }
+
+        /// <summary>
+        /// Accounts whose sessions the service asked to have ended, in the order it asked.
+        /// </summary>
+        public List<int> RevokedSessionUserIds { get; }
+
+        /// <summary>
+        /// Whether the token store can end an account's sessions. Defaults to true.
+        /// </summary>
+        public bool SessionsRevoked { get; set; } = true;
+
+        /// <summary>
+        /// Whether the credential store can remove an account's credential. Defaults to true.
+        /// </summary>
+        public bool CredentialRemoved { get; set; } = true;
 
         public PasswordPolicyOptions PasswordPolicy { get; }
 
@@ -3218,6 +4318,19 @@ public class UserServiceTests
         public int UserCount { get; set; }
 
         public int? CallerUserId { get; set; }
+
+        /// <summary>
+        /// The tenant the acting caller's token was minted for. Matched against the tenant a credential
+        /// operation addresses, because self-service requires the account AND the tenant to agree.
+        /// </summary>
+        public int? CallerPortalId { get; set; }
+
+        /// <summary>
+        /// The stored row the ACTING CALLER resolves to, when a test needs it to differ from the account
+        /// under test. Consulted only for the unscoped read the credential-authorisation path performs, so
+        /// leaving it null keeps every other test seeing exactly the account it described.
+        /// </summary>
+        public User? CallerAccount { get; set; }
 
         public Exception? CommitFault { get; set; }
 
@@ -3324,6 +4437,75 @@ public class UserServiceTests
         }
 
         /// <summary>
+        /// Makes the acting caller the account under test, signed in against the tenant under test — which is
+        /// what a self-service credential change requires.
+        /// </summary>
+        /// <remarks>
+        /// This is deliberately NOT the harness default. Most members of this service are administrative and
+        /// refuse a transition an administrator aimed at their own account, so a harness that silently made the
+        /// caller the account under test would make those refusals fire everywhere and hide what each test
+        /// meant to measure. The acting caller is therefore stated by the tests that depend on one.
+        /// </remarks>
+        public void ActAsTheAccountOwner()
+        {
+            CallerUserId = UserId;
+            CallerPortalId = PortalId;
+        }
+
+        /// <summary>
+        /// Makes the acting caller a host account: a distinct account, signed in against the tenant under
+        /// test, whose own stored row carries the installation-wide super-user flag.
+        /// </summary>
+        /// <remarks>
+        /// The flag is placed on the STORED ROW rather than on the caller's claims, because the service reads
+        /// authority from the database for exactly the reason a token cannot be trusted for it: a token is
+        /// minted at sign-in and cannot observe an account demoted since. A host account is read without a
+        /// tenant scope, so it is published through <see cref="CallerAccount"/> rather than through
+        /// <see cref="LookupUser"/>, which continues to describe the account under test.
+        /// </remarks>
+        public void ActAsAHostAccount()
+        {
+            CallerUserId = CallerId;
+            CallerPortalId = PortalId;
+            CallerAccount = new User
+            {
+                UserId = CallerId,
+                Username = "measured_host",
+                IsSuperUser = true,
+            };
+        }
+
+        /// <summary>
+        /// Makes the acting caller an administrator of the tenant under test by the only route that confers
+        /// it: an in-force assignment to the role the tenant's own <c>AdministratorRoleId</c> column names.
+        /// </summary>
+        /// <remarks>
+        /// Authority is conferred by ROLE KEY and judged AT AN INSTANT, never by role name, because no unique
+        /// constraint on <c>Roles.RoleName</c> exists anywhere in the upgrade scripts and the stock name names
+        /// a different row in every portal. The assignment is left open-ended so it is in force at the clock
+        /// the harness publishes.
+        /// </remarks>
+        public void ActAsAPortalAdministrator()
+        {
+            CallerUserId = CallerId;
+            CallerPortalId = PortalId;
+            CallerAccount = new User
+            {
+                UserId = CallerId,
+                Username = "measured_administrator",
+                IsSuperUser = false,
+            };
+
+            PortalRow!.AdministratorRoleId = AdministratorRoleId;
+            UserAssignments.Add(new UserRole
+            {
+                UserRoleId = 91,
+                UserId = CallerId,
+                RoleId = AdministratorRoleId,
+            });
+        }
+
+        /// <summary>
         /// Builds a harness whose world is consistent: an existing tenant holding one account with a
         /// credential that is present, approved and unlocked, a declared profile catalogue, and a store that
         /// accepts every write.
@@ -3345,7 +4527,10 @@ public class UserServiceTests
 
             harness.Users
                 .Setup(u => u.GetAsync(It.IsAny<int?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.LookupUser);
+                .ReturnsAsync((int? portalId, int userId, CancellationToken _) =>
+                    portalId is null && harness.CallerAccount is User caller && userId == harness.CallerUserId
+                        ? caller
+                        : harness.LookupUser);
             harness.Users
                 .Setup(u => u.GetByUsernameAsync(
                     It.IsAny<int?>(),
@@ -3390,6 +4575,8 @@ public class UserServiceTests
                     It.IsAny<string?>(),
                     It.IsAny<bool?>(),
                     It.IsAny<bool>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
                     It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.UserPage);
@@ -3456,7 +4643,20 @@ public class UserServiceTests
                 .Returns((int userId, CancellationToken _) =>
                 {
                     harness.DeletedCredentialUserIds.Add(userId);
-                    return Task.FromResult(true);
+                    return Task.FromResult(harness.CredentialRemoved);
+                });
+
+            // Revocation succeeds by default, because the ordinary case for every operation that ends an
+            // account's sessions is that they end. A test that needs the store to refuse says so.
+            harness.Tokens
+                .Setup(t => t.RevokeAllRefreshTokensAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Returns((int userId, CancellationToken _) =>
+                {
+                    harness.RevokedSessionUserIds.Add(userId);
+                    return Task.FromResult(
+                        harness.SessionsRevoked
+                            ? Result.Success()
+                            : Result.Failure("TOKEN_STORE_UNAVAILABLE", "The token store could not be written."));
                 });
 
             // The declaration catalogue is unpaged and excludes withdrawn declarations, which the
@@ -3632,7 +4832,9 @@ public class UserServiceTests
 
             harness.Clock.SetupGet(c => c.UtcNow).Returns(Now);
 
+            harness.CurrentUser.SetupGet(c => c.IsAuthenticated).Returns(() => harness.CallerUserId is not null);
             harness.CurrentUser.SetupGet(c => c.UserId).Returns(() => harness.CallerUserId);
+            harness.CurrentUser.SetupGet(c => c.PortalId).Returns(() => harness.CallerPortalId);
 
             harness.Cache
                 .Setup(c => c.InvalidatePortal(It.IsAny<int>()))

@@ -47,6 +47,20 @@ public sealed class TabApiTests
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
     private const int UnknownPortalId = 987654;
 
+    /// <summary>
+    /// The "All Users" pseudo-role, whose grants reach every caller, authenticated or not.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>glbRoleAllUsers = "-1"</c> at <c>Library/Components/Shared/Globals.vb:L95</c>. The value
+    /// collides with the seed of the portal identity column, so it is a role sentinel in this column only.
+    /// </remarks>
+    private const int AllUsersRoleId = -1;
+
+    /// <summary>
+    /// The "Unauthenticated Users" pseudo-role, whose grants reach exactly the callers with no account.
+    /// </summary>
+    private const int UnauthenticatedRoleId = -3;
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="TabApiTests"/> class.</summary>
@@ -92,6 +106,58 @@ public sealed class TabApiTests
         tabs.Select(tab => tab.TabOrder).Should().BeInAscendingOrder();
     }
 
+    /// <summary>
+    /// A page in the recycle bin is still listed, carrying its own deletion flag, because the terminal
+    /// legacy read returns soft-deleted rows and projects that flag for the caller to act on.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This pins the answer to a question the listing cannot answer twice: a caller that receives a
+    /// filtered listing cannot tell a tenant with no recycled pages from a tenant whose recycled pages
+    /// were withheld from it. The page is recycled through the write endpoint rather than by a direct
+    /// insert so that the cached navigation is invalidated the way production invalidates it -
+    /// recycling a page behind the service's back would leave the assertion reading a stale entry and
+    /// passing for the wrong reason. It is restored the same way once asserted, which leaves the shared
+    /// tenant in the state every other page this suite creates leaves it in.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_IncludesAPageInTheRecycleBin()
+    {
+        string name = "IRecycled" + Suffix();
+        int tabId = await CreateTabAsync(name);
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        UpdateTabRequest recycled = NewUpdateRequest(name);
+        recycled.IsDeleted = true;
+
+        using HttpResponseMessage written = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            recycled,
+            ApiTestFixture.Json);
+
+        written.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        List<TabListItemDto> tabs = await ReadListAsync(response);
+
+        TabListItemDto? listed = tabs.SingleOrDefault(tab => tab.TabId == tabId);
+
+        listed.Should().NotBeNull("a recycled page is still a row and the listing is complete by contract");
+        listed!.IsDeleted.Should().BeTrue("the flag travels on the row so the caller owns the filtering");
+        listed.TabName.Should().Be(name);
+
+        using HttpResponseMessage restored = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest(name),
+            ApiTestFixture.Json);
+
+        restored.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     /// <summary>The listing requires credentials.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -102,6 +168,38 @@ public sealed class TabApiTests
         using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// The listing is tenant-bound administration, so an ordinary member of the tenant holding a perfectly
+    /// valid token is refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This route previously required only that the caller be authenticated, so any member of any tenant could
+    /// read any other tenant's entire page hierarchy — its navigation structure, including pages in the recycle
+    /// bin and pages an ordinary visitor is not permitted to see — simply by changing the tenant segment.
+    /// </para>
+    /// <para>
+    /// It cannot be guarded by the page view policy, because that policy resolves its scope from a page
+    /// identifier in the route and this route names no page; the tenant it DOES name is what binds it. The
+    /// per-page routes remain permission-gated, which the tests further down measure.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_AsAnOrdinaryMember_ReturnsForbidden()
+    {
+        using HttpClient member = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        using HttpResponseMessage response = await member.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>An unknown tenant answers <c>404 Not Found</c>, because the route names the tenant itself.</summary>
@@ -120,12 +218,21 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// A newly created tenant holds no pages, which is asserted because creating a portal deliberately does
-    /// not provision a page tree.
+    /// A newly created tenant holds exactly its home page, at the root of its navigation.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// C-02: this assertion previously read <c>BeEmpty</c>, on the stated grounds that "creating a portal
+    /// deliberately does not provision a page tree". That premise was the defect rather than the design - a
+    /// tenant with no page has nowhere to serve, and the legacy creation sequence provisioned a home page and
+    /// stamped the portal with it. The test is corrected to the behaviour the legacy application had, because
+    /// a test that encodes an incorrect implementation must follow the implementation being fixed rather than
+    /// hold it in place. A page TREE is still not provisioned: the pages beyond the home page came from the
+    /// XML portal template, whose subsystem AAP 0.2.2.2 places out of scope, so exactly one page is expected
+    /// and that exactness is what this test pins.
+    /// </remarks>
     [Fact]
-    public async Task ListTabs_ForATenantWithNoPages_ReturnsOkAndEmpty()
+    public async Task ListTabs_ForANewTenant_ReturnsOnlyItsHomePage()
     {
         using HttpClient client = _fixture.CreateHostClient();
         int isolatedPortalId = await CreateIsolatedPortalAsync(client);
@@ -136,7 +243,13 @@ public sealed class TabApiTests
 
         List<TabListItemDto> tabs = await ReadListAsync(response);
 
-        tabs.Should().BeEmpty();
+        // The route names the tenant, so a row appearing here is by construction one of that tenant's pages;
+        // the list-item projection therefore carries no tenant identifier of its own.
+        TabListItemDto homePage = tabs.Should().ContainSingle().Subject;
+        homePage.TabName.Should().Be("Home");
+        homePage.ParentId.Should().BeNull();
+        homePage.Level.Should().Be(0);
+        homePage.IsDeleted.Should().BeFalse();
     }
 
     /// <summary>The host reads a page it holds no explicit grant on, because a host account holds everything.</summary>
@@ -238,14 +351,145 @@ public sealed class TabApiTests
     }
 
     /// <summary>
+    /// A grant on the page whose permission belongs to the module vocabulary rather than the page one
+    /// confers nothing, even though it is recorded against the page and against a role the caller holds.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This pins the strictness of the page evaluator's catalogue narrowing, and it is the assertion a
+    /// well-meaning performance change is most likely to break. The evaluator reads every grant on a page in
+    /// one request - the grant reader's permission argument carries a documented wildcard - and then decides
+    /// which of those rows may be judged by looking each row's permission up in the page catalogue it has
+    /// already loaded. A row naming a permission outside that catalogue must be discarded. Reading the rows
+    /// more cheaply must not widen which rows count.
+    /// </para>
+    /// <para>
+    /// The grant below is allowing, is recorded against this exact page, and names a role the member holds,
+    /// so every check except the scope check would admit it. Its permission carries the module scope code,
+    /// which the page catalogue does not include - both scope identifiers seed at zero, so an identifier
+    /// alone does not say what it identifies, and this is what keeps a module vocabulary out of a page
+    /// decision. A second call after a genuine page-scoped grant is added proves the refusal was the scope
+    /// check rather than an unrelated failure to reach the grant at all.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetTab_WithAGrantNamingAModuleScopedPermission_ReturnsForbidden()
+    {
+        int tabId = await CreateTabAsync("ITab" + Suffix());
+        await GrantAsync(tabId, _fixture.Seed.ModuleViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
+
+        using HttpClient client = MemberClient();
+
+        using HttpResponseMessage refused = await client.GetAsync(TabRoute(tabId));
+
+        refused.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the grant names a permission the page catalogue does not carry, so it confers nothing");
+
+        // The same page, the same role, the same allowing grant - only the permission's scope differs - is
+        // admitted, which is what makes the refusal above attributable to the scope check alone.
+        await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, _fixture.Seed.RegisteredRoleId, allowAccess: true);
+
+        using HttpResponseMessage admitted = await client.GetAsync(TabRoute(tabId));
+
+        admitted.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// A grant to the unauthenticated pseudo-role reaches a caller with no account at all.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the property the view policies were opened up for, and it went unproven long enough to regress.
+    /// Two things have to be true at once for it to hold, and only the first was ever tested: the policy must
+    /// not demand an authenticated caller, and the requirement must still be able to name the tenant it is
+    /// deciding. This route is addressed by page identifier alone, so it names no tenant, and a caller with no
+    /// token carries none either - which left the handler abandoning the requirement unevaluated and the caller
+    /// refused. That refusal was indistinguishable from a denial while being nothing of the kind: it deleted
+    /// exactly the grants this pseudo-role exists to express. The tenant now falls back to the requested host,
+    /// which is how the legacy application identified it for every visitor including the anonymous ones.
+    /// </para>
+    /// <para>
+    /// The pseudo-role identifiers are sentinels with no row in the roles table, which is why the grant table
+    /// must carry no foreign key to it - a constraint an earlier revision of the schema fabricated, and whose
+    /// presence made every grant written here unstorable.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GetTab_AsAnAnonymousCallerWithAnUnauthenticatedGrant_ReturnsOk()
+    {
+        int tabId = await CreateTabAsync("ITab" + Suffix());
+        await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, UnauthenticatedRoleId, allowAccess: true);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.TabId.Should().Be(tabId);
+    }
+
+    /// <summary>
+    /// A grant to the unauthenticated pseudo-role reaches <em>only</em> callers with no account, so an
+    /// authenticated member holding no grant of their own is still refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Without this, the preceding test would also pass if the host fallback had simply opened the route to
+    /// everybody. The pair is what pins the semantics: the same single grant admits the anonymous caller and
+    /// excludes the signed-in one, which is the whole meaning of "unauthenticated users".
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GetTab_WithOnlyAnUnauthenticatedGrant_StillRefusesAnAuthenticatedMember()
+    {
+        int tabId = await CreateTabAsync("ITab" + Suffix());
+        await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, UnauthenticatedRoleId, allowAccess: true);
+
+        using HttpClient client = MemberClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// A grant to the all-users pseudo-role reaches an anonymous caller as well as an authenticated one.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The all-users sentinel differs from the unauthenticated one by reaching everybody rather than only the
+    /// accountless, so it is asserted separately; a fallback that resolved the tenant only for one of the two
+    /// would leave the other silently unreachable.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task GetTab_AsAnAnonymousCallerWithAnAllUsersGrant_ReturnsOk()
+    {
+        int tabId = await CreateTabAsync("ITab" + Suffix());
+        await GrantAsync(tabId, _fixture.Seed.TabViewPermissionId, AllUsersRoleId, allowAccess: true);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
     /// A denial suppresses an allowance on the same page and key, so the caller is refused even though a role
     /// it holds is granted the permission.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The denial is written against the account rather than a pseudo-role, because the pseudo-role
-    /// identifiers are sentinels with no row in the roles table and the grant table has a foreign key to it.
-    /// An account-scoped denial is applicable to the same caller, which is what the precedence rule needs.
+    /// identifiers are sentinels with no row in the roles table. An account-scoped denial is applicable to the
+    /// same caller, which is what the precedence rule needs.
     /// </remarks>
     [Fact]
     public async Task GetTab_WhenADenialSuppressesAnAllowance_ReturnsForbidden()
@@ -297,6 +541,139 @@ public sealed class TabApiTests
         using HttpResponseMessage response = await host.GetAsync(TabRoute(foreignTabId));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// A blank page name is refused as an RFC 7807 validation response naming the member, and nothing is
+    /// written.
+    /// </summary>
+    /// <param name="submittedName">The name to submit.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: <c>Website/admin/Tabs/managetabs.ascx</c> L36-L37 declares a required-field validator over
+    /// the page-name box, so none of these submissions could reach the legacy controller. This test's real
+    /// subject is whether the new validator is ATTACHED TO THE ACTION - a validator that exists but is never
+    /// invoked would pass its own unit suite and change nothing here - which is why the assertion is on the
+    /// status code and the payload's <c>errors</c> key rather than on the validator's own output.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("   ")]
+    public async Task UpdateTab_WithABlankName_ReturnsValidationProblem(string submittedName)
+    {
+        string originalName = "IBlank" + Suffix();
+        int tabId = await CreateTabAsync(originalName);
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            new UpdateTabRequest { TabName = submittedName },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain("\"errors\"");
+        payload.Should().Contain("Page Name Is Required");
+
+        string storedName = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [TabName] FROM [dbo].[Tabs] WHERE [TabID] = @tabId;",
+            new Dictionary<string, object?> { ["tabId"] = tabId });
+
+        storedName.Should().Be(originalName, "a refused update must not have written anything");
+    }
+
+    /// <summary>
+    /// A value one character beyond its column width is refused as a validation problem rather than reaching
+    /// the database and faulting there.
+    /// </summary>
+    /// <param name="member">The member to overrun.</param>
+    /// <param name="limit">The member's measured maximum length.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the assertion the finding turned on. Without the validator each of these submissions travels
+    /// the whole way to SQL Server, which refuses it as a truncation error - surfacing as a 500 that names no
+    /// field - or, on a connection configured to truncate, stores a silently shortened value. The status code
+    /// is therefore the whole point: 400 means the shape was judged, 500 means it was not.
+    /// </remarks>
+    [Theory]
+    [InlineData("tabName", 50)]
+    [InlineData("title", 200)]
+    [InlineData("description", 500)]
+    [InlineData("keywords", 500)]
+    [InlineData("pageHeadText", 500)]
+    [InlineData("iconFile", 100)]
+    [InlineData("url", 255)]
+    [InlineData("skinSrc", 200)]
+    [InlineData("containerSrc", 200)]
+    public async Task UpdateTab_BeyondAColumnWidth_ReturnsValidationProblem(string member, int limit)
+    {
+        int tabId = await CreateTabAsync("IWide" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        // Built as a raw document rather than through the request type, so the test drives the JSON member
+        // name the caller actually sends. The name is always present, because it is required.
+        Dictionary<string, object?> body = new(StringComparer.Ordinal)
+        {
+            ["tabName"] = "IWideName",
+            [member] = new string('x', limit + 1),
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            body,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "an overlong {0} must be judged by the validator, not by the database",
+            member);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain("\"errors\"");
+    }
+
+    /// <summary>
+    /// A value exactly at its column width is accepted, so the widths are not off by one.
+    /// </summary>
+    /// <param name="member">The member to fill.</param>
+    /// <param name="limit">The member's measured maximum length.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion to the test above, and not optional. An off-by-one rule would refuse the longest
+    /// legitimate value - making a page whose name is exactly fifty characters uneditable - and would pass
+    /// every over-limit assertion while doing so.
+    /// </remarks>
+    [Theory]
+    [InlineData("title", 200)]
+    [InlineData("description", 500)]
+    [InlineData("keywords", 500)]
+    [InlineData("pageHeadText", 500)]
+    public async Task UpdateTab_AtAColumnWidth_IsAccepted(string member, int limit)
+    {
+        int tabId = await CreateTabAsync("IAtLimit" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        Dictionary<string, object?> body = new(StringComparer.Ordinal)
+        {
+            ["tabName"] = "IAtLimitName",
+            [member] = new string('x', limit),
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            body,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a {0} of exactly {1} characters is the longest legitimate value and must be accepted",
+            member,
+            limit);
     }
 
     /// <summary>A write is applied and persisted, and the stored path follows the new name.</summary>
@@ -909,7 +1286,13 @@ public sealed class TabApiTests
         using System.Text.Json.JsonDocument document =
             System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        return document.RootElement.GetProperty("portalId").GetInt32();
+        // The created representation travels inside the shared success envelope, so the identifier is one
+        // level down under "data". Read as raw JSON rather than through a typed envelope because only the
+        // one member is wanted, and naming it here proves the envelope member name as a side effect.
+        return document.RootElement
+            .GetProperty("data")
+            .GetProperty("portalId")
+            .GetInt32();
     }
 
     /// <summary>Builds a client for the seeded plain member.</summary>
@@ -921,16 +1304,22 @@ public sealed class TabApiTests
         isSuperUser: false,
         roles: new[] { IntegrationSeed.RegisteredUsersRoleName });
 
-    /// <summary>Reads a page listing from a response.</summary>
+    /// <summary>Reads a page listing out of the collection envelope a response carries.</summary>
     /// <param name="response">The response.</param>
     /// <returns>The listing.</returns>
+    /// <remarks>
+    /// The listing travels inside the Application layer's standard success envelope, under <c>data</c>,
+    /// because it is an unpaged collection read. Binding straight onto a bare list would fail at run time
+    /// rather than at compile time, which is exactly what happened when the wire contract was corrected,
+    /// so the envelope is named explicitly here.
+    /// </remarks>
     private static async Task<List<TabListItemDto>> ReadListAsync(HttpResponseMessage response)
     {
-        List<TabListItemDto>? tabs = await response.Content
-            .ReadFromJsonAsync<List<TabListItemDto>>(ApiTestFixture.Json);
+        CollectionEnvelope<TabListItemDto>? envelope = await response.Content
+            .ReadFromJsonAsync<CollectionEnvelope<TabListItemDto>>(ApiTestFixture.Json);
 
-        tabs.Should().NotBeNull();
-        return tabs!;
+        envelope.Should().NotBeNull();
+        return envelope!.Data.ToList();
     }
 
     /// <summary>Reads a page representation from a response.</summary>
@@ -939,7 +1328,7 @@ public sealed class TabApiTests
     private static async Task<TabDetailDto> ReadDetailAsync(HttpResponseMessage response)
     {
         TabDetailDto? detail = await response.Content
-            .ReadFromJsonAsync<TabDetailDto>(ApiTestFixture.Json);
+            .ReadEnvelopeAsync<TabDetailDto>();
 
         detail.Should().NotBeNull();
         return detail!;

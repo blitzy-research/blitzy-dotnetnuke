@@ -101,6 +101,44 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// The set is materialised into an array before it is used in the predicate, so the translated
+    /// <c>IN</c> list is built once from a stable snapshot rather than from a collection the caller could
+    /// still be mutating. Duplicates are collapsed first, because a repeated identifier would lengthen
+    /// the parameter list without widening the answer.
+    /// </para>
+    /// <para>
+    /// An empty request short-circuits with no round trip. That is not merely an optimisation: EF Core
+    /// translates an empty <c>Contains</c> into a constant-false predicate, and issuing a query whose
+    /// answer is known to be empty is a round trip spent to learn nothing.
+    /// </para>
+    /// <para>
+    /// Ordering by identifier matches the definition-scoped and page-scoped readers on this type, so
+    /// every catalogue read in this repository returns a stable sequence.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<Permission>> GetByIdsAsync(
+        IReadOnlyCollection<int> permissionIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(permissionIds);
+
+        if (permissionIds.Count == 0)
+        {
+            return Array.Empty<Permission>();
+        }
+
+        int[] distinct = permissionIds.Distinct().ToArray();
+
+        return await _context.Permissions
+            .Where(p => distinct.Contains(p.PermissionId))
+            .OrderBy(p => p.PermissionId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// MIGRATION: the terminal <c>GetPermissionsByModuleDefID</c> (04.05.03) filters on the definition
     /// column alone and orders by permission identifier, which is reproduced exactly.
     /// </remarks>

@@ -20,8 +20,9 @@ namespace DnnMigration.Domain.Entities;
 // MIGRATION: TabID is declared IDENTITY(0, 1) at 01.00.00.SqlDataProvider line 140, so ZERO IS A
 // REAL, PERSISTED PAGE IDENTITY - the first row ever inserted owns it. TabId must never be read as
 // "absent", "transient", "unsaved" or "not set", and no member may be added that draws such a
-// conclusion from its value. Whether the row exists is declared by the persistence layer through
-// Entity<int>.MarkIdentityPersisted and read back through Entity<int>.IdentityIsPersisted; it is
+// conclusion from its value. Whether the row exists is DECLARED, through
+// Entity<int>.MarkIdentityPersisted, by code that already knows it - nothing in this solution declares
+// it automatically, so a materialised tab reports Entity<int>.IdentityIsPersisted as false - and it is
 // never deduced here.
 //
 // MIGRATION: the legacy Null sentinels are not ported. Library/Components/Shared/Null.vb lines 36-85

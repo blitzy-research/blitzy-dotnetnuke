@@ -35,13 +35,21 @@ namespace DnnMigration.Api.Extensions;
 /// hasher.
 /// </para>
 /// <para>
-/// <b>The limits are applied globally by matching the request, not only by an opt-in
-/// annotation.</b> A named policy exists as well, so an action may declare it, but
-/// the global matcher is what makes the control impossible to omit: an author adding
-/// a sign-in or password endpoint cannot forget to annotate it, because nothing was
-/// ever relying on the annotation. Requests that are not credential-bearing pass
-/// through a single shared no-limit partition, so this file imposes no cost on the
-/// rest of the API.
+/// <b>An endpoint is classified from its METADATA FIRST and from its path only as a
+/// fall-back.</b> <see cref="CredentialEndpointAttribute"/> states that an action
+/// handles a credential, and that statement is what brings it under both limiters.
+/// The whole-segment path matcher is retained underneath - it is what still catches an
+/// endpoint whose author forgets the attribute, and it is the only classifier
+/// available for a request that matched no endpoint - but it is no longer the only
+/// source of truth, because a path is not a statement about what an action does. That
+/// distinction was not academic: the path list matched none of the three endpoints
+/// that hash a credential outside the sign-in flow - account creation on
+/// <c>/users</c>, tenant provisioning on <c>/portals</c>, which hashes the
+/// administrator credential it creates, and the administrative reset, whose
+/// <c>password-reset</c> segment is not equal to <c>password</c> - so all three ran
+/// with no window and no concurrency bound. Requests that are not credential-bearing
+/// pass through a single shared no-limit partition, so this file imposes no cost on
+/// the rest of the API.
 /// </para>
 /// <para>
 /// <b>What the window partition is, and what it is not.</b> The partition key is the
@@ -74,11 +82,25 @@ public static class RateLimitingExtensions
     /// matcher: <c>credential-endpoints</c>.
     /// </summary>
     /// <remarks>
-    /// Declaring it on an action is harmless and additive - the action is then subject
-    /// to both this policy's window and the global one - but it is not how the control
-    /// is delivered. It exists so an endpoint that the global matcher would not
-    /// recognise as credential-bearing, yet which handles a credential, can still be
-    /// brought under a window explicitly.
+    /// <para>
+    /// Declaring it on an action is additive: the action is then subject to this policy's window as well as
+    /// the global one. The two are keyed identically but are separate limiter instances with separate
+    /// budgets, and one permit is taken from each per request, so they are consumed in lockstep and the
+    /// effective limit is unchanged.
+    /// </para>
+    /// <para>
+    /// APPLIED UNCONDITIONALLY. This policy's partitioner used to ask the same path matcher the global
+    /// limiter asks, and therefore returned the shared no-limit partition for precisely the paths the policy
+    /// was documented as existing to cover - so declaring it on an unmatched credential endpoint changed
+    /// nothing whatsoever. An author who names this policy has already made the statement the matcher was
+    /// guessing at, and second-guessing a declaration with a heuristic is what made the opt-in inert.
+    /// </para>
+    /// <para>
+    /// A named policy contributes exactly ONE partition, so it can carry the window but not also the
+    /// process-wide concurrency bound. Both bounds come from the global chained limiter, and what brings an
+    /// endpoint under that chain is <see cref="CredentialEndpointAttribute"/>. Marking an action is
+    /// therefore the complete measure; declaring this policy in addition documents the intent at the action.
+    /// </para>
     /// </remarks>
     public const string CredentialPolicyName = "credential-endpoints";
 
@@ -86,11 +108,12 @@ public static class RateLimitingExtensions
     /// The policy name an action declares to opt into the credential window explicitly.
     /// </summary>
     /// <remarks>
-    /// The sign-in, refresh and sign-out actions declare this policy by name. It resolves to the same
-    /// window partitioner the global matcher applies, so declaring it adds a second, identically keyed
-    /// budget rather than a different rule: the two are consumed in lockstep and the effective limit is
-    /// unchanged. Both exist on purpose - the annotation documents the intent at the action, and the
-    /// global matcher is what makes the control impossible to omit on an endpoint whose author forgets it.
+    /// The sign-in, refresh and sign-out actions declare this policy by name. It applies the same window the
+    /// global limiter applies, unconditionally and for the same reason
+    /// <see cref="CredentialPolicyName"/> does, so declaring it adds a second, identically keyed budget
+    /// rather than a different rule: the two are consumed in lockstep and the effective limit is unchanged.
+    /// Both exist on purpose - the annotation documents the intent at the action, and the global classifier
+    /// is what makes the control impossible to omit on an endpoint whose author forgets it.
     /// </remarks>
     public const string AuthenticationPolicyName = "authentication";
 
@@ -264,13 +287,17 @@ public static class RateLimitingExtensions
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = WriteRefusalAsync;
 
+            // The two named policies apply the window UNCONDITIONALLY. Routing them through the same
+            // classifier the global limiter uses is what made them inert: the classifier answered "not
+            // credential-bearing" for exactly the endpoints an author would have declared a policy on,
+            // so the declaration resolved to the shared no-limit partition and enforced nothing.
             options.AddPolicy(
                 CredentialPolicyName,
-                context => ResolveWindowPartition(context, permitLimit, window));
+                context => BuildWindowPartition(context, permitLimit, window));
 
             options.AddPolicy(
                 AuthenticationPolicyName,
-                context => ResolveWindowPartition(context, permitLimit, window));
+                context => BuildWindowPartition(context, permitLimit, window));
 
             options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
                 PartitionedRateLimiter.Create<HttpContext, string>(
@@ -348,6 +375,36 @@ public static class RateLimitingExtensions
             return RateLimitPartition.GetNoLimiter(UnlimitedPartitionKey);
         }
 
+        return BuildWindowPartition(context, permitLimit, window);
+    }
+
+    /// <summary>
+    /// Builds the window partition for a request, without asking whether it is credential-bearing.
+    /// </summary>
+    /// <param name="context">The request being partitioned.</param>
+    /// <param name="permitLimit">Permits per window.</param>
+    /// <param name="window">Length of the window.</param>
+    /// <returns>A window partition keyed by the caller's observable address.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is what the two NAMED policies use, and the absence of a classification test here is the whole
+    /// point of separating it from <see cref="ResolveWindowPartition"/>. A named policy is reached only
+    /// because an action declared it, and that declaration is a statement that the action handles a
+    /// credential - so re-deriving the same conclusion from the request's path can only ever contradict the
+    /// author, which is exactly what it used to do.
+    /// </para>
+    /// <para>
+    /// The window does not queue. A caller who has spent the budget is told to wait rather than held open,
+    /// because holding a guessing attempt open consumes exactly the resources the limiter is protecting.
+    /// </para>
+    /// </remarks>
+    private static RateLimitPartition<string> BuildWindowPartition(
+        HttpContext context,
+        int permitLimit,
+        TimeSpan window)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
         return RateLimitPartition.GetFixedWindowLimiter(
             ResolveClientPartitionKey(context),
             _ => new FixedWindowRateLimiterOptions
@@ -394,15 +451,36 @@ public static class RateLimitingExtensions
     }
 
     /// <summary>
-    /// Reports whether a request can carry a credential.
+    /// Reports whether a request handles a credential.
     /// </summary>
     /// <param name="context">The request being classified.</param>
     /// <returns>
-    /// <see langword="true"/> when the method can carry a body and any whole path
-    /// segment names a credential concern.
+    /// <see langword="true"/> when the matched endpoint declares itself a credential endpoint, or when the
+    /// method can carry a body and any whole path segment names a credential concern.
     /// </returns>
+    /// <remarks>
+    /// <para>
+    /// METADATA IS ASKED FIRST, AND ITS ANSWER IS FINAL WHEN AFFIRMATIVE. The rate-limiting middleware is
+    /// ordered after routing, so the matched endpoint - and therefore
+    /// <see cref="CredentialEndpointAttribute"/> - is available here. A marked action is credential-bearing
+    /// whatever its path and whatever its method: the mark is a statement about what the action DOES, and no
+    /// property of the request can contradict it.
+    /// </para>
+    /// <para>
+    /// THE PATH MATCHER REMAINS AS A FALL-BACK RATHER THAN AS THE RULE. It still catches an endpoint whose
+    /// author forgot the mark, and it is the only classifier available for a request that matched no endpoint
+    /// at all. It is deliberately not narrowed now that the mark exists: a false match costs a bounded
+    /// endpoint that did not need bounding, while a miss costs an unbounded credential endpoint, and three
+    /// such misses are what this correction was written for.
+    /// </para>
+    /// </remarks>
     private static bool IsCredentialBearing(HttpContext context)
     {
+        if (context.GetEndpoint()?.Metadata.GetMetadata<CredentialEndpointAttribute>() is not null)
+        {
+            return true;
+        }
+
         if (!CredentialMethods.Contains(context.Request.Method, StringComparer.OrdinalIgnoreCase))
         {
             return false;

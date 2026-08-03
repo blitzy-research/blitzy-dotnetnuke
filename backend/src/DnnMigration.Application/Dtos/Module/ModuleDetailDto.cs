@@ -4,7 +4,7 @@ namespace DnnMigration.Application.Dtos.Module;
 
 /// <summary>
 /// The full state of one module instance, returned as the response body of
-/// <c>GET /api/v1/modules/{id}</c>. A boundary contract and nothing more: no navigation property, no
+/// <c>GET /api/v1/portals/{portalId}/modules/{moduleId}</c>. A boundary contract and nothing more: no navigation property, no
 /// tracked state, no behaviour and no domain entity, in either direction. It describes a single item,
 /// so it carries no paging envelope and no paging metadata - that envelope belongs to the listing
 /// endpoint, whose row shape is <see cref="ModuleListItemDto"/>.
@@ -69,7 +69,7 @@ namespace DnnMigration.Application.Dtos.Module;
 /// SETTINGS ARE NOT CARRIED HERE. Neither the module-scoped nor the placement-scoped key-value settings
 /// appear on this contract, and no map-valued member of any kind does. Both are genuine key-value tables
 /// and both are served by <see cref="ModuleSettingsDto"/> through
-/// <c>GET</c> and <c>PUT /api/v1/modules/{id}/settings</c>. Keeping them in their own contract is how the
+/// <c>GET</c> and <c>PUT /api/v1/portals/{portalId}/modules/{moduleId}/settings</c>. Keeping them in their own contract is how the
 /// target makes the module-versus-placement scope explicit, which is precisely what the legacy
 /// flattening hid.
 /// </para>
@@ -231,10 +231,12 @@ public sealed class ModuleDetailDto
     //   NULL", and that ALTER is the exact migration in which modules became portal-scoped and the
     //   foreign key tying them to pages was dropped, so a stored null is a real, reachable state. The
     //   semantic reason: dbo.Portals.PortalID is IDENTITY (-1, 1) (01.00.00 line 77), so -1 IS A REAL
-    //   PORTAL IDENTIFIER held by the first portal ever created - and it is simultaneously the value of
-    //   the legacy absent-integer sentinel. A null here means "not portal-scoped"; a -1 here means "the
-    //   portal whose identifier is -1". Those are DIFFERENT FACTS. Treating -1 as absence would
-    //   reassign every module of the first portal to no portal at all, and no mapper may do it.
+    //   PORTAL IDENTIFIER - it is the seed, the first value the column generates - and it is
+    //   simultaneously the value of the legacy absent-integer sentinel. The shipped default portal is a
+    //   separate row inserted with an explicit PortalID of 0 (01.00.00 line 7125), so 0 is a real portal
+    //   key too. A null here means "not portal-scoped"; a -1 here means "the portal whose identifier is
+    //   -1". Those are DIFFERENT FACTS. Treating -1 as absence would reassign every module of that portal
+    //   to no portal at all, and no mapper may do it.
     public int? PortalId { get; set; }
 
     /// <summary>

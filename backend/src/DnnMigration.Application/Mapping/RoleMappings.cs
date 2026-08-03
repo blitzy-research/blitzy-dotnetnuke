@@ -142,9 +142,9 @@ namespace DnnMigration.Application.Mapping;
 //
 // -------------------------------------------------------------------------------------------------
 // MIGRATION: RoleStatus is COMPUTED and NEVER PERSISTED, and it appears nowhere in this file.
-// UserRole.GetStatus(DateTime asOfUtc) derives it from the two bounds - treating both null AND
-// DateTime.MinValue as unset, reporting Expired when the expiry bound is already past, Pending when
-// the start bound is still future, Active otherwise, and Active for equality at either bound - and
+// UserRole.GetStatus(DateTime asOfUtc) derives it from the two bounds - treating a null, and only a
+// null, as unset, reporting Expired when the expiry bound is already past, Pending when the start
+// bound is still future, Active otherwise, and Active for equality at either bound - and
 // dbo.UserRoles has no column for it. No role contract exposes it, which is asserted rather than
 // assumed: RoleDetailDto declares exactly fourteen members and none of them is a status. It is
 // consumed where an authorisation question is actually being answered, in
@@ -206,14 +206,14 @@ public static class RoleMappings
     //     EditRoles.ascx.vb L232 assigned it from ambient page state - and the migrated route
     //     /api/v1/portals/{portalId}/roles/{roleId} already carries it. The list projection above
     //     omits it for the same reason, so the two role contracts stay consistent.
-    //   * The group's NAME and a member TALLY were both carried by an earlier revision of this
-    //     method, which took them as arguments because neither is a column on dbo.Roles. Their
-    //     removal is a behavioural improvement rather than a loss: the group name belongs to
+    //   * The group's NAME and a member TALLY are both deliberately absent, and neither may be
+    //     added as an argument - neither is a column on dbo.Roles. Their
+    //     absence is a behavioural improvement rather than a loss: the group name belongs to
     //     RoleGroupDto and the legacy editor resolved it client-side from the group drop-down it had
     //     already bound (BindGroups, EditRoles.ascx.vb L75-L78), while no legacy role screen showed
-    //     a member tally at all. Supplying them obliged the caller to issue two further reads per
-    //     single-role request - one for the group, one for the total of a one-row page of
-    //     assignments consulted purely for its count - so a detail read is now a single-row query.
+    //     a member tally at all. Supplying them would oblige the caller to issue two further reads
+    //     per single-role request - one for the group, one for the total of a one-row page of
+    //     assignments consulted purely for its count - whereas a detail read is a single-row query.
     //
     // MIGRATION: RoleGroupId is the ONE member in this file where the legacy -1 means "absent" and
     // therefore becomes null, and the asymmetry with PortalId is worth stating plainly because the
@@ -270,6 +270,54 @@ public static class RoleMappings
             PortalId = roleGroup.PortalId,
             RoleGroupName = roleGroup.RoleGroupName,
             Description = roleGroup.Description,
+        };
+    }
+
+    /// <summary>
+    /// Projects one role membership, together with the account and role it joins, into its wire contract.
+    /// </summary>
+    /// <param name="assignment">
+    /// The assignment to project. Its account and role navigations must both be loaded; the repository
+    /// read that answers this question materialises both, because the terminal statement projects columns
+    /// from all three tables in a single result set.
+    /// </param>
+    /// <returns>The membership contract.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="assignment"/> is null.
+    /// </exception>
+    /// <remarks>
+    /// The two dates are copied straight across with no coercion in either direction. That is the whole
+    /// substance of this projection, so it is worth being explicit about what is NOT done: a null is not
+    /// turned into a minimum date on the way out, and a minimum date is not turned into a null. The
+    /// legacy absence marker for a date was <c>Date.MinValue</c>, and reintroducing it here would hand a
+    /// consumer a value it must recognise as magic - the collision AAP Rule T7 exists to prevent. The
+    /// legacy screen's own renderer agrees: <c>SecurityRoles.ascx.vb</c> <c>FormatDate</c> answers the
+    /// empty string for an absent date rather than printing the sentinel.
+    /// </remarks>
+    // MIGRATION: the five columns of securityroles.ascx:L71-L86 plus the three keys a caller needs to
+    // act on the row. The account's display name is the value the legacy grid showed, projected by the
+    // terminal GetUserRolesByUsername statement as "U.DisplayName As FullName"; the login name is
+    // carried in addition, because the display name is not an identifier.
+    public static RoleMembershipDto ToMembership(UserRole assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+
+        // Both navigations are required rather than defaulted. A missing one means the caller used a read
+        // that did not compose them, and answering with an empty name would publish a row that looks
+        // complete and is not - so the failure is raised here, at the point that can still name the cause.
+        ArgumentNullException.ThrowIfNull(assignment.User);
+        ArgumentNullException.ThrowIfNull(assignment.Role);
+
+        return new RoleMembershipDto
+        {
+            UserRoleId = assignment.UserRoleId,
+            UserId = assignment.UserId,
+            Username = assignment.User.Username,
+            DisplayName = assignment.User.DisplayName,
+            RoleId = assignment.RoleId,
+            RoleName = assignment.Role.RoleName,
+            EffectiveDate = assignment.EffectiveDate,
+            ExpiryDate = assignment.ExpiryDate,
         };
     }
 
@@ -522,9 +570,11 @@ public static class RoleMappings
     // MIGRATION: NullDate is DateTime.MinValue (Null.vb L66), and Null.IsNull compared DATE PARTS
     // ONLY - "objDate.Date.Equals(NullDate.Date)" at L224 - so any legacy DateTime falling on
     // 0001-01-01 was treated as unset REGARDLESS OF ITS TIME COMPONENT. Both bounds here are
-    // DateTime?, so "unset" is expressed by null; the domain's UserRole.GetStatus continues to
-    // honour DateTime.MinValue as unset as well, which is what preserves the legacy reading for rows
-    // that already hold the marker. This method neither classifies nor normalises: it assigns.
+    // DateTime?, so "unset" is expressed by null and by nothing else. Reading the marker as absence is
+    // the job of the two boundaries that own it, both of which compare date parts exactly as Null.vb
+    // did: RoleService interprets a submitted marker, and RoleRepository discards one before staging a
+    // row. The Domain classifier recognises no marker at all. This method neither classifies nor
+    // normalises: it assigns.
     public static void ApplyAssignmentUpdate(
         UserRole assignment,
         DateTime? effectiveDate,

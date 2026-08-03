@@ -35,6 +35,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Application.Services;
 
@@ -78,6 +79,18 @@ public sealed class ModuleService : IModuleService
     /// Reported when the addressed module does not exist in the portal.
     /// </summary>
     private const string NotFoundCode = "module.not_found";
+
+    /// <summary>
+    /// Reported when the caller holds no edit grant on the page or module a mutation targets.
+    /// </summary>
+    /// <remarks>
+    /// The <c>forbidden</c> token is what the shared status translator classifies as a 403, so the code
+    /// itself - rather than a status written out at a call site - is what decides how this refusal reaches
+    /// the caller. The message names the target but never says WHY the grant is missing, and a target that
+    /// does not exist produces this same refusal rather than a not-found: distinguishing the two would tell
+    /// an unauthorised caller which identifiers exist.
+    /// </remarks>
+    private const string EditForbiddenCode = "module.edit_forbidden";
 
     /// <summary>
     /// Reported when the named definition does not exist or is not available to the portal.
@@ -128,7 +141,7 @@ public sealed class ModuleService : IModuleService
     /// terminal schema.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: <b>the width is 2000, and an earlier revision of this constant said 256.</b> The
+    /// MIGRATION: <b>the width is 2000, not 256.</b> The
     /// 01.00.00 create script did declare <c>nvarchar(256)</c> at line 353, but the later chain does
     /// widen it: <c>01.00.08.SqlDataProvider</c> lines 6248-6286 destroy and rebuild the whole table
     /// through a <c>Tmp_ModuleSettings</c> copy declaring <c>SettingValue nvarchar(2000) NOT NULL</c>
@@ -146,6 +159,60 @@ public sealed class ModuleService : IModuleService
     /// the 03.00.01 create script.
     /// </summary>
     private const int PlacementSettingValueMaximumLength = 2000;
+
+    /// <summary>
+    /// The submitted position that means "put this module at the bottom of its pane" rather than
+    /// naming a position.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this value is a COMMAND on the request contract and must never reach a column. The
+    /// legacy documentation states it outright - <c>UpdateModuleOrder</c>'s own parameter comment reads
+    /// "position within the controls list on page, -1 if to be added at the end"
+    /// (ModuleController.vb:L1155) - and the legacy code acted on it as a command in two places, both
+    /// immediately after writing the row: <c>AddModule</c> tested
+    /// <c>If objModule.ModuleOrder = -1 Then UpdateModuleOrder(...)</c> (L667-L669) and
+    /// <c>UpdateModule</c> called the same resolver unconditionally (L1124). The number is the integer
+    /// absence sentinel from <c>Library/Components/Shared/Null.vb</c> L41 being reused as an
+    /// instruction, which is why it must be consumed by this layer rather than mapped onto the column
+    /// like an ordinary value: persisted literally it would sort every appended module ahead of every
+    /// deliberately positioned one, since the stored positions are non-negative.
+    /// </remarks>
+    private const int AppendPositionSentinel = -1;
+
+    /// <summary>
+    /// The gap the legacy renumbering pass left between two adjacent positions in one pane.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: measured, not chosen. <c>UpdateModuleOrder</c> resolved an append by reading the
+    /// pane's occupied positions and then adding exactly two (ModuleController.vb:L1170), and the
+    /// renumbering pass that normalises a pane assigns <c>(counter * 2) - 1</c> (L1205 and L1441). The
+    /// step of two is therefore what keeps an appended module's position on the same odd sequence a
+    /// renumbering pass produces, leaving the even numbers between them free for an insertion. A step
+    /// of one would appear to work and would quietly collide with the next renumbering.
+    /// </remarks>
+    private const int PositionStep = 2;
+
+    /// <summary>
+    /// Largest number of settings either scope may carry in one submission.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: a net-new bound with no legacy counterpart, and generous by design: seventy-two distinct
+    /// setting names exist across EVERY bundled module in the whole legacy application, so this admits more
+    /// than three times that vocabulary for a single module. It bounds row growth and transaction size, not
+    /// any real configuration. The request validator states the same figure so a caller reached through the
+    /// API gets a field-level answer; this copy covers every other caller, and the two must agree.
+    /// </remarks>
+    private const int SettingsPerScopeMaximum = 250;
+
+    /// <summary>
+    /// Largest number of settings the two scopes may carry between them in one submission.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: deliberately lower than twice the per-scope bound, so that it binds when both maps are
+    /// large rather than being implied by them. This is the figure that bounds one transaction's row count,
+    /// which the per-scope bounds alone do not protect. Mirrored by the request validator.
+    /// </remarks>
+    private const int SettingsAggregateMaximum = 400;
 
     /// <summary>
     /// Friendly name of the module instance that holds a portal's own settings rows.
@@ -205,6 +272,12 @@ public sealed class ModuleService : IModuleService
     private const int UnpagedPageSize = 0;
 
     /// <summary>
+    /// Property the module listing orders by when a caller names none, reproducing the order the legacy
+    /// module settings screen presented.
+    /// </summary>
+    private const string DefaultModuleSortProperty = "ModuleTitle";
+
+    /// <summary>
     /// Attribution used when an import arrives without an authenticated caller.
     /// </summary>
     /// <remarks>
@@ -221,6 +294,7 @@ public sealed class ModuleService : IModuleService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
     private readonly ICurrentUser _currentUser;
+    private readonly IPermissionService _permissions;
     private readonly IModuleBusinessControllerFactory _businessControllers;
     private readonly CachingOptions _caching;
 
@@ -233,7 +307,15 @@ public sealed class ModuleService : IModuleService
     /// <param name="portals">Portal existence and the administrative page identifier.</param>
     /// <param name="unitOfWork">The single commit point for every write below.</param>
     /// <param name="cache">Cache reads and invalidation.</param>
-    /// <param name="currentUser">Attribution for a content import.</param>
+    /// <param name="currentUser">
+    /// The caller. Used for attribution on a content import and, on the two mutations whose target is named
+    /// in the request body rather than in the route, as the subject of the permission question below.
+    /// </param>
+    /// <param name="permissions">
+    /// Evaluates whether the caller may edit the page a module is being created on, or the module content is
+    /// being imported into. Those two targets arrive in the request BODY, so no route-based authorisation
+    /// policy can reach them and the check has to happen here, after binding.
+    /// </param>
     /// <param name="businessControllers">Resolution of a module's own portable-content contract.</param>
     /// <param name="caching">Bound caching configuration supplying the performance multiplier.</param>
     public ModuleService(
@@ -244,6 +326,7 @@ public sealed class ModuleService : IModuleService
         IUnitOfWork unitOfWork,
         ICacheService cache,
         ICurrentUser currentUser,
+        IPermissionService permissions,
         IModuleBusinessControllerFactory businessControllers,
         CachingOptions caching)
     {
@@ -254,6 +337,7 @@ public sealed class ModuleService : IModuleService
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _businessControllers = businessControllers ?? throw new ArgumentNullException(nameof(businessControllers));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
     }
@@ -274,10 +358,14 @@ public sealed class ModuleService : IModuleService
     /// in the portal. That trade is recorded here rather than hidden.
     /// </para>
     /// <para>
-    /// Ordering is fixed at page, then position within the page, then placement identifier. The
-    /// repository contract declares no sort parameter, so a sort field on the request cannot be
-    /// honoured; sorting the returned page in memory would order only the rows in hand and misreport
-    /// the sequence, so it is deliberately not done.
+    /// Ordering is fixed: modules by title then key, and within each module its placements by page,
+    /// then position, then placement identifier. It is not caller-selectable, and a request that names
+    /// an ordering is REFUSED with <c>module.request_invalid</c> rather than accepted and ignored -
+    /// accepting it would return a page the caller believes was ordered and cannot tell was not. The
+    /// refusal is structural rather than a limitation of the read: the page window is taken over
+    /// modules while each module contributes one row per placement, so any ordering could only apply to
+    /// the modules behind the rows, never to the rows returned. <c>SortableFields.Modules</c> records
+    /// the measurement and enumerates every excluded member of the projection.
     /// </para>
     /// </remarks>
     public async Task<Result<PagedResult<ModuleListItemDto>>> ListModulesAsync(
@@ -387,10 +475,7 @@ public sealed class ModuleService : IModuleService
                 && module.ModuleTitle.Contains(wanted, StringComparison.OrdinalIgnoreCase));
         }
 
-        List<Module> ordered = candidates
-            .OrderBy(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(module => module.ModuleId)
-            .ToList();
+        List<Module> ordered = ApplyOrder(candidates, request).ToList();
 
         if (request.PageSize == UnpagedPageSize)
         {
@@ -398,11 +483,74 @@ public sealed class ModuleService : IModuleService
         }
 
         List<Module> window = ordered
-            .Skip(request.PageIndex * request.PageSize)
+            .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
             .Take(request.PageSize)
             .ToList();
 
         return PagedResult<Module>.Create(window, ordered.Count, request.PageIndex, request.PageSize);
+    }
+
+    /// <summary>
+    /// Applies the caller's chosen ordering to the narrowed module set, before the page is taken.
+    /// </summary>
+    /// <param name="candidates">The modules that survived the deletion, page and title filters.</param>
+    /// <param name="request">The paging request carrying the sort field and its direction.</param>
+    /// <returns>The ordered module set.</returns>
+    /// <remarks>
+    /// An ordering is applied unconditionally, including when the caller names nothing and when the
+    /// caller names something this listing does not recognise, and every ordering ends on the primary key
+    /// so the order is total. Ordering happens here rather than after the page has been taken, because a
+    /// listing that ordered a page it had already cut would only be re-ordering the rows that one
+    /// arbitrary page happened to contain.
+    /// </remarks>
+    // MIGRATION: the arms below are exactly the five names the boundary admits for this collection,
+    // declared as Modules in Application/Validation/SortableFields.cs and enforced by the sealed
+    // ModulePagedRequestValidator, and each one is a projected member of ModuleListItemDto. That
+    // correspondence has to hold in both directions: a name the boundary admits without an arm here is a
+    // field the listing accepts and then ignores, and an arm without a permitted name is unreachable.
+    //
+    // Two members of the projection are deliberately NOT sortable, and their absence is measured rather
+    // than accidental. ModuleOrder is a per-pane placement position rather than a listing order: it is a
+    // column of dbo.TabModules and not of dbo.Modules, it is only meaningful within one pane of one page,
+    // and it carries the append sentinel -1 - so ordering a cross-page module listing by it would sort
+    // unrelated positions against each other and put every pending append first. DisplayTitle is derived
+    // at projection time from the module title and its definition's friendly name, so it exists only
+    // after this ordering has run; sorting by it would require the derivation to move into the read.
+    //
+    // The default arm reproduces the order this listing has always had, the module title compared
+    // case-insensitively. Note that ModuleTitle is nullable, so an untitled module sorts first ascending
+    // and last descending; that is the framework comparer's own behaviour and is left as it is, because
+    // grouping the untitled modules together at one end is the only ordering that carries information.
+    private static IEnumerable<Module> ApplyOrder(IEnumerable<Module> candidates, PagedRequest request)
+    {
+        bool descending = request.SortDir == SortDirection.Descending;
+        string property = request.HasSort ? request.SortBy!.Trim() : DefaultModuleSortProperty;
+
+        return property.ToUpperInvariant() switch
+        {
+            "MODULEID" => descending
+                ? candidates.OrderByDescending(module => module.ModuleId)
+                : candidates.OrderBy(module => module.ModuleId),
+            "ISDELETED" => descending
+                ? candidates.OrderByDescending(module => module.IsDeleted)
+                    .ThenByDescending(module => module.ModuleId)
+                : candidates.OrderBy(module => module.IsDeleted).ThenBy(module => module.ModuleId),
+            "STARTDATE" => descending
+                ? candidates.OrderByDescending(module => module.StartDate)
+                    .ThenByDescending(module => module.ModuleId)
+                : candidates.OrderBy(module => module.StartDate).ThenBy(module => module.ModuleId),
+            "ENDDATE" => descending
+                ? candidates.OrderByDescending(module => module.EndDate)
+                    .ThenByDescending(module => module.ModuleId)
+                : candidates.OrderBy(module => module.EndDate).ThenBy(module => module.ModuleId),
+            _ => descending
+                ? candidates
+                    .OrderByDescending(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
+                    .ThenByDescending(module => module.ModuleId)
+                : candidates
+                    .OrderBy(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(module => module.ModuleId),
+        };
     }
 
     /// <inheritdoc />
@@ -503,8 +651,31 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Page {request.TabId} does not belong to portal {portalId}."));
         }
 
+        // The caller must hold the edit grant on the page they are placing a module on. Verified here rather
+        // than by a policy because the page arrives in the BODY, which no route-reading policy can see - and
+        // verified at all because it previously was not: tenant ownership was checked and the permission was
+        // not, so any authenticated caller could place a module on any tenant's page. When the request also
+        // asks for every page, the grant on the addressed page is what authorises the fan-out, exactly as the
+        // legacy screen's "all pages" switch was reached from one page already in edit mode.
+        if (await EnsureMayEditPageAsync(portalId, request.TabId, cancellationToken).ConfigureAwait(false)
+            is ResultReason forbidden)
+        {
+            return Result<ModuleDetailDto>.Failure(forbidden);
+        }
+
         Module module = ModuleMappings.ToNewModule(portalId, request);
         TabModule placement = ModuleMappings.ToNewPlacement(request);
+
+        // The submitted position may be the append instruction rather than a position, and the mapping
+        // carries it through verbatim because a mapping cannot read the pane it would have to resolve
+        // against. It is resolved here, before anything is staged, so the instruction is consumed by this
+        // layer and never reaches the column.
+        placement.ModuleOrder = await ResolvePositionAsync(
+            placement.TabId,
+            placement.PaneName,
+            request.ModuleOrder,
+            cancellationToken).ConfigureAwait(false);
+
         module.TabModules.Add(placement);
 
         var affectedTabIds = new HashSet<int> { placement.TabId };
@@ -520,6 +691,18 @@ public sealed class ModuleService : IModuleService
 
                 TabModule additional = ModuleMappings.ToNewPlacement(request);
                 additional.TabId = target.TabId;
+
+                // Resolved against the TARGET page's pane rather than copied from the addressed one,
+                // because the legacy resolver was keyed on (TabId, PaneName): appending to one pane says
+                // nothing about where the bottom of another page's pane is. No two placements created
+                // here share a page, so each read sees a settled pane even though none of them is saved
+                // yet.
+                additional.ModuleOrder = await ResolvePositionAsync(
+                    target.TabId,
+                    additional.PaneName,
+                    request.ModuleOrder,
+                    cancellationToken).ConfigureAwait(false);
+
                 module.TabModules.Add(additional);
                 affectedTabIds.Add(target.TabId);
             }
@@ -595,13 +778,29 @@ public sealed class ModuleService : IModuleService
         bool wasPlacedEverywhere = module.AllTabs;
         ModuleMappings.ApplyUpdate(module, placement, request);
 
+        // The projection above assigned the submitted position verbatim, which may be the append
+        // instruction. Resolving it here - after the projection and before the fan-out below - is what
+        // stops the instruction reaching the column and stops it being copied onto every other page as
+        // though it were a position. The stored pane is used, because the update contract carries no
+        // pane and the projection deliberately leaves the column alone.
+        placement.ModuleOrder = await ResolvePositionAsync(
+            placement.TabId,
+            placement.PaneName,
+            request.ModuleOrder,
+            cancellationToken).ConfigureAwait(false);
+
         var affectedTabIds = new HashSet<int> { placement.TabId };
         var effects = new List<string>();
 
         if (!wasPlacedEverywhere && module.AllTabs)
         {
-            int added = await PlaceOnContentTabsAsync(portalId, module, placement, affectedTabIds, cancellationToken)
-                .ConfigureAwait(false);
+            int added = await PlaceOnContentTabsAsync(
+                portalId,
+                module,
+                placement,
+                request.ModuleOrder,
+                affectedTabIds,
+                cancellationToken).ConfigureAwait(false);
             if (added > 0)
             {
                 effects.Add(FormattableString.Invariant($"placed on {added} further page(s)"));
@@ -801,8 +1000,49 @@ public sealed class ModuleService : IModuleService
         IReadOnlyDictionary<string, string> tabModuleSettings,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(moduleSettings);
-        ArgumentNullException.ThrowIfNull(tabModuleSettings);
+        // MIGRATION: an absent map is REFUSED rather than thrown on. Both members are non-nullable
+        // reference types carrying an initialiser on the request contract, which makes null look
+        // unreachable - but an initialiser only runs when the deserialiser does not assign, and a body
+        // carrying an explicit null assigns over it. Throwing here turned a syntactically valid body into
+        // a server fault; the caller is now told which map is missing. The request validator states the
+        // same rule at the edge, and this remains as defence in depth for callers it does not front.
+        if (moduleSettings is null)
+        {
+            return Result.Failure(
+                SettingInvalidCode,
+                "The module settings map is required. Send an empty map to clear every module setting.");
+        }
+
+        if (tabModuleSettings is null)
+        {
+            return Result.Failure(
+                SettingInvalidCode,
+                "The placement settings map is required. Send an empty map to clear every placement "
+                + "setting.");
+        }
+
+        // MIGRATION: cardinality is bounded before anything is read or written. Every setting name and
+        // value was already bounded individually, but nothing bounded the COUNT, and the two limits
+        // multiply: a body well inside the request size limit can carry tens of thousands of short
+        // settings, each becoming a tracked entity and a row in one transaction. The bound is checked
+        // against the two maps together as well as separately, because the transaction spans both.
+        if (moduleSettings.Count > SettingsPerScopeMaximum
+            || tabModuleSettings.Count > SettingsPerScopeMaximum)
+        {
+            return Result.Failure(
+                SettingInvalidCode,
+                FormattableString.Invariant(
+                    $"A settings map must carry no more than {SettingsPerScopeMaximum} entries."));
+        }
+
+        if (moduleSettings.Count + tabModuleSettings.Count > SettingsAggregateMaximum)
+        {
+            return Result.Failure(
+                SettingInvalidCode,
+                FormattableString.Invariant(
+                    $"The two settings maps must carry no more than {SettingsAggregateMaximum} entries")
+                + " between them.");
+        }
 
         Module? module = await _modules
             .GetByIdAsync(moduleId, cancellationToken)
@@ -1009,6 +1249,69 @@ public sealed class ModuleService : IModuleService
 
     /// <inheritdoc />
     /// <remarks>
+    /// Answered by NARROWING THE CATALOGUE rather than by reading the definition directly, and the choice
+    /// is load-bearing. The catalogue read applies the premium-module rule - a definition is available to a
+    /// portal only when its package is not premium or has been granted to that portal - and a direct
+    /// repository read by identifier applies nothing at all. Re-implementing the rule here would place a
+    /// second copy of it beside the first, and the two copies would eventually disagree about which
+    /// definitions a tenant may see, which is a tenant-isolation defect rather than a cosmetic one. It also
+    /// reuses the catalogue's cache entry, so a by-identifier read costs no database round trip once the
+    /// catalogue is warm; the catalogue is small, bounded reference data written only by installation.
+    /// </remarks>
+    public async Task<Result<ModuleDefinitionDto?>> GetModuleDefinitionAsync(
+        int portalId,
+        int moduleDefinitionId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<IReadOnlyList<ModuleDefinitionDto>> catalogue = await this
+            .ListModuleDefinitionsAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (catalogue.IsFailure)
+        {
+            return Result<ModuleDefinitionDto?>.Failure(catalogue.Error!);
+        }
+
+        // A definition the portal cannot instantiate is reported as ABSENT rather than refused, so the
+        // endpoint cannot be used to discover which definitions exist elsewhere in the installation: a
+        // caller cannot tell "no such definition" from "not yours" and therefore learns nothing either way.
+        ModuleDefinitionDto? definition = catalogue.Value
+            .FirstOrDefault(candidate => candidate.ModuleDefId == moduleDefinitionId);
+
+        return Result<ModuleDefinitionDto?>.Success(definition);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Narrows the catalogue for the same reason the single-definition read above does, and consequently
+    /// preserves the catalogue's ordering - friendly name, then identifier - rather than imposing an order
+    /// of its own. A package that declares nothing, or that the portal has not been granted, yields an
+    /// empty sequence, which is a legitimate answer: the caller asked a question with a negative answer
+    /// rather than asking an invalid question.
+    /// </remarks>
+    public async Task<Result<IReadOnlyList<ModuleDefinitionDto>>> ListDesktopModuleDefinitionsAsync(
+        int portalId,
+        int desktopModuleId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<IReadOnlyList<ModuleDefinitionDto>> catalogue = await this
+            .ListModuleDefinitionsAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (catalogue.IsFailure)
+        {
+            return catalogue;
+        }
+
+        IReadOnlyList<ModuleDefinitionDto> declared = catalogue.Value
+            .Where(candidate => candidate.DesktopModuleId == desktopModuleId)
+            .ToList();
+
+        return Result<IReadOnlyList<ModuleDefinitionDto>>.Success(declared);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// <para>
     /// Portability is decided by the stored capability bit field, which is what the legacy export path
     /// tested: <c>objModule.BusinessControllerClass &lt;&gt; "" And objModule.IsPortable</c>
@@ -1130,6 +1433,15 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Module {request.ModuleId} does not exist in portal {portalId}."));
         }
 
+        // The caller must hold the edit grant on the module whose content they are replacing. Verified here
+        // for the same reason as on creation - the target arrives in the BODY - and verified at all because it
+        // previously was not, so any authenticated caller could overwrite any tenant's module content.
+        if (await EnsureMayEditModuleAsync(portalId, request.ModuleId, cancellationToken).ConfigureAwait(false)
+            is ResultReason forbidden)
+        {
+            return Result.Failure(forbidden);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Content))
         {
             return Result.Failure(ContentInvalidCode, "The submitted document is empty.");
@@ -1200,6 +1512,98 @@ public sealed class ModuleService : IModuleService
     }
 
     /// <summary>
+    /// Confirms that the caller may edit a page, which is what placing a module on it requires.
+    /// </summary>
+    /// <param name="portalId">The tenant the page belongs to.</param>
+    /// <param name="tabId">The page a module is being created on.</param>
+    /// <param name="cancellationToken">Abandons the reads when the caller disconnects.</param>
+    /// <returns>The reason the caller may not, or <see langword="null"/> when they may.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS CHECK LIVES HERE AND NOT IN A POLICY. Every other module mutation names its module in the
+    /// route, so a route-reading authorisation policy can evaluate a permission against it before the action
+    /// runs. Creation does not: the page it targets arrives in the request BODY, which no policy can read,
+    /// and there is no module yet to evaluate against. The check therefore has to be performed after binding,
+    /// and the only layer holding both the caller and the permission evaluator is this one.
+    /// </para>
+    /// <para>
+    /// WHAT IT WAS BEFORE. Creation carried the bare authentication requirement, and this service's own
+    /// commentary asserted that the service performed the check. It did not - it verified only that the page
+    /// belonged to the tenant - so any authenticated caller could place a module on any page of any tenant.
+    /// The assertion is now true.
+    /// </para>
+    /// <para>
+    /// EDIT ON THE PAGE IS THE LEGACY RULE. The legacy module-settings screen was reachable only from a page
+    /// already in edit mode, which required the edit permission on that page, and the permission service
+    /// answers a host account affirmatively before reading a grant - so a host account is admitted exactly as
+    /// it is everywhere else. A refusal and a page that does not exist produce the SAME answer, because
+    /// telling an unauthorised caller which page identifiers exist is an enumeration oracle.
+    /// </para>
+    /// <para>
+    /// NO IMPLICIT PORTAL-ADMINISTRATOR ARM, DELIBERATELY. Admitting a portal administrator here regardless of
+    /// grants was considered and rejected on two grounds. Legacy
+    /// <c>Library/Components/Security/PortalSecurity.vb</c> L123 short-circuits on <c>IsSuperUser</c> ALONE and
+    /// admits every other caller only through a real grant or a pseudo-role, so an implicit administrator arm
+    /// would be a widening rather than a port; and the sibling update, delete and settings endpoints are gated
+    /// on the module edit policy, which likewise delegates wholly to <see cref="IPermissionService"/>. Adding
+    /// the arm on creation alone would make placing a module easier than editing the one just placed. A portal
+    /// administrator that should be able to place modules is granted the page edit permission, which is what
+    /// the permissions resource exists to do.
+    /// </para>
+    /// </remarks>
+    private async Task<ResultReason?> EnsureMayEditPageAsync(
+        int portalId,
+        int tabId,
+        CancellationToken cancellationToken)
+    {
+        Result<bool> granted = await _permissions
+            .HasTabPermissionAsync(portalId, _currentUser.UserId, tabId, PermissionKey.EDIT, cancellationToken)
+            .ConfigureAwait(false);
+
+        return granted.IsSuccess && granted.Value
+            ? null
+            : new ResultReason(
+                EditForbiddenCode,
+                FormattableString.Invariant(
+                    $"The caller may not place a module on page {tabId} in portal {portalId}."));
+    }
+
+    /// <summary>
+    /// Confirms that the caller may edit a module, which is what importing content into it requires.
+    /// </summary>
+    /// <param name="portalId">The tenant the module belongs to.</param>
+    /// <param name="moduleId">The module content is being imported into.</param>
+    /// <param name="cancellationToken">Abandons the reads when the caller disconnects.</param>
+    /// <returns>The reason the caller may not, or <see langword="null"/> when they may.</returns>
+    /// <remarks>
+    /// The import's target arrives in the request body - the legacy import page chose it from a list on the
+    /// form - so, exactly as for creation, no route-reading policy can reach it and the check belongs here.
+    /// Import replaces a module's stored content, so the permission required is the module edit key, the same
+    /// one the update and delete endpoints are gated on.
+    /// </remarks>
+    private async Task<ResultReason?> EnsureMayEditModuleAsync(
+        int portalId,
+        int moduleId,
+        CancellationToken cancellationToken)
+    {
+        Result<bool> granted = await _permissions
+            .HasModulePermissionAsync(
+                portalId,
+                _currentUser.UserId,
+                moduleId,
+                PermissionKey.EDIT,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return granted.IsSuccess && granted.Value
+            ? null
+            : new ResultReason(
+                EditForbiddenCode,
+                FormattableString.Invariant(
+                    $"The caller may not import content into module {moduleId} in portal {portalId}."));
+    }
+
+    /// <summary>
     /// Rejects a paging request whose bounds no validator can have accepted.
     /// </summary>
     /// <param name="request">The submitted paging request.</param>
@@ -1230,6 +1634,29 @@ public sealed class ModuleService : IModuleService
                 RequestInvalidCode,
                 FormattableString.Invariant(
                     $"The search text must not exceed {PagedRequestValidator.QueryMaximumLength} characters."));
+        }
+
+        // MIGRATION: the PER-COLLECTION ordering set is enforced HERE, against this collection's own set
+        // rather than against the union. The shared request validator applies nothing narrower than the
+        // union of every collection's set - one PagedRequest contract serves every listing and one
+        // validator is resolved for it - so a portal-only, role-only or account-only field name would
+        // otherwise be accepted here and then silently discarded, which returns a page the caller cannot
+        // account for and cannot detect. Refusing states that plainly.
+        //
+        // SortableFields.Modules holds exactly the five names ApplyOrder has an arm for, and that
+        // correspondence is the point: a name admitted here without an arm is a field the listing accepts
+        // and ignores, and an arm without an admitted name is unreachable. The ordering is applied to the
+        // modules BEFORE the page window is taken, so it orders the collection rather than re-sorting one
+        // arbitrary page - and because each module contributes its placement rows together, the rows are
+        // returned in the module order the caller asked for. The projection's two remaining members are
+        // refused rather than faked, for the reasons recorded on ApplyOrder: a placement position is not a
+        // listing order, and a title derived at projection time does not exist until after the ordering
+        // has run.
+        if (!SortableFields.IsPermittedFor(request.SortBy, SortableFields.Modules))
+        {
+            return new ResultReason(
+                RequestInvalidCode,
+                FormattableString.Invariant($"Modules cannot be ordered by '{request.SortBy}'."));
         }
 
         return null;
@@ -1492,18 +1919,98 @@ public sealed class ModuleService : IModuleService
             && (tab.TabId == administrationTabId || tab.ParentId == administrationTabId);
 
     /// <summary>
+    /// Turns a submitted position into the position that is actually stored, resolving the append
+    /// instruction against the pane it is being appended to.
+    /// </summary>
+    /// <param name="tabId">The page whose pane is being positioned within.</param>
+    /// <param name="paneName">The pane being positioned within.</param>
+    /// <param name="requested">The position the caller submitted, which may be the append instruction.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>
+    /// <paramref name="requested"/> unchanged when it names a position, or the next position at the
+    /// bottom of the pane when it is the append instruction.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this reproduces <c>ModuleController.UpdateModuleOrder</c> (ModuleController.vb:L1160-L1173),
+    /// which read the pane's occupied positions through <c>GetTabModuleOrder(TabId, PaneName)</c> and
+    /// added the step. An EMPTY pane yields position one, and that is the legacy arithmetic rather than a
+    /// special case invented here: the legacy loop left its variable at the incoming -1 when the reader
+    /// returned no rows and then added two, so -1 + 2 = 1. The same subtraction is reproduced by seeding
+    /// the running maximum with the sentinel, so one expression covers both the empty and the occupied
+    /// pane exactly as the legacy one did.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the resolution happens BEFORE the row is written, whereas the legacy resolved it
+    /// immediately AFTER writing the row and then issued a second statement to correct it. The outcome
+    /// stored is identical and the sentinel is never durable in either arrangement; doing it first
+    /// removes a write and, more importantly, removes the window in which a concurrent reader could
+    /// observe the sentinel as though it were a position.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the running maximum is taken with <c>Max</c> rather than by reading the last row the
+    /// repository returns. The legacy loop took the last row read and relied entirely on the
+    /// procedure's <c>order by ModuleOrder</c> (03.00.01.SqlDataProvider:L495-L507) to make that row the
+    /// greatest, which the repository's own ordering reproduces - so the two agree today. Taking the
+    /// maximum explicitly states what the value has to be, and cannot be broken later by a change to an
+    /// ordering that no longer looks load-bearing.
+    /// </para>
+    /// <para>
+    /// The read is per pane and per page, because that is the key the legacy resolver took. Two
+    /// placements of one module on two different pages therefore each land at the bottom of their own
+    /// pane rather than sharing a position computed for one of them.
+    /// </para>
+    /// </remarks>
+    private async Task<int> ResolvePositionAsync(
+        int tabId,
+        string paneName,
+        int requested,
+        CancellationToken cancellationToken)
+    {
+        if (requested != AppendPositionSentinel)
+        {
+            return requested;
+        }
+
+        IReadOnlyList<TabModule> occupied = await _modules
+            .GetTabModuleOrderAsync(tabId, paneName, cancellationToken)
+            .ConfigureAwait(false);
+
+        int highest = occupied.Count == 0
+            ? AppendPositionSentinel
+            : occupied.Max(placement => placement.ModuleOrder);
+
+        return highest + PositionStep;
+    }
+
+    /// <summary>
     /// Places a module on every content page it is missing from.
     /// </summary>
     /// <param name="portalId">The portal being fanned out across.</param>
     /// <param name="module">The module being placed.</param>
     /// <param name="template">The placement whose settings the new placements copy.</param>
+    /// <param name="requestedPosition">
+    /// The position the caller submitted, forwarded unresolved so that an append instruction is resolved
+    /// against each target page's own pane rather than reusing the position computed for the addressed
+    /// page. When the caller named a position instead, every new placement takes that position, which is
+    /// what copying a template means.
+    /// </param>
     /// <param name="affectedTabIds">Set collecting the pages whose caches must be dropped.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The number of placements added.</returns>
+    /// <remarks>
+    /// MIGRATION - discovered legacy defect, not inherited. The legacy copy-to-another-page path passed
+    /// the append instruction straight to the insert under the comment "Add a copy of the module to the
+    /// bottom of the Pane for the new Tab" (ModuleController.vb:L712) and then, unlike both the add and
+    /// the update paths, never called the resolver - so the sentinel stayed in the row until some later
+    /// renumbering of that page happened to overwrite it. The stated intent is honoured here and the
+    /// omission is not reproduced.
+    /// </remarks>
     private async Task<int> PlaceOnContentTabsAsync(
         int portalId,
         Module module,
         TabModule template,
+        int requestedPosition,
         ISet<int> affectedTabIds,
         CancellationToken cancellationToken)
     {
@@ -1520,6 +2027,12 @@ public sealed class ModuleService : IModuleService
                 continue;
             }
 
+            int position = await ResolvePositionAsync(
+                target.TabId,
+                template.PaneName,
+                requestedPosition,
+                cancellationToken).ConfigureAwait(false);
+
             await _modules
                 .AddTabModuleAsync(
                     new TabModule
@@ -1527,7 +2040,7 @@ public sealed class ModuleService : IModuleService
                         TabId = target.TabId,
                         ModuleId = module.ModuleId,
                         PaneName = template.PaneName,
-                        ModuleOrder = template.ModuleOrder,
+                        ModuleOrder = position,
                         CacheTime = template.CacheTime,
                         Alignment = template.Alignment,
                         Color = template.Color,

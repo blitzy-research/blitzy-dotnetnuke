@@ -95,13 +95,23 @@ export interface LoginResponse {
    */
   readonly passwordExpiring: boolean;
 
-  /**
-   * Whether the caller must complete or correct their profile before continuing.
+  /*
+   * MIGRATION: there is deliberately no `mustUpdateProfile` member, and the reason
+   * is a scope decision rather than the absence of a producer. The server DOES now
+   * send the flag — it is decided by the account-administration vertical, which
+   * owns the tenant's profile-property definitions and the per-tenant gate the
+   * legacy flow read — and an earlier revision of this note said otherwise, which
+   * was true of the tree before that producer existed and is not true now.
    *
-   * BLOCKING. The legacy flow sent this case to a different step rather than to
-   * the credential interstitial.
+   * It is not declared here because nothing in this application consumes it: the
+   * legacy flow sent this one advisory to a DIFFERENT step rather than to the
+   * credential interstitial, and no such step exists here. Declaring an advisory
+   * with no screen behind it would put a signal into stored session state that
+   * nothing can act on, which is the mirror image of the false capability signal
+   * the server-side member was corrected for. An extra property on the wire is
+   * ignored, so nothing is lost by omitting it, and adding it is a one-line change
+   * on the day a profile-completion step is built.
    */
-  readonly mustUpdateProfile: boolean;
 
   /** The signed-in identity, including the roles and permissions it holds. */
   readonly user: CurrentUser;
@@ -169,17 +179,16 @@ export interface AuthSession {
   readonly refreshToken: string;
   readonly mustChangePassword: boolean;
   readonly passwordExpiring: boolean;
-  readonly mustUpdateProfile: boolean;
   readonly user: CurrentUser;
 }
 
 /**
  * Projects a login or refresh response into the session shape that is kept.
  *
- * The three advisory booleans are kept alongside the pair so that a reload does
- * not lose a prompt the caller has not yet acted on. They stay plain booleans
- * rather than optional ones: `false` means "no advisory" and is always present on
- * the wire, so there is no third state to model.
+ * Both advisory booleans are kept alongside the pair so that a reload does not
+ * lose a prompt the caller has not yet acted on. They stay plain booleans rather
+ * than optional ones: `false` means "no advisory" and is always present on the
+ * wire, so there is no third state to model.
  *
  * @param response A successful login or refresh response.
  * @returns The session to store.
@@ -191,7 +200,6 @@ export function sessionFromLoginResponse(response: LoginResponse): AuthSession {
     refreshToken: response.refreshToken,
     mustChangePassword: response.mustChangePassword,
     passwordExpiring: response.passwordExpiring,
-    mustUpdateProfile: response.mustUpdateProfile,
     user: response.user,
   };
 }

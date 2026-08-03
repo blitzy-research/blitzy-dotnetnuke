@@ -1,6 +1,6 @@
 // MIGRATION: This contract replaces reflection-based activation of a module's business controller
 // with resolution from a closed set registered at start-up. Five legacy call sites late-bound a type
-// whose name was read from the Modules.BusinessControllerClass column and then tested the resulting
+// whose name was read from the DesktopModules.BusinessControllerClass column and then tested the resulting
 // untyped reference against a lifecycle interface: content export, content import, the queued import
 // of content awaiting later processing, the version-by-version upgrade, and the capability re-probe.
 // An implementation must resolve every controller by looking the key up in a registration map
@@ -47,7 +47,7 @@ namespace DnnMigration.Application.Abstractions;
 /// <para>
 /// <b>Scope.</b> It answers exactly one question: <em>what can the business controller registered
 /// under this key do, and will it do it?</em> A business controller is a module author's optional
-/// companion class, identified in the legacy schema by the <c>Modules.BusinessControllerClass</c>
+/// companion class, identified in the legacy schema by the <c>DesktopModules.BusinessControllerClass</c>
 /// column, that knows how to serialise the module's own content, restore it, and migrate it between
 /// versions. Most modules declare no such class at all, so "there is nothing to do" is the single
 /// most common outcome of every member here and is reported as a success, never as an error.
@@ -109,9 +109,27 @@ namespace DnnMigration.Application.Abstractions;
 /// per call, from the current scope. Treat an unsupplied, unregistered or unsupported controller as a
 /// successful no-op carrying the documented advisory code, never as a failure and never as an
 /// exception. Let no exception raised by a module's own code escape silently: translate it into a
-/// failed outcome with the documented failure code, preserving the original message. Honour the
-/// cancellation token on every member. Perform no caching, no invalidation, no persistence and no
-/// audit logging.
+/// failed outcome with the documented failure code. Honour the cancellation token on every member.
+/// Perform no caching, no invalidation and no persistence.
+/// </para>
+/// <para>
+/// <b>A failure message is fixed text, and the module's own explanation is logged instead of returned.</b>
+/// This is an obligation on the implementation rather than a liberty granted to it. A business controller
+/// is third-party code that may raise anything, so its exception message can hold a connection string, a
+/// file system path, an internal type name or personal data drawn from the content being moved - and a
+/// failed outcome from this contract is published by the API edge as the RFC 7807 <c>detail</c> member,
+/// which is to say to the HTTP client. An implementation must therefore return a stable code with a fixed
+/// message naming the operation that failed, and must write the exception itself to the log, where the
+/// request's correlation identifier already scopes it and the detail stays actionable for whoever operates
+/// the system. Not swallowing the fault and not disclosing its text are two separate obligations and both
+/// are required; satisfying one by sacrificing the other is not permitted. Nothing else may travel on the
+/// message either: not the supplied controller key, not the payload, not a stack trace.
+/// </para>
+/// <para>
+/// <b>Audit logging remains the caller's.</b> The prohibition is on writing an audit entry - a record that
+/// an operation was performed, which the module service owns - and it is unaffected by the fault logging
+/// obligation above, which records that an operation could not be performed and is the only way to keep
+/// the explanation out of the response.
 /// </para>
 /// </remarks>
 public interface IModuleBusinessControllerFactory
@@ -122,7 +140,7 @@ public interface IModuleBusinessControllerFactory
     /// schema stores in the <c>DesktopModules.SupportedFeatures</c> column.
     /// </summary>
     /// <param name="businessControllerClass">
-    /// The controller key, taken verbatim from the legacy <c>Modules.BusinessControllerClass</c>
+    /// The controller key, taken verbatim from the legacy <c>DesktopModules.BusinessControllerClass</c>
     /// column. A <see langword="null"/>, empty or white-space value means the module declares no
     /// business controller.
     /// </param>
@@ -144,7 +162,9 @@ public interface IModuleBusinessControllerFactory
     /// <para>
     /// A failed outcome carrying <c>module.controller.capability_probe_failed</c> when the registered
     /// controller could not be brought into existence to be examined - for instance because one of its
-    /// own dependencies could not be satisfied.
+    /// own dependencies could not be satisfied. The message is fixed text naming the operation; the
+    /// resolution failure's own explanation is written to the log rather than returned, which matters
+    /// here because a dependency-resolution message routinely names internal types and configuration.
     /// </para>
     /// </returns>
     /// <remarks>
@@ -165,7 +185,7 @@ public interface IModuleBusinessControllerFactory
     /// <paramref name="moduleId"/>.
     /// </summary>
     /// <param name="businessControllerClass">
-    /// The controller key, taken verbatim from the legacy <c>Modules.BusinessControllerClass</c>
+    /// The controller key, taken verbatim from the legacy <c>DesktopModules.BusinessControllerClass</c>
     /// column. A <see langword="null"/>, empty or white-space value means the module declares no
     /// business controller.
     /// </param>
@@ -195,8 +215,9 @@ public interface IModuleBusinessControllerFactory
     /// </para>
     /// <para>
     /// A failed outcome carrying <c>module.content.export_failed</c> when the controller was asked and
-    /// its own serialisation raised an exception. The message must preserve the underlying explanation
-    /// so the caller can log something actionable.
+    /// its own serialisation raised an exception. The message is fixed text naming the operation; the
+    /// controller's own explanation is written to the log rather than returned, for the reason set out on
+    /// this contract's implementer's obligations.
     /// </para>
     /// </returns>
     /// <remarks>
@@ -219,7 +240,7 @@ public interface IModuleBusinessControllerFactory
     /// <paramref name="moduleId"/>.
     /// </summary>
     /// <param name="businessControllerClass">
-    /// The controller key, taken verbatim from the legacy <c>Modules.BusinessControllerClass</c>
+    /// The controller key, taken verbatim from the legacy <c>DesktopModules.BusinessControllerClass</c>
     /// column. A <see langword="null"/>, empty or white-space value means the module declares no
     /// business controller.
     /// </param>
@@ -256,9 +277,11 @@ public interface IModuleBusinessControllerFactory
     /// </para>
     /// <para>
     /// A failed outcome carrying <c>module.content.import_failed</c> when the controller was asked and
-    /// its own restore raised an exception. The message must preserve the underlying explanation. A
-    /// failure here means content was lost, so a caller is expected to log it and to treat the
-    /// surrounding operation as incomplete - which is the whole point of not swallowing it.
+    /// its own restore raised an exception. The message is fixed text naming the operation; the
+    /// controller's own explanation is written to the log rather than returned - which matters most on
+    /// this member, because an exception raised while parsing a payload can quote that payload. A failure
+    /// here means content was lost, so a caller must treat the surrounding operation as incomplete, which
+    /// is the whole point of not swallowing it.
     /// </para>
     /// </returns>
     /// <remarks>
@@ -280,7 +303,7 @@ public interface IModuleBusinessControllerFactory
     /// migrate its stored content to a single named <paramref name="version"/>.
     /// </summary>
     /// <param name="businessControllerClass">
-    /// The controller key, taken verbatim from the legacy <c>Modules.BusinessControllerClass</c>
+    /// The controller key, taken verbatim from the legacy <c>DesktopModules.BusinessControllerClass</c>
     /// column. A <see langword="null"/>, empty or white-space value means the module declares no
     /// business controller.
     /// </param>
@@ -305,7 +328,8 @@ public interface IModuleBusinessControllerFactory
     /// </para>
     /// <para>
     /// A failed outcome carrying <c>module.upgrade_failed</c> when the controller was asked and its own
-    /// migration raised an exception. The message must preserve the underlying explanation.
+    /// migration raised an exception. The message is fixed text naming the operation; the controller's own
+    /// explanation is written to the log rather than returned.
     /// </para>
     /// </returns>
     /// <remarks>
