@@ -930,7 +930,7 @@ public sealed class UserRepositoryTests
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        roles.AddAssignment(new UserRole
+        await roles.AddUserRoleAsync(new UserRole
         {
             UserId = userId,
             RoleId = roleId,

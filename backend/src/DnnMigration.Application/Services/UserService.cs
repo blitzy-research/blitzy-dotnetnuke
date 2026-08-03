@@ -680,8 +680,14 @@ public sealed class UserService : IUserService
             IsAuthorised = request.Authorize,
         });
 
-        IReadOnlyList<Role> automatic =
-            await _roles.ListAutoAssignedAsync(portalId, cancellationToken).ConfigureAwait(false);
+        // The auto-assignment filter is applied here rather than in the repository because the legacy
+        // membership provider had no such procedure: it exposed GetPortalRoles alone
+        // (DataProvider.vb:L91) and the AutoAssignment column was tested by the caller. Roles are
+        // counted in tens per portal, so selecting over the portal's own set costs nothing.
+        IReadOnlyList<Role> portalRoles =
+            await _roles.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        List<Role> automatic = portalRoles.Where(role => role.AutoAssignment).ToList();
 
         foreach (Role role in automatic)
         {
@@ -849,15 +855,29 @@ public sealed class UserService : IUserService
                     $"Account {userId} is the designated administrator of portal {portalId} and cannot be deleted."));
         }
 
-        await _permissions.DeleteUserPermissionsAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
+        // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
+        // through two separate provider members - DeleteModulePermissionsByUserID at core
+        // DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305 - and each terminal procedure
+        // joins its own grant table to its own owning table so the delete is bounded to this portal.
+        // Both are issued here for the same reason the legacy code issued both: a grant left behind on
+        // either table would outlive the account that held it. Only grants naming the account itself
+        // go; grants it received through a role belong to the role and are removed below by
+        // withdrawing the assignments instead.
+        await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
 
         IReadOnlyList<UserRole> assignments = await _roles
-            .ListUserAssignmentsAsync(portalId, userId, cancellationToken)
+            .GetUserRolesAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         foreach (UserRole assignment in assignments)
         {
-            _roles.RemoveAssignment(assignment);
+            await _roles
+                .DeleteUserRoleAsync(assignment.UserId, assignment.RoleId, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         UserPortal? membership = await _users
@@ -1200,11 +1220,12 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<ModuleSetting> stored =
-            await _modules.ListSettingsAsync(source.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetModuleSettingsAsync(source.ModuleId, cancellationToken).ConfigureAwait(false);
 
         foreach (KeyValuePair<string, string> setting in ProjectMembershipSettings(settings))
         {
-            UpsertModuleSetting(stored, source.ModuleId, setting.Key, setting.Value);
+            await UpsertModuleSettingAsync(stored, source.ModuleId, setting.Key, setting.Value, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -1688,7 +1709,12 @@ public sealed class UserService : IUserService
     {
         foreach (UserRole assignment in account.UserRoles.ToList())
         {
-            _roles.RemoveAssignment(assignment);
+            // The account key is read from the account rather than from the assignment, so the
+            // reversal does not depend on the dependent's foreign key having been populated by the
+            // commit that is being reversed.
+            await _roles
+                .DeleteUserRoleAsync(account.UserId, assignment.RoleId, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         foreach (UserPortal membership in account.UserPortals.ToList())
@@ -1852,17 +1878,15 @@ public sealed class UserService : IUserService
             return null;
         }
 
-        PagedResult<Module> instances = await _modules.ListAsync(
-            portalId,
-            tabId: null,
-            includeDeleted: false,
-            pageIndex: 0,
-            pageSize: UnpagedPageSize,
-            titleFilter: null,
-            cancellationToken).ConfigureAwait(false);
+        // MIGRATION: the legacy module block has no paging member, so the tenant's modules are read whole
+        // and the recycle bin is excluded here. This call site never wanted a page - it asked for every
+        // live instance so it could locate one by its definition.
+        IReadOnlyList<Module> instances =
+            await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        return instances.Items.FirstOrDefault(candidate =>
-            candidate.ModuleDefinitionId == accounts.ModuleDefinitionId);
+        return instances.FirstOrDefault(candidate =>
+            !candidate.IsDeleted
+            && candidate.ModuleDefinitionId == accounts.ModuleDefinitionId);
     }
 
     /// <summary>
@@ -1882,7 +1906,7 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<ModuleSetting> stored =
-            await _modules.ListSettingsAsync(source.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetModuleSettingsAsync(source.ModuleId, cancellationToken).ConfigureAwait(false);
 
         var map = new Dictionary<string, string>(stored.Count, StringComparer.OrdinalIgnoreCase);
         foreach (ModuleSetting setting in stored)
@@ -2118,11 +2142,14 @@ public sealed class UserService : IUserService
     /// <param name="moduleId">The module the setting belongs to.</param>
     /// <param name="settingName">The setting name.</param>
     /// <param name="settingValue">The value to store.</param>
-    private void UpsertModuleSetting(
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>A task that completes once the write is staged.</returns>
+    private async Task UpsertModuleSettingAsync(
         IReadOnlyList<ModuleSetting> stored,
         int moduleId,
         string settingName,
-        string settingValue)
+        string settingValue,
+        CancellationToken cancellationToken)
     {
         ModuleSetting? existing = stored.FirstOrDefault(candidate =>
             string.Equals(candidate.SettingName, settingName, StringComparison.OrdinalIgnoreCase));
@@ -2133,12 +2160,16 @@ public sealed class UserService : IUserService
             return;
         }
 
-        _modules.AddSetting(new ModuleSetting
-        {
-            ModuleId = moduleId,
-            SettingName = settingName,
-            SettingValue = settingValue,
-        });
+        await _modules
+            .AddModuleSettingAsync(
+                new ModuleSetting
+                {
+                    ModuleId = moduleId,
+                    SettingName = settingName,
+                    SettingValue = settingValue,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

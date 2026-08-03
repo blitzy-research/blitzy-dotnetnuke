@@ -285,11 +285,18 @@ public static class DependencyInjection
     /// <param name="services">The collection to add to.</param>
     /// <remarks>
     /// <para>
-    /// The permission evaluator is a singleton because it is stateless: it is pure precedence arithmetic
-    /// over grants a repository has already retrieved. It is registered as its concrete type on purpose.
-    /// Allow-and-deny precedence is settled in exactly one place, and an interface here would be an
-    /// invitation to supply a second implementation - two evaluators that can disagree being the worst
-    /// available outcome in this area.
+    /// MIGRATION: the permission evaluator is registered per request, not as a singleton. Its precedence
+    /// arithmetic is stateless, but it now also resolves the grants that arithmetic runs over - which is
+    /// where AAP section 0.4.3 places evaluation - so it depends on the unit-of-work scoped database
+    /// context and must share that context's lifetime. The permission repository no longer performs any
+    /// part of evaluation: its Domain contract mirrors the legacy provider blocks at core
+    /// <c>DataProvider.vb</c> L279-L308 and is pure persistence.
+    /// </para>
+    /// <para>
+    /// It is registered against <see cref="IPermissionEvaluator"/> because the application layer has to
+    /// reach it without seeing the store, and that abstraction exists for no other purpose. Exactly one
+    /// implementation is registered against it, deliberately: allow-and-deny precedence is settled in one
+    /// place, two evaluators that can disagree being the worst available outcome in this area.
     /// </para>
     /// <para>
     /// The password hasher and the clock are singletons because they hold only configuration. The refresh
@@ -300,7 +307,7 @@ public static class DependencyInjection
     /// </remarks>
     private static void AddSecurity(IServiceCollection services)
     {
-        services.AddSingleton<PermissionEvaluator>();
+        services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
         services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
         services.AddSingleton<RefreshTokenStore>();
 

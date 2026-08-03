@@ -528,8 +528,8 @@ public sealed class ModuleApiTests
 
         var request = new UpdateModuleRequest
         {
+            TabId = _fixture.Seed.RootTabId,
             ModuleTitle = "Renamed " + Suffix(),
-            PaneName = "LeftPane",
             ModuleOrder = 6,
             AllTabs = false,
             InheritViewPermissions = false,
@@ -573,44 +573,33 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// These fields are editable on the legacy screen
-    /// (<c>Website/admin/Modules/ModuleSettings.ascx.vb:L345-L347,L381-L382</c>), so the write capability
-    /// must stay reachable end to end: the values go out over HTTP, through the entity configuration and
-    /// into the real <c>nvarchar(10)</c>, <c>nvarchar(20)</c> and <c>nvarchar(1)</c> columns on
-    /// <c>dbo.TabModules</c>. Both legs below assert that the write is accepted.
+    /// MIGRATION: these seven columns are EXCLUDED from the update contract, and this test asserts that
+    /// exclusion end to end. An earlier revision asserted the opposite - that the contract accepted them as
+    /// write-only fields. It does not: pane, alignment, colour, border, the print and syndicate flags and the
+    /// container source are all Web Forms pane-layout, server-side rendering or skinning concerns, excluded by
+    /// AAP 0.2.2.1 and 0.2.2.4, so no request or response contract in the module group declares any of them.
+    /// The absence is asserted positively against all three contracts below, so a later change that quietly
+    /// reintroduces one fails here.
     /// </para>
     /// <para>
-    /// They are deliberately WRITE-ONLY in the target, which is why this test does not read them back. They
-    /// exist solely to drive server-side markup generation, and that is excluded from this migration, so no
-    /// response contract carries them: not the detail projection, and not the settings projection, which
-    /// carries the two identifiers and the two key-value settings maps only. Their absence from the settings
-    /// response is asserted positively below, so a later change that quietly reintroduces them fails here.
-    /// The corresponding unit test pins the same asymmetry against all three contracts at once.
-    /// </para>
-    /// <para>
-    /// The second leg still exercises the whole-row replacement semantics: omitting an appearance field
-    /// clears the column rather than preserving it, because the legacy screen posted an empty text box as an
-    /// empty value. Since no response contract reads the column back, what is asserted here is that the
-    /// clearing write is accepted rather than rejected - the cleared VALUE is verified by the unit-level
-    /// <c>ApplyUpdate</c> tests, which observe the entity directly.
+    /// Because no caller can name them, the write path must PRESERVE the stored values rather than clear
+    /// them - the pane column is NOT NULL, so clearing it would fail the write outright. That preservation is
+    /// verified at unit level by the <c>ApplyUpdate</c> tests, which observe the entity directly; what is
+    /// asserted here is that an update naming only the members the contract does carry is accepted, and that
+    /// unknown appearance properties in the payload cannot smuggle a value through.
     /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModule_AcceptsTheAppearanceFieldsAndExposesThemOnNoResponseContract()
+    public async Task UpdateModule_DeclaresNoAppearanceFieldOnAnyModuleContract()
     {
         using HttpClient client = _fixture.CreateHostClient();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         var request = new UpdateModuleRequest
         {
+            TabId = _fixture.Seed.RootTabId,
             ModuleTitle = created.ModuleTitle,
-            PaneName = "ContentPane",
-            Alignment = "right",
-            Color = "#003366",
-            Border = "1",
-            DisplayPrint = false,
-            DisplaySyndicate = false,
         };
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
@@ -620,7 +609,17 @@ public sealed class ModuleApiTests
 
         response.StatusCode.Should().Be(
             HttpStatusCode.OK,
-            "the legacy screen edited these columns, so the write path must keep accepting them");
+            "an update naming only the members the contract carries is a legitimate request");
+
+        foreach (string appearance in new[]
+        {
+            "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate", "ContainerSrc",
+        })
+        {
+            typeof(UpdateModuleRequest).GetProperty(appearance).Should().BeNull(
+                $"the placement's {appearance} drives server-side markup or skinning, both excluded, so the "
+                + "update contract must not offer it");
+        }
 
         using HttpResponseMessage reread = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -643,34 +642,44 @@ public sealed class ModuleApiTests
                 + "so the settings contract carries the two identifiers and the two settings maps only");
         }
 
-        using HttpResponseMessage cleared = await client.PutAsJsonAsync(
+        using HttpResponseMessage repeated = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
-            new UpdateModuleRequest { ModuleTitle = created.ModuleTitle, PaneName = "ContentPane" },
+            new UpdateModuleRequest { TabId = _fixture.Seed.RootTabId, ModuleTitle = created.ModuleTitle },
             ApiTestFixture.Json);
 
-        cleared.StatusCode.Should().Be(
+        repeated.StatusCode.Should().Be(
             HttpStatusCode.OK,
-            "omitting an appearance field clears the column, which is a legitimate edit rather than an "
-            + "invalid request");
+            "a repeated full replacement is idempotent and must not be refused because the appearance "
+            + "columns it cannot name still hold values");
     }
 
     /// <summary>
     /// A value longer than the column is refused by the request validator rather than by the store.
     /// </summary>
     /// <remarks>
-    /// <c>TabModules.Border</c> is <c>nvarchar(1)</c>. Letting a longer value reach SQL Server would surface
-    /// as a truncation error rather than a field-level message, so the bound is asserted at the boundary.
+    /// MIGRATION: this asserted the border bound until the border was excluded from the update contract along
+    /// with the rest of the pane-layout and rendering columns - and with it went the fourth of the legacy
+    /// screen's four validators, whose message read "Invalid Border (must be a number between 0 and 9)". The
+    /// test's INTENT is preserved against a bound that still exists: <c>TabModules.IconFile</c> is
+    /// <c>nvarchar(100)</c>. Letting a longer value reach SQL Server would surface as a truncation error
+    /// rather than a field-level message, so the bound is asserted at the boundary. Note that the icon carries
+    /// no legacy validator either, so this bound comes from the terminal schema alone.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModule_WithAnOverlongBorderFlag_ReturnsBadRequest()
+    public async Task UpdateModule_WithAnOverlongIconFile_ReturnsBadRequest()
     {
         using HttpClient client = _fixture.CreateHostClient();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
-            new UpdateModuleRequest { PaneName = "ContentPane", Border = "12" },
+            new UpdateModuleRequest
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = created.ModuleTitle,
+                IconFile = new string('i', 101),
+            },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);

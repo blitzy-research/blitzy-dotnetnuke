@@ -305,6 +305,8 @@ public static class ModuleMappings
         ArgumentNullException.ThrowIfNull(placement);
         ArgumentNullException.ThrowIfNull(request);
 
+        // Module scope: the eight value arguments of the legacy first provider call, less the identity the
+        // route supplies.
         module.ModuleTitle = request.ModuleTitle;
         module.AllTabs = request.AllTabs;
         module.InheritViewPermissions = request.InheritViewPermissions;
@@ -312,23 +314,35 @@ public static class ModuleMappings
         module.Footer = request.Footer;
         module.StartDate = request.StartDate;
         module.EndDate = request.EndDate;
+        module.IsDeleted = request.IsDeleted;
 
-        placement.PaneName = string.IsNullOrWhiteSpace(request.PaneName) ? DefaultPaneName : request.PaneName;
+        // Placement scope: the six surviving value arguments of the legacy second provider call.
         placement.ModuleOrder = request.ModuleOrder;
-        placement.CacheTime = Math.Max(request.CacheTime ?? placement.CacheTime, 0);
+        placement.CacheTime = Math.Max(request.CacheTime, 0);
         placement.IconFile = request.IconFile;
-        placement.Alignment = request.Alignment;
-        placement.Color = request.Color;
-        placement.Border = request.Border;
         placement.Visibility = request.Visibility;
         placement.DisplayTitle = request.DisplayTitle;
-        placement.DisplayPrint = request.DisplayPrint;
-        placement.DisplaySyndicate = request.DisplaySyndicate;
 
-        // MIGRATION: placement.ContainerSrc is deliberately left alone rather than being cleared. A module
-        // container is a skin object and skinning is excluded by AAP 0.2.2.4, so the request carries no
-        // container field; assigning the absent value would silently wipe a stored container on every
-        // update. Not assigning it preserves the stored value exactly, which is what the exclusion means.
+        // MIGRATION: the placement's pane-layout and rendering columns - PaneName, Alignment, Color, Border,
+        // DisplayPrint and DisplaySyndicate - together with ContainerSrc are deliberately left ALONE rather
+        // than being assigned. All seven are excluded from UpdateModuleRequest as Web Forms pane-layout,
+        // server-side rendering or skinning concerns (AAP 0.2.2.1 and 0.2.2.4), so the request carries no
+        // field for any of them; assigning an absent value would silently wipe a stored pane, alignment,
+        // colour, border or container on every update, and PaneName is NOT NULL so clearing it would fail
+        // the write outright. Not assigning them preserves the stored values exactly, which is what the
+        // exclusion means. They are consequently write-once at create for pane and read-only thereafter.
+        //
+        // MIGRATION: 5.6 - IsDeleted IS assigned here, which is a deliberate widening of the legacy settings
+        // screen. That screen held the bare unconditional assignment of False, so every save silently
+        // un-deleted the module; the flag was actually toggled by the placement-delete and recycle-bin paths
+        // instead. The column is real and is genuinely the ninth argument of the legacy first provider call,
+        // so consolidating soft delete and restore onto this contract is justified - but it means this
+        // endpoint can now SET a flag the legacy screen could only clear.
+        //
+        // MIGRATION: 5.5 - CacheTime is a non-nullable integer and zero is a REAL value meaning "do not
+        // cache", so there is no coalesce to a stored value here: a blank legacy field wrote literally zero
+        // rather than a sentinel. The clamp to zero guards only against a negative, which the store would
+        // refuse to interpret.
     }
 
     /// <summary>

@@ -394,9 +394,12 @@ public sealed class PortalService : IPortalService
             isPublic: true,
             autoAssignment: true);
 
-        _roles.Add(administratorsRole);
-        _roles.Add(registeredUsersRole);
-        _roles.Add(subscribersRole);
+        // Staged, not committed: IRoleRepository.AddAsync records the insertion and the single
+        // SaveChanges below closes the transaction over all five tables at once, which is what keeps
+        // the legacy multi-table creation sequence atomic.
+        await _roles.AddAsync(administratorsRole, cancellationToken).ConfigureAwait(false);
+        await _roles.AddAsync(registeredUsersRole, cancellationToken).ConfigureAwait(false);
+        await _roles.AddAsync(subscribersRole, cancellationToken).ConfigureAwait(false);
 
         User administrator = UserMappings.ToNewUser(new CreateUserRequest
         {
@@ -421,14 +424,16 @@ public sealed class PortalService : IPortalService
         // absent effective date and an absent expiry date (L1399-L1401).
         foreach (Role role in new[] { administratorsRole, registeredUsersRole, subscribersRole })
         {
-            _roles.AddAssignment(new UserRole
-            {
-                User = administrator,
-                Role = role,
-                EffectiveDate = null,
-                ExpiryDate = null,
-                IsTrialUsed = false,
-            });
+            await _roles.AddUserRoleAsync(
+                new UserRole
+                {
+                    User = administrator,
+                    Role = role,
+                    EffectiveDate = null,
+                    ExpiryDate = null,
+                    IsTrialUsed = false,
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
         // The whole tenant graph - portal, alias, three roles, administrator, membership and three
@@ -908,12 +913,19 @@ public sealed class PortalService : IPortalService
 
         foreach (Role role in roles)
         {
+            // The assignment is read before it is withdrawn, so a compensation withdraws only what the
+            // store actually accepted. DeleteUserRoleAsync would itself be a no-op on an absent row, but
+            // issuing it regardless would make a compensation that reverses nothing indistinguishable
+            // from one that reverses three enrolments - and this path exists precisely to be auditable.
             UserRole? assignment = await _roles
-                .GetAssignmentAsync(role.RoleId, administrator.UserId, cancellationToken)
+                .GetUserRoleAsync(portal.PortalId, administrator.UserId, role.RoleId, cancellationToken)
                 .ConfigureAwait(false);
+
             if (assignment is not null)
             {
-                _roles.RemoveAssignment(assignment);
+                await _roles
+                    .DeleteUserRoleAsync(assignment.UserId, assignment.RoleId, cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -927,7 +939,7 @@ public sealed class PortalService : IPortalService
 
         foreach (Role role in roles)
         {
-            _roles.Remove(role);
+            await _roles.DeleteAsync(role.RoleId, cancellationToken).ConfigureAwait(false);
         }
 
         _users.Remove(administrator);

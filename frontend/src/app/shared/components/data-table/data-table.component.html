@@ -1,42 +1,130 @@
+<!--
+  THE ONE REAL TABLE IN THIS APPLICATION.
+
+  Eight legacy grids across the five administration trees collapse into this single
+  template. Every other legacy table carried a design-surface summary attribute on pure
+  layout markup and becomes a grid or flex arrangement in a stylesheet instead; only a
+  genuine record listing earns a table element, and this is it.
+
+  Read the component class before changing a binding here. Every value this template
+  renders is a PRE-COMPUTED projection, and every list is tracked. Nothing is formatted,
+  sorted, paged or filtered in this file.
+
+  MIGRATION: EVERY table gets a caption, which normalises a legacy inconsistency rather
+  than copying it. Only three of the eight legacy grids carried a summary attribute at
+  all and the account listing carried none, so a reader meeting two grids on one screen
+  had no way to tell them apart. The legacy summary TEXT is deliberately NOT reused as
+  caption prose: it is a Visual Studio design-surface artefact, not user-facing writing.
+  Three independent proofs that it is machine noise - the member-services markup repeats
+  one summary on both a layout table and its grid, the page-management markup repeats
+  another on two different tables, and the edit-roles markup puts one on a table that
+  holds nothing but form fields. The caption's wording therefore arrives by projection
+  from the feature, in the short title-case register the resource files use for control
+  titles.
+
+  MIGRATION: heading scope, sort announcement and keyboard-operable sorting are NET
+  ACCESSIBILITY GAINS AT ZERO VISUAL COST. Measured across the legacy stylesheets:
+  ':focus' appears in zero files, 'outline' appears in zero files and 'aria-' appears in
+  zero files, so the legacy grids announced no sort state and drew no focus indicator of
+  any kind. Nothing is taken away to add them.
+
+  MIGRATION: heading wording is the feature's to supply and is never hardcoded here.
+  The legacy markup's heading attributes are STALE - the portal listing declares three
+  that the resource file overrides at run time, keyed by the stale text itself - so the
+  resource VALUE is authoritative, not the markup. Counted directly over the 37 in-scope
+  resource files, heading keys number 55: reproduced three ways, by an XML parse of each
+  file's data elements, by a repeat of that parse across every depth, and by a literal
+  scan for the key suffix. A figure of 51 circulates and is NOT reproducible against
+  this checkout; the difference of four matches exactly one file's heading count,
+  consistent with one file having been missed in the earlier census. Both figures and
+  the method are recorded rather than one being chosen silently. A heading may also
+  legitimately contain a space, so no class name or identifier is ever derived from one.
+
+  MIGRATION: localisation is not carried across. The resource files were read for
+  wording only; no translation runtime is added and no translation attribute appears
+  here.
+-->
+
+<!--
+  MIGRATION: the scrolling region is the component's own container and deliberately does
+  NOT opt into the shared table stylesheet's scroll-region hook. Two measured reasons.
+  The shared hook floors the table at the width of its container, and the component
+  stylesheet records that this exact value is INERT under a fixed table layout with
+  percentage tracks - it was tried, and four pairs of headings still physically
+  overlapped on a narrow viewport - so the component's own token-composed floor must win
+  and the shared hook would outrank it below the tablet step. The shared hook also
+  documents that its consumer must supply the tab stop, the region role and an
+  ACCESSIBLE NAME; a shared component cannot invent a name, which is the same reason the
+  caption is projected rather than defaulted.
+
+  Not a landmark, and never will be. Landmark elements belong exclusively to the
+  application shell. A caption is not a landmark either.
+-->
 <div class="data-table__container">
   <!--
-    `aria-rowcount` reports the rows of the CURRENT PAGE plus the heading row. The pager
-    is a sibling and reports the whole match set; this table must not claim knowledge of
-    rows it was never handed.
+    The row count reports the CURRENT PAGE plus the heading row, and nothing more. The
+    pager is a sibling and reports the whole match set; a table must not claim knowledge
+    of rows it was never handed.
   -->
   <table class="data-table" [attr.aria-rowcount]="ariaRowCount()">
     <!--
-      The accessible name arrives by PROJECTION, not by an input: the public surface is
-      closed at five inputs, and every further affordance is projected. A feature writes
-      `<span dataTableCaption>Portals</span>` and gets a real `caption` element.
+      The accessible name arrives by PROJECTION, not by an input. The public surface is
+      closed at five inputs and every further affordance is projected, so a feature
+      writes its own element carrying the caption attribute and gets a real caption in
+      return. Projecting it is the CONSUMER'S OBLIGATION: this component supplies the
+      element, never the words, because inventing a screen-specific default inside a
+      shared component would put wording in the one place no screen can correct it.
 
-      Kept out of the painted output but present in the accessibility tree, so a reader
-      who reaches the table directly still learns what it lists. `display: none` and
-      `visibility: hidden` would remove it from the tree as well as the page.
+      Carried out of the painted output but kept in the accessibility tree, so a reader
+      who reaches the table directly still learns what it lists while a screen that
+      already shows a page heading does not read the same phrase twice. The attribute is
+      the shared stylesheet's own documented hook for this, so the clipping technique
+      lives in one place; neither display nor visibility is used, because both would
+      remove the caption from the accessibility tree along with the page.
     -->
-    <caption class="data-table__caption">
+    <caption class="data-table__caption" data-visually-hidden>
       <ng-content select="[dataTableCaption]" />
     </caption>
 
     <!--
-      Track sizes live here and nowhere else, so no cell rule carries a size. This is also
-      what makes the row-level render virtualisation safe: with a fixed table layout the
-      columns are sized from this group rather than from cell content, so rows whose
-      layout is skipped while off screen cannot shift the columns as they scroll in.
+      Track sizes live here and nowhere else, so NO CELL EVER CARRIES A SIZE. This is
+      also what makes row-level render virtualisation safe: under a fixed table layout
+      the columns resolve from this group rather than from cell content, so a row whose
+      layout is skipped while it is off screen cannot shift the columns as it scrolls
+      in. The width member and the virtualisation strategy are two halves of one design.
+
+      Guarded so that a table with no columns yet - the initial state, before a feature's
+      first response arrives - emits no group at all. A column group containing neither a
+      column element nor a span is not conforming markup, and an unguarded group emits
+      exactly that.
+
+      A track is emitted for EVERY column and its size only when one was declared, so an
+      undeclared or blank width leaves the column to take its share rather than
+      collapsing it.
     -->
-    <colgroup>
-      @for (track of columnWidths(); track track.key) {
-        <col [style.inline-size]="track.width" />
-      }
-    </colgroup>
+    @if (columnWidths().length > 0) {
+      <colgroup>
+        @for (columnTrack of columnWidths(); track columnTrack.key) {
+          <col [style.inline-size]="columnTrack.width" />
+        }
+      </colgroup>
+    }
 
     <thead>
       <tr class="data-table__header-row" [attr.aria-rowindex]="headerRowIndex">
         @for (cell of headerCells(); track cell.key) {
           <!--
-            `scope="col"` is what lets assistive technology name a cell by its column when
-            a reader moves across a row. `aria-sort` is omitted entirely for a column that
-            offers no sorting, because `none` would claim it is sortable.
+            Column scope is what lets assistive technology name a cell by its column as
+            a reader moves across a row. The sort state is OMITTED ENTIRELY for a column
+            that offers no sorting, because announcing 'none' there would claim the
+            column is sortable when it is not; a sortable column that is merely inactive
+            does carry 'none', and that policy is applied consistently.
+
+            Heading alignment and body alignment are resolved INDEPENDENTLY, each from
+            its own column member, and neither is derived from the other. The eight
+            legacy grids genuinely disagreed - several centred their headings while
+            starting their bodies - so deriving one from the other would silently
+            override whichever screen a feature was reproducing.
           -->
           <th
             scope="col"
@@ -46,10 +134,60 @@
           >
             @if (cell.sortable) {
               <!--
-                A real button with an explicit type, so it cannot submit a surrounding
-                form and so Enter and Space both activate it with no key handling here.
-                Disabled while a request is in flight, which matches the component's own
-                refusal to queue a second ordering.
+                A REAL BUTTON inside the heading, not a heading with a click handler.
+                Chosen over an activatable heading deliberately: a button is focusable
+                by default, is announced as operable, and answers both Enter and Space
+                with no key handling written here at all. An activatable heading would
+                need a tab stop and a hand-rolled key handler to reach the same place,
+                and would still not be announced as a control. The explicit type stops
+                it submitting any form a feature wraps around the table.
+
+                Disabled while a request is in flight, which mirrors the component's own
+                refusal to queue a second ordering behind the first.
+
+                BLITZY [A11Y]: THIS BUTTON'S FOCUS RING IS PRESENT BUT INVISIBLE, and the
+                cause is a design-token collision OUTSIDE this file, so it is flagged here
+                rather than worked around in markup. Measured at run time in a real browser:
+                the shared focus ring resolves its colour from the focus-ring token, that
+                token is defined as the primary brand colour, and the heading band's own
+                background is that same primary brand colour - so the ring paints
+                brand-on-brand at a contrast ratio of 1:1. It cannot escape geometrically
+                either: with the shared ring width and offset, the ring's outer box measured
+                fully inside the heading cell's painted box, and a pixel census of the ring
+                annulus found zero ring-distinct pixels. The identical ring IS clearly
+                visible on body rows, because their backdrop is the page surface, which
+                proves the mechanism is sound and isolates the fault to the dark heading
+                band. Anything focusable placed on a primary-coloured surface anywhere in
+                this application has the same defect. Proven to be fixable ONLY outside this
+                file: overriding that one token at run time, changing nothing else, restored
+                a crisp ring while this component's rendered markup stayed byte-identical,
+                and the whole-page pixel diff was confined entirely to the ring annulus.
+                Every focus-ring rule in the application reads the token and none exposes a
+                markup-level hook, so no attribute, class or structural change here could
+                influence the colour. An inline style is forbidden, and repainting the
+                heading band would discard the reversed-on-brand treatment carried over from
+                the legacy grids. Structure is already correct - a real, natively focusable
+                button - so no markup change is warranted or made. WCAG 2.4.7 and 2.4.11.
+
+                TWO WARNINGS FOR WHOEVER FIXES THIS, both established by measurement, so the
+                defect is not merely relocated. First: NO SINGLE FLAT RING COLOUR CAN WORK.
+                This component paints four distinct surfaces behind a focusable element - the
+                heading band, the page background, the alternating-row surface and the
+                selected-row tint - and clearing the 3:1 non-text contrast floor on the
+                heading band requires a luminance at or above roughly 0.20 while clearing it
+                on the selected tint requires one at or below roughly 0.18. That window is
+                empty, and an exhaustive search of the colour space confirms the best
+                achievable worst-case is about 2.87:1, short of the floor. Setting the ring
+                to the page background specifically MOVES the failure rather than removing
+                it: it reads 1:1 against every unselected body row. The remedies that do work
+                are a two-tone double ring - the shadow channel is currently unused on both
+                the sort control and the row, so it is free - or re-declaring the token within
+                the dark heading scope only. Second: A NAIVE REGRESSION TEST WILL PASS WHILE
+                THE DEFECT IS LIVE. A body row's own background resolves to transparent, so
+                comparing the ring colour with the element's own background returns
+                "different" and looks correct; the real backdrop is the first opaque ancestor.
+                Any automated guard must resolve the effective painted backdrop or compare
+                rendered pixels.
               -->
               <button
                 class="data-table__sort"
@@ -62,8 +200,10 @@
                 }}</span>
 
                 <!--
-                  Hidden from assistive technology: `aria-sort` on the heading already
-                  conveys the direction, and announcing the glyph too would state it twice.
+                  MIGRATION: the direction indicator is a TEXT GLYPH, not an image. It is
+                  hidden from assistive technology because the heading's sort state
+                  already conveys the direction, and announcing the glyph as well would
+                  state it twice.
                 -->
                 @if (cell.sorted) {
                   <span class="data-table__sort-indicator" aria-hidden="true">
@@ -85,47 +225,122 @@
       </tr>
     </thead>
 
+    <!--
+      MIGRATION: THE PAGER IS A SIBLING OF THIS TABLE, NEVER A ROW INSIDE IT, so no foot
+      row is emitted here and the shared pagination component is referenced nowhere in
+      this file. That is the legacy arrangement reproduced, not a preference: the portal
+      listing closes its grid, emits two line breaks and THEN declares its paging
+      control, and the account listing does the identical thing. A third variant makes
+      the same point from another direction - the profile-property listing follows its
+      grid with form action buttons instead. What follows the table is always the
+      feature's business.
+
+      The two line breaks become a spacing token in the FEATURE'S layout, not an empty
+      element here. The legacy pager class is deliberately not borrowed either: the
+      markup referenced it four times and no stylesheet in the repository ever defined
+      it, and the only pager rule that does exist belongs to a file-management feature
+      that is out of scope.
+
+      MIGRATION: row commands are PROJECTED by the consuming feature, and the feature
+      also owns the confirmation dialogue and the call to the interface. This component
+      exposes no row-command output, so no dialogue is rendered here.
+
+      MIGRATION: legacy spacer rows and spacer cells become spacing tokens in the
+      stylesheet and NEVER empty elements in this template. The role listing carried
+      both - a fixed-height row spanning four columns with no content whatsoever, and a
+      star-width cell holding a single non-breaking space. Neither survives; an empty
+      cell is announced as a blank by a screen reader, and a spacing token costs nothing
+      and says nothing.
+    -->
     <tbody class="data-table__body">
+      <!--
+        WAITING WINS OVER EMPTY, and the emptiness test counts explicitly. An empty page
+        is a legitimate answer rather than an error, but claiming it while a request is
+        still in flight would show the reader 'nothing found' about a query that has not
+        answered yet. The component's own emptiness projection compares the row count to
+        zero rather than testing the array for truthiness, because an empty array is
+        truthy and the naive test would report 'empty' never.
+      -->
       @if (isLoading()) {
         <!--
-          One spanning cell rather than a skeleton of empty cells, so a screen reader reads
-          a single status instead of a row of blanks. The indicator is rendered with NO
-          bindings so it uses its own default label and lands in its announced mode; it
-          carries its own status role, so nothing is added here.
+          ONE SPANNING CELL rather than a skeleton row of empty cells, so a screen reader
+          reads a single status instead of a row of blanks, the heading context stays on
+          screen, and the markup stays valid. The span covers EVERY rendered column
+          including the commands column, and the component floors it at one so it can
+          never span zero cells.
+
+          The placeholder attribute is the shared table stylesheet's own documented hook
+          for exactly this pattern - a spanning message cell while the table's structure
+          stays on screen - so the treatment is inherited rather than re-invented here.
+
+          The indicator is rendered with NO BINDINGS AT ALL, so it uses its own default
+          wording and resolves into its announced mode. It carries its own status role;
+          nothing is added to it here.
         -->
         <tr [attr.aria-rowindex]="messageRowIndex">
-          <td class="data-table__message" [attr.colspan]="columnSpan()">
+          <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
             <app-loading-spinner />
           </td>
         </tr>
       } @else if (isEmpty()) {
         <!--
-          Also rendered with NO bindings, relying on its own default wording: this
-          component has no `emptyMessage` input, because the surface is closed at five. A
-          feature that needs particular wording renders the empty state itself.
+          Also rendered with NO BINDINGS, relying on its own default wording: this
+          component has no message input, because its surface is closed at five. A
+          feature needing particular wording renders the empty state itself.
+
+          MIGRATION, and a deliberate composition choice rather than an oversight: the
+          shared empty state emits its own heading and documents that it assumes no
+          surrounding table, grid or list. Placing it inside a cell is valid markup - a
+          cell accepts flow content - and is chosen so that ONE table survives with its
+          headings intact, which is what lets a reader still see which columns the
+          absent rows would have filled. The alternative the shared stylesheet describes,
+          replacing the table outright, discards that context. The divergence is recorded
+          rather than absorbed.
         -->
         <tr [attr.aria-rowindex]="messageRowIndex">
-          <td class="data-table__message" [attr.colspan]="columnSpan()">
+          <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
             <app-empty-state />
           </td>
         </tr>
       } @else {
         <!--
-          Tracked by the ROW OBJECT, never by an identifier member and never by index. The
-          legacy identity seeds make both zero and minus one legitimate keys, so any
-          truthiness or sign test on an identifier would mis-key the first role, page or
-          module row with no error at all.
+          TRACKED BY THE ROW OBJECT ITSELF - never by an identifier member and never by
+          index. The legacy identity seeds make BOTH zero and minus one legitimate keys:
+          the portal table seeds its identity at minus one while the role, page and
+          module tables seed theirs at zero, so a live listing really does contain a
+          portal keyed minus one and a role keyed zero. Minus one is SIMULTANEOUSLY the
+          legacy integer null sentinel, and the legacy markup compares against it
+          directly - the page-module grid enables a control only where a module
+          identifier is not minus one, on a column seeded at zero. Any truthiness test,
+          any positivity test and any null-coalescing default would therefore mis-key the
+          first role, page or module row or discard a real portal, with no error anywhere:
+          the DOM would simply reuse the wrong node. Taking the reference is immune to all
+          of it, because there is no number to misread.
 
-          The row is a tab stop so selection is reachable from the keyboard, and the
-          selected state is published through `aria-current` rather than by colour alone.
-          The trade-off is accepted deliberately: the alternative is a mouse-only row,
-          which is not an option.
+          The row is a tab stop so selection is reachable from the keyboard.
+
+          MIGRATION: the selected state is published PROGRAMMATICALLY, never by colour
+          alone, and it is published TWICE on purpose. The component class settled on the
+          current-item state and its own tests assert it, while the shared table
+          stylesheet keys both the selected tint and the selectable pointer affordance to
+          the selection state instead - and that stylesheet states the reason plainly:
+          keying the tint to an announced attribute makes it impossible to paint a state
+          that is not also announced. Emitting only one would either break the class's
+          contract or leave the shared hook dead and the rows without their pointer. Both
+          are emitted, so both contracts hold and the two can never disagree. The
+          selection state is present on every selectable row and reads true on exactly
+          one; the current-item state is omitted entirely unless the row is selected.
+
+          MIGRATION: the legacy selected-row treatment was bold red text with no change
+          of surface, while the tinted surface value sat unused on a different selector.
+          The tint is the correction; the announcement is the addition.
         -->
         @for (bodyRow of bodyRows(); track bodyRow.row) {
           <tr
             class="data-table__row"
             tabindex="0"
             [attr.aria-rowindex]="bodyRow.ariaRowIndex"
+            [attr.aria-selected]="bodyRow.row === selectedRow()"
             [attr.aria-current]="bodyRow.row === selectedRow() ? 'true' : null"
             [class.data-table__row--selected]="bodyRow.row === selectedRow()"
             (click)="activateRow(bodyRow.row)"
@@ -135,10 +350,49 @@
               @switch (cell.kind) {
                 @case ('actions') {
                   <!--
-                    Row commands are interactive elements INSIDE an activatable row, so
-                    both event families are stopped here. Without that, pressing Edit or
-                    Delete would bubble to the row and select it as well - and pairing a
-                    delete with a selection is the worst of the possibilities.
+                    MIGRATION: the commands column replaces the legacy image-command
+                    column, and EVERY COMMAND NOW CARRIES AN ACCESSIBLE NAME. Roughly
+                    half of the legacy commands carried none at all - both commands in
+                    the portal listing, the delete command in the role listing, the two
+                    reordering commands in the profile-property listing and all three
+                    commands in the account listing were unlabelled images. Where the
+                    legacy markup did label them it is honoured: the profile-property
+                    listing gave its edit and delete commands visible text, and the
+                    portal-alias listing gave its edit command alternative text and a
+                    resource key. One wording gap is recorded rather than papered over -
+                    the portal resource file supplies 'Edit this Portal' but has NO
+                    delete key at all, its only near-match being a grid-level bulk
+                    action - so a feature authors 'Delete' directly.
+
+                    MIGRATION: nine legacy raster buttons and boolean glyphs are replaced
+                    by text, inline vector art or stylesheet treatment, and this component
+                    references no image asset at all. Named so the replacement is
+                    traceable, all of them GIF: edit, delete, checked, unchecked, up, dn,
+                    userOnline, and the two toolbar glyphs icon_users and
+                    icon_securityroles, each of which carries its sixteen-pixel size as a
+                    filename suffix.
+
+                    MIGRATION: the commands column's heading is normalised. Only the
+                    profile-property listing supplied any heading text for its command
+                    columns - 'Edit', 'Del', 'Dn' and 'Up' - and abbreviations that
+                    terse are unreadable to a screen reader; the other seven grids
+                    supplied nothing. The heading is now a column label like any other,
+                    which is why it arrives through the same column descriptor.
+
+                    MIGRATION: the users-online column is DROPPED. The account listing
+                    declared a template column with NO heading text holding a single
+                    unconditional image with no alternative text - it reported nothing,
+                    because it rendered identically for every user whether online or not.
+                    Users-online is out of scope and no endpoint serves it. A documented
+                    functional reduction.
+
+                    THE HAZARD THIS CELL EXISTS FOR: commands are interactive elements
+                    sitting INSIDE an activatable row, so BOTH event families are stopped
+                    here. Without it, activating Edit or Delete would bubble to the row
+                    and select it as well, and pairing a delete with a selection is the
+                    worst of the available outcomes. A keyboard activation raises a key
+                    event that bubbles exactly as a click does, which is why stopping
+                    clicks alone would not be enough.
                   -->
                   <td
                     class="data-table__cell data-table__cell--actions"
@@ -147,10 +401,10 @@
                     (keydown)="blockRowActivation($event)"
                   >
                     <!--
-                      The commands are laid out by this wrapper, not by the cell. A
-                      `td` that is made a flex container stops being a table cell and
-                      drops out of the row's layout altogether, so the flex context has
-                      to live one level in.
+                      The commands are laid out by this wrapper, not by the cell. A cell
+                      made into a flex container stops being a table cell and drops out
+                      of the row's layout altogether, so the flex context has to live one
+                      level in.
                     -->
                     <div class="data-table__actions">
                       @if (cell.template !== null && cell.context !== null) {
@@ -163,6 +417,23 @@
                   </td>
                 }
                 @case ('template') {
+                  <!--
+                    MIGRATION: rich cell content arrives as a REAL ANGULAR TEMPLATE
+                    supplied by the feature and rendered through an outlet - never as
+                    injected markup. This is the replacement for the legacy template
+                    columns, including the two inline-editable checkbox cells that posted
+                    back on change and the four boolean columns that swapped one raster
+                    glyph for another.
+
+                    MIGRATION: those boolean columns compared a bound value against the
+                    STRING LITERAL 'true', which only ever worked because the
+                    administration pages compiled with strict type checking switched off
+                    while the class library compiled with it on. The portal listing shows
+                    the same asymmetry from another angle, calling a conversion helper
+                    with the wrong casing. Neither survives translation: a boolean is a
+                    boolean here, every conversion is explicit, and the coercions the
+                    legacy pages relied on are made deliberate rather than inherited.
+                  -->
                   <td class="data-table__cell" [attr.data-align]="cell.align">
                     @if (cell.template !== null && cell.context !== null) {
                       <ng-container
@@ -174,9 +445,26 @@
                 }
                 @default {
                   <!--
-                    Already-formatted text, produced once inside the row projection. No
-                    function is called from here: a template-invoked formatter would re-run
-                    on every change-detection pass and defeat the push strategy.
+                    ALREADY-FORMATTED TEXT, produced exactly once inside the row
+                    projection. No function is called from this template: a
+                    template-invoked formatter re-runs on every change-detection pass,
+                    which with one call per cell across a page of rows is the single most
+                    likely performance defect in a grid and defeats the push strategy
+                    outright.
+
+                    MIGRATION: cell text, heading text and the caption are interpolated
+                    as PLAIN TEXT and nothing else. This is parity, not caution. Cell
+                    values and legacy wording are untrusted markup: across the in-scope
+                    resource files 76 values carry an HTML tag, and one of them holds a
+                    live third-party advertising script with a remote source. A literal
+                    scan for an opening script tag finds nothing there because the tags
+                    are stored escaped, which is precisely how such a value survives
+                    review unnoticed. The legacy code escaped too - the access-denied
+                    page wraps an externally supplied message in an HTML encoder before
+                    displaying it, and the page loader encodes exception text the same
+                    way. Interpolation escapes by default, so no markup-injecting binding
+                    and no sanitiser bypass appears anywhere in this file. Rich content
+                    goes through the template column above instead.
                   -->
                   <td class="data-table__cell" [attr.data-align]="cell.align">
                     {{ cell.text }}

@@ -268,11 +268,12 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The page, the page filter and the deleted-row switch all reach the store unchanged.
+    /// The tenant's modules are read once for the addressed portal, and a named page is resolved through
+    /// the page repository rather than by reading each candidate module's placements in turn.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task ListModules_PassesTheFiltersThroughUnchanged()
+    public async Task ListModules_ReadsTheTenantOnceAndResolvesTheNamedPageThroughThePageStore()
     {
         Harness harness = Harness.Ready();
 
@@ -284,36 +285,118 @@ public class ModuleServiceTests
             CancellationToken.None);
 
         harness.Modules.Verify(
-            m => m.ListAsync(PortalId, TabId, true, 2, 20, "wel", It.IsAny<CancellationToken>()),
+            m => m.GetByPortalIdAsync(PortalId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Tabs.Verify(
+            t => t.GetTabModulesAsync(TabId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     /// <summary>
-    /// A search term consisting only of white space is treated as absent rather than searched for.
+    /// No page filter means the page repository is never consulted, because there is no page to resolve.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListModules_ConsultsNoPageStoreWhenNoPageWasNamed()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest(),
+            null,
+            false,
+            CancellationToken.None);
+
+        harness.Tabs.Verify(
+            t => t.GetTabModulesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A search term consisting only of white space is treated as absent rather than searched for, so a
+    /// module whose title shares none of that white space still appears.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_TreatsAWhitespaceQueryAsAbsent()
     {
         Harness harness = Harness.Ready();
+        harness.ModulePage = PagedResult<Module>.Unpaged([StoredModule()]);
+        harness.PlacementsByModuleId[ModuleId] = [Placement(TabModuleId, TabId)];
 
-        await harness.Service.ListModulesAsync(
+        Result<PagedResult<ModuleListItemDto>> outcome = await harness.Service.ListModulesAsync(
             PortalId,
-            new PagedRequest { Query = "   " },
+            new PagedRequest { Query = "   ", PageSize = 0 },
             null,
             false,
             CancellationToken.None);
 
-        harness.Modules.Verify(
-            m => m.ListAsync(
-                PortalId,
-                null,
-                false,
-                0,
-                10,
-                null,
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        outcome.Value.Items.Should().ContainSingle().Which.ModuleId.Should().Be(ModuleId);
+    }
+
+    /// <summary>
+    /// A search term that is present filters on the module title, case-insensitively, as the lower-cased
+    /// legacy comparison did.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListModules_FiltersOnTheTitleCaseInsensitively()
+    {
+        Harness harness = Harness.Ready();
+        Module matching = StoredModule();
+        matching.ModuleTitle = "Welcome Banner";
+        harness.ModulePage = PagedResult<Module>.Unpaged([matching]);
+        harness.PlacementsByModuleId[ModuleId] = [Placement(TabModuleId, TabId)];
+
+        Result<PagedResult<ModuleListItemDto>> matched = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { Query = "  wEl ", PageSize = 0 },
+            null,
+            false,
+            CancellationToken.None);
+
+        Result<PagedResult<ModuleListItemDto>> missed = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { Query = "absent", PageSize = 0 },
+            null,
+            false,
+            CancellationToken.None);
+
+        matched.Value.Items.Should().ContainSingle();
+        missed.Value.Items.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The recycle bin is excluded unless it is asked for, and asking for it brings the deleted module back
+    /// into the listing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListModules_HonoursTheDeletedRowSwitch()
+    {
+        Harness harness = Harness.Ready();
+        Module binned = StoredModule();
+        binned.IsDeleted = true;
+        harness.ModulePage = PagedResult<Module>.Unpaged([binned]);
+        harness.PlacementsByModuleId[ModuleId] = [Placement(TabModuleId, TabId)];
+
+        Result<PagedResult<ModuleListItemDto>> excluded = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            null,
+            includeDeleted: false,
+            CancellationToken.None);
+
+        Result<PagedResult<ModuleListItemDto>> included = await harness.Service.ListModulesAsync(
+            PortalId,
+            new PagedRequest { PageSize = 0 },
+            null,
+            includeDeleted: true,
+            CancellationToken.None);
+
+        excluded.Value.Items.Should().BeEmpty();
+        included.Value.Items.Should().ContainSingle();
     }
 
     /// <summary>
@@ -470,15 +553,33 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A paged answer keeps the module store's total, which counts modules rather than placements.
+    /// A paged answer reports a total that counts modules rather than placements, and echoes the window it
+    /// was asked for.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The total is now computed over the tenant's modules in the service rather than returned by the store,
+    /// because the legacy module block of the data provider carries no paging member and none was invented
+    /// on the repository contract. The observable behaviour is unchanged: thirty-one live modules, a request
+    /// for the second page of ten, and a total of thirty-one - even though the emitted rows are placements
+    /// and there are more of them than there are modules on the page.
+    /// </remarks>
     [Fact]
-    public async Task ListModules_KeepsTheStoresTotalWhenAPageWasAsked()
+    public async Task ListModules_KeepsAModuleTotalWhenAPageWasAsked()
     {
         Harness harness = Harness.Ready();
-        harness.ModulePage = PagedResult<Module>.Create([StoredModule()], totalCount: 31, pageIndex: 1, pageSize: 10);
-        harness.PlacementsByModuleId[ModuleId] = [Placement(TabModuleId, TabId)];
+
+        var tenantModules = new List<Module>();
+        for (int index = 0; index < 31; index++)
+        {
+            Module module = StoredModule();
+            module.ModuleId = index;
+            module.ModuleTitle = FormattableString.Invariant($"Module {index:D2}");
+            tenantModules.Add(module);
+            harness.PlacementsByModuleId[index] = [Placement(100 + index, TabId)];
+        }
+
+        harness.ModulePage = PagedResult<Module>.Unpaged(tenantModules);
 
         Result<PagedResult<ModuleListItemDto>> outcome = await harness.Service
             .ListModulesAsync(PortalId, new PagedRequest { PageIndex = 1, PageSize = 10 }, null, false, CancellationToken.None);
@@ -486,6 +587,7 @@ public class ModuleServiceTests
         outcome.Value.TotalCount.Should().Be(31);
         outcome.Value.PageIndex.Should().Be(1);
         outcome.Value.PageSize.Should().Be(10);
+        outcome.Value.Items.Should().HaveCount(10);
     }
 
     /// <summary>
@@ -617,7 +719,7 @@ public class ModuleServiceTests
 
         outcome.Value!.TabModuleId.Should().Be(TabModuleId);
         harness.Modules.Verify(
-            m => m.ListPlacementsAsync(ModuleId, It.IsAny<CancellationToken>()),
+            m => m.GetTabModulesByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -982,7 +1084,7 @@ public class ModuleServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RequestInvalidCode);
         harness.Modules.Verify(
-            m => m.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            m => m.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -1043,9 +1145,11 @@ public class ModuleServiceTests
         Module module = harness.LookupModule!;
         TabModule placement = module.TabModules.Single();
 
+        // The stored pane is captured before the update so the assertion below can prove it SURVIVES.
+        string storedPane = placement.PaneName;
+
         UpdateModuleRequest request = ValidUpdateRequest();
         request.ModuleTitle = "Renamed";
-        request.PaneName = "RightPane";
         request.ModuleOrder = 8;
         request.InheritViewPermissions = false;
         request.Visibility = ModuleVisibility.None;
@@ -1063,7 +1167,10 @@ public class ModuleServiceTests
         module.InheritViewPermissions.Should().BeFalse();
         module.Header.Should().Be("head");
         module.Footer.Should().Be("foot");
-        placement.PaneName.Should().Be("RightPane");
+        // MIGRATION: the pane is excluded from UpdateModuleRequest as Web Forms pane-layout state, so the
+        // update must PRESERVE the stored value rather than clear it. Its column is NOT NULL, so clearing it
+        // would fail the write outright.
+        placement.PaneName.Should().Be(storedPane);
         placement.ModuleOrder.Should().Be(8);
         placement.CacheTime.Should().Be(45);
         placement.IconFile.Should().Be("changed.gif");
@@ -1072,22 +1179,31 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A request that names no cache lifetime keeps the stored one rather than resetting it.
+    /// A request that omits the cache lifetime stores zero, disabling caching, because this endpoint replaces
+    /// rather than patches and zero is a real value rather than an absent one.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, and an earlier revision of this test asserted the
+    /// opposite. The legacy save read the cache-time box and stored a parsed integer when it was non-empty
+    /// and LITERALLY ZERO when it was empty, so a blank field disabled caching rather than preserving the
+    /// stored lifetime. CacheTime is consequently a non-nullable integer with no "unspecified" state to
+    /// exempt: treating zero as unset would silently enable caching on a module the caller asked not to
+    /// cache. Callers wanting to retain a lifetime must send it, which is the documented consequence of
+    /// full-replacement semantics.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateModule_KeepsTheStoredCacheTimeWhenNoneWasAsked()
+    public async Task UpdateModule_StoresZeroCacheTimeWhenNoneWasAsked()
     {
         Harness harness = Harness.Ready();
         TabModule placement = harness.LookupModule!.TabModules.Single();
         placement.CacheTime = 900;
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.CacheTime = null;
 
         await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
 
-        placement.CacheTime.Should().Be(900);
+        placement.CacheTime.Should().Be(0);
     }
 
     /// <summary>
@@ -1212,7 +1328,7 @@ public class ModuleServiceTests
         harness.AddSiteSettingsInstance();
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.IsDefaultModule = true;
+        request.SetAsDefaultSettings = true;
 
         Result<ModuleDetailDto?> outcome = await harness.Service
             .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
@@ -1238,7 +1354,7 @@ public class ModuleServiceTests
         Harness harness = Harness.Ready();
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.IsDefaultModule = true;
+        request.SetAsDefaultSettings = true;
 
         Result<ModuleDetailDto?> outcome = await harness.Service
             .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
@@ -1267,7 +1383,7 @@ public class ModuleServiceTests
         harness.SettingsByModuleId[OtherModuleId] = [stored];
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.IsDefaultModule = true;
+        request.SetAsDefaultSettings = true;
 
         await harness.Service.UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
 
@@ -1299,7 +1415,7 @@ public class ModuleServiceTests
         harness.PlacementsByModuleId[OtherModuleId] = [target];
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.AllModules = true;
+        request.ApplyToAllModules = true;
         request.Visibility = ModuleVisibility.Minimized;
         request.IconFile = "shared.gif";
         request.DisplayTitle = true;
@@ -1336,7 +1452,7 @@ public class ModuleServiceTests
         harness.PlacementsByModuleId[OtherModuleId] = [administrative];
 
         UpdateModuleRequest request = ValidUpdateRequest();
-        request.AllModules = true;
+        request.ApplyToAllModules = true;
         request.IconFile = "shared.gif";
 
         Result<ModuleDetailDto?> outcome = await harness.Service
@@ -1359,7 +1475,7 @@ public class ModuleServiceTests
 
         UpdateModuleRequest request = ValidUpdateRequest();
         request.AllTabs = true;
-        request.IsDefaultModule = true;
+        request.SetAsDefaultSettings = true;
 
         Result<ModuleDetailDto?> outcome = await harness.Service
             .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
@@ -2702,63 +2818,132 @@ public class ModuleServiceTests
                 .Setup(t => t.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.TenantTabs);
 
+            // The page-centric placement read belongs to ITabRepository, and the service now uses it to
+            // answer "which modules sit on this page" in one call. It is derived from the same placement
+            // world the module stubs below serve, so the harness stays internally consistent.
+            harness.Tabs
+                .Setup(t => t.GetTabModulesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, CancellationToken _) =>
+                    harness.PlacementsByModuleId.Values
+                        .SelectMany(placements => placements)
+                        .Where(placement => placement.TabId == tabId)
+                        .ToList());
+
             harness.Modules
-                .Setup(m => m.GetAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupModule);
             harness.Modules
-                .Setup(m => m.GetPlacementAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetTabModuleByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int tabModuleId, CancellationToken _) =>
                     harness.PlacementsById.TryGetValue(tabModuleId, out TabModule? found) ? found : null);
             harness.Modules
-                .Setup(m => m.ListPlacementsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetTabModulesByModuleIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int moduleId, CancellationToken _) =>
                     harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
                         ? (IReadOnlyList<TabModule>)found
                         : Array.Empty<TabModule>());
             harness.Modules
-                .Setup(m => m.ListSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetModuleSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int moduleId, CancellationToken _) =>
                     harness.SettingsByModuleId.TryGetValue(moduleId, out List<ModuleSetting>? found)
                         ? (IReadOnlyList<ModuleSetting>)found
                         : Array.Empty<ModuleSetting>());
             harness.Modules
-                .Setup(m => m.ListPlacementSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetTabModuleSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int tabModuleId, CancellationToken _) =>
                     harness.PlacementSettingsByTabModuleId.TryGetValue(tabModuleId, out List<TabModuleSetting>? found)
                         ? (IReadOnlyList<TabModuleSetting>)found
                         : Array.Empty<TabModuleSetting>());
+
+            // The repository contract carries no paging member, so the tenant's modules arrive whole and
+            // the service composes the page. ModulePage remains the harness's seam for that world.
             harness.Modules
-                .Setup(m => m.ListAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<int?>(),
-                    It.IsAny<bool>(),
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<string?>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.ModulePage);
+                .Setup(m => m.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.ModulePage.Items);
 
             harness.Modules
-                .Setup(m => m.Add(It.IsAny<Module>()))
-                .Callback<Module>(harness.AddedModules.Add);
+                .Setup(m => m.AddAsync(It.IsAny<Module>(), It.IsAny<CancellationToken>()))
+                .Callback<Module, CancellationToken>((module, _) => harness.AddedModules.Add(module))
+                .Returns(Task.CompletedTask);
             harness.Modules
-                .Setup(m => m.AddPlacement(It.IsAny<TabModule>()))
-                .Callback<TabModule>(harness.AddedPlacements.Add);
+                .Setup(m => m.AddTabModuleAsync(It.IsAny<TabModule>(), It.IsAny<CancellationToken>()))
+                .Callback<TabModule, CancellationToken>((placement, _) => harness.AddedPlacements.Add(placement))
+                .Returns(Task.CompletedTask);
             harness.Modules
-                .Setup(m => m.RemovePlacement(It.IsAny<TabModule>()))
-                .Callback<TabModule>(harness.RemovedPlacements.Add);
+                .Setup(m => m.AddModuleSettingAsync(It.IsAny<ModuleSetting>(), It.IsAny<CancellationToken>()))
+                .Callback<ModuleSetting, CancellationToken>((setting, _) => harness.AddedSettings.Add(setting))
+                .Returns(Task.CompletedTask);
             harness.Modules
-                .Setup(m => m.AddSetting(It.IsAny<ModuleSetting>()))
-                .Callback<ModuleSetting>(harness.AddedSettings.Add);
+                .Setup(m => m.AddTabModuleSettingAsync(It.IsAny<TabModuleSetting>(), It.IsAny<CancellationToken>()))
+                .Callback<TabModuleSetting, CancellationToken>((setting, _) => harness.AddedPlacementSettings.Add(setting))
+                .Returns(Task.CompletedTask);
+
+            // The deletes address their target by key rather than by entity, so each stub resolves the
+            // instance out of the harness's own world. Recording the resolved instance keeps the identity
+            // assertions in the tests meaningful.
             harness.Modules
-                .Setup(m => m.RemoveSetting(It.IsAny<ModuleSetting>()))
-                .Callback<ModuleSetting>(harness.RemovedSettings.Add);
+                .Setup(m => m.DeleteTabModuleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, int, CancellationToken>((tabId, moduleId, _) =>
+                {
+                    TabModule? stored = harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? placements)
+                        ? placements.FirstOrDefault(placement => placement.TabId == tabId)
+                        : null;
+
+                    stored ??= harness.PlacementsById.Values
+                        .OfType<TabModule>()
+                        .FirstOrDefault(placement => placement.TabId == tabId && placement.ModuleId == moduleId);
+
+                    if (stored is not null)
+                    {
+                        harness.RemovedPlacements.Add(stored);
+                    }
+                })
+                .Returns(Task.CompletedTask);
             harness.Modules
-                .Setup(m => m.AddPlacementSetting(It.IsAny<TabModuleSetting>()))
-                .Callback<TabModuleSetting>(harness.AddedPlacementSettings.Add);
+                .Setup(m => m.DeleteModuleSettingAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, string, CancellationToken>((moduleId, settingName, _) =>
+                {
+                    if (harness.SettingsByModuleId.TryGetValue(moduleId, out List<ModuleSetting>? settings)
+                        && settings.FirstOrDefault(setting =>
+                            string.Equals(setting.SettingName, settingName, StringComparison.Ordinal))
+                            is ModuleSetting stored)
+                    {
+                        harness.RemovedSettings.Add(stored);
+                    }
+                })
+                .Returns(Task.CompletedTask);
             harness.Modules
-                .Setup(m => m.RemovePlacementSetting(It.IsAny<TabModuleSetting>()))
-                .Callback<TabModuleSetting>(harness.RemovedPlacementSettings.Add);
+                .Setup(m => m.DeleteTabModuleSettingAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, string, CancellationToken>((tabModuleId, settingName, _) =>
+                {
+                    if (harness.PlacementSettingsByTabModuleId.TryGetValue(tabModuleId, out List<TabModuleSetting>? settings)
+                        && settings.FirstOrDefault(setting =>
+                            string.Equals(setting.SettingName, settingName, StringComparison.Ordinal))
+                            is TabModuleSetting stored)
+                    {
+                        harness.RemovedPlacementSettings.Add(stored);
+                    }
+                })
+                .Returns(Task.CompletedTask);
+            harness.Modules
+                .Setup(m => m.DeleteTabModuleSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((tabModuleId, _) =>
+                {
+                    if (harness.PlacementSettingsByTabModuleId.TryGetValue(tabModuleId, out List<TabModuleSetting>? settings))
+                    {
+                        harness.RemovedPlacementSettings.AddRange(settings);
+                    }
+                })
+                .Returns(Task.CompletedTask);
 
             harness.Definitions
                 .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))

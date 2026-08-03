@@ -266,7 +266,7 @@ public sealed class ModuleService : IModuleService
     /// which is what the legacy join-based read did too.
     /// </para>
     /// <para>
-    /// The total count needs an explicit reconciliation. <see cref="IModuleRepository.ListAsync"/>
+    /// The total count needs an explicit reconciliation. <see cref="ReadModulePageAsync"/>
     /// pages over modules, so its total is a module count. When a page is named the two agree, because
     /// a module has at most one placement on any one page. When no page is named an unpaged read
     /// reports the exact placement count, because every row is present; a paged read reports the
@@ -301,13 +301,11 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Portal {portalId} does not exist."));
         }
 
-        PagedResult<Module> page = await _modules.ListAsync(
+        PagedResult<Module> page = await ReadModulePageAsync(
             portalId,
             tabId,
             includeDeleted,
-            request.PageIndex,
-            request.PageSize,
-            request.HasQuery ? request.Query : null,
+            request,
             cancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<int, string> friendlyNames = page.Items.Count == 0
@@ -318,7 +316,7 @@ public sealed class ModuleService : IModuleService
         foreach (Module module in page.Items)
         {
             IReadOnlyList<TabModule> placements =
-                await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+                await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
             foreach (TabModule placement in OrderPlacements(placements, tabId))
             {
@@ -330,6 +328,81 @@ public sealed class ModuleService : IModuleService
             request.PageSize == UnpagedPageSize
                 ? PagedResult<ModuleListItemDto>.Unpaged(rows)
                 : PagedResult<ModuleListItemDto>.Create(rows, page.TotalCount, page.PageIndex, page.PageSize));
+    }
+
+    /// <summary>
+    /// Reads one page of a tenant's modules, applying the recycle-bin, page and title filters.
+    /// </summary>
+    /// <param name="portalId">The tenant whose modules are read.</param>
+    /// <param name="tabId">Restrict to the modules placed on one page, or <see langword="null"/> for the whole tenant.</param>
+    /// <param name="includeDeleted">Whether modules already in the recycle bin are included.</param>
+    /// <param name="request">The paging request supplying the page window and the optional title query.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The requested page of modules together with the unpaged total.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy module block of the data provider carries no paging member of any kind, so
+    /// none is invented on the repository contract; the page window and the filters are composed here,
+    /// in the layer that owns the paging request. The predicates are applied in the same order and with
+    /// the same meaning the single legacy query had.
+    /// <para>
+    /// The page filter is answered by the page repository rather than by reading each candidate module's
+    /// placements in turn. "Which modules sit on this page" is a page-centric question, it belongs to
+    /// that contract by the same ownership split that keeps placement mutation on the module contract,
+    /// and it resolves in one read instead of one per candidate.
+    /// </para>
+    /// </remarks>
+    private async Task<PagedResult<Module>> ReadModulePageAsync(
+        int portalId,
+        int? tabId,
+        bool includeDeleted,
+        PagedRequest request,
+        CancellationToken cancellationToken)
+    {
+        IEnumerable<Module> candidates =
+            await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        if (!includeDeleted)
+        {
+            candidates = candidates.Where(module => !module.IsDeleted);
+        }
+
+        if (tabId is int addressedTab)
+        {
+            // The presence of a value selects the filter, never its magnitude: TabID is IDENTITY(0, 1),
+            // so a page identifier of zero is a real page and must not be read as "unspecified".
+            IReadOnlyList<TabModule> onPage =
+                await _tabs.GetTabModulesAsync(addressedTab, cancellationToken).ConfigureAwait(false);
+
+            HashSet<int> placedModuleIds = onPage.Select(placement => placement.ModuleId).ToHashSet();
+            candidates = candidates.Where(module => placedModuleIds.Contains(module.ModuleId));
+        }
+
+        if (request.HasQuery)
+        {
+            // ModuleTitle is nullable, so the null test precedes the comparison. The match stays
+            // case-insensitive, as the lower-cased legacy comparison was.
+            string wanted = request.Query!.Trim();
+            candidates = candidates.Where(module =>
+                module.ModuleTitle is not null
+                && module.ModuleTitle.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+        }
+
+        List<Module> ordered = candidates
+            .OrderBy(module => module.ModuleTitle, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(module => module.ModuleId)
+            .ToList();
+
+        if (request.PageSize == UnpagedPageSize)
+        {
+            return PagedResult<Module>.Unpaged(ordered);
+        }
+
+        List<Module> window = ordered
+            .Skip(request.PageIndex * request.PageSize)
+            .Take(request.PageSize)
+            .ToList();
+
+        return PagedResult<Module>.Create(window, ordered.Count, request.PageIndex, request.PageSize);
     }
 
     /// <inheritdoc />
@@ -345,7 +418,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken = default)
     {
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -452,7 +525,7 @@ public sealed class ModuleService : IModuleService
             }
         }
 
-        _modules.Add(module);
+        await _modules.AddAsync(module, cancellationToken).ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         InvalidatePlacements(affectedTabIds);
 
@@ -500,7 +573,7 @@ public sealed class ModuleService : IModuleService
         }
 
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -544,7 +617,12 @@ public sealed class ModuleService : IModuleService
             }
         }
 
-        if (request.IsDefaultModule)
+        // MIGRATION: renamed from the legacy IsDefaultModule, whose name read as persisted state although it
+        // was excluded from the legacy object's serialisation and carried no column. The target name follows
+        // the wording the product showed its users, ModuleSettings.ascx.resx plDefault.Text, "Set As Default
+        // Settings?". It remains intent rather than state: the write below targets PORTAL configuration, and
+        // the portal comes from the per-request context rather than from the request body.
+        if (request.SetAsDefaultSettings)
         {
             bool recorded = await NameAsPortalDefaultAsync(
                 portalId,
@@ -558,7 +636,19 @@ public sealed class ModuleService : IModuleService
                     $"could not be named as the portal default because portal {portalId} has no \"{SiteSettingsDefinitionName}\" module instance"));
         }
 
-        if (request.AllModules)
+        // MIGRATION: renamed from the legacy AllModules, whose name read as a COLLECTION of modules rather
+        // than as an instruction about them, following ModuleSettings.ascx.resx plAllModules.Text, "Apply To
+        // All Modules?".
+        //
+        // MIGRATION: 5.9 - the propagation this triggers is NARROWER than the legacy's. The legacy loop
+        // copied NINE appearance values - alignment, colour, border, icon, visibility, container source and
+        // the title, print and syndicate flags - to every module on every non-administrative page. SIX of
+        // those nine are excluded from UpdateModuleRequest as pane-layout, rendering or skinning concerns,
+        // leaving only the icon, the visibility and the container-display flag propagable. That is a
+        // documented functional reduction rather than an oversight, and it follows mechanically from the
+        // exclusions. This is still the only path in the module API that writes rows outside the addressed
+        // module, so its portal-wide reach is why it is administrator-gated by policy.
+        if (request.ApplyToAllModules)
         {
             int copied = await PropagateAppearanceAsync(portalId, placement, affectedTabIds, cancellationToken)
                 .ConfigureAwait(false);
@@ -597,7 +687,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken = default)
     {
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -611,7 +701,7 @@ public sealed class ModuleService : IModuleService
 
         if (tabModuleId is int addressed)
         {
-            TabModule? placement = await _modules.GetPlacementAsync(addressed, cancellationToken).ConfigureAwait(false);
+            TabModule? placement = await _modules.GetTabModuleByIdAsync(addressed, cancellationToken).ConfigureAwait(false);
             if (placement is null || placement.ModuleId != moduleId)
             {
                 return Result.Failure(
@@ -627,7 +717,7 @@ public sealed class ModuleService : IModuleService
             module.IsDeleted = true;
 
             IReadOnlyList<TabModule> placements =
-                await _modules.ListPlacementsAsync(moduleId, cancellationToken).ConfigureAwait(false);
+                await _modules.GetTabModulesByModuleIdAsync(moduleId, cancellationToken).ConfigureAwait(false);
 
             foreach (TabModule placement in placements)
             {
@@ -654,7 +744,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken = default)
     {
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -674,10 +764,10 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyList<ModuleSetting> moduleSettings =
-            await _modules.ListSettingsAsync(moduleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetModuleSettingsAsync(moduleId, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<TabModuleSetting> placementSettings =
-            await _modules.ListPlacementSettingsAsync(placement.TabModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetTabModuleSettingsAsync(placement.TabModuleId, cancellationToken).ConfigureAwait(false);
 
         return Result<ModuleSettingsDto?>.Success(
             ModuleMappings.ToSettings(module, placement, moduleSettings, placementSettings));
@@ -715,7 +805,7 @@ public sealed class ModuleService : IModuleService
         ArgumentNullException.ThrowIfNull(tabModuleSettings);
 
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -746,7 +836,7 @@ public sealed class ModuleService : IModuleService
         TabModule? placement = null;
         if (tabModuleId is int addressed)
         {
-            placement = await _modules.GetPlacementAsync(addressed, cancellationToken).ConfigureAwait(false);
+            placement = await _modules.GetTabModuleByIdAsync(addressed, cancellationToken).ConfigureAwait(false);
             if (placement is null || placement.ModuleId != moduleId)
             {
                 return Result.Failure(
@@ -784,14 +874,16 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyList<ModuleSetting> storedModuleSettings =
-            await _modules.ListSettingsAsync(moduleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetModuleSettingsAsync(moduleId, cancellationToken).ConfigureAwait(false);
 
         var survivingModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (ModuleSetting stored in storedModuleSettings)
         {
             if (!desiredModuleSettings.TryGetValue(stored.SettingName, out string? desired))
             {
-                _modules.RemoveSetting(stored);
+                await _modules
+                    .DeleteModuleSettingAsync(stored.ModuleId, stored.SettingName, cancellationToken)
+                    .ConfigureAwait(false);
                 continue;
             }
 
@@ -809,18 +901,22 @@ public sealed class ModuleService : IModuleService
                 continue;
             }
 
-            _modules.AddSetting(new ModuleSetting
-            {
-                ModuleId = moduleId,
-                SettingName = desired.Key,
-                SettingValue = desired.Value,
-            });
+            await _modules
+                .AddModuleSettingAsync(
+                    new ModuleSetting
+                    {
+                        ModuleId = moduleId,
+                        SettingName = desired.Key,
+                        SettingValue = desired.Value,
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (placement is not null)
         {
             IReadOnlyList<TabModuleSetting> storedPlacementSettings = await _modules
-                .ListPlacementSettingsAsync(placement.TabModuleId, cancellationToken)
+                .GetTabModuleSettingsAsync(placement.TabModuleId, cancellationToken)
                 .ConfigureAwait(false);
 
             var survivingPlacementNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -828,7 +924,9 @@ public sealed class ModuleService : IModuleService
             {
                 if (!desiredPlacementSettings.TryGetValue(stored.SettingName, out string? desired))
                 {
-                    _modules.RemovePlacementSetting(stored);
+                    await _modules
+                        .DeleteTabModuleSettingAsync(stored.TabModuleId, stored.SettingName, cancellationToken)
+                        .ConfigureAwait(false);
                     continue;
                 }
 
@@ -846,12 +944,16 @@ public sealed class ModuleService : IModuleService
                     continue;
                 }
 
-                _modules.AddPlacementSetting(new TabModuleSetting
-                {
-                    TabModuleId = placement.TabModuleId,
-                    SettingName = desired.Key,
-                    SettingValue = desired.Value,
-                });
+                await _modules
+                    .AddTabModuleSettingAsync(
+                        new TabModuleSetting
+                        {
+                            TabModuleId = placement.TabModuleId,
+                            SettingName = desired.Key,
+                            SettingValue = desired.Value,
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -864,7 +966,7 @@ public sealed class ModuleService : IModuleService
         else
         {
             IReadOnlyList<TabModule> placements =
-                await _modules.ListPlacementsAsync(moduleId, cancellationToken).ConfigureAwait(false);
+                await _modules.GetTabModulesByModuleIdAsync(moduleId, cancellationToken).ConfigureAwait(false);
 
             foreach (TabModule affected in placements)
             {
@@ -945,7 +1047,7 @@ public sealed class ModuleService : IModuleService
         }
 
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: false, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -1018,7 +1120,7 @@ public sealed class ModuleService : IModuleService
         ArgumentNullException.ThrowIfNull(request);
 
         Module? module = await _modules
-            .GetAsync(request.ModuleId, includePlacements: false, cancellationToken)
+            .GetByIdAsync(request.ModuleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
@@ -1087,7 +1189,7 @@ public sealed class ModuleService : IModuleService
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<TabModule> placements =
-            await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
         foreach (TabModule placement in placements)
         {
@@ -1219,7 +1321,7 @@ public sealed class ModuleService : IModuleService
     {
         if (tabModuleId is int addressed)
         {
-            TabModule? named = await _modules.GetPlacementAsync(addressed, cancellationToken).ConfigureAwait(false);
+            TabModule? named = await _modules.GetTabModuleByIdAsync(addressed, cancellationToken).ConfigureAwait(false);
             if (named is not null && named.ModuleId == module.ModuleId)
             {
                 return Result<TabModule?>.Success(named);
@@ -1235,7 +1337,7 @@ public sealed class ModuleService : IModuleService
 
         IReadOnlyList<TabModule> placements = module.TabModules.Count > 0
             ? module.TabModules.ToList()
-            : await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+            : await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
         return Result<TabModule?>.Success(
             placements.OrderBy(candidate => candidate.TabModuleId).FirstOrDefault());
@@ -1406,7 +1508,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<TabModule> existing =
-            await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
         var placed = existing.Select(placement => placement.TabId).ToHashSet();
         int added = 0;
@@ -1418,23 +1520,27 @@ public sealed class ModuleService : IModuleService
                 continue;
             }
 
-            _modules.AddPlacement(new TabModule
-            {
-                TabId = target.TabId,
-                ModuleId = module.ModuleId,
-                PaneName = template.PaneName,
-                ModuleOrder = template.ModuleOrder,
-                CacheTime = template.CacheTime,
-                Alignment = template.Alignment,
-                Color = template.Color,
-                Border = template.Border,
-                IconFile = template.IconFile,
-                Visibility = template.Visibility,
-                ContainerSrc = template.ContainerSrc,
-                DisplayTitle = template.DisplayTitle,
-                DisplayPrint = template.DisplayPrint,
-                DisplaySyndicate = template.DisplaySyndicate,
-            });
+            await _modules
+                .AddTabModuleAsync(
+                    new TabModule
+                    {
+                        TabId = target.TabId,
+                        ModuleId = module.ModuleId,
+                        PaneName = template.PaneName,
+                        ModuleOrder = template.ModuleOrder,
+                        CacheTime = template.CacheTime,
+                        Alignment = template.Alignment,
+                        Color = template.Color,
+                        Border = template.Border,
+                        IconFile = template.IconFile,
+                        Visibility = template.Visibility,
+                        ContainerSrc = template.ContainerSrc,
+                        DisplayTitle = template.DisplayTitle,
+                        DisplayPrint = template.DisplayPrint,
+                        DisplaySyndicate = template.DisplaySyndicate,
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             affectedTabIds.Add(target.TabId);
             added++;
@@ -1458,7 +1564,7 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<TabModule> existing =
-            await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
         int removed = 0;
         foreach (TabModule stale in existing.Where(placement => placement.TabModuleId != kept.TabModuleId))
@@ -1483,16 +1589,15 @@ public sealed class ModuleService : IModuleService
     /// </remarks>
     private async Task RemovePlacementAsync(TabModule placement, CancellationToken cancellationToken)
     {
-        IReadOnlyList<TabModuleSetting> settings = await _modules
-            .ListPlacementSettingsAsync(placement.TabModuleId, cancellationToken)
+        // The whole placement-scoped collection goes, so this is the bulk removal the legacy provider
+        // exposed for exactly this case rather than a read followed by a row-at-a-time loop.
+        await _modules
+            .DeleteTabModuleSettingsAsync(placement.TabModuleId, cancellationToken)
             .ConfigureAwait(false);
 
-        foreach (TabModuleSetting setting in settings)
-        {
-            _modules.RemovePlacementSetting(setting);
-        }
-
-        _modules.RemovePlacement(placement);
+        await _modules
+            .DeleteTabModuleAsync(placement.TabId, placement.ModuleId, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1526,17 +1631,15 @@ public sealed class ModuleService : IModuleService
             return false;
         }
 
-        PagedResult<Module> instances = await _modules.ListAsync(
-            portalId,
-            tabId: null,
-            includeDeleted: false,
-            pageIndex: 0,
-            pageSize: UnpagedPageSize,
-            titleFilter: null,
-            cancellationToken).ConfigureAwait(false);
+        // MIGRATION: the legacy module block has no paging member, so the tenant's modules are read whole
+        // and the recycle bin is excluded here. This call site never wanted a page - it asked for every
+        // live instance so it could locate one by its definition.
+        IReadOnlyList<Module> instances =
+            await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        Module? host = instances.Items.FirstOrDefault(candidate =>
-            candidate.ModuleDefinitionId == siteSettings.ModuleDefinitionId);
+        Module? host = instances.FirstOrDefault(candidate =>
+            !candidate.IsDeleted
+            && candidate.ModuleDefinitionId == siteSettings.ModuleDefinitionId);
 
         if (host is null)
         {
@@ -1544,10 +1647,12 @@ public sealed class ModuleService : IModuleService
         }
 
         IReadOnlyList<ModuleSetting> stored =
-            await _modules.ListSettingsAsync(host.ModuleId, cancellationToken).ConfigureAwait(false);
+            await _modules.GetModuleSettingsAsync(host.ModuleId, cancellationToken).ConfigureAwait(false);
 
-        UpsertSetting(stored, host.ModuleId, DefaultModuleSettingName, moduleId.ToString(CultureInfo.InvariantCulture));
-        UpsertSetting(stored, host.ModuleId, DefaultTabSettingName, tabId.ToString(CultureInfo.InvariantCulture));
+        await UpsertSettingAsync(stored, host.ModuleId, DefaultModuleSettingName, moduleId.ToString(CultureInfo.InvariantCulture), cancellationToken)
+            .ConfigureAwait(false);
+        await UpsertSettingAsync(stored, host.ModuleId, DefaultTabSettingName, tabId.ToString(CultureInfo.InvariantCulture), cancellationToken)
+            .ConfigureAwait(false);
 
         return true;
     }
@@ -1559,11 +1664,14 @@ public sealed class ModuleService : IModuleService
     /// <param name="moduleId">The module the setting belongs to.</param>
     /// <param name="settingName">The setting name.</param>
     /// <param name="settingValue">The value to store.</param>
-    private void UpsertSetting(
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>A task that completes once the write is staged.</returns>
+    private async Task UpsertSettingAsync(
         IReadOnlyList<ModuleSetting> stored,
         int moduleId,
         string settingName,
-        string settingValue)
+        string settingValue,
+        CancellationToken cancellationToken)
     {
         ModuleSetting? existing = stored.FirstOrDefault(candidate =>
             string.Equals(candidate.SettingName, settingName, StringComparison.OrdinalIgnoreCase));
@@ -1574,12 +1682,16 @@ public sealed class ModuleService : IModuleService
             return;
         }
 
-        _modules.AddSetting(new ModuleSetting
-        {
-            ModuleId = moduleId,
-            SettingName = settingName,
-            SettingValue = settingValue,
-        });
+        await _modules
+            .AddModuleSettingAsync(
+                new ModuleSetting
+                {
+                    ModuleId = moduleId,
+                    SettingName = settingName,
+                    SettingValue = settingValue,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1604,20 +1716,17 @@ public sealed class ModuleService : IModuleService
         IReadOnlyList<Tab> contentTabs = await ReadContentTabsAsync(portalId, cancellationToken).ConfigureAwait(false);
         var contentTabIds = contentTabs.Select(tab => tab.TabId).ToHashSet();
 
-        PagedResult<Module> instances = await _modules.ListAsync(
-            portalId,
-            tabId: null,
-            includeDeleted: false,
-            pageIndex: 0,
-            pageSize: UnpagedPageSize,
-            titleFilter: null,
-            cancellationToken).ConfigureAwait(false);
+        // MIGRATION: the legacy module block has no paging member, so the tenant's modules are read whole
+        // and the recycle bin is excluded here. This call site never wanted a page - it asked for every
+        // live instance so it could locate one by its definition.
+        IReadOnlyList<Module> instances =
+            await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         int copied = 0;
-        foreach (Module candidate in instances.Items)
+        foreach (Module candidate in instances.Where(module => !module.IsDeleted))
         {
             IReadOnlyList<TabModule> placements =
-                await _modules.ListPlacementsAsync(candidate.ModuleId, cancellationToken).ConfigureAwait(false);
+                await _modules.GetTabModulesByModuleIdAsync(candidate.ModuleId, cancellationToken).ConfigureAwait(false);
 
             foreach (TabModule target in placements)
             {

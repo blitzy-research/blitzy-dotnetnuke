@@ -95,7 +95,20 @@ public sealed class PermissionService : IPermissionService
     /// </summary>
     private const int UnpagedPageSize = 0;
 
+    /// <summary>
+    /// Every permission key the schema can hold, which is the enumeration itself.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>Permission.PermissionKey</c> is a closed enumeration whose member names are the
+    /// stored <c>varchar(50)</c> values, so this sequence is the complete key vocabulary by
+    /// construction rather than by observation - no catalogue row can carry a key outside it. That is
+    /// what lets the unfiltered catalogue question and the host-account answer be settled without a
+    /// round trip.
+    /// </remarks>
+    private static readonly IReadOnlyList<PermissionKey> AllPermissionKeys = Enum.GetValues<PermissionKey>();
+
     private readonly IPermissionRepository _permissions;
+    private readonly IPermissionEvaluator _evaluator;
     private readonly IPortalRepository _portals;
     private readonly IModuleRepository _modules;
     private readonly ITabRepository _tabs;
@@ -106,7 +119,15 @@ public sealed class PermissionService : IPermissionService
     /// <summary>
     /// Initialises the service with the collaborators it resolves callers and scopes through.
     /// </summary>
-    /// <param name="permissions">The permission catalogue, the grants, and the single evaluator.</param>
+    /// <param name="permissions">
+    /// The permission aggregate's persistence contract: the catalogue and the grant rows. It answers
+    /// no access question, which is why the evaluator is a separate collaborator.
+    /// </param>
+    /// <param name="evaluator">
+    /// The single authority on allow-and-deny precedence. This service resolves the caller into a set
+    /// of role names and then asks the evaluator what the caller consequently holds, so it owns the
+    /// rules about <em>who the caller is</em> and none of the rules about <em>how grants combine</em>.
+    /// </param>
     /// <param name="portals">Portal existence.</param>
     /// <param name="modules">Module existence and, for the inherit-view rule, module placement.</param>
     /// <param name="tabs">Page existence.</param>
@@ -115,6 +136,7 @@ public sealed class PermissionService : IPermissionService
     /// <param name="portalOptions">Bound configuration supplying the two pseudo-role names.</param>
     public PermissionService(
         IPermissionRepository permissions,
+        IPermissionEvaluator evaluator,
         IPortalRepository portals,
         IModuleRepository modules,
         ITabRepository tabs,
@@ -123,6 +145,7 @@ public sealed class PermissionService : IPermissionService
         PortalOptions portalOptions)
     {
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
+        _evaluator = evaluator ?? throw new ArgumentNullException(nameof(evaluator));
         _portals = portals ?? throw new ArgumentNullException(nameof(portals));
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
@@ -158,8 +181,8 @@ public sealed class PermissionService : IPermissionService
                     $"Module definition {definitionId} cannot name a row; identifiers start at {LowestModuleDefinitionId}."));
         }
 
-        IReadOnlyList<Permission> catalogue =
-            await _permissions.ListAsync(permissionCode, moduleDefinitionId, cancellationToken)
+        IReadOnlyList<string> catalogueKeys =
+            await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, cancellationToken)
                 .ConfigureAwait(false);
 
         // MIGRATION: Permission.PermissionKey is the closed PermissionKey enumeration, whose member
@@ -167,8 +190,7 @@ public sealed class PermissionService : IPermissionService
         // it can only ever yield VIEW, EDIT, READ or WRITE. Normalise still runs: it de-duplicates the
         // catalogue and imposes the ordinal ordering the contract promises, and it is the same
         // treatment the grant-derived answers below receive, which do arrive as arbitrary column text.
-        return Result<IReadOnlyList<string>>.Success(Normalise(
-            catalogue.Select(entry => entry.PermissionKey.ToString())));
+        return Result<IReadOnlyList<string>>.Success(Normalise(catalogueKeys));
     }
 
     /// <inheritdoc />
@@ -216,21 +238,22 @@ public sealed class PermissionService : IPermissionService
 
         if (caller.IsSuperUser)
         {
-            IReadOnlyList<Permission> catalogue = await _permissions
-                .ListAsync(permissionCode: null, moduleDefinitionId: null, cancellationToken)
-                .ConfigureAwait(false);
-
-            // MIGRATION: see GetPermissionKeysAsync - the enumeration member name is the stored value,
-            // so a host account is answered with the catalogue's own key names and nothing is translated.
+            // MIGRATION: a host account is answered from the closed PermissionKey enumeration rather
+            // than by reading the catalogue table. The legacy role test returned true for a host
+            // account before examining a single grant, so the answer is "everything" by definition;
+            // and since Permission.PermissionKey IS that enumeration, the enumeration is the complete
+            // set of keys any catalogue row could ever carry. Reading the table would ask the store a
+            // question whose answer is already known, and would answer "everything" with less than
+            // everything on an installation whose catalogue happens to be missing a row.
             return Result<IReadOnlyList<string>>.Success(Normalise(
-                catalogue.Select(entry => entry.PermissionKey.ToString())));
+                AllPermissionKeys.Select(key => key.ToString())));
         }
 
         Module? module = null;
         if (moduleId is int scopedModuleId)
         {
             module = await _modules
-                .GetAsync(scopedModuleId, includePlacements: true, cancellationToken)
+                .GetByIdAsync(scopedModuleId, cancellationToken)
                 .ConfigureAwait(false);
 
             if (module is null || !BelongsToPortal(module.PortalId, portalId))
@@ -255,7 +278,7 @@ public sealed class PermissionService : IPermissionService
 
         if (module is null && tabId is null)
         {
-            IReadOnlyList<string> portalWide = await _permissions
+            IReadOnlyList<string> portalWide = await _evaluator
                 .ListEffectivePortalPermissionKeysAsync(portalId, userId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -266,7 +289,7 @@ public sealed class PermissionService : IPermissionService
 
         if (module is not null)
         {
-            IReadOnlyList<string> moduleKeys = await _permissions
+            IReadOnlyList<string> moduleKeys = await _evaluator
                 .ListEffectiveModulePermissionKeysAsync(module.ModuleId, userId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -291,7 +314,7 @@ public sealed class PermissionService : IPermissionService
 
         if (tabId is int pageId)
         {
-            IReadOnlyList<string> tabKeys = await _permissions
+            IReadOnlyList<string> tabKeys = await _evaluator
                 .ListEffectiveTabPermissionKeysAsync(pageId, userId, caller.RoleNames, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -322,7 +345,7 @@ public sealed class PermissionService : IPermissionService
         }
 
         Module? module = await _modules
-            .GetAsync(moduleId, includePlacements: true, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || !BelongsToPortal(module.PortalId, portalId))
@@ -353,7 +376,7 @@ public sealed class PermissionService : IPermissionService
             return Result<bool>.Success(inherited);
         }
 
-        bool granted = await _permissions
+        bool granted = await _evaluator
             .HasModulePermissionAsync(moduleId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
 
@@ -401,7 +424,7 @@ public sealed class PermissionService : IPermissionService
             return Result<bool>.Success(true);
         }
 
-        bool granted = await _permissions
+        bool granted = await _evaluator
             .HasTabPermissionAsync(tabId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
 
@@ -416,9 +439,13 @@ public sealed class PermissionService : IPermissionService
     /// that role as well.
     /// </para>
     /// <para>
-    /// The removal spans both grant tables and is committed as one unit by the repository member, whose
-    /// contract makes it immediate rather than staged and has it report how many entries it removed.
-    /// Removing nothing is a legitimate outcome, so an account that held no direct grants succeeds.
+    /// MIGRATION: the removal spans both grant tables and is therefore two repository calls, one per
+    /// table, exactly as the legacy provider declared it - <c>DeleteModulePermissionsByUserID</c> at
+    /// core <c>DataProvider.vb</c>:L296 and <c>DeleteTabPermissionsByUserID</c> at L305 were two
+    /// separate members over two separate tables, and each terminal procedure joins its own grant
+    /// table to its own owning table to bound the delete to one tenant. Neither reports a count, and
+    /// neither did in the legacy source; removing nothing is a legitimate outcome, so an account that
+    /// held no direct grants succeeds.
     /// </para>
     /// <para>
     /// The portal is taken as an argument deliberately. The two legacy cleanups read it off the account
@@ -448,10 +475,85 @@ public sealed class PermissionService : IPermissionService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        await _permissions.DeleteUserPermissionsAsync(portalId, userId, cancellationToken)
+        await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Reads the catalogue keys matching an optional scope code and an optional module definition.
+    /// </summary>
+    /// <param name="permissionCode">The scope code filter, or <see langword="null"/> for no restriction.</param>
+    /// <param name="moduleDefinitionId">The module definition filter, or <see langword="null"/> for no restriction.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The keys the catalogue reports for that combination, unnormalised.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy catalogue reader, core <c>DataProvider.vb</c>:L284
+    /// <c>GetPermissionByCodeAndKey</c>, treated a null in either argument as a wildcard, so one
+    /// procedure served "everything", "by code", "by key" and "by both". The repository contract that
+    /// replaces it takes a non-nullable code and a non-nullable key, because a wildcard argument on a
+    /// typed contract is precisely the sentinel-in-the-signature habit this migration removes. The
+    /// three shapes are therefore composed here, in the layer that owns the question, from the two
+    /// filtered reads the provider actually declared.
+    /// </para>
+    /// <para>
+    /// A definition filter goes straight to the definition-scoped read (core
+    /// <c>DataProvider.vb</c>:L281), and any code filter is then applied to its result: a definition
+    /// declares a handful of entries, so filtering them in memory costs nothing and avoids a second
+    /// round trip. A code filter on its own iterates the closed key enumeration - at most four reads,
+    /// bounded by the schema rather than by the data - because "which keys exist under this code" is
+    /// exactly the question the code-and-key read answers, one key at a time. Neither filter present
+    /// is answered from the enumeration, for the reason given on that field.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<string>> ReadCatalogueKeysAsync(
+        string? permissionCode,
+        int? moduleDefinitionId,
+        CancellationToken cancellationToken)
+    {
+        string? wantedCode = permissionCode?.Trim();
+
+        if (moduleDefinitionId is int definitionId)
+        {
+            IReadOnlyList<Permission> declared = await _permissions
+                .GetByModuleDefinitionIdAsync(definitionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            IEnumerable<Permission> matching = wantedCode is null
+                ? declared
+                : declared.Where(entry => string.Equals(
+                    entry.PermissionCode,
+                    wantedCode,
+                    StringComparison.OrdinalIgnoreCase));
+
+            return matching.Select(entry => entry.PermissionKey.ToString()).ToList();
+        }
+
+        if (wantedCode is not null)
+        {
+            var present = new List<string>(AllPermissionKeys.Count);
+
+            foreach (PermissionKey candidate in AllPermissionKeys)
+            {
+                IReadOnlyList<Permission> entries = await _permissions
+                    .GetByCodeAndKeyAsync(wantedCode, candidate, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (entries.Count > 0)
+                {
+                    present.Add(candidate.ToString());
+                }
+            }
+
+            return present;
+        }
+
+        return AllPermissionKeys.Select(key => key.ToString()).ToList();
     }
 
     /// <summary>
@@ -478,11 +580,11 @@ public sealed class PermissionService : IPermissionService
     {
         IReadOnlyList<TabModule> placements = module.TabModules.Count > 0
             ? module.TabModules.ToList()
-            : await _modules.ListPlacementsAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+            : await _modules.GetTabModulesByModuleIdAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
 
         foreach (TabModule placement in placements)
         {
-            bool granted = await _permissions
+            bool granted = await _evaluator
                 .HasTabPermissionAsync(
                     placement.TabId,
                     PermissionKey.VIEW,

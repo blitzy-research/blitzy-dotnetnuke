@@ -3,6 +3,8 @@ using System.Security.Claims;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
+using DnnMigration.Domain.Entities;
+using DnnMigration.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 
@@ -144,15 +146,29 @@ internal sealed class PortalAdministratorAuthorizationHandler
         }
 
         // The authoritative question, asked by keys. The cancellation token is not available on the
-        // authorisation context, so none is passed; the query is a single indexed existence check.
-        bool isAdministrator = await _roles
-            .IsUserInPortalRoleAsync(
-                userId,
-                administratorRoleId,
-                portal.PortalId,
-                _clock.UtcNow,
-                CancellationToken.None)
+        // authorisation context, so none is passed.
+        //
+        // MIGRATION: the decision is composed from the assignment read and the entity's own status
+        // rule rather than from a predicate inside the repository, because classifying a membership is
+        // not persistence. IRoleRepository.GetUserRolesAsync applies the tenant anchor - UserRoles has
+        // no portal column, so the scope is taken from the role the assignment points at, which means
+        // a role with no owning portal can never satisfy a portal question - and UserRole.GetStatus
+        // applies the validity window. That window is exactly the legacy predicate
+        // ( EffectiveDate <= getdate() or EffectiveDate is null ) and its expiry counterpart, seen at
+        // 03.02.03.SqlDataProvider:L405: an absent bound is unbounded in that direction rather than
+        // "now". GetStatus additionally treats the legacy Null.NullDate marker as unset, which the SQL
+        // predicate could not, so a membership bounded by that marker is correctly read as unbounded.
+        // Every assignment is examined rather than just the first, so a duplicated pair cannot hide a
+        // valid grant behind a lapsed one.
+        DateTime asOfUtc = _clock.UtcNow;
+
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesAsync(portal.PortalId, userId, CancellationToken.None)
             .ConfigureAwait(false);
+
+        bool isAdministrator = assignments.Any(assignment =>
+            assignment.RoleId == administratorRoleId
+            && assignment.GetStatus(asOfUtc) == RoleStatus.Active);
 
         if (isAdministrator)
         {

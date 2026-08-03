@@ -394,7 +394,7 @@ public sealed class DnnDbContextTests
                 AutoAssignment = false,
             };
 
-            roles.Add(role);
+            await roles.AddAsync(role);
             await unitOfWork.SaveChangesAsync();
 
             roleId = role.RoleId;
@@ -415,7 +415,7 @@ public sealed class DnnDbContextTests
         {
             IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            Role? reread = await roles.GetAsync(roleId);
+            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
 
             reread.Should().NotBeNull();
             reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.Month);
@@ -459,7 +459,7 @@ public sealed class DnnDbContextTests
                 AutoAssignment = false,
             };
 
-            roles.Add(role);
+            await roles.AddAsync(role);
             await unitOfWork.SaveChangesAsync();
 
             roleId = role.RoleId;
@@ -476,7 +476,7 @@ public sealed class DnnDbContextTests
         {
             IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            Role? reread = await roles.GetAsync(roleId);
+            Role? reread = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
 
             reread.Should().NotBeNull();
             reread!.BillingFrequency.Should().BeNull();
@@ -548,13 +548,10 @@ public sealed class DnnDbContextTests
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Role? doomed = await roles.GetAsync(roleId);
-
-        if (doomed is not null)
-        {
-            roles.Remove(doomed);
-            await unitOfWork.SaveChangesAsync();
-        }
+        // DeleteAsync carries the key alone, exactly as the legacy DeleteRole did, and is a no-op when
+        // no such role exists - so the read-then-remove pair this replaces is no longer needed.
+        await roles.DeleteAsync(roleId);
+        await unitOfWork.SaveChangesAsync();
     }
 
     /// <summary>Produces a short random suffix so concurrently executing suites cannot collide.</summary>

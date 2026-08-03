@@ -159,8 +159,8 @@ public sealed class RoleService : IRoleService
 
         if (roleGroupId is int scopedGroupId)
         {
-            RoleGroup? group = await _roles.GetGroupAsync(scopedGroupId, cancellationToken).ConfigureAwait(false);
-            if (group is null || group.PortalId != portalId)
+            RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, scopedGroupId, cancellationToken).ConfigureAwait(false);
+            if (group is null)
             {
                 return Result<PagedResult<RoleListItemDto>>.Failure(
                     RoleGroupNotFoundCode,
@@ -168,19 +168,52 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        PagedResult<Role> page = await _roles.ListAsync(
-            portalId,
-            roleGroupId,
-            request.PageIndex,
-            request.PageSize,
-            request.Query,
-            cancellationToken).ConfigureAwait(false);
+        // MIGRATION: the narrowing below is applied here rather than in the repository because the
+        // legacy membership provider exposed no paged, filtered or group-scoped role read. Its whole
+        // role-listing surface was GetPortalRoles(PortalId) (DataProvider.vb:L91), which returned every
+        // row; the group restriction and the name search were the admin screen's own work. A portal
+        // holds tens of roles, so materialising its set and narrowing it in memory is faithful to the
+        // legacy shape and costs nothing measurable.
+        IReadOnlyList<Role> visible = await _roles
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
 
-        IReadOnlyList<RoleListItemDto> rows = page.Items.Select(RoleMappings.ToListItem).ToList();
+        // The repository read admits the installation-wide roles that carry no owning portal, because
+        // the terminal GetPortalRoles did (04.08.00.SqlDataProvider:L40). This screen lists only the
+        // roles the portal itself owns, which is the behaviour this endpoint has always had, so the
+        // strict ownership test is reapplied here rather than weakened in the repository.
+        IEnumerable<Role> matching = visible.Where(candidate => candidate.PortalId == portalId);
+
+        if (roleGroupId is int filteredGroupId)
+        {
+            // RoleGroupID is IDENTITY(0, 1), so zero is a legitimate group key; the presence of a
+            // value selects the filter, never its magnitude.
+            matching = matching.Where(candidate => candidate.RoleGroupId == filteredGroupId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Query))
+        {
+            string wanted = request.Query.Trim();
+            matching = matching.Where(candidate =>
+                candidate.RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+        }
+
+        List<Role> ordered = matching
+            .OrderBy(candidate => candidate.RoleName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.RoleId)
+            .ToList();
+
+        int totalCount = ordered.Count;
+
+        IReadOnlyList<RoleListItemDto> rows = (request.PageSize == 0
+                ? ordered
+                : ordered.Skip(request.PageIndex * request.PageSize).Take(request.PageSize).ToList())
+            .Select(RoleMappings.ToListItem)
+            .ToList();
 
         PagedResult<RoleListItemDto> projected = request.PageSize == 0
             ? PagedResult<RoleListItemDto>.Unpaged(rows)
-            : PagedResult<RoleListItemDto>.Create(rows, page.TotalCount, page.PageIndex, page.PageSize);
+            : PagedResult<RoleListItemDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
 
         return Result<PagedResult<RoleListItemDto>>.Success(projected);
     }
@@ -196,8 +229,8 @@ public sealed class RoleService : IRoleService
             return Result<RoleDetailDto?>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             // A role that the portal does not own is indistinguishable from one that does not exist, and
             // absence on a read is a success carrying no value rather than a fabricated failure.
@@ -223,8 +256,8 @@ public sealed class RoleService : IRoleService
 
         if (request.RoleGroupId is int requestedGroupId)
         {
-            RoleGroup? group = await _roles.GetGroupAsync(requestedGroupId, cancellationToken).ConfigureAwait(false);
-            if (group is null || group.PortalId != portalId)
+            RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, requestedGroupId, cancellationToken).ConfigureAwait(false);
+            if (group is null)
             {
                 return Result<RoleDetailDto>.Failure(
                     RoleGroupNotFoundCode,
@@ -232,10 +265,14 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        bool nameTaken = await _roles
-            .RoleNameExistsAsync(portalId, request.RoleName, null, cancellationToken)
+        // MIGRATION: uniqueness is settled by the legacy name lookup itself. IX_RoleName is unique
+        // over (PortalID, RoleName), so GetRoleByName (membership DataProvider.vb:L94) can match at
+        // most one row and a non-null answer IS the duplicate report - no separate existence member is
+        // needed on the repository contract.
+        Role? clashing = await _roles
+            .GetByNameAsync(portalId, request.RoleName, cancellationToken)
             .ConfigureAwait(false);
-        if (nameTaken)
+        if (clashing is not null)
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNameDuplicateCode,
@@ -243,7 +280,7 @@ public sealed class RoleService : IRoleService
         }
 
         Role role = RoleMappings.ToNewRole(portalId, request);
-        _roles.Add(role);
+        await _roles.AddAsync(role, cancellationToken).ConfigureAwait(false);
 
         // MIGRATION: the legacy creation member enrolled the portal's existing members immediately after
         // a successful insert when the auto-assignment flag was set (RoleController.vb L106 calling the
@@ -269,14 +306,16 @@ public sealed class RoleService : IRoleService
 
             foreach (User member in members.Items)
             {
-                _roles.AddAssignment(new UserRole
-                {
-                    UserId = member.UserId,
-                    Role = role,
-                    EffectiveDate = null,
-                    ExpiryDate = null,
-                    IsTrialUsed = false,
-                });
+                await _roles.AddUserRoleAsync(
+                    new UserRole
+                    {
+                        UserId = member.UserId,
+                        Role = role,
+                        EffectiveDate = null,
+                        ExpiryDate = null,
+                        IsTrialUsed = false,
+                    },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -284,7 +323,7 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidatePortal(portalId);
 
-        Role? stored = await _roles.GetAsync(role.RoleId, cancellationToken).ConfigureAwait(false);
+        Role? stored = await _roles.GetByIdAsync(role.RoleId, portalId, cancellationToken).ConfigureAwait(false);
         if (stored is null)
         {
             return Result<RoleDetailDto>.Failure(
@@ -310,8 +349,8 @@ public sealed class RoleService : IRoleService
             return Result<RoleDetailDto>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             return Result<RoleDetailDto>.Failure(
                 RoleNotFoundCode,
@@ -341,8 +380,8 @@ public sealed class RoleService : IRoleService
 
         if (request.RoleGroupId is int requestedGroupId)
         {
-            RoleGroup? group = await _roles.GetGroupAsync(requestedGroupId, cancellationToken).ConfigureAwait(false);
-            if (group is null || group.PortalId != portalId)
+            RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, requestedGroupId, cancellationToken).ConfigureAwait(false);
+            if (group is null)
             {
                 return Result<RoleDetailDto>.Failure(
                     RoleGroupNotFoundCode,
@@ -383,24 +422,19 @@ public sealed class RoleService : IRoleService
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             return Result.Failure(RoleNotFoundCode, $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
 
-        // Assignments are removed explicitly rather than left to a cascade, so that the write is
-        // expressed entirely through the repository contract and is identical on every provider.
-        PagedResult<UserRole> assignments = await _roles
-            .ListAssignmentsAsync(roleId, 0, 0, cancellationToken)
-            .ConfigureAwait(false);
-
-        foreach (UserRole assignment in assignments.Items)
-        {
-            _roles.RemoveAssignment(assignment);
-        }
-
-        _roles.Remove(role);
+        // MIGRATION: a role's assignments go with it. FK_UserRoles_Roles is declared ON DELETE CASCADE
+        // in the schema this migration binds to, and UserRoleConfiguration declares the same behaviour,
+        // so DeleteAsync loads the assignments and stages their removal with the role - one traversal
+        // rather than a role-scoped assignment read this contract deliberately does not expose. The
+        // permission rows are NOT swept: FK_ModulePermission_Roles_RoleID and
+        // FK_TabPermission_Roles_RoleID carry no cascade and are configured NoAction, exactly as before.
+        await _roles.DeleteAsync(roleId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -426,31 +460,33 @@ public sealed class RoleService : IRoleService
                 $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             return Result<PagedResult<UserListItemDto>>.Failure(
                 RoleNotFoundCode,
                 $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
 
-        PagedResult<UserRole> page = await _roles
-            .ListAssignmentsAsync(roleId, request.PageIndex, request.PageSize, cancellationToken)
+        // MIGRATION: the accounts in a role are read through IUserRepository, not through the role
+        // contract. The legacy procedure for this question is GetUsersByRolename(PortalID, Rolename),
+        // and it sits in the membership provider's Users section (DataProvider.vb:L85) rather than its
+        // role section - so the account-shaped read belongs to the account repository and the role
+        // contract yields assignment rows only. That also removes the read-per-row this projection used
+        // to perform, because the accounts arrive already composed and already confined to the portal.
+        IReadOnlyList<User> members = await _users
+            .ListByRoleNameAsync(portalId, role.RoleName, cancellationToken)
             .ConfigureAwait(false);
 
-        var rows = new List<UserListItemDto>(page.Items.Count);
-        foreach (UserRole assignment in page.Items)
-        {
-            User? member = await _users
-                .GetAsync(portalId, assignment.UserId, cancellationToken)
-                .ConfigureAwait(false);
-            if (member is null)
-            {
-                // An assignment whose account is no longer a member of this portal is skipped rather
-                // than surfaced as a hole in the projection.
-                continue;
-            }
+        int totalCount = members.Count;
 
+        IReadOnlyList<User> pageOfMembers = request.PageSize == 0
+            ? members
+            : members.Skip(request.PageIndex * request.PageSize).Take(request.PageSize).ToList();
+
+        var rows = new List<UserListItemDto>(pageOfMembers.Count);
+        foreach (User member in pageOfMembers)
+        {
             // The legacy grid on this screen bound the identifier, the display name and the two
             // assignment dates only, so no profile value is read here; the address and telephone
             // members of the projection stay absent rather than costing a read per row.
@@ -459,7 +495,7 @@ public sealed class RoleService : IRoleService
 
         PagedResult<UserListItemDto> projected = request.PageSize == 0
             ? PagedResult<UserListItemDto>.Unpaged(rows)
-            : PagedResult<UserListItemDto>.Create(rows, page.TotalCount, page.PageIndex, page.PageSize);
+            : PagedResult<UserListItemDto>.Create(rows, totalCount, request.PageIndex, request.PageSize);
 
         return Result<PagedResult<UserListItemDto>>.Success(projected);
     }
@@ -486,17 +522,17 @@ public sealed class RoleService : IRoleService
         }
 
         IReadOnlyList<UserRole> assignments = await _roles
-            .ListUserAssignmentsAsync(portalId, userId, cancellationToken)
+            .GetUserRolesAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
         // The portal's roles are read once, unpaged, and indexed, so the projection costs two round
         // trips rather than one per assignment. The answer is bounded by the number of roles the portal
         // defines, which the legacy screen also rendered whole.
-        PagedResult<Role> portalRoles = await _roles
-            .ListAsync(portalId, null, 0, 0, null, cancellationToken)
+        IReadOnlyList<Role> portalRoles = await _roles
+            .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        Dictionary<int, Role> rolesById = portalRoles.Items.ToDictionary(entry => entry.RoleId);
+        Dictionary<int, Role> rolesById = portalRoles.ToDictionary(entry => entry.RoleId);
 
         var rows = new List<RoleListItemDto>(assignments.Count);
         foreach (UserRole assignment in assignments)
@@ -524,8 +560,8 @@ public sealed class RoleService : IRoleService
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             return Result.Failure(RoleNotFoundCode, $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
@@ -539,7 +575,7 @@ public sealed class RoleService : IRoleService
         }
 
         UserRole? existing = await _roles
-            .GetAssignmentAsync(roleId, request.UserId, cancellationToken)
+            .GetUserRoleAsync(portalId, request.UserId, roleId, cancellationToken)
             .ConfigureAwait(false);
 
         (DateTime? effectiveDate, DateTime? expiryDate) = DeriveAssignmentDates(
@@ -550,14 +586,16 @@ public sealed class RoleService : IRoleService
 
         if (existing is null)
         {
-            _roles.AddAssignment(new UserRole
-            {
-                UserId = request.UserId,
-                RoleId = roleId,
-                EffectiveDate = effectiveDate,
-                ExpiryDate = expiryDate,
-                IsTrialUsed = false,
-            });
+            await _roles.AddUserRoleAsync(
+                new UserRole
+                {
+                    UserId = request.UserId,
+                    RoleId = roleId,
+                    EffectiveDate = effectiveDate,
+                    ExpiryDate = expiryDate,
+                    IsTrialUsed = false,
+                },
+                cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -590,8 +628,8 @@ public sealed class RoleService : IRoleService
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        Role? role = await _roles.GetAsync(roleId, cancellationToken).ConfigureAwait(false);
-        if (role is null || role.PortalId != portalId)
+        Role? role = await _roles.GetByIdAsync(roleId, portalId, cancellationToken).ConfigureAwait(false);
+        if (role is null)
         {
             return Result.Failure(RoleNotFoundCode, $"Portal {portalId} has no role bearing identifier {roleId}.");
         }
@@ -603,7 +641,7 @@ public sealed class RoleService : IRoleService
         }
 
         UserRole? assignment = await _roles
-            .GetAssignmentAsync(roleId, userId, cancellationToken)
+            .GetUserRoleAsync(portalId, userId, roleId, cancellationToken)
             .ConfigureAwait(false);
         if (assignment is null)
         {
@@ -642,7 +680,9 @@ public sealed class RoleService : IRoleService
         }
         else
         {
-            _roles.RemoveAssignment(assignment);
+            await _roles
+                .DeleteUserRoleAsync(userId, roleId, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -669,7 +709,7 @@ public sealed class RoleService : IRoleService
         }
 
         IReadOnlyList<RoleGroup> groups = await _roles
-            .ListGroupsAsync(portalId, cancellationToken)
+            .GetRoleGroupsAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         IReadOnlyList<RoleGroupDto> rows = groups.Select(RoleMappings.ToDto).ToList();
@@ -687,9 +727,9 @@ public sealed class RoleService : IRoleService
             return Result<RoleGroupDto?>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        RoleGroup? group = await _roles.GetGroupAsync(roleGroupId, cancellationToken).ConfigureAwait(false);
+        RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, roleGroupId, cancellationToken).ConfigureAwait(false);
 
-        return group is null || group.PortalId != portalId
+        return group is null
             ? Result<RoleGroupDto?>.Success(null)
             : Result<RoleGroupDto?>.Success(RoleMappings.ToDto(group));
     }
@@ -709,9 +749,14 @@ public sealed class RoleService : IRoleService
             return Result<RoleGroupDto>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        bool nameTaken = await _roles
-            .GroupNameExistsAsync(portalId, request.RoleGroupName, null, cancellationToken)
-            .ConfigureAwait(false);
+        // MIGRATION: group-name uniqueness is settled over the portal's own group list. The membership
+        // provider exposed GetRoleGroups(portalId) (DataProvider.vb:L104) and no existence procedure, so
+        // the comparison was always the caller's; a portal defines a handful of groups at most.
+        bool nameTaken = (await _roles.GetRoleGroupsAsync(portalId, cancellationToken).ConfigureAwait(false))
+            .Any(candidate => string.Equals(
+                candidate.RoleGroupName.Trim(),
+                request.RoleGroupName.Trim(),
+                StringComparison.OrdinalIgnoreCase));
         if (nameTaken)
         {
             return Result<RoleGroupDto>.Failure(
@@ -720,7 +765,7 @@ public sealed class RoleService : IRoleService
         }
 
         RoleGroup group = RoleMappings.ToNewGroup(portalId, request);
-        _roles.AddGroup(group);
+        await _roles.AddRoleGroupAsync(group, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -745,17 +790,20 @@ public sealed class RoleService : IRoleService
             return Result<RoleGroupDto>.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        RoleGroup? group = await _roles.GetGroupAsync(roleGroupId, cancellationToken).ConfigureAwait(false);
-        if (group is null || group.PortalId != portalId)
+        RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, roleGroupId, cancellationToken).ConfigureAwait(false);
+        if (group is null)
         {
             return Result<RoleGroupDto>.Failure(
                 RoleGroupNotFoundCode,
                 $"Portal {portalId} has no role group bearing identifier {roleGroupId}.");
         }
 
-        bool nameTaken = await _roles
-            .GroupNameExistsAsync(portalId, request.RoleGroupName, roleGroupId, cancellationToken)
-            .ConfigureAwait(false);
+        bool nameTaken = (await _roles.GetRoleGroupsAsync(portalId, cancellationToken).ConfigureAwait(false))
+            .Any(candidate => candidate.RoleGroupId != roleGroupId
+                && string.Equals(
+                    candidate.RoleGroupName.Trim(),
+                    request.RoleGroupName.Trim(),
+                    StringComparison.OrdinalIgnoreCase));
         if (nameTaken)
         {
             return Result<RoleGroupDto>.Failure(
@@ -783,8 +831,8 @@ public sealed class RoleService : IRoleService
             return Result.Failure(PortalNotFoundCode, $"No portal bears identifier {portalId}.");
         }
 
-        RoleGroup? group = await _roles.GetGroupAsync(roleGroupId, cancellationToken).ConfigureAwait(false);
-        if (group is null || group.PortalId != portalId)
+        RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, roleGroupId, cancellationToken).ConfigureAwait(false);
+        if (group is null)
         {
             return Result.Failure(
                 RoleGroupNotFoundCode,
@@ -793,18 +841,20 @@ public sealed class RoleService : IRoleService
 
         // One page of size one is read purely for its total, because a group that still classifies a
         // role may not be removed and the repository exposes no bare count.
-        PagedResult<Role> classified = await _roles
-            .ListAsync(portalId, roleGroupId, 0, 1, null, cancellationToken)
+        // GetRolesByGroup (membership DataProvider.vb:L105) is the legacy read for exactly this
+        // question, so the in-use check is expressed through it rather than through a filtered list.
+        IReadOnlyList<Role> classified = await _roles
+            .GetRolesByGroupAsync(roleGroupId, portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (classified.TotalCount > 0)
+        if (classified.Count > 0)
         {
             return Result.Failure(
                 RoleGroupInUseCode,
-                $"Role group {roleGroupId} still classifies {classified.TotalCount} role(s) and cannot be removed.");
+                $"Role group {roleGroupId} still classifies {classified.Count} role(s) and cannot be removed.");
         }
 
-        _roles.RemoveGroup(group);
+        await _roles.DeleteRoleGroupAsync(group.RoleGroupId, cancellationToken).ConfigureAwait(false);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 

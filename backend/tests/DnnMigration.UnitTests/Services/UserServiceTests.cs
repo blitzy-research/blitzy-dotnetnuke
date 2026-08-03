@@ -906,8 +906,8 @@ public class UserServiceTests
     public async Task CreateUser_EnrolsTheAccountInTheTenantAndEveryAutomaticRole()
     {
         Harness harness = Harness.Ready();
-        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users" });
-        harness.AutoAssigned.Add(new Role { RoleId = 6, RoleName = "Subscribers" });
+        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users", AutoAssignment = true });
+        harness.AutoAssigned.Add(new Role { RoleId = 6, RoleName = "Subscribers", AutoAssignment = true });
 
         Result<UserDetailDto> outcome = await harness.Service
             .CreateUserAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
@@ -972,7 +972,7 @@ public class UserServiceTests
     public async Task CreateUser_WithdrawsTheCommittedRowWhenTheCredentialIsRefused()
     {
         Harness harness = Harness.Ready();
-        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users" });
+        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users", AutoAssignment = true });
         harness.CredentialCreated = false;
 
         Result<UserDetailDto> outcome = await harness.Service
@@ -1289,7 +1289,8 @@ public class UserServiceTests
         Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        harness.DeletedPermissions.Should().Equal(new[] { (PortalId, UserId) });
+        harness.DeletedModulePermissions.Should().Equal(new[] { (PortalId, UserId) });
+        harness.DeletedTabPermissions.Should().Equal(new[] { (PortalId, UserId) });
         harness.RemovedAssignments.Should().HaveCount(2);
         harness.RemovedMemberships.Should().ContainSingle();
         harness.DeletedCredentialUserIds.Should().Equal(new[] { UserId });
@@ -3096,7 +3097,8 @@ public class UserServiceTests
             DeletedCredentialUserIds = [];
             SetPasswordHashes = [];
             ApprovalWrites = [];
-            DeletedPermissions = [];
+            DeletedModulePermissions = [];
+            DeletedTabPermissions = [];
             InvalidatedPortalIds = [];
             InvalidatedUsers = [];
             InvalidatedProfileDefinitionsPortalIds = [];
@@ -3255,7 +3257,9 @@ public class UserServiceTests
 
         public List<(int UserId, bool IsApproved)> ApprovalWrites { get; }
 
-        public List<(int PortalId, int UserId)> DeletedPermissions { get; }
+        public List<(int PortalId, int UserId)> DeletedModulePermissions { get; }
+
+        public List<(int PortalId, int UserId)> DeletedTabPermissions { get; }
 
         public List<int> InvalidatedPortalIds { get; }
 
@@ -3533,50 +3537,76 @@ public class UserServiceTests
                     return Task.CompletedTask;
                 });
 
+            // The auto-assignment set is now selected by the service from the portal's own roles, which
+            // is what the legacy caller did over GetPortalRoles - the membership provider had no
+            // auto-assigned procedure. The harness therefore publishes the portal's roles and lets the
+            // service apply the flag, so AutoAssigned still describes the world the test intends.
             harness.Roles
-                .Setup(r => r.ListAutoAssignedAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.AutoAssigned.ToList());
             harness.Roles
-                .Setup(r => r.ListUserAssignmentsAsync(
+                .Setup(r => r.GetUserRolesAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.UserAssignments.ToList());
             harness.Roles
-                .Setup(r => r.RemoveAssignment(It.IsAny<UserRole>()))
-                .Callback<UserRole>(harness.RemovedAssignments.Add);
+                .Setup(r => r.DeleteUserRoleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, int, CancellationToken>((userId, roleId, _) =>
+                {
+                    // The contract deletes by the account-and-role pair, so the assignment object the
+                    // assertions name is resolved from the world the test described.
+                    UserRole? matched = harness.UserAssignments
+                        .FirstOrDefault(a => a.UserId == userId && a.RoleId == roleId);
+                    harness.RemovedAssignments.Add(matched ?? new UserRole { UserId = userId, RoleId = roleId });
+                })
+                .Returns(Task.CompletedTask);
 
+            // MIGRATION: the account's direct grants live in two tables and the legacy provider declared
+            //            two members to clear them - DeleteModulePermissionsByUserID at core
+            //            DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305. Both are stubbed
+            //            and both record, so a cascade that cleaned only one table would fail the
+            //            assertion rather than pass it quietly.
             harness.Permissions
-                .Setup(p => p.DeleteUserPermissionsAsync(
+                .Setup(p => p.DeleteModulePermissionsByUserIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .Returns((int portalId, int userId, CancellationToken _) =>
                 {
-                    harness.DeletedPermissions.Add((portalId, userId));
-                    return Task.FromResult(0);
+                    harness.DeletedModulePermissions.Add((portalId, userId));
+                    return Task.CompletedTask;
+                });
+
+            harness.Permissions
+                .Setup(p => p.DeleteTabPermissionsByUserIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((int portalId, int userId, CancellationToken _) =>
+                {
+                    harness.DeletedTabPermissions.Add((portalId, userId));
+                    return Task.CompletedTask;
                 });
 
             harness.ModuleDefinitions
                 .Setup(d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ModuleDefinitionCatalogue.ToList());
 
+            // The module repository contract carries no paging member, so the tenant's modules arrive whole
+            // and the service narrows them itself.
             harness.Modules
-                .Setup(m => m.ListAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<int?>(),
-                    It.IsAny<bool>(),
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<string?>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => PagedResult<Module>.Unpaged(harness.ModuleInstances.ToList()));
+                .Setup(m => m.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.ModuleInstances.ToList());
             harness.Modules
-                .Setup(m => m.ListSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(m => m.GetModuleSettingsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int moduleId, CancellationToken _) => harness.ModuleSettingsFor(moduleId).ToList());
             harness.Modules
-                .Setup(m => m.AddSetting(It.IsAny<ModuleSetting>()))
-                .Callback<ModuleSetting>(setting =>
+                .Setup(m => m.AddModuleSettingAsync(It.IsAny<ModuleSetting>(), It.IsAny<CancellationToken>()))
+                .Callback<ModuleSetting, CancellationToken>((setting, _) =>
                 {
                     harness.AddedSettings.Add(setting);
                     if (!harness.StoredModuleSettings.TryGetValue(setting.ModuleId, out List<ModuleSetting>? settings))
@@ -3586,7 +3616,8 @@ public class UserServiceTests
                     }
 
                     settings.Add(setting);
-                });
+                })
+                .Returns(Task.CompletedTask);
 
             harness.PasswordHasher
                 .Setup(h => h.Hash(It.IsAny<string>()))

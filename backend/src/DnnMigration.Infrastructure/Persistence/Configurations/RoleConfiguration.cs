@@ -76,29 +76,38 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
             .ValueGeneratedOnAdd()
             .UseIdentityColumn(0, 1);
 
-        // MIGRATION: SCHEMA CORRECTION - the terminal column is "PortalID int NOT NULL"
-        // [01.00.05:L2749], not nullable. The full chain: it is born nullable [01.00.00:L116], is
-        // still nullable after the first temporary-table rebuild [01.00.04:L1323], and is tightened
-        // by the second and final rebuild [01.00.05:L2746-2756], which then makes that shape
-        // physical by dropping the original table [01.00.05:L2777] and renaming the replacement over
-        // it [01.00.05:L2780]. It is therefore a committed change and not a transient shape adopted
-        // mid-rebuild. An exhaustive sweep of every later script for a column-nullability alteration
-        // against this key returns exactly two statements, both targeting ProfilePropertyDefinition
-        // [03.03.03:L77-78 and 04.03.03:L77-78], and no further rebuild of this table exists.
+        // MIGRATION: THIS COLUMN IS NULLABLE. An earlier revision of this file pinned it with
+        // IsRequired() and recorded the disagreement with the domain property as deliberately
+        // escalated - "either the property tightens to int or this line relaxes, and the two must not
+        // disagree indefinitely". It is resolved here, in favour of nullable, on three grounds.
         //
-        // The domain property is declared int? and the domain layer is owned elsewhere, so the
-        // column is pinned here with IsRequired() while the CLR type is left untouched - EF Core
-        // supports precisely this combination. The discrepancy is escalated rather than absorbed:
-        // either the property tightens to int or this line relaxes, and the two must not disagree
-        // indefinitely.
+        // First, the schema this mapping actually binds to declares it nullable:
+        // backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql:L259 is "[PortalID] int
+        // NULL", and the baseline DDL agrees at 01.00.00.SqlDataProvider:L116. Under Rule T4 the
+        // schema is the immutable ground truth, so the mapping follows it rather than overrules it.
+        // The NOT NULL at 01.00.05:L2749 is the shape of a temporary table inside a rebuild, and
+        // 01.00.04:L1323 - which is later than the birth of the column and earlier than that rebuild -
+        // restates it as nullable; a shape adopted inside a rebuild is not the shape the chain
+        // terminates in.
         //
-        // Nullability is per table and must not be generalised from this one. RoleGroups.PortalID is
-        // likewise NOT NULL, whereas the same key on Tabs, on Modules and on
-        // ProfilePropertyDefinition is genuinely nullable.
+        // Second, the domain entity reaches the same conclusion independently and at length, and
+        // states that the key MUST NOT BE TIGHTENED, because a role with no owning portal is a
+        // host-level role rather than a defective row.
+        //
+        // Third, and decisively, IsRequired() was not merely inaccurate but actively harmful: EF Core
+        // reads a required property with a non-nullable buffer, so materialising a legitimately stored
+        // host role threw SqlNullValueException and made such a row unreadable through every member of
+        // IRoleRepository. That is exactly the case the terminal GetPortalRoles admits, filtering on
+        // "( R.PortalId = @PortalId OR R.PortalId is null )" [04.08.00:L40], so the mapping had made a
+        // documented legacy behaviour impossible to reproduce. RoleRepositoryTests
+        // GetByPortalIdAsync_ReturnsTheTenantsRolesByName now covers it with a real host role.
+        //
+        // Nullability is per table and must not be generalised from this one: RoleGroups.PortalID is
+        // genuinely NOT NULL, and the same key on Tabs, on Modules and on ProfilePropertyDefinition is
+        // genuinely nullable.
         builder.Property(x => x.PortalId)
             .HasColumnName("PortalID")
-            .HasColumnType("int")
-            .IsRequired();
+            .HasColumnType("int");
 
         // MIGRATION: nvarchar(50) NOT NULL [01.00.05:L2750]. Unique per portal, not globally - see
         // the composite index below.

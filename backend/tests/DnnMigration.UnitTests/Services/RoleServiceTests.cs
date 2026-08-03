@@ -175,13 +175,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
         outcome.Reason!.Message.Should().Be($"No portal bears identifier {PortalId}.");
         harness.Roles.Verify(
-            r => r.ListAsync(
-                It.IsAny<int>(),
-                It.IsAny<int?>(),
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
+            r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -240,12 +234,13 @@ public class RoleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         harness.Roles.Verify(
-            r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
     /// <summary>
-    /// The paging request reaches the store unchanged, with the free-text term carried as the name filter.
+    /// The tenant's roles are read once and the request's paging and free-text term are applied to that
+    /// result, because the legacy membership provider exposed no paged or filtered role read.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -257,7 +252,7 @@ public class RoleServiceTests
         await harness.Service.ListRolesAsync(PortalId, request, RoleGroupId, CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.ListAsync(PortalId, RoleGroupId, 3, 25, "sub", It.IsAny<CancellationToken>()),
+            r => r.GetByPortalIdAsync(PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -288,17 +283,31 @@ public class RoleServiceTests
     [Fact]
     public async Task ListRoles_PreservesTheStoresTotalWhenAPageWasAsked()
     {
+        // MIGRATION: the total is computed over the tenant's roles rather than reported by the store,
+        // because the legacy membership provider had no paged role read - GetPortalRoles(PortalId)
+        // returned every row and the admin screen paged it. Twenty-one roles across three pages of ten
+        // therefore reproduces the same arithmetic the legacy screen performed.
         Harness harness = Harness.Ready();
-        harness.RolePage = PagedResult<Role>.Create([StoredRole()], totalCount: 57, pageIndex: 2, pageSize: 10);
+        harness.RolePage = PagedResult<Role>.Unpaged(
+            Enumerable.Range(0, 21)
+                .Select(index =>
+                {
+                    Role role = StoredRole();
+                    role.RoleId = index;
+                    role.RoleName = FormattableString.Invariant($"Role {index:D2}");
+                    return role;
+                })
+                .ToList());
 
         Result<PagedResult<RoleListItemDto>> outcome = await harness.Service
             .ListRolesAsync(PortalId, new PagedRequest { PageIndex = 2, PageSize = 10 }, null, CancellationToken.None);
 
-        outcome.Value.TotalCount.Should().Be(57);
+        outcome.Value.TotalCount.Should().Be(21, "the total counts every role, not the page returned");
         outcome.Value.PageIndex.Should().Be(2);
         outcome.Value.PageSize.Should().Be(10);
-        outcome.Value.TotalPages.Should().Be(6);
-        outcome.Value.Items.Should().HaveCount(1);
+        outcome.Value.TotalPages.Should().Be(3);
+        outcome.Value.Items.Should().HaveCount(1, "the third page of ten holds the single remaining role");
+        outcome.Value.Items[0].RoleId.Should().Be(20, "the ordering is by name, which here tracks the index");
     }
 
     /// <summary>
@@ -414,7 +423,7 @@ public class RoleServiceTests
 
         outcome.Value!.RoleGroupId.Should().Be(RoleGroupId);
         harness.Roles.Verify(
-            r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -434,7 +443,7 @@ public class RoleServiceTests
 
         outcome.Value!.RoleGroupId.Should().BeNull();
         harness.Roles.Verify(
-            r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -466,8 +475,7 @@ public class RoleServiceTests
 
         outcome.Value!.RoleId.Should().Be(RoleId);
         harness.Roles.Verify(
-            r => r.ListAssignmentsAsync(
-                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetUserRolesAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -559,7 +567,7 @@ public class RoleServiceTests
         await harness.Service.CreateRoleAsync(PortalId, ValidCreateRequest(), CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.RoleNameExistsAsync(PortalId, RoleName, null, It.IsAny<CancellationToken>()),
+            r => r.GetByNameAsync(PortalId, RoleName, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -961,7 +969,7 @@ public class RoleServiceTests
             () => harness.Service.UpdateRoleAsync(PortalId, RoleId, request, CancellationToken.None));
 
         harness.Roles.Verify(
-            r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -982,10 +990,9 @@ public class RoleServiceTests
         // refuses on a hit, while the edit branch updates with no such check. The absence of this read
         // is therefore the faithful behaviour, not a missing rule.
         harness.Roles.Verify(
-            r => r.RoleNameExistsAsync(
+            r => r.GetByNameAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
-                It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -1083,7 +1090,7 @@ public class RoleServiceTests
         await harness.Service.UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            r => r.GetByIdAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -1156,10 +1163,16 @@ public class RoleServiceTests
         Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
+        // MIGRATION: the assignments are no longer swept row by row. FK_UserRoles_Roles is declared
+        // ON DELETE CASCADE and UserRoleConfiguration declares the same behaviour, so the single keyed
+        // delete carries them - and issuing the deletes here as well would issue them twice.
         harness.Roles.Verify(
-            r => r.ListAssignmentsAsync(RoleId, 0, 0, It.IsAny<CancellationToken>()),
+            r => r.DeleteAsync(RoleId, It.IsAny<CancellationToken>()),
             Times.Once);
-        harness.RemovedAssignments.Select(a => a.UserRoleId).Should().Equal(new[] { 1, 2 });
+        harness.Roles.Verify(
+            r => r.DeleteUserRoleAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.RemovedRoleIds.Should().Equal(RoleId);
         harness.RemovedRoles.Should().ContainSingle().Which.Should().BeSameAs(tracked);
     }
 
@@ -1229,7 +1242,7 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// Each member named by an assignment is resolved within the tenant, never installation-wide.
+    /// The members are read within the tenant and by the role's own name, never installation-wide.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1237,18 +1250,24 @@ public class RoleServiceTests
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
-        harness.AssignmentPage = PagedResult<UserRole>.Unpaged(
-        [
-            new UserRole { UserRoleId = 1, UserId = UserId, RoleId = RoleId },
-        ]);
+        harness.RoleMembers = [Member(UserId)];
 
         Result<PagedResult<UserListItemDto>> outcome = await harness.Service
             .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 0 }, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
+
+        // The tenant and the role name are both passed, because a role name is unique only within a
+        // portal - the legacy GetUsersByRolename took the same pair.
         harness.Users.Verify(
-            u => u.GetAsync(PortalId, UserId, It.IsAny<CancellationToken>()),
+            u => u.ListByRoleNameAsync(PortalId, RoleName, It.IsAny<CancellationToken>()),
             Times.Once);
+
+        // No read-per-row remains: the accounts arrive already composed.
+        harness.Users.Verify(
+            u => u.GetAsync(It.IsAny<int?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
         UserListItemDto row = outcome.Value.Items.Should().ContainSingle().Which;
         row.UserId.Should().Be(UserId);
         row.PortalId.Should().Be(PortalId);
@@ -1256,21 +1275,22 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// An assignment whose member is not in the tenant is skipped rather than reported as a hollow row.
+    /// An account that is not a member of the tenant never reaches the projection at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this used to be a skip inside the projection, because the projection walked assignment
+    /// rows and resolved each account separately - so an account outside the tenant produced a row that
+    /// had to be discarded. The read now answers the tenant-scoped question directly, exactly as the
+    /// legacy GetUsersByRolename(PortalID, Rolename) did, so the hollow row cannot be produced in the
+    /// first place and there is nothing left to skip.
+    /// </remarks>
     [Fact]
-    public async Task ListRoleUsers_SkipsAnAssignmentWhoseMemberIsNotInTheTenant()
+    public async Task ListRoleUsers_ReportsOnlyTheAccountsTheTenantReadidReturns()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
-        harness.MembersById[UserId] = Member(UserId);
-        harness.MembersById[8] = null;
-        harness.AssignmentPage = PagedResult<UserRole>.Unpaged(
-        [
-            new UserRole { UserRoleId = 1, UserId = UserId, RoleId = RoleId },
-            new UserRole { UserRoleId = 2, UserId = 8, RoleId = RoleId },
-        ]);
+        harness.RoleMembers = [Member(UserId)];
 
         Result<PagedResult<UserListItemDto>> outcome = await harness.Service
             .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 0 }, CancellationToken.None);
@@ -1279,32 +1299,35 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The store's total survives a skipped row, so a page's total is the assignment count rather than the
-    /// number of rows that could be projected.
+    /// The reported total counts every member of the role, not just the page that was returned.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task ListRoleUsers_KeepsTheStoresTotalEvenWhenARowWasSkipped()
+    public async Task ListRoleUsers_ReportsTheTotalIndependentlyOfThePageSize()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
-        harness.MembersById[UserId] = Member(UserId);
-        harness.MembersById[8] = null;
-        harness.AssignmentPage = PagedResult<UserRole>.Create(
-        [
-            new UserRole { UserRoleId = 1, UserId = UserId, RoleId = RoleId },
-            new UserRole { UserRoleId = 2, UserId = 8, RoleId = RoleId },
-        ],
-            totalCount: 2,
-            pageIndex: 0,
-            pageSize: 10);
+        harness.RoleMembers = [Member(UserId), Member(8), Member(9)];
 
         Result<PagedResult<UserListItemDto>> outcome = await harness.Service
-            .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 10 }, CancellationToken.None);
+            .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 2 }, CancellationToken.None);
 
-        outcome.Value.Items.Should().HaveCount(1);
-        outcome.Value.TotalCount.Should().Be(2);
-        outcome.Value.PageSize.Should().Be(10);
+        outcome.Value.Items.Select(row => row.UserId).Should().Equal(new[] { UserId, 8 });
+        outcome.Value.TotalCount.Should().Be(3, "the total counts every member, not the page");
+        outcome.Value.PageIndex.Should().Be(0);
+        outcome.Value.PageSize.Should().Be(2);
+        outcome.Value.HasNextPage.Should().BeTrue();
+
+        Result<PagedResult<UserListItemDto>> second = await harness.Service
+            .ListRoleUsersAsync(
+                PortalId,
+                RoleId,
+                new PagedRequest { PageIndex = 1, PageSize = 2 },
+                CancellationToken.None);
+
+        second.Value.Items.Select(row => row.UserId).Should().Equal(9);
+        second.Value.TotalCount.Should().Be(3);
+        second.Value.HasNextPage.Should().BeFalse();
     }
 
     /// <summary>
@@ -1317,10 +1340,7 @@ public class RoleServiceTests
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
-        harness.AssignmentPage = PagedResult<UserRole>.Unpaged(
-        [
-            new UserRole { UserRoleId = 1, UserId = UserId, RoleId = RoleId },
-        ]);
+        harness.RoleMembers = [Member(UserId)];
 
         Result<PagedResult<UserListItemDto>> outcome = await harness.Service
             .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 0 }, CancellationToken.None);
@@ -1340,17 +1360,18 @@ public class RoleServiceTests
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
-        harness.AssignmentPage = PagedResult<UserRole>.Unpaged(
-        [
-            new UserRole { UserRoleId = 1, UserId = UserId, RoleId = RoleId },
-        ]);
+        harness.RoleMembers = [Member(UserId)];
 
         Result<PagedResult<UserListItemDto>> outcome = await harness.Service
             .ListRoleUsersAsync(PortalId, RoleId, new PagedRequest { PageSize = 0 }, CancellationToken.None);
 
         outcome.Value.IsUnpaged.Should().BeTrue();
-        harness.Roles.Verify(
-            r => r.ListAssignmentsAsync(RoleId, 0, 0, It.IsAny<CancellationToken>()),
+
+        // The accounts in a role are read through the account repository, because the legacy procedure for
+        // that question - GetUsersByRolename - sits in the membership provider's Users section
+        // (DataProvider.vb:L85) rather than its role section.
+        harness.Users.Verify(
+            u => u.ListByRoleNameAsync(PortalId, RoleName, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -1426,7 +1447,7 @@ public class RoleServiceTests
         await harness.Service.ListUserRolesAsync(PortalId, UserId, CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.ListAsync(PortalId, null, 0, 0, null, It.IsAny<CancellationToken>()),
+            r => r.GetByPortalIdAsync(PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -2359,7 +2380,7 @@ public class RoleServiceTests
         outcome.Reason!.Message.Should()
             .Be($"Portal {PortalId} already has a role group named '{RoleGroupName}'.");
         harness.Roles.Verify(
-            r => r.GroupNameExistsAsync(PortalId, RoleGroupName, null, It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupsAsync(PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
         harness.AddedGroups.Should().BeEmpty();
     }
@@ -2495,7 +2516,7 @@ public class RoleServiceTests
             CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.GroupNameExistsAsync(PortalId, RoleGroupName, RoleGroupId, It.IsAny<CancellationToken>()),
+            r => r.GetRoleGroupsAsync(PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -2609,9 +2630,13 @@ public class RoleServiceTests
     [Fact]
     public async Task DeleteRoleGroup_RefusesAGroupThatStillClassifiesARole()
     {
+        // The occupancy question is asked through GetRolesByGroup (membership DataProvider.vb:L105),
+        // which is the legacy read for exactly it, so the roles the group classifies are what the world
+        // must contain. FK_Roles_RoleGroups carries no cascade, so the store would refuse this anyway -
+        // reporting it here turns a constraint violation into an intelligible failure.
         Harness harness = Harness.Ready();
         harness.LookupGroup = StoredGroup();
-        harness.RolePage = PagedResult<Role>.Create([StoredRole()], totalCount: 4, pageIndex: 0, pageSize: 1);
+        harness.RolesInGroup = [StoredRole(), StoredRole(), StoredRole(), StoredRole()];
 
         Result outcome = await harness.Service
             .DeleteRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
@@ -2625,11 +2650,11 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The occupancy probe asks for a single row, because only the total is needed.
+    /// The occupancy probe is the legacy group read, asked with both the group and its tenant.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task DeleteRoleGroup_ProbesForOnlyOneClassifiedRole()
+    public async Task DeleteRoleGroup_ProbesTheGroupsClassifiedRoles()
     {
         Harness harness = Harness.Ready();
         harness.LookupGroup = StoredGroup();
@@ -2637,7 +2662,7 @@ public class RoleServiceTests
         await harness.Service.DeleteRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
 
         harness.Roles.Verify(
-            r => r.ListAsync(PortalId, RoleGroupId, 0, 1, null, It.IsAny<CancellationToken>()),
+            r => r.GetRolesByGroupAsync(RoleGroupId, PortalId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -2907,6 +2932,22 @@ public class RoleServiceTests
 
         public List<RoleGroup> RemovedGroups { get; }
 
+        public List<Role> UpdatedRoles { get; } = [];
+
+        public List<UserRole> UpdatedAssignments { get; } = [];
+
+        public List<RoleGroup> UpdatedGroups { get; } = [];
+
+        public List<int> RemovedRoleIds { get; } = [];
+
+        public List<int> RemovedGroupIds { get; } = [];
+
+        public List<(int UserId, int RoleId)> RemovedAssignmentKeys { get; } = [];
+
+        public IReadOnlyList<Role> RolesInGroup { get; set; } = [];
+
+        public IReadOnlyList<User> RoleMembers { get; set; } = [];
+
         /// <summary>
         /// Builds a harness whose world is consistent: the tenant exists, the role exists and belongs to
         /// it, the member exists, and no name is taken.
@@ -2923,83 +2964,156 @@ public class RoleServiceTests
                 .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalRow);
 
+            // Every stub below names a member of the role contract as it is actually declared: reads
+            // scoped by portal, writes staged asynchronously and never returning a generated key. The
+            // harness properties the tests set are unchanged, so a test still describes its world in
+            // the same terms.
+            // Both reads make the portal a CONDITION rather than a hint, exactly as the terminal
+            // procedures did - GetRole filters on "RoleId = @RoleId AND PortalId = @PortalId"
+            // (04.00.04.SqlDataProvider:L334-L335). The stub therefore withholds a row belonging to
+            // another tenant, so a test that plants a foreign row still exercises a genuine refusal
+            // instead of relying on a check the service no longer needs to perform.
             harness.Roles
-                .Setup(r => r.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.LookupRole);
+                .Setup(r => r.GetByIdAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int roleId, int portalId, CancellationToken _) =>
+                    harness.LookupRole is { } candidate && candidate.PortalId == portalId
+                        ? candidate
+                        : null);
             harness.Roles
-                .Setup(r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.LookupGroup);
+                .Setup(r => r.GetRoleGroupAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, int roleGroupId, CancellationToken _) =>
+                    harness.LookupGroup is { } candidate && candidate.PortalId == portalId
+                        ? candidate
+                        : null);
             harness.Roles
-                .Setup(r => r.GetAssignmentAsync(
+                .Setup(r => r.GetUserRoleAsync(
+                    It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ExistingAssignment);
+
+            // Role-name uniqueness is now answered by the name lookup itself, because IX_RoleName makes
+            // it a single-row question. A taken name is therefore modelled as a matching row.
             harness.Roles
-                .Setup(r => r.RoleNameExistsAsync(
+                .Setup(r => r.GetByNameAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
-                    It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.NameTaken);
+                .ReturnsAsync((int portalId, string roleName, CancellationToken _) => harness.NameTaken
+                    ? new Role { RoleId = 4242, PortalId = portalId, RoleName = roleName }
+                    : null);
+
             harness.Roles
-                .Setup(r => r.GroupNameExistsAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<string>(),
-                    It.IsAny<int?>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.GroupNameTaken);
+                .Setup(r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.RolePage.Items);
             harness.Roles
-                .Setup(r => r.ListAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<int?>(),
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<string?>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.RolePage);
-            harness.Roles
-                .Setup(r => r.ListAssignmentsAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.AssignmentPage);
-            harness.Roles
-                .Setup(r => r.ListUserAssignmentsAsync(
+                .Setup(r => r.GetUserRolesAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.UserAssignments);
             harness.Roles
-                .Setup(r => r.ListGroupsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.Groups);
+                .Setup(r => r.GetRolesByGroupAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.RolesInGroup);
+
+            // Group-name uniqueness is answered over the portal's group list, so a taken name is
+            // modelled by a group of that name being present in it.
+            harness.Roles
+                .Setup(r => r.GetRoleGroupsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int portalId, CancellationToken _) => harness.GroupNameTaken
+                    ? harness.Groups
+                        .Concat([new RoleGroup { RoleGroupId = 4242, PortalId = portalId, RoleGroupName = RoleGroupName }])
+                        .ToList()
+                    : harness.Groups);
 
             harness.Roles
-                .Setup(r => r.Add(It.IsAny<Role>()))
-                .Callback<Role>(role =>
+                .Setup(r => r.AddAsync(It.IsAny<Role>(), It.IsAny<CancellationToken>()))
+                .Callback<Role, CancellationToken>((role, _) =>
                 {
                     harness.AddedRoles.Add(role);
                     if (harness.EchoCreatedRole)
                     {
                         harness.LookupRole = role;
                     }
-                });
+                })
+                .Returns(Task.CompletedTask);
             harness.Roles
-                .Setup(r => r.Remove(It.IsAny<Role>()))
-                .Callback<Role>(harness.RemovedRoles.Add);
+                .Setup(r => r.UpdateAsync(It.IsAny<Role>(), It.IsAny<CancellationToken>()))
+                .Callback<Role, CancellationToken>((role, _) => harness.UpdatedRoles.Add(role))
+                .Returns(Task.CompletedTask);
+
+            // A delete now carries the key rather than the entity, so the harness resolves the entity it
+            // was given a key for. That keeps the existing assertions - which name the role object -
+            // meaningful while the contract stays key-based, as the legacy DeleteRole was.
             harness.Roles
-                .Setup(r => r.AddAssignment(It.IsAny<UserRole>()))
-                .Callback<UserRole>(harness.AddedAssignments.Add);
+                .Setup(r => r.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((roleId, _) =>
+                {
+                    harness.RemovedRoleIds.Add(roleId);
+                    if (harness.LookupRole is { } candidate && candidate.RoleId == roleId)
+                    {
+                        harness.RemovedRoles.Add(candidate);
+                    }
+                })
+                .Returns(Task.CompletedTask);
+
             harness.Roles
-                .Setup(r => r.RemoveAssignment(It.IsAny<UserRole>()))
-                .Callback<UserRole>(harness.RemovedAssignments.Add);
+                .Setup(r => r.AddUserRoleAsync(It.IsAny<UserRole>(), It.IsAny<CancellationToken>()))
+                .Callback<UserRole, CancellationToken>((assignment, _) => harness.AddedAssignments.Add(assignment))
+                .Returns(Task.CompletedTask);
             harness.Roles
-                .Setup(r => r.AddGroup(It.IsAny<RoleGroup>()))
-                .Callback<RoleGroup>(harness.AddedGroups.Add);
+                .Setup(r => r.UpdateUserRoleAsync(It.IsAny<UserRole>(), It.IsAny<CancellationToken>()))
+                .Callback<UserRole, CancellationToken>((assignment, _) => harness.UpdatedAssignments.Add(assignment))
+                .Returns(Task.CompletedTask);
             harness.Roles
-                .Setup(r => r.RemoveGroup(It.IsAny<RoleGroup>()))
-                .Callback<RoleGroup>(harness.RemovedGroups.Add);
+                .Setup(r => r.DeleteUserRoleAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, int, CancellationToken>((userId, roleId, _) =>
+                {
+                    harness.RemovedAssignmentKeys.Add((userId, roleId));
+
+                    UserRole? matched = harness.UserAssignments
+                        .Concat(harness.ExistingAssignment is null ? [] : new[] { harness.ExistingAssignment })
+                        .FirstOrDefault(a => a.UserId == userId && a.RoleId == roleId);
+                    if (matched is not null)
+                    {
+                        harness.RemovedAssignments.Add(matched);
+                    }
+                })
+                .Returns(Task.CompletedTask);
+
+            harness.Roles
+                .Setup(r => r.AddRoleGroupAsync(It.IsAny<RoleGroup>(), It.IsAny<CancellationToken>()))
+                .Callback<RoleGroup, CancellationToken>((group, _) => harness.AddedGroups.Add(group))
+                .Returns(Task.CompletedTask);
+            harness.Roles
+                .Setup(r => r.UpdateRoleGroupAsync(It.IsAny<RoleGroup>(), It.IsAny<CancellationToken>()))
+                .Callback<RoleGroup, CancellationToken>((group, _) => harness.UpdatedGroups.Add(group))
+                .Returns(Task.CompletedTask);
+            harness.Roles
+                .Setup(r => r.DeleteRoleGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((roleGroupId, _) =>
+                {
+                    harness.RemovedGroupIds.Add(roleGroupId);
+                    if (harness.LookupGroup is { } candidate && candidate.RoleGroupId == roleGroupId)
+                    {
+                        harness.RemovedGroups.Add(candidate);
+                    }
+                })
+                .Returns(Task.CompletedTask);
+
+            // The accounts in a role are read through the account repository - membership
+            // DataProvider.vb:L85 GetUsersByRolename sits in the provider's Users section - so the
+            // members of a role are published here rather than as assignment rows.
+            harness.Users
+                .Setup(u => u.ListByRoleNameAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.RoleMembers);
 
             harness.Users
                 .Setup(u => u.GetAsync(It.IsAny<int?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))

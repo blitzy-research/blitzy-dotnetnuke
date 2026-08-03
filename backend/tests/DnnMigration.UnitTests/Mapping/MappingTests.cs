@@ -1122,9 +1122,14 @@ public class MappingTests
             "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
         })
         {
-            typeof(UpdateModuleRequest).GetProperty(appearance).Should().NotBeNull(
-                $"the legacy screen edited the placement's {appearance}, so the write capability must "
-                + "remain reachable even though no response contract reads it back");
+            // MIGRATION: the appearance columns are absent from the UPDATE contract too, so they are
+            // neither readable nor writable through the module API - not write-only, as an earlier
+            // revision of this assertion had it. They remain mapped and PRESERVED in the store; the
+            // migration simply declines to manage them, pane layout and server-side rendering being
+            // excluded by AAP 0.2.2.1.
+            typeof(UpdateModuleRequest).GetProperty(appearance).Should().BeNull(
+                $"the placement's {appearance} drives server-side markup, which this migration excludes, "
+                + "so the update contract must not offer it either");
 
             typeof(ModuleDetailDto).GetProperty(appearance).Should().BeNull(
                 $"the placement's {appearance} drives server-side markup, which this migration excludes, "
@@ -1152,59 +1157,63 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The appearance fields are opaque persisted strings, so a value the renderer would not understand is
-    /// still carried through unchanged.
+    /// The seven pane-layout, rendering and skinning columns the update contract excludes are left exactly as
+    /// they were stored, rather than being cleared by an update that cannot name them.
     /// </summary>
     /// <remarks>
-    /// The legacy screen bound plain text boxes with no validator of any kind, so whatever the operator
-    /// typed was stored. Normalising or rejecting these values here would refuse data the old site held
-    /// happily, and would make a migrated database unreadable through the new contract.
+    /// MIGRATION: this asserts the CORRECTED behaviour, and an earlier pair of tests asserted the opposite -
+    /// that an omitted appearance field should clear its column. That was wrong twice over. The seven columns
+    /// - pane, alignment, colour, border, print flag, syndicate flag and container source - are excluded from
+    /// UpdateModuleRequest as Web Forms pane-layout, server-side rendering and skinning concerns (AAP 0.2.2.1
+    /// and 0.2.2.4), so no caller can express them; clearing them on every update would therefore destroy
+    /// stored data that the new contract offers no way to restore. The pane makes the point unanswerably: its
+    /// column is NOT NULL, so clearing it would fail the write outright. Excluding a column means declining
+    /// to manage it, not deleting it.
     /// </remarks>
     [Fact]
-    public void ModuleApplyUpdate_TreatsTheAppearanceFieldsAsOpaqueText()
+    public void ModuleApplyUpdate_PreservesEveryExcludedAppearanceColumn()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
+        // Capture the stored appearance so the assertions can prove each column SURVIVES the update.
+        string storedPane = placement.PaneName;
+        string? storedAlignment = placement.Alignment;
+        string? storedColor = placement.Color;
+        string? storedBorder = placement.Border;
+        string? storedContainer = placement.ContainerSrc;
+        bool storedPrint = placement.DisplayPrint;
+        bool storedSyndicate = placement.DisplaySyndicate;
+
+        storedAlignment.Should().NotBeNull("the fixture must start with a value for this to prove anything");
+
+        // A request that changes everything it CAN change, to prove the excluded columns are untouched even
+        // on a maximally invasive update.
         UpdateModuleRequest request = new()
         {
-            PaneName = "LeftPane",
-            Alignment = "  centre ",
-            Color = "not-a-colour",
-            Border = "x",
+            TabId = placement.TabId,
+            ModuleTitle = "Renamed",
+            ModuleOrder = 7,
+            CacheTime = 60,
+            IconFile = "changed.gif",
+            Visibility = ModuleVisibility.None,
+            DisplayTitle = false,
         };
 
         ModuleMappings.ApplyUpdate(module, placement, request);
 
-        placement.Alignment.Should().Be(
-            "  centre ",
-            "the legacy screen stored the text box verbatim, whitespace included");
-        placement.Color.Should().Be("not-a-colour", "the value is data, never interpolated into a style declaration");
-        placement.Border.Should().Be("x", "the column is a single character used as a flag, not a width");
-    }
+        placement.PaneName.Should().Be(storedPane, "the pane column is NOT NULL, so clearing it would fail the write");
+        placement.Alignment.Should().Be(storedAlignment);
+        placement.Color.Should().Be(storedColor);
+        placement.Border.Should().Be(storedBorder);
+        placement.ContainerSrc.Should().Be(storedContainer);
+        placement.DisplayPrint.Should().Be(storedPrint);
+        placement.DisplaySyndicate.Should().Be(storedSyndicate);
 
-    /// <summary>
-    /// Clearing an appearance field is a legitimate edit, so an omitted value returns the placement to
-    /// inheriting rather than leaving the previous value in place.
-    /// </summary>
-    /// <remarks>
-    /// The update request is a whole-row replacement. The legacy screen posted an empty text box as an
-    /// empty value and stored it, so an absent field here must clear the column rather than preserve it —
-    /// otherwise an operator could never undo a colour once one had been set.
-    /// </remarks>
-    [Fact]
-    public void ModuleApplyUpdate_ClearsAnOmittedAppearanceField()
-    {
-        Module module = FullModule();
-        TabModule placement = FullPlacement();
-
-        placement.Alignment.Should().NotBeNull("the fixture must start with a value for this to prove anything");
-
-        ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest { PaneName = "LeftPane" });
-
-        placement.Alignment.Should().BeNull();
-        placement.Color.Should().BeNull();
-        placement.Border.Should().BeNull();
+        // The members the contract DOES carry still applied, proving preservation is targeted rather than a
+        // wholesale refusal to write.
+        placement.ModuleOrder.Should().Be(7);
+        placement.IconFile.Should().Be("changed.gif");
     }
 
 
@@ -1512,26 +1521,25 @@ public class MappingTests
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
+        // Every one of the sixteen members the contract carries, so this exercises the whole surface.
         UpdateModuleRequest request = new()
         {
+            TabId = placement.TabId,
             ModuleTitle = "Renamed Module",
-            PaneName = "LeftPane",
-            ModuleOrder = 9,
             AllTabs = false,
-            InheritViewPermissions = true,
-            Visibility = ModuleVisibility.Maximized,
-            DisplayTitle = true,
-            CacheTime = 30,
-            IconFile = "renamed.gif",
-            StartDate = null,
-            EndDate = null,
             Header = "Renamed header",
             Footer = "Renamed footer",
-            Alignment = "right",
-            Color = "#003366",
-            Border = "0",
-            DisplayPrint = true,
-            DisplaySyndicate = true,
+            StartDate = null,
+            EndDate = null,
+            InheritViewPermissions = true,
+            IsDeleted = false,
+            ModuleOrder = 9,
+            CacheTime = 30,
+            IconFile = "renamed.gif",
+            Visibility = ModuleVisibility.Maximized,
+            DisplayTitle = true,
+            SetAsDefaultSettings = false,
+            ApplyToAllModules = false,
         };
 
         ModuleMappings.ApplyUpdate(module, placement, request);
@@ -1544,17 +1552,21 @@ public class MappingTests
         module.StartDate.Should().BeNull("clearing a publication window is a legitimate edit");
         module.EndDate.Should().BeNull();
 
-        placement.PaneName.Should().Be("LeftPane");
         placement.ModuleOrder.Should().Be(9);
         placement.CacheTime.Should().Be(30);
         placement.IconFile.Should().Be("renamed.gif");
-        placement.Alignment.Should().Be("right");
-        placement.Color.Should().Be("#003366");
-        placement.Border.Should().Be("0");
         placement.Visibility.Should().Be(ModuleVisibility.Maximized);
         placement.DisplayTitle.Should().BeTrue();
-        placement.DisplayPrint.Should().BeTrue();
-        placement.DisplaySyndicate.Should().BeTrue();
+
+        // MIGRATION: the six pane-layout and rendering columns keep their FIXTURE values, because the update
+        // contract carries no field for any of them. The same reasoning as the container below: excluding a
+        // column means declining to manage it, not wiping it. The pane matters most - its column is NOT NULL.
+        placement.PaneName.Should().Be("RightPane");
+        placement.Alignment.Should().Be("left");
+        placement.Color.Should().Be("#EEEEEE");
+        placement.Border.Should().Be("1");
+        placement.DisplayPrint.Should().BeFalse();
+        placement.DisplaySyndicate.Should().BeFalse();
 
         placement.ContainerSrc.Should().Be(
             "[G]Containers/DNN/Blue.ascx",
@@ -1568,7 +1580,13 @@ public class MappingTests
             4,
             "which definition a module instantiates is fixed when it is created, and the update request "
             + "carries no definition field");
-        module.IsDeleted.Should().BeTrue("deletion is its own operation, not a field on the edit form");
+        // MIGRATION: 5.6 - the fixture starts deleted and the request clears the flag, so this asserts that
+        // IsDeleted IS applied. An earlier revision expected it to be left alone on the grounds that deletion
+        // was a separate operation; measured, IsDeleted is genuinely the ninth argument of the legacy first
+        // provider call, and the legacy settings save wrote it unconditionally - as a bare False, so that
+        // screen could only ever CLEAR it. Carrying it on the contract consolidates soft delete and restore,
+        // a deliberate widening, and it means an omitted flag now clears rather than preserves.
+        module.IsDeleted.Should().BeFalse("the request cleared the flag, exactly as the legacy save did");
         placement.TabModuleId.Should().Be(31);
         placement.TabId.Should().Be(7, "moving a module between pages is not an edit of the module");
         placement.ModuleId.Should().Be(0);
@@ -1578,39 +1596,45 @@ public class MappingTests
     /// The update path falls back to the period already stored, which is not the create path's fallback.
     /// </summary>
     /// <remarks>
-    /// The two fallbacks differ deliberately, and confusing them is the kind of error that only shows up
-    /// as a quietly changed cache period. On creation there is no stored period yet, so the definition's
-    /// default applies; on update there is one, so omitting the field leaves it as it was rather than
-    /// resetting it to the definition default.
+    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, and an earlier revision of this test asserted the
+    /// opposite, that an omitted period should be left as it was. Measured: the legacy save read the
+    /// cache-time box and stored a parsed integer when it was non-empty and LITERALLY ZERO when it was empty,
+    /// so a blank field DISABLED caching. Zero is consequently a real value meaning "do not cache" and not an
+    /// absent one, which is why the member is a non-nullable integer with no "unspecified" state. Treating
+    /// zero as unset would silently enable caching on a module the caller asked not to cache. Note the
+    /// deliberate contrast with the create path, where no stored period exists yet.
     /// </remarks>
     [Fact]
-    public void ModuleApplyUpdate_FallsBackToTheStoredPeriodRatherThanTheDefinitionDefault()
+    public void ModuleApplyUpdate_StoresZeroForAnOmittedPeriodRatherThanKeepingTheStoredOne()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
         placement.CacheTime.Should().Be(120, "the fixture stores a period that is not a default");
 
-        ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest { CacheTime = null });
+        ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest());
 
-        placement.CacheTime.Should().Be(120);
+        placement.CacheTime.Should().Be(0);
     }
 
     /// <summary>
-    /// The update path substitutes the content pane for a blank pane and floors a negative period.
+    /// The update path floors a negative period at zero and leaves the stored pane alone.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the pane is no longer substituted here, because the update contract carries no pane member
+    /// to substitute FOR - the column is excluded and its stored value is preserved. Only the negative-period
+    /// floor remains, which guards a value the store would refuse to interpret.
+    /// </remarks>
     [Fact]
-    public void ModuleApplyUpdate_SubstitutesTheContentPaneAndFloorsANegativePeriod()
+    public void ModuleApplyUpdate_FloorsANegativePeriodAndLeavesTheStoredPaneAlone()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
+        string storedPane = placement.PaneName;
 
-        ModuleMappings.ApplyUpdate(
-            module,
-            placement,
-            new UpdateModuleRequest { PaneName = "  ", CacheTime = -1 });
+        ModuleMappings.ApplyUpdate(module, placement, new UpdateModuleRequest { CacheTime = -1 });
 
-        placement.PaneName.Should().Be(DefaultPaneName);
+        placement.PaneName.Should().Be(storedPane);
         placement.CacheTime.Should().Be(0);
     }
 

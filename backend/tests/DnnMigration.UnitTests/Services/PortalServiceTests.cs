@@ -2280,19 +2280,42 @@ public class PortalServiceTests
                 });
 
             harness.Roles
-                .Setup(r => r.Add(It.IsAny<Role>()))
-                .Callback<Role>(harness.AddedRoles.Add);
+                .Setup(r => r.AddAsync(It.IsAny<Role>(), It.IsAny<CancellationToken>()))
+                .Callback<Role, CancellationToken>((role, _) => harness.AddedRoles.Add(role))
+                .Returns(Task.CompletedTask);
+
+            // A role delete carries its key, and a portal compensation deletes the three stock roles it
+            // created, so the harness records the keys and resolves them back to the role objects the
+            // assertions name.
             harness.Roles
-                .Setup(r => r.Remove(It.IsAny<Role>()))
-                .Callback<Role>(harness.RemovedRoles.Add);
+                .Setup(r => r.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Callback<int, CancellationToken>((roleId, _) =>
+                {
+                    Role? matched = harness.AddedRoles.FirstOrDefault(role => role.RoleId == roleId);
+                    harness.RemovedRoles.Add(matched ?? new Role { RoleId = roleId });
+                })
+                .Returns(Task.CompletedTask);
+
             harness.Roles
-                .Setup(r => r.AddAssignment(It.IsAny<UserRole>()))
-                .Callback<UserRole>(harness.AddedAssignments.Add);
+                .Setup(r => r.AddUserRoleAsync(It.IsAny<UserRole>(), It.IsAny<CancellationToken>()))
+                .Callback<UserRole, CancellationToken>((assignment, _) => harness.AddedAssignments.Add(assignment))
+                .Returns(Task.CompletedTask);
             harness.Roles
-                .Setup(r => r.RemoveAssignment(It.IsAny<UserRole>()))
-                .Callback<UserRole>(harness.RemovedAssignments.Add);
+                .Setup(r => r.DeleteUserRoleAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<int, int, CancellationToken>((userId, roleId, _) =>
+                    harness.RemovedAssignments.Add(
+                        harness.ExistingAssignment is { } existing
+                            && existing.UserId == userId
+                            && existing.RoleId == roleId
+                                ? existing
+                                : new UserRole { UserId = userId, RoleId = roleId }))
+                .Returns(Task.CompletedTask);
             harness.Roles
-                .Setup(r => r.GetAssignmentAsync(
+                .Setup(r => r.GetUserRoleAsync(
+                    It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))

@@ -33,6 +33,9 @@ public sealed class RoleRepositoryTests
     private const int UnknownPortalId = 987654;
     private const int UnknownRoleGroupId = 987654;
 
+    /// <summary>An account key no seeded or suite-created account bears.</summary>
+    private const int UnknownUserId = 987654;
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="RoleRepositoryTests"/> class.</summary>
@@ -47,7 +50,7 @@ public sealed class RoleRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-        Role? role = await roles.GetAsync(_fixture.Seed.AdministratorRoleId);
+        Role? role = await roles.GetByIdAsync(_fixture.Seed.AdministratorRoleId, _fixture.Seed.PortalId);
 
         role.Should().NotBeNull();
         role!.RoleName.Should().Be(IntegrationSeed.AdministratorsRoleName);
@@ -78,7 +81,7 @@ public sealed class RoleRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-        Role? role = await roles.GetAsync(0);
+        Role? role = await roles.GetByIdAsync(0, _fixture.Seed.PortalId);
 
         role.Should().NotBeNull();
         role!.RoleName.Should().Be(IntegrationSeed.AdministratorsRoleName);
@@ -92,8 +95,12 @@ public sealed class RoleRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-        (await roles.GetAsync(UnknownRoleId)).Should().BeNull();
-        (await roles.GetGroupAsync(UnknownRoleGroupId)).Should().BeNull();
+        (await roles.GetByIdAsync(UnknownRoleId, _fixture.Seed.PortalId)).Should().BeNull();
+        (await roles.GetRoleGroupAsync(_fixture.Seed.PortalId, UnknownRoleGroupId)).Should().BeNull();
+
+        // A real role asked for under the wrong tenant is absent too: the terminal GetRole
+        // (04.00.04.SqlDataProvider:L334-L335) makes the portal a condition, not a hint.
+        (await roles.GetByIdAsync(_fixture.Seed.AdministratorRoleId, UnknownPortalId)).Should().BeNull();
     }
 
     /// <summary>A role name resolves irrespective of case, and only within its own tenant.</summary>
@@ -143,7 +150,7 @@ public sealed class RoleRepositoryTests
     /// with itself.
     /// </remarks>
     [Fact]
-    public async Task RoleNameExistsAsync_IsScopedToTheTenantAndCanExcludeOneRole()
+    public async Task GetByNameAsync_SettlesUniquenessWithinTheTenant()
     {
         int portalId = await CreatePortalAsync();
         string roleName = FormattableString.Invariant($"Unique {Suffix()}");
@@ -154,11 +161,18 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await roles.RoleNameExistsAsync(portalId, roleName)).Should().BeTrue();
-            (await roles.RoleNameExistsAsync(portalId, roleName.ToUpperInvariant())).Should().BeTrue();
-            (await roles.RoleNameExistsAsync(portalId, roleName, excludingRoleId: roleId)).Should().BeFalse();
-            (await roles.RoleNameExistsAsync(_fixture.Seed.PortalId, roleName)).Should().BeFalse();
-            (await roles.RoleNameExistsAsync(portalId, "Absent " + Suffix())).Should().BeFalse();
+            // MIGRATION: uniqueness needs no dedicated member. IX_RoleName is UNIQUE over
+            // (PortalID, RoleName), so GetRoleByName (membership DataProvider.vb:L94) can match at most
+            // one row and the row it matches IS the answer - including which role holds the name, which
+            // a boolean could not report.
+            Role? taken = await roles.GetByNameAsync(portalId, roleName);
+            taken.Should().NotBeNull();
+            taken!.RoleId.Should().Be(roleId, "the match names the role holding the name, so an edit can recognise itself");
+
+            (await roles.GetByNameAsync(portalId, roleName.ToUpperInvariant())).Should().NotBeNull();
+            (await roles.GetByNameAsync(_fixture.Seed.PortalId, roleName)).Should()
+                .BeNull("role names are unique per tenant, not per installation");
+            (await roles.GetByNameAsync(portalId, "Absent " + Suffix())).Should().BeNull();
         }
         finally
         {
@@ -174,7 +188,7 @@ public sealed class RoleRepositoryTests
     /// access to everyone who signs up.
     /// </remarks>
     [Fact]
-    public async Task ListAutoAssignedAsync_ReturnsOnlyTheAutomaticRoles()
+    public async Task GetByPortalIdAsync_CarriesTheAutoAssignmentFlag()
     {
         int portalId = await CreatePortalAsync();
         string marker = Suffix();
@@ -187,14 +201,22 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            IReadOnlyList<Role> automatic = await roles.ListAutoAssignedAsync(portalId);
+            // MIGRATION: the membership provider had no auto-assigned procedure - it exposed
+            // GetPortalRoles(PortalId) alone (DataProvider.vb:L91) and the caller tested the column. The
+            // flag is therefore asserted on the rows this read returns, which is where the legacy
+            // behaviour actually lived.
+            List<Role> automatic = (await roles.GetByPortalIdAsync(portalId))
+                .Where(role => role.AutoAssignment)
+                .ToList();
 
             automatic.Select(role => role.RoleId).Should().Equal(new[] { automaticA, automaticB });
             automatic.Select(role => role.RoleId).Should().NotContain(manual);
 
             // The seeded tenant provisions two automatic roles of its own, which confirms the filter is not
             // simply returning nothing.
-            IReadOnlyList<Role> seeded = await roles.ListAutoAssignedAsync(_fixture.Seed.PortalId);
+            List<Role> seeded = (await roles.GetByPortalIdAsync(_fixture.Seed.PortalId))
+                .Where(role => role.AutoAssignment)
+                .ToList();
             seeded.Select(role => role.RoleName).Should()
                 .Contain(IntegrationSeed.RegisteredUsersRoleName)
                 .And.Contain(IntegrationSeed.SubscribersRoleName)
@@ -209,10 +231,10 @@ public sealed class RoleRepositoryTests
         }
     }
 
-    /// <summary>An unpaged listing returns a tenant's roles by name and is confined to that tenant.</summary>
+    /// <summary>The tenant listing returns a tenant's roles by name and excludes other tenants.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListAsync_Unpaged_ReturnsTheTenantsRolesByName()
+    public async Task GetByPortalIdAsync_ReturnsTheTenantsRolesByName()
     {
         int portalId = await CreatePortalAsync();
         string marker = Suffix();
@@ -225,14 +247,62 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            PagedResult<Role> page = await roles.ListAsync(portalId, null, 0, 0, null);
+            IReadOnlyList<Role> page = await roles.GetByPortalIdAsync(portalId);
 
-            page.IsUnpaged.Should().BeTrue();
-            page.Items.Select(role => role.RoleId).Should().Equal(new[] { first, second, third });
-            page.TotalCount.Should().Be(3);
+            // Ordered by name, matching the terminal GetPortalRoles ORDER BY R.RoleName
+            // (04.08.00.SqlDataProvider:L41). The owned subset is selected because the same procedure
+            // also admits installation-wide roles, which the next assertion covers explicitly.
+            page.Where(role => role.PortalId == portalId).Select(role => role.RoleId)
+                .Should().Equal(new[] { first, second, third });
 
-            PagedResult<Role> elsewhere = await roles.ListAsync(UnknownPortalId, null, 0, 0, null);
-            elsewhere.Items.Should().BeEmpty();
+            // Nothing belonging to another tenant may appear. Expressed as "no row owned by a different
+            // portal" rather than as a positive predicate, so the assertion still means something when
+            // the installation happens to define no host role at all.
+            page.Where(role => role.PortalId != portalId && role.PortalId != null)
+                .Should().BeEmpty("a tenant listing may not disclose another tenant's roles");
+
+            IReadOnlyList<Role> elsewhere = await roles.GetByPortalIdAsync(UnknownPortalId);
+            elsewhere.Where(role => role.PortalId != null).Should().BeEmpty();
+            elsewhere.Select(role => role.RoleId).Should().NotContain(first);
+
+            // MIGRATION: THE READ ADMITS ROLES WITH NO OWNING PORTAL. The terminal GetPortalRoles filters
+            // on ( R.PortalId = @PortalId OR R.PortalId is null ) at 04.08.00.SqlDataProvider:L40, so an
+            // installation-wide role is visible to every tenant. That is asserted with a real host role
+            // rather than inferred, because the seeded installation defines none and an absent case would
+            // let a strict-equality regression pass unnoticed. Note the contrast with GetByIdAsync, whose
+            // terminal procedure is a strict equality - the two are deliberately asymmetric.
+            Role hostRole = new()
+            {
+                PortalId = null,
+                RoleName = FormattableString.Invariant($"Host {marker}"),
+                Description = "Created by the persistence role suite.",
+            };
+
+            using (IServiceScope hostScope = _fixture.Services.CreateScope())
+            {
+                IRoleRepository hostRoles = hostScope.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork hostUnitOfWork = hostScope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await hostRoles.AddAsync(hostRole);
+                await hostUnitOfWork.SaveChangesAsync();
+            }
+
+            try
+            {
+                using IServiceScope withHost = _fixture.Services.CreateScope();
+                IRoleRepository reading = withHost.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                (await reading.GetByPortalIdAsync(portalId)).Select(role => role.RoleId)
+                    .Should().Contain(hostRole.RoleId, "a role with no owning portal is visible to every tenant");
+
+                // The same role is unreachable through the by-key read, whose portal condition is strict.
+                (await reading.GetByIdAsync(hostRole.RoleId, portalId)).Should()
+                    .BeNull("GetRole compares PortalId for equality, which a null never satisfies");
+            }
+            finally
+            {
+                await RemoveRoleAsync(hostRole.RoleId);
+            }
         }
         finally
         {
@@ -243,10 +313,15 @@ public sealed class RoleRepositoryTests
         }
     }
 
-    /// <summary>The reported total counts every match, not just the page that was returned.</summary>
+    /// <summary>The host-wide listing crosses tenant boundaries, as the argument-less legacy read did.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Realises membership <c>DataProvider.vb:L92 GetRoles()</c>, which took no argument and applied no
+    /// filter. It is the one role read that is deliberately not tenant-scoped, so a caller answering a
+    /// question about one portal must not reach for it.
+    /// </remarks>
     [Fact]
-    public async Task ListAsync_Paged_ReportsTheTotalIndependentlyOfThePageSize()
+    public async Task GetAllAsync_ReturnsRolesFromEveryTenant()
     {
         int portalId = await CreatePortalAsync();
         string marker = Suffix();
@@ -259,19 +334,17 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            PagedResult<Role> firstPage = await roles.ListAsync(portalId, null, 0, 2, null);
-            PagedResult<Role> secondPage = await roles.ListAsync(portalId, null, 1, 2, null);
+            IReadOnlyList<Role> everything = await roles.GetAllAsync();
 
-            firstPage.TotalCount.Should().Be(3);
-            firstPage.PageIndex.Should().Be(0);
-            firstPage.PageSize.Should().Be(2);
-            firstPage.TotalPages.Should().Be(2);
-            firstPage.HasNextPage.Should().BeTrue();
-            firstPage.Items.Select(role => role.RoleId).Should().Equal(new[] { first, second });
+            // The three roles this test created, and the seeded tenant's own, are all present - which is
+            // what "no filter" means and is exactly why this member is not the one a tenant-scoped
+            // caller should use.
+            everything.Select(role => role.RoleId).Should()
+                .Contain(first).And.Contain(second).And.Contain(third)
+                .And.Contain(_fixture.Seed.AdministratorRoleId);
 
-            secondPage.TotalCount.Should().Be(3);
-            secondPage.HasNextPage.Should().BeFalse();
-            secondPage.Items.Select(role => role.RoleId).Should().Equal(third);
+            everything.Select(role => role.PortalId).Distinct().Should()
+                .HaveCountGreaterThan(1, "the read spans tenants rather than being confined to one");
         }
         finally
         {
@@ -282,38 +355,50 @@ public sealed class RoleRepositoryTests
         }
     }
 
-    /// <summary>The name filter matches a fragment anywhere in the value and ignores case.</summary>
+    /// <summary>Only the tenant's public roles are offered for subscription.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Realises membership <c>DataProvider.vb:L115 GetServices(PortalId, UserId)</c>. The terminal
+    /// procedure at <c>04.05.00.SqlDataProvider:L36-L37</c> filters on
+    /// <c>R.PortalId = @PortalId and R.IsPublic = 1</c>, so a private role must never appear here: it
+    /// would offer a subscription to a grouping the tenant never published. The portal condition is a
+    /// strict equality there, so installation-wide roles are excluded as well.
+    /// </remarks>
     [Fact]
-    public async Task ListAsync_WithANameFragment_MatchesAnywhereAndIgnoresCase()
+    public async Task GetSubscribableRolesAsync_ReturnsOnlyThePublicRoles()
     {
         int portalId = await CreatePortalAsync();
         string marker = Suffix();
-        int matching = await CreateRoleAsync(portalId, FormattableString.Invariant($"Lead {marker}"));
-        int other = await CreateRoleAsync(portalId, FormattableString.Invariant($"Other {Suffix()}"));
+        int publicRole = await CreateRoleAsync(portalId, FormattableString.Invariant($"Public {marker}"), isPublic: true);
+        int privateRole = await CreateRoleAsync(portalId, FormattableString.Invariant($"Private {marker}"));
 
         try
         {
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await roles.ListAsync(portalId, null, 0, 0, marker)).Items
-                .Should().ContainSingle().Which.RoleId.Should().Be(matching);
+            IReadOnlyList<Role> offered = await roles.GetSubscribableRolesAsync(
+                portalId,
+                _fixture.Seed.MemberUserId);
 
-            (await roles.ListAsync(portalId, null, 0, 0, marker.ToUpperInvariant())).Items
-                .Should().ContainSingle().Which.RoleId.Should().Be(matching);
+            offered.Select(role => role.RoleId).Should().Equal(publicRole);
+            offered.Should().OnlyContain(role => role.IsPublic);
+            offered.Select(role => role.RoleId).Should().NotContain(privateRole);
 
-            (await roles.ListAsync(portalId, null, 0, 0, "  " + marker + "  ")).Items
-                .Should().ContainSingle().Which.RoleId.Should().Be(matching);
+            // The account argument annotates the caller's own subscription state in the legacy
+            // projection; it must not widen or narrow the set of roles offered.
+            IReadOnlyList<Role> forAnotherAccount = await roles.GetSubscribableRolesAsync(
+                portalId,
+                _fixture.Seed.AdminUserId);
+            forAnotherAccount.Select(role => role.RoleId).Should().Equal(publicRole);
 
-            (await roles.ListAsync(portalId, null, 0, 0, "no-role-bears-this")).Items.Should().BeEmpty();
-
-            other.Should().NotBe(matching);
+            (await roles.GetSubscribableRolesAsync(UnknownPortalId, _fixture.Seed.MemberUserId))
+                .Should().BeEmpty();
         }
         finally
         {
-            await RemoveRoleAsync(matching);
-            await RemoveRoleAsync(other);
+            await RemoveRoleAsync(publicRole);
+            await RemoveRoleAsync(privateRole);
             await RemovePortalAsync(portalId);
         }
     }
@@ -325,7 +410,7 @@ public sealed class RoleRepositoryTests
     /// rather than left for a caller to fetch one row at a time.
     /// </remarks>
     [Fact]
-    public async Task ListAsync_WithAGroupFilter_SelectsThatGroupAndLoadsItsNavigation()
+    public async Task GetRolesByGroupAsync_SelectsThatGroupAndLoadsItsNavigation()
     {
         int portalId = await CreatePortalAsync();
         string marker = Suffix();
@@ -339,19 +424,26 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            PagedResult<Role> inGroup = await roles.ListAsync(portalId, groupId, 0, 0, null);
+            // Realises membership DataProvider.vb:L105 GetRolesByGroup(RoleGroupId, PortalId).
+            IReadOnlyList<Role> inGroup = await roles.GetRolesByGroupAsync(groupId, portalId);
 
-            inGroup.Items.Should().ContainSingle();
-            inGroup.Items[0].RoleId.Should().Be(grouped);
-            inGroup.Items[0].RoleGroupId.Should().Be(groupId);
-            inGroup.Items[0].RoleGroup.Should().NotBeNull();
-            inGroup.Items[0].RoleGroup!.RoleGroupName.Should().Be(groupName);
+            inGroup.Should().ContainSingle();
+            inGroup[0].RoleId.Should().Be(grouped);
+            inGroup[0].RoleGroupId.Should().Be(groupId);
+            inGroup[0].RoleGroup.Should().NotBeNull();
+            inGroup[0].RoleGroup!.RoleGroupName.Should().Be(groupName);
 
-            PagedResult<Role> everything = await roles.ListAsync(portalId, null, 0, 0, null);
-            everything.Items.Select(role => role.RoleId).Should().BeEquivalentTo(new[] { grouped, ungrouped });
+            // The ungrouped role is reachable through the tenant listing but belongs to no group, so no
+            // group read may return it.
+            IReadOnlyList<Role> everything = await roles.GetByPortalIdAsync(portalId);
+            everything.Where(role => role.PortalId == portalId).Select(role => role.RoleId)
+                .Should().BeEquivalentTo(new[] { grouped, ungrouped });
 
-            PagedResult<Role> emptyGroup = await roles.ListAsync(portalId, UnknownRoleGroupId, 0, 0, null);
-            emptyGroup.Items.Should().BeEmpty();
+            (await roles.GetRolesByGroupAsync(UnknownRoleGroupId, portalId)).Should().BeEmpty();
+
+            // The portal is a condition as well as the group, so a real group asked for under another
+            // tenant yields nothing.
+            (await roles.GetRolesByGroupAsync(groupId, UnknownPortalId)).Should().BeEmpty();
         }
         finally
         {
@@ -380,21 +472,27 @@ public sealed class RoleRepositoryTests
             {
                 IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-                RoleGroup? group = await roles.GetGroupAsync(firstId);
+                RoleGroup? group = await roles.GetRoleGroupAsync(portalId, firstId);
                 group.Should().NotBeNull();
                 group!.RoleGroupName.Should().Be(firstName);
                 group.PortalId.Should().Be(portalId);
 
-                IReadOnlyList<RoleGroup> listed = await roles.ListGroupsAsync(portalId);
+                // RoleGroups.PortalID is NOT NULL, so the portal is a genuine condition: the same key
+                // asked for under another tenant is absent.
+                (await roles.GetRoleGroupAsync(UnknownPortalId, firstId)).Should().BeNull();
+
+                IReadOnlyList<RoleGroup> listed = await roles.GetRoleGroupsAsync(portalId);
                 listed.Select(entry => entry.RoleGroupId).Should().Equal(new[] { firstId, secondId });
 
-                (await roles.ListGroupsAsync(UnknownPortalId)).Should().BeEmpty();
+                (await roles.GetRoleGroupsAsync(UnknownPortalId)).Should().BeEmpty();
 
-                (await roles.GroupNameExistsAsync(portalId, firstName)).Should().BeTrue();
-                (await roles.GroupNameExistsAsync(portalId, firstName.ToUpperInvariant())).Should().BeTrue();
-                (await roles.GroupNameExistsAsync(portalId, firstName, excludingRoleGroupId: firstId)).Should().BeFalse();
-                (await roles.GroupNameExistsAsync(_fixture.Seed.PortalId, firstName)).Should()
-                    .BeFalse("group names are unique per tenant, not per installation");
+                // MIGRATION: group-name uniqueness is settled over this list. The membership provider
+                // exposed GetRoleGroups(portalId) (DataProvider.vb:L104) and no existence procedure, so
+                // the comparison was always the caller's.
+                listed.Should().Contain(entry => entry.RoleGroupName == firstName);
+                (await roles.GetRoleGroupsAsync(_fixture.Seed.PortalId)).Should()
+                    .NotContain(entry => entry.RoleGroupName == firstName,
+                        "group names are unique per tenant, not per installation");
             }
 
             await RemoveGroupAsync(firstId);
@@ -402,8 +500,8 @@ public sealed class RoleRepositoryTests
             using IServiceScope after = _fixture.Services.CreateScope();
             IRoleRepository remaining = after.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await remaining.GetGroupAsync(firstId)).Should().BeNull();
-            (await remaining.ListGroupsAsync(portalId)).Select(entry => entry.RoleGroupId).Should().Equal(secondId);
+            (await remaining.GetRoleGroupAsync(portalId, firstId)).Should().BeNull();
+            (await remaining.GetRoleGroupsAsync(portalId)).Select(entry => entry.RoleGroupId).Should().Equal(secondId);
         }
         finally
         {
@@ -416,61 +514,84 @@ public sealed class RoleRepositoryTests
     /// <summary>The seeded administrator's assignment to the administrators role is readable.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task GetAssignmentAsync_ReturnsTheSeededAssignment()
+    public async Task GetUserRoleAsync_ReturnsTheSeededAssignment()
     {
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-        UserRole? assignment = await roles.GetAssignmentAsync(
-            _fixture.Seed.AdministratorRoleId,
-            _fixture.Seed.AdminUserId);
+        // Realises membership DataProvider.vb:L109 GetUserRole(PortalID, UserId, RoleId), in that
+        // argument order.
+        UserRole? assignment = await roles.GetUserRoleAsync(
+            _fixture.Seed.PortalId,
+            _fixture.Seed.AdminUserId,
+            _fixture.Seed.AdministratorRoleId);
 
         assignment.Should().NotBeNull();
         assignment!.UserId.Should().Be(_fixture.Seed.AdminUserId);
         assignment.RoleId.Should().Be(_fixture.Seed.AdministratorRoleId);
 
-        (await roles.GetAssignmentAsync(UnknownRoleId, _fixture.Seed.AdminUserId)).Should().BeNull();
-        (await roles.GetAssignmentAsync(_fixture.Seed.AdministratorRoleId, 987654)).Should().BeNull();
+        (await roles.GetUserRoleAsync(_fixture.Seed.PortalId, _fixture.Seed.AdminUserId, UnknownRoleId))
+            .Should().BeNull();
+        (await roles.GetUserRoleAsync(_fixture.Seed.PortalId, UnknownUserId, _fixture.Seed.AdministratorRoleId))
+            .Should().BeNull();
+
+        // MIGRATION: dbo.UserRoles has no portal column, so the tenant anchor is taken from the role the
+        // assignment points at. A real assignment asked about under another tenant is therefore absent,
+        // which is what stops one tenant answering another tenant's membership question.
+        (await roles.GetUserRoleAsync(UnknownPortalId, _fixture.Seed.AdminUserId, _fixture.Seed.AdministratorRoleId))
+            .Should().BeNull();
     }
 
-    /// <summary>A role's members are listed by account, paged, with the account navigation loaded.</summary>
+    /// <summary>Assignments resolve by login name, and the role name narrows the answer optionally.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The membership grid shows the account rather than its identifier, so the navigation is loaded by the
-    /// listing. Without it a page of members would cost one extra read per row.
+    /// Realises membership <c>DataProvider.vb:L111 GetUserRolesByUsername(PortalID, Username,
+    /// Rolename)</c>. The legacy role argument was optional and a null meant "every role", which is why
+    /// it is the one nullable argument on the contract. An empty string is a different question: the
+    /// legacy no-string marker WAS the empty string, so it narrows to a role of that name rather than
+    /// widening to all of them, and the two must not be conflated.
     /// </remarks>
     [Fact]
-    public async Task ListAssignmentsAsync_ListsMembersByAccountAndLoadsTheNavigation()
+    public async Task GetUserRolesByUsernameAsync_ResolvesByLoginNameAndNarrowsByRoleName()
     {
         int portalId = await CreatePortalAsync();
-        int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Members {Suffix()}"));
+        string roleName = FormattableString.Invariant($"Named {Suffix()}");
+        int roleId = await CreateRoleAsync(portalId, roleName);
 
         try
         {
             await AddAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
-            await AddAssignmentAsync(roleId, _fixture.Seed.AdminUserId);
-
-            int lowerUserId = Math.Min(_fixture.Seed.MemberUserId, _fixture.Seed.AdminUserId);
-            int higherUserId = Math.Max(_fixture.Seed.MemberUserId, _fixture.Seed.AdminUserId);
 
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            PagedResult<UserRole> all = await roles.ListAssignmentsAsync(roleId, 0, 0);
+            // A null role name narrows nothing.
+            IReadOnlyList<UserRole> all = await roles.GetUserRolesByUsernameAsync(
+                portalId,
+                IntegrationSeed.MemberUserName,
+                null);
 
-            all.Items.Select(assignment => assignment.UserId).Should().Equal(new[] { lowerUserId, higherUserId });
-            all.Items[0].User.Should().NotBeNull();
-            all.Items[0].User!.UserId.Should().Be(lowerUserId);
+            all.Select(assignment => assignment.RoleId).Should().Equal(roleId);
 
-            PagedResult<UserRole> firstPage = await roles.ListAssignmentsAsync(roleId, 0, 1);
-            firstPage.TotalCount.Should().Be(2);
-            firstPage.Items.Should().ContainSingle().Which.UserId.Should().Be(lowerUserId);
+            // The login name is matched without regard to case, as the legacy collation did.
+            (await roles.GetUserRolesByUsernameAsync(
+                portalId,
+                IntegrationSeed.MemberUserName.ToUpperInvariant(),
+                null)).Should().ContainSingle();
 
-            PagedResult<UserRole> secondPage = await roles.ListAssignmentsAsync(roleId, 1, 1);
-            secondPage.TotalCount.Should().Be(2);
-            secondPage.Items.Should().ContainSingle().Which.UserId.Should().Be(higherUserId);
+            // A supplied role name narrows to it.
+            (await roles.GetUserRolesByUsernameAsync(portalId, IntegrationSeed.MemberUserName, roleName))
+                .Select(assignment => assignment.RoleId).Should().Equal(roleId);
 
-            (await roles.ListAssignmentsAsync(UnknownRoleId, 0, 0)).Items.Should().BeEmpty();
+            // An empty role name is a name, not a wildcard, so it matches no role here.
+            (await roles.GetUserRolesByUsernameAsync(portalId, IntegrationSeed.MemberUserName, string.Empty))
+                .Should().BeEmpty();
+
+            (await roles.GetUserRolesByUsernameAsync(portalId, "no_such_account", null)).Should().BeEmpty();
+
+            // Scoped through the role, so another tenant's question yields nothing.
+            (await roles.GetUserRolesByUsernameAsync(UnknownPortalId, IntegrationSeed.MemberUserName, null))
+                .Should().BeEmpty();
         }
         finally
         {
@@ -486,7 +607,7 @@ public sealed class RoleRepositoryTests
     /// about would disclose the role structure of every other tenant the account belongs to.
     /// </remarks>
     [Fact]
-    public async Task ListUserAssignmentsAsync_IsConfinedToTheTenantsRoles()
+    public async Task GetUserRolesAsync_IsConfinedToTheTenantsRoles()
     {
         int portalId = await CreatePortalAsync();
         int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Elsewhere {Suffix()}"));
@@ -498,14 +619,14 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            IReadOnlyList<UserRole> here = await roles.ListUserAssignmentsAsync(portalId, _fixture.Seed.MemberUserId);
+            IReadOnlyList<UserRole> here = await roles.GetUserRolesAsync(portalId, _fixture.Seed.MemberUserId);
 
             here.Should().ContainSingle();
             here[0].RoleId.Should().Be(roleId);
             here[0].Role.Should().NotBeNull();
             here[0].Role!.PortalId.Should().Be(portalId);
 
-            IReadOnlyList<UserRole> inTheSeededTenant = await roles.ListUserAssignmentsAsync(
+            IReadOnlyList<UserRole> inTheSeededTenant = await roles.GetUserRolesAsync(
                 _fixture.Seed.PortalId,
                 _fixture.Seed.MemberUserId);
 
@@ -513,7 +634,13 @@ public sealed class RoleRepositoryTests
                 .Contain(_fixture.Seed.RegisteredRoleId)
                 .And.NotContain(roleId);
 
-            (await roles.ListUserAssignmentsAsync(UnknownPortalId, _fixture.Seed.MemberUserId)).Should().BeEmpty();
+            (await roles.GetUserRolesAsync(UnknownPortalId, _fixture.Seed.MemberUserId)).Should().BeEmpty();
+
+            // The role-shaped view of the same membership agrees with the assignment-shaped one.
+            (await roles.GetRolesByUserIdAsync(_fixture.Seed.MemberUserId, portalId))
+                .Select(role => role.RoleId).Should().Equal(roleId);
+            (await roles.GetRolesByUserIdAsync(_fixture.Seed.MemberUserId, UnknownPortalId))
+                .Should().BeEmpty();
         }
         finally
         {
@@ -540,12 +667,16 @@ public sealed class RoleRepositoryTests
                 IRoleRepository roles = amending.ServiceProvider.GetRequiredService<IRoleRepository>();
                 IUnitOfWork unitOfWork = amending.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                UserRole? assignment = await roles.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
+                UserRole? assignment = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
                 assignment.Should().NotBeNull();
-                assignment!.ExpiryDate.Should().BeNull();
+                assignment!.ExpiryDate.Should().BeNull("an absent bound is unbounded, not a far-future date");
 
                 assignment.ExpiryDate = expiry;
                 assignment.IsTrialUsed = true;
+
+                // The amendment is staged through the contract rather than left to change tracking, so
+                // the same call works for a detached assignment too.
+                await roles.UpdateUserRoleAsync(assignment);
                 await unitOfWork.SaveChangesAsync();
             }
 
@@ -553,7 +684,7 @@ public sealed class RoleRepositoryTests
             {
                 IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-                UserRole? amended = await roles.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
+                UserRole? amended = await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
                 amended.Should().NotBeNull();
                 amended!.ExpiryDate.Should().Be(expiry);
                 amended.IsTrialUsed.Should().BeTrue();
@@ -564,16 +695,22 @@ public sealed class RoleRepositoryTests
                 IRoleRepository roles = removing.ServiceProvider.GetRequiredService<IRoleRepository>();
                 IUnitOfWork unitOfWork = removing.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                UserRole? doomed = await roles.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
-                roles.RemoveAssignment(doomed!);
+                // Removal is by the account-and-role pair, which is how the legacy DeleteUserRole
+                // identified the row - no prior read and no portal argument.
+                await roles.DeleteUserRoleAsync(_fixture.Seed.MemberUserId, roleId);
                 await unitOfWork.SaveChangesAsync();
             }
 
             using IServiceScope after = _fixture.Services.CreateScope();
             IRoleRepository remaining = after.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await remaining.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId)).Should().BeNull();
-            (await remaining.GetAsync(roleId)).Should().NotBeNull("removing a member does not remove the role");
+            (await remaining.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId)).Should().BeNull();
+            (await remaining.GetByIdAsync(roleId, portalId)).Should()
+                .NotBeNull("removing a member does not remove the role");
+
+            // Removing an assignment that is already gone is not an error, exactly as the legacy
+            // key-matched delete affected no row and reported nothing.
+            await remaining.DeleteUserRoleAsync(_fixture.Seed.MemberUserId, roleId);
         }
         finally
         {
@@ -594,7 +731,7 @@ public sealed class RoleRepositoryTests
     /// the identifier, so the pattern is correct whatever value the identity column produces.
     /// </remarks>
     [Fact]
-    public async Task Add_ThroughTheNavigation_SavesARoleAndItsFirstMemberTogether()
+    public async Task AddAsync_ThroughTheNavigation_SavesARoleAndItsFirstMemberTogether()
     {
         int portalId = await CreatePortalAsync();
         int roleId;
@@ -614,8 +751,11 @@ public sealed class RoleRepositoryTests
                     IsPublic = true,
                 };
 
-                roles.Add(role);
-                roles.AddAssignment(new UserRole { UserId = _fixture.Seed.MemberUserId, Role = role });
+                // Both stagings return a bare task: neither yields the generated key, which is exactly
+                // what lets the role and its first member commit as one unit even though the key is not
+                // known until they do.
+                await roles.AddAsync(role);
+                await roles.AddUserRoleAsync(new UserRole { UserId = _fixture.Seed.MemberUserId, Role = role });
 
                 await unitOfWork.SaveChangesAsync();
 
@@ -625,9 +765,9 @@ public sealed class RoleRepositoryTests
             using IServiceScope reading = _fixture.Services.CreateScope();
             IRoleRepository confirming = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await confirming.GetAsync(roleId)).Should().NotBeNull();
+            (await confirming.GetByIdAsync(roleId, portalId)).Should().NotBeNull();
 
-            UserRole? assignment = await confirming.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
+            UserRole? assignment = await confirming.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
             assignment.Should().NotBeNull();
             assignment!.RoleId.Should().Be(roleId, "the store filled the identifier in from the navigation");
         }
@@ -645,7 +785,7 @@ public sealed class RoleRepositoryTests
     /// resolves role names by joining through exactly those rows.
     /// </remarks>
     [Fact]
-    public async Task Remove_TakesTheRolesMembershipsWithIt()
+    public async Task DeleteAsync_TakesTheRolesMembershipsWithIt()
     {
         int portalId = await CreatePortalAsync();
         int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Doomed {Suffix()}"));
@@ -662,9 +802,9 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            (await roles.GetAsync(roleId)).Should().BeNull();
+            (await roles.GetByIdAsync(roleId, portalId)).Should().BeNull();
             (await CountAssignmentsAsync(roleId)).Should().Be(0);
-            (await roles.GetAssignmentAsync(roleId, _fixture.Seed.MemberUserId)).Should().BeNull();
+            (await roles.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId)).Should().BeNull();
 
             // The account itself survives; only its membership of the removed role is gone.
             IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
@@ -729,12 +869,14 @@ public sealed class RoleRepositoryTests
     /// <param name="roleName">The role name, which must be unique within the tenant.</param>
     /// <param name="autoAssignment">Whether new accounts join the role automatically.</param>
     /// <param name="roleGroupId">The group the role belongs to, if any.</param>
+    /// <param name="isPublic">Whether the role is offered for subscription.</param>
     /// <returns>The identifier the store assigned.</returns>
     private async Task<int> CreateRoleAsync(
         int portalId,
         string roleName,
         bool autoAssignment = false,
-        int? roleGroupId = null)
+        int? roleGroupId = null,
+        bool isPublic = false)
     {
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
@@ -746,11 +888,11 @@ public sealed class RoleRepositoryTests
             RoleName = roleName,
             Description = "Created by the persistence role suite.",
             AutoAssignment = autoAssignment,
-            IsPublic = false,
+            IsPublic = isPublic,
             RoleGroupId = roleGroupId,
         };
 
-        roles.Add(role);
+        await roles.AddAsync(role);
         await unitOfWork.SaveChangesAsync();
 
         return role.RoleId;
@@ -765,13 +907,10 @@ public sealed class RoleRepositoryTests
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Role? doomed = await roles.GetAsync(roleId);
-
-        if (doomed is not null)
-        {
-            roles.Remove(doomed);
-            await unitOfWork.SaveChangesAsync();
-        }
+        // DeleteAsync carries the key alone, exactly as the legacy DeleteRole(RoleId) did, and is a
+        // no-op when no such role exists, so no read is needed first.
+        await roles.DeleteAsync(roleId);
+        await unitOfWork.SaveChangesAsync();
     }
 
     /// <summary>Creates a role group through the repository.</summary>
@@ -791,7 +930,7 @@ public sealed class RoleRepositoryTests
             Description = "Created by the persistence role suite.",
         };
 
-        roles.AddGroup(group);
+        await roles.AddRoleGroupAsync(group);
         await unitOfWork.SaveChangesAsync();
 
         return group.RoleGroupId;
@@ -806,13 +945,8 @@ public sealed class RoleRepositoryTests
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        RoleGroup? doomed = await roles.GetGroupAsync(roleGroupId);
-
-        if (doomed is not null)
-        {
-            roles.RemoveGroup(doomed);
-            await unitOfWork.SaveChangesAsync();
-        }
+        await roles.DeleteRoleGroupAsync(roleGroupId);
+        await unitOfWork.SaveChangesAsync();
     }
 
     /// <summary>Records a membership of a role.</summary>
@@ -825,7 +959,7 @@ public sealed class RoleRepositoryTests
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
         IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        roles.AddAssignment(new UserRole
+        await roles.AddUserRoleAsync(new UserRole
         {
             UserId = userId,
             RoleId = roleId,
@@ -890,7 +1024,7 @@ public sealed class RoleRepositoryTests
                 TrialFrequency = BillingFrequency.Week,
             };
 
-            writeRoles.Add(role);
+            await writeRoles.AddAsync(role);
             await unitOfWork.SaveChangesAsync();
             roleId = role.RoleId;
         }
@@ -900,7 +1034,7 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            Role? stored = await roles.GetAsync(roleId);
+            Role? stored = await roles.GetByIdAsync(roleId, portalId);
 
             stored.Should().NotBeNull();
             stored!.ServiceFee.Should().Be(serviceFee);

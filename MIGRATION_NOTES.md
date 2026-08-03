@@ -5430,3 +5430,582 @@ the very member that must not exist, and the legacy tree shows the wider cost of
 properties. No optimistic-concurrency member is invented, because no row-version, entity-tag or
 last-modified column exists on `dbo.Roles` in any of the eighty-eight scripts. The conditional-fee
 gating stays with the validator and the service; the contract is inert.
+
+## The permission triad — one inheritance hierarchy becomes three independent entities
+
+The three legacy permission classes are the only place in the migrated surface where a
+single inheritance chain, four separate defects and two contradictory readings of the same
+integer all meet on the same three tables. Each difference below is deliberate, each is
+asserted by
+`backend/tests/DnnMigration.UnitTests/Domain/PermissionTests.cs`, and each carries an
+inline `// MIGRATION:` annotation at the assertion that pins it.
+
+### The hierarchy is flattened, so a grant is no longer a kind of catalogue entry
+
+**Legacy shape.** `Library/Components/Security/Permissions/ModulePermission.vb` declares
+`Public Class ModulePermissionInfo` (line 28) followed immediately by
+`Inherits PermissionInfo` (line 29), and
+`Library/Components/Security/Permissions/TabPermission.vb` does the same at lines 29 and
+30. Each derived class declared eight properties of its own and inherited five more, so
+each presented **thirteen accessible members** and every grant instance carried a private
+copy of `PermissionCode`, `ModuleDefID`, `PermissionKey` and `PermissionName`.
+
+**Target shape.** `Permission`, `ModulePermission` and `TabPermission` each derive from
+`Entity<int>` and are each `sealed`. The two grant entities reference the catalogue by
+`PermissionId` plus a required `Permission` navigation, and `Permission` exposes the two
+inverse collections.
+
+**Why.** The tables were never in an inheritance relationship — they are related by a
+foreign key. `Website/Providers/DataProviders/SqlDataProvider/02.02.00.SqlDataProvider`
+creates the three tables separately (the catalogue at lines 684-690 with `PK_Permission`
+added at lines 723-728) and declares the grant-to-catalogue keys at lines 744, 768 and 777;
+`03.00.09.SqlDataProvider` rebuilds them with cascade delete at lines 482, 488 and 492.
+Modelling that as inheritance made a grant indistinguishable from the action it grants and
+duplicated four catalogue columns onto every grant row. Under the flattened model the
+joined columns are reassembled by an Application-layer projection when a caller needs them,
+and nowhere else.
+
+**Observable consequence.** Code that relied on reading a catalogue column straight off a
+grant must now traverse the navigation. That is the intended cost: the values are
+single-sourced, so they cannot drift from the row that owns them.
+
+### The legacy copy constructor and the three flattened display columns are gone
+
+`ModulePermissionInfo` carried a second constructor at lines 55-63 —
+`Public Sub New(ByVal permission As PermissionInfo)` — which chained to the
+sentinel-initialising constructor and then copied `ModuleDefID`, `PermissionCode`,
+`PermissionID`, `PermissionKey` and `PermissionName` off a catalogue entry onto itself. It
+existed only because the inheritance gave the grant somewhere to put them.
+`TabPermissionInfo` never had the overload at all — it declares one constructor, at line 44
+— so the legacy pair was already inconsistent about it. **Neither target type declares such
+a constructor**, and the absence is asserted rather than assumed.
+
+Both legacy grant classes also declared `RoleName`, `Username` and `DisplayName`
+(`ModulePermission.vb` lines 93, 120 and 129; `TabPermission.vb` lines 85, 112 and 121),
+each a join-flattened copy of a column belonging to `dbo.Roles` or `dbo.Users`. **None of
+the six survives.** The principal is reached through the optional `Role` and `User`
+navigations instead, so a grant carries no stale copy of a name the principal row can
+change underneath it.
+
+### Four legacy defects, two of which could not be reproduced
+
+The minimal-change discipline annotates a discovered defect rather than fixing it — *unless
+reproducing it would block delivery*. Two of the four below fall squarely inside that
+carve-out, so each becomes a documented divergence rather than a silent correction.
+
+**Defect 1 — equality ignored its own primary key.** `ModulePermission.vb` lines 158-165
+override `Equals` and return
+`(AllowAccess = perm.AllowAccess) And (ModuleID = perm.ModuleID) And (RoleID = perm.RoleID) And (PermissionID = perm.PermissionID)`
+— four columns, deliberately **excluding** `ModulePermissionID`. The documentation at lines
+149-153 says why: it existed solely to stop duplicates being added to the pre-generics
+grant collection, whose `Contains` used it. That collection type produces no target file,
+so the *reason* for the rule is gone while its consequences are not. The target compares by
+identity, and the two rules genuinely disagree in **both** directions: two distinct rows
+that share all four legacy columns were equal and are now not, and one row read twice and
+edited in memory was unequal and is now equal. The second direction is the one change
+tracking depends on.
+
+**Defect 2 — comparing against nothing threw.** Line 159 reads
+`If obj Is Nothing Or Not Me.GetType() Is obj.GetType() Then`. The operator is `Or`, not
+`OrElse`, and VB's `Or` does not short-circuit, so when `obj` really was `Nothing` the
+right-hand side was evaluated anyway and `obj.GetType()` dereferenced it: the legacy
+`Equals(Nothing)` **threw a `NullReferenceException`** instead of returning `False`,
+violating the `Object.Equals` contract that every framework collection relies on. This
+cannot be reproduced under nullable reference types, so the target returns false through
+the typed overload, the object override and both operators, from either side.
+
+**Defect 3 — no hash code accompanied the equality override.** A search of
+`ModulePermission.vb` finds no `GetHashCode` member, so two instances the type called equal
+could hash to different buckets and become unfindable in a collection that still contained
+them. In C# that omission raises the compiler's "overrides `Object.Equals` but does not
+override `Object.GetHashCode`" diagnostic, which this solution promotes to a build failure
+and whose suppression list is closed at two entries. The shared base therefore overrides
+it, and the agreement — equal instances share a hash code — is asserted rather than
+assumed.
+
+**Defect 4 — a shadowed backing field made a constructor write dead.**
+`TabPermission.vb` line 35 declares `Dim _permissionKey As String`, which shadows the
+identically named field `PermissionInfo` declares at line 34. The inherited `PermissionKey`
+property reads the **base** field while `TabPermissionInfo`'s constructor writes the
+**derived shadow** at line 47, so that write was dead: `New TabPermissionInfo().PermissionKey`
+returned `Nothing` rather than the empty string the constructor plainly intended, which is
+why that type declares nine backing fields for only eight properties. In the target this
+defect has **nowhere to exist** — the flattened grant carries no `PermissionKey` at all, so
+there is no field to shadow and no dead write to reproduce. It was not fixed, patched or
+annotated around; the restructuring removed its habitat.
+
+**One point of agreement, worth stating.** Line 159's `Me.GetType() Is obj.GetType()` is an
+*exact runtime type* test, not an "is a kind of" test, and `Entity<TId>` compares types the
+same way. That technique matters more here than anywhere else in the model: the legacy
+triad was one of only two inheritance hierarchies in the migrated surface, and all three
+tables are keyed by their own `IDENTITY` column, so colliding identifiers are the normal
+case rather than a corner one. A subtype-tolerant comparison would have let a grant equal
+the catalogue entry it inherited from whenever their numbers happened to coincide.
+
+**A fifth difference by omission.** `TabPermissionInfo` overrode neither `Equals` nor
+`GetHashCode` — its last member is `DisplayName` at line 121 and the class ends at line 132
+— so a page grant compared by **reference** and two instances read from the same row were
+never equal. Porting it onto the shared base gives it identity equality, which also ends
+the legacy inconsistency whereby one grant type used a four-column tuple and its sibling
+used object identity.
+
+### The constructors disagreed about sentinels, and the target keeps only the safe default
+
+`PermissionInfo`'s own constructor is **empty** — `Public Sub New()` at
+`Permission.vb` lines 38-39 with no body — so every field took its CLR default. Both
+derived constructors, by contrast, sentinel-initialised everything they touched.
+`ModulePermission.vb` lines 43-53 assign, in order, `_modulePermissionID = Null.NullInteger`
+(-1), `_moduleID = Null.NullInteger` (-1), `_roleID = Integer.Parse(glbRoleNothing)` (-4),
+`_AllowAccess = False`, `_RoleName = Null.NullString` (the **empty string**, not null),
+`_userID = Null.NullInteger` (-1), `_Username = Null.NullString` and
+`_DisplayName = Null.NullString`; `TabPermission.vb` lines 44-54 do the same for the page
+scope, adding the dead `_permissionKey` write and omitting the explicit `MyBase.New()` call
+that VB then inserts for it.
+
+The target translates all eight rather than carrying any:
+
+| Legacy constructor default | Target |
+| --- | --- |
+| surrogate key `-1` | CLR `0`, with persisted identity **declared** rather than deduced |
+| owning `ModuleID` / `TabID` `-1` | required data; the owner must be stated explicitly |
+| `RoleID` `-4` | `null` |
+| `UserID` `-1` | `null` |
+| `AllowAccess` `False` | `false` — reproduced exactly |
+| `RoleName` / `Username` / `DisplayName` `""` | properties removed; the optional navigation reports absence |
+
+`AllowAccess` is the one legacy default that was never a sentinel: a grant row created
+without an explicit decision must withhold access rather than confer it, so it is preserved
+byte for byte. On the catalogue the two text properties default to the empty string rather
+than to the legacy `Nothing`, which is a hardening rather than a change of meaning — both
+columns are `NOT NULL`, so no caller should have to null-check them.
+
+**Why the owning identifiers are required rather than defaulted.**
+`dbo.Modules.ModuleID` and `dbo.Tabs.TabID` are both declared `IDENTITY(0, 1)`
+(`01.00.00.SqlDataProvider` lines 221 and 140), so the zero a bare instance reports is a
+**real identifier** — the first module and the first page of an installation — and is
+indistinguishable from a deliberate reference to them. Nothing may read zero here as
+"unset"; the enforced foreign key behind each column is what rejects a grant naming no
+owner.
+
+
+### The same integer means three different things, and the collisions are security-relevant
+
+This is the sharpest sentinel boundary in the migrated surface, and it is concentrated on
+these three tables.
+
+**Zero may never be read as "not set".** `dbo.Roles.RoleID`, `dbo.Tabs.TabID` and
+`dbo.Modules.ModuleID` are all declared `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider` lines
+115, 140 and 221), and the shipped `Administrators` role really is `RoleID` zero — inserted
+verbatim as `(0, 0, 'Administrators', 'Portal Administration', …)` at line 7192 under
+`SET IDENTITY_INSERT`. A grant addressed to role zero is the single most common grant a real
+installation holds, so a "zero means unsaved" convenience anywhere in the model would
+silently discard portal administration itself. That is why `Entity<TId>` **declares**
+persisted identity instead of deducing it from the value, and why it exposes no member that
+tests for a default.
+
+**Minus one points the other way, and this is the security-relevant part.**
+`Null.NullInteger` is -1, and the legacy constructors used it to mean "absent" for the
+surrogate key, the owning module or page, and the account. But for a **role subject** -1 is
+`glbRoleAllUsers` (`Library/Components/Shared/Globals.vb` line 95), which means *grant to
+everyone* — the widest possible subject, not the absence of one. A nullable mapping that
+collapsed -1 to null would convert an all-users grant into a grant naming no role, and the
+consequence would depend entirely on how the evaluator then read the null, so the failure
+could as easily widen access as narrow it. It would also happen silently, and to the rows a
+real installation holds most of. The target keeps the two apart absolutely: absence is
+`null`, and every negative subject is left as the integer it is.
+
+`dbo.ModulePermission.RoleID` never acquires a foreign key to `dbo.Roles` across any of the
+eighty-eight scripts — it gets an index only, at `04.06.00.SqlDataProvider` line 1226 —
+which is precisely why `vw_ModulePermissions` reaches roles through a `LEFT OUTER JOIN`
+(`04.05.00.SqlDataProvider` line 685) and synthesises names for the values that resolve to
+nothing: -1 reads "All Users", -2 "Superuser" and -3 "Unauthenticated Users" (lines
+670-672). **Those pseudo-principals are persisted, externally observable data.** Nothing in
+the domain rewrites, clamps or normalises them.
+
+**Minus one is safe on two other columns, which completes the picture.**
+`dbo.ModuleDefinitions.ModuleDefID` and `dbo.Users.UserID` are `IDENTITY(1, 1)`
+(`01.00.00.SqlDataProvider` lines 66 and 98), so neither table ever issues zero and -1
+collides with nothing either issues. The legacy code exploited exactly that, testing
+`Null.IsNull(objModulePermission.UserID)` to tell a role grant from an account grant. On
+`Permission.ModuleDefinitionId` the -1 that appears in real data is therefore **not** a
+sentinel at all: the column is `NOT NULL`, so -1 cannot mean absent — it means *system
+level*, an entry belonging to no particular module definition, which is what a `SYSTEM_TAB`
+or `SYSTEM_FOLDER` scope entry is. That property is consequently a plain `int` rather than
+an `int?`, because a nullable property would invite the one conversion that must never
+happen.
+
+The net effect is one integer carrying three unrelated meanings across four columns of the
+same three tables — legacy absence marker, all-users principal, and safe out-of-range marker
+— alongside a zero that is real in three columns and unissued in two. A third, unrelated
+meaning exists nearby and is deliberately left where it is:
+`Library/Components/Security/PortalSecurity.vb` lines 45-53 declare
+`SecurityAccessLevel As Integer` with `Anonymous = -1`, which types a module control's
+required access level and names no catalogue row.
+
+### `glbRoleNothing` is a seventh `Globals` member reached from in-scope code
+
+The technical specification lists six distinct members of the excluded `Globals` module that
+in-scope code reaches — the host-settings reader, the performance multiplier, the
+application path, the application map path, the map-path helper and `glbRoleUnauthUserName`.
+**`glbRoleNothing` is not among them, and it should be.** Both permission constructors reach
+it directly (`ModulePermission.vb` line 47, `TabPermission.vb` line 48), which makes it a
+seventh member and the only one reached from a domain *constructor* rather than from a
+service or a path helper. The list is incomplete rather than wrong, and no behaviour depends
+on the omission, because the constant's only use was to supply a default that the target
+expresses as `null`.
+
+The full measured vocabulary, at `Library/Components/Shared/Globals.vb` lines 95-102, is
+recorded here because **no target constant holds it**: a test may not invent the production
+surface it is meant to be checking, so the vocabulary is documented and what is asserted is
+its observable consequence.
+
+| Legacy constant | Value | Meaning |
+| --- | --- | --- |
+| `glbRoleAllUsers` | `"-1"` | the grant reaches every visitor |
+| `glbRoleSuperUser` | `"-2"` | the grant reaches the installation's super users |
+| `glbRoleUnauthUser` | `"-3"` | the grant reaches signed-out visitors only |
+| `glbRoleNothing` | `"-4"` | no role chosen — an in-memory placeholder, never a row |
+| `glbRoleAllUsersName` | `"All Users"` | display name synthesised for -1 |
+| `glbRoleSuperUserName` | `"Superuser"` | display name synthesised for -2 |
+| `glbRoleUnauthUserName` | `"Unauthenticated Users"` | display name synthesised for -3 |
+
+All seven are declared `As String` — the identifiers spell integers but hold text — and they
+are compared as text, at `Globals.vb` lines 2303 and 2305, through
+`Convert.ToString(RoleID)` rather than numerically. The right home for this vocabulary in
+the target is a domain constant, exactly as the specification treats
+`glbRoleUnauthUserName`. Until one exists, a grant carrying `-4` still round-trips
+unmodified rather than being corrected, because a domain entity that silently repaired its
+own data would hide a real defect in an installation instead of surfacing it — and
+distinguishing "the row said -4" from "the row said nothing" is precisely what the nullable
+property buys.
+
+### The catalogue table is singular, and its text columns are ANSI
+
+Recorded because a convention-driven mapping gets both wrong. The table is `dbo.Permission`
+— **singular** — which is anomalous in a schema that is otherwise plural (`Portals`,
+`Roles`, `Tabs`, `Modules`, `Users`, `UserRoles`, `RoleGroups`, `ModuleDefinitions`), so the
+Fluent configuration must name it explicitly. Its three text columns are `varchar`, never
+`nvarchar`: `04.06.00.SqlDataProvider` widens the key with
+`ALTER TABLE …Permission ALTER COLUMN PermissionKey varchar(50) not null` at lines 397-398,
+then recreates `AddPermission` at line 404 with `@PermissionCode`, `@PermissionKey` and
+`@PermissionName` all `varchar(50)` (lines 405-408), inserting four columns at lines 411-415
+and returning `SCOPE_IDENTITY()` at line 423. The terminal width is therefore **50, not the
+baseline 20**, and letting the provider default those columns to Unicode would make every
+parameter a different type from the column it is compared against — which costs the unique
+index its usefulness for lookup and changes comparison behaviour under a case-sensitive
+collation.
+
+The catalogue class rename belongs with this. The legacy type is `PermissionInfo`, not
+`Permission`, even though its file is already named `Permission.vb` (line 28; the class
+spans lines 28-88), and its five properties are declared over `Dim` backing fields at lines
+31-35 — `Dim`, not `Private`, so a search for private fields finds none of them. The target
+keeps all five and renames two: `ModuleDefID` becomes `ModuleDefinitionId`, mapped back to
+the legacy column name, and the free-text `PermissionKey` becomes the closed enumeration
+described under *Domain enumerations* above. The legacy spellings are **absent rather than
+retained as aliases**, which matters because property lookup is case-sensitive and
+`PermissionID` differs from `PermissionId` only by casing: keeping both would give the
+entity two names for one column.
+
+All XML-serialisation decoration is dropped from the triad. `PermissionID`,
+`PermissionCode` and `PermissionKey` carried `<XmlElement("permissionid")>`,
+`<XmlElement("permissioncode")>` and `<XmlElement("permissionkey")>`, and the two members
+hidden behind `<XmlIgnore()>` were `ModuleDefID` and `PermissionName`. The wire contract now
+belongs to the DTOs at the API boundary, so the lower-case element names disappear with the
+attributes that carried them and the two formerly concealed members are plainly visible to
+callers that legitimately need them.
+
+### What the permission suite deliberately does not cover
+
+`FolderPermission.vb`, `FolderPermissionController.vb` and their collection wrapper sit in
+the same legacy directory as the three in-scope files, and file management is out of scope,
+so no test for them exists. The two pre-generics grant-collection wrappers produce no target
+file — `IReadOnlyList<T>` subsumes them — which is what removes the reason the tuple
+equality existed in the first place, though the divergence is still documented above. The
+reflection-based row hydrator and its hydration interface produce no target file either, and
+neither does the sentinel module: the object-relational materialiser and nullable reference
+types replace all three. Permission *evaluation* is a separate concern with its own suite,
+and the persistence mapping described in this section — including the singular table name —
+is verified against a real schema by the integration persistence suite rather than here. The
+domain suite asserts entity and enumeration invariants only, and touches no database.
+
+## Module domain invariants — the sentinel boundary the Domain unit suite pins
+
+The entries below record the divergences that
+`backend/tests/DnnMigration.UnitTests/Domain/ModuleTests.cs` asserts. Each is
+annotated inline at the point of departure with a `// MIGRATION:` comment, and the
+test that holds it is named so a reader can reach the executable statement of the
+decision rather than only its description.
+
+### The capability bit field keeps its negative-value guard, and dropping that guard would invert all three capabilities
+
+**Legacy behaviour.** `Library/Components/Modules/DesktopModuleInfo.vb` declares
+`DesktopModuleSupportedFeature` at `L30-L34` as `IsPortable = 1`,
+`IsSearchable = 2`, `IsUpgradeable = 4` — a flags enumeration in everything but
+declaration, since it carries no `<Flags>` attribute. Every capability question was
+answered by `GetFeature` at `L220-L229`, whose single condition at `L224` reads
+verbatim:
+
+```vb
+If SupportedFeatures > Null.NullInteger AndAlso (SupportedFeatures And Feature) = Feature Then
+```
+
+The guard is `SupportedFeatures > -1`, evaluated first, with short-circuiting
+`AndAlso`. A bit field holding the legacy integer sentinel therefore never reached
+the mask test and every capability read as `False`.
+
+**Target behaviour.** `backend/src/DnnMigration.Domain/Entities/DesktopModule.cs`
+reproduces the guard exactly: each of `IsPortable`, `IsSearchable` and
+`IsUpgradeable` is `SupportedFeatures > -1 && (SupportedFeatures & mask) == mask`
+over the private masks `1`, `2` and `4`.
+
+**Why the guard is load-bearing.** A naive port that keeps only
+`(SupportedFeatures & bit) == bit` inverts all three answers simultaneously,
+because `-1` is all-ones in two's complement: `-1 & 1 == 1`, `-1 & 2 == 2` and
+`-1 & 4 == 4` are each true. A module whose capability mask was never written would
+be reported portable, searchable **and** upgradeable, so content export, indexing
+and version-driven upgrade would all be offered for a module that implements none
+of them. This is a silent inversion with no failure signal, which is why it is
+pinned by a nine-row truth table rather than left to review.
+
+**Where it is asserted.** `SupportedFeatures_ReportsEachCapabilityFromItsOwnBit`
+covers the whole reachable table — `0` through `7` plus `-1` — and
+`SupportedFeatures_LegacySentinelReportsNoCapabilitiesDespiteEveryBitBeingSet`
+demonstrates the two's-complement arithmetic inline before asserting that the guard
+overrides it. The guard is a lower bound rather than an equality test, so
+`int.MinValue` is rejected as well as `-1`.
+
+**A second, different route to the same answer.** The legacy constructor at
+`DesktopModuleInfo.vb:L58-L59` is **empty**, so a freshly constructed package left
+`SupportedFeatures` at `0` rather than at the sentinel — unlike `ModuleInfo`, whose
+constructor seeded five identifiers with `-1`. Zero passes the guard and fails the
+masks. Both routes are asserted together by
+`SupportedFeatures_DefaultConstructedPackageReportsNoCapabilitiesByTheZeroRoute`,
+because a port that collapsed them — by seeding the field at `-1` to mean "unset" —
+would be indistinguishable until the first real bit was written.
+
+### The 58-property `ModuleInfo` splits four ways, and three of its properties survive nowhere
+
+**Legacy behaviour.** `Library/Components/Modules/ModuleInfo.vb` declared 57
+properties in its `Public Properties` region at `L131-L627` plus `Cacheability` at
+`L925`. It was never the shape of a `dbo.Modules` row: it was the materialised
+result of a join across `Modules`, `TabModules`, `ModuleDefinitions` and
+`ModuleControls`, with a permission collection and per-request presentation state
+carried alongside.
+
+**Target behaviour.** The observed split, as the generated entities implement it:
+
+| Target entity | Legacy properties it receives |
+|---|---|
+| `Module` (11) | `ModuleID`, `ModuleDefID`, `ModuleTitle`, `AllTabs`, `IsDeleted`, `InheritViewPermissions`, `Header`, `Footer`, `StartDate`, `EndDate`, `PortalID` |
+| `TabModule` (15) | `TabModuleID`, `TabID`, `ModuleID`, `PaneName`, `ModuleOrder`, `CacheTime`, `Alignment`, `Color`, `Border`, `IconFile`, `Visibility`, `ContainerSrc`, `DisplayTitle`, `DisplayPrint`, `DisplaySyndicate` |
+| `ModuleDefinition` (4) | `ModuleDefID`, `FriendlyName`, `DesktopModuleID`, `DefaultCacheTime` |
+| `ModuleControl` (10) | `ModuleControlID`, `ModuleDefID`, `ControlKey`, `ControlTitle`, `ControlSrc`, `IconFile`, `ControlType`, `ViewOrder`, `HelpUrl`, `SupportsPartialRendering` |
+| `DesktopModule` (13 stored + 3 computed) | `DesktopModuleID`, `ModuleName`, `FriendlyName`, `Description`, `FolderName`, `Version`, `IsPremium`, `IsAdmin`, `BusinessControllerClass`, `SupportedFeatures`, `CompatibleVersions`, `Dependencies`, `Permissions`, and the three capability flags |
+
+**The three that survive nowhere.** `AuthorizedEditRoles`, `AuthorizedViewRoles`
+and `AuthorizedRoles` have **no target member on any entity**. `03.00.01` dropped
+both `Modules` columns when grants became rows in `dbo.ModulePermission`, yet the
+legacy class kept exposing all three — and the legacy author's own comment above
+`AuthorizedRoles` at `ModuleInfo.vb:L626` reads
+`'should be deprecated due to roles being abstracted`. A semicolon-delimited
+role-identifier string is not carried forward in any form; grants are reached
+through `Module.ModulePermissions`. The same applies to `Tab`: `03.00.01` dropped
+`Tabs.AuthorizedRoles` and `Tabs.AdministratorRoles`, and grants are reached
+through `Tab.TabPermissions`.
+
+**Where it is asserted.** `Module_CarriesTheElevenTerminalColumnsAndNoOthers` is
+the positive half; `Module_OmitsTheMembersTheLegacyClassFlattenedIntoOneRow` is the
+negative half, covering all 46 names by reflection so that reinstating any one of
+them fails the build.
+
+### `IPropertyAccess`, the five Web Forms rendering properties, and the untyped page lists are dropped
+
+**Legacy behaviour.** Both `ModuleInfo` (`L37`) and `TabInfo` (`L41`) declared
+`Implements IPropertyAccess`, which obliged each to expose a name-keyed
+`GetProperty(..., ByRef PropertyNotFound As Boolean)` accessor and a `Cacheability`
+member. `ModuleInfo` additionally carried five `<XmlIgnore()>` properties at
+`L563-L599` — `ContainerPath`, `PaneModuleIndex`, `PaneModuleCount`,
+`IsDefaultModule` and `AllModules` — that a skin populated while laying out its
+panes. `TabInfo` carried three untyped `ArrayList` properties at `L365`, `L374` and
+`L383` — `BreadCrumbs`, `Panes` and `Modules` — plus the read-only computed
+`TabType` (`L406`), `FullUrl` (`L412`) and `IsAdminTab` (`L435`).
+
+**Target behaviour.** None of these produces a domain member.
+
+**Why the difference is deliberate.** `IPropertyAccess` existed solely for the
+token-replacement subsystem, which the system boundaries exclude. The five
+`ModuleInfo` properties and the three `TabInfo` lists were Web Forms rendering
+state: there is no server-side rendering in the target, navigation is the Angular
+router's concern, and a page's placements are reached through the typed
+`Tab.TabModules` collection. `IsAdminTab` is the sharpest case — its getter reached
+the portal settings, then the cache, then the portal controller, so **reading a
+property issued a database query**, which a domain entity may not do.
+
+**Where it is asserted.**
+`Module_OmitsTheMembersTheLegacyClassFlattenedIntoOneRow` and
+`Tab_OmitsTheWebFormsRenderStateAndTheComputedNavigationMembers`.
+
+### Every XML serialisation attribute is dropped from the module and page entities, and nothing replaces it
+
+**Legacy behaviour.** `ModuleInfo` was `<XmlRoot("module", IsNullable:=False)>`
+with an `<XmlElement>`, `<XmlArray>` or `<XmlIgnore>` on all 58 members, and
+`TabInfo` was `<XmlRoot("tab", IsNullable:=False)>` with the same treatment across
+all 36, because portal templates were serialised straight off the entity.
+
+**Target behaviour.** No entity in the module aggregate carries an attribute of any
+kind — not a serialisation attribute, not a JSON replacement, not a validation
+attribute and not a persistence attribute. The wire contract belongs to the
+Application DTOs and the mapping to the Infrastructure entity configurations.
+
+**Why it is a compile-time fact rather than a convention.** The Domain project
+declares no package reference at all, so a persistence or validation attribute is
+unavailable there by construction.
+
+**Where it is asserted.**
+`ModuleAggregate_CarriesNoSerialisationOrValidationAttributes`, which filters the
+compiler-emitted `System.Runtime.CompilerServices.*` attributes that enabling
+nullable reference types stamps onto every reference-typed member.
+
+### Two sibling classes over two identically seeded tables disagreed about "no key yet", and neither convention is adopted
+
+**Legacy behaviour.** `dbo.Modules.ModuleID` and `dbo.Tabs.TabID` are both declared
+`IDENTITY(0, 1)` — `01.00.00.SqlDataProvider:L221` and `:L140` respectively — so
+zero is a real, persisted key for each. Yet the two classes over those tables
+represented "not saved yet" differently. `ModuleInfo`'s constructor seeded
+`_ModuleID = Null.NullInteger` (`L108`), while `TabInfo`'s constructor
+(`L86-L105`) seeded sixteen fields but **not** `_TabID`, leaving it at `0` — which
+made a freshly constructed page indistinguishable from the first real page of the
+installation.
+
+**Target behaviour.** Neither convention is adopted. No entity carries a sentinel
+identity initialiser, and whether a row exists is **declared** by the persistence
+layer through `Entity<TId>.MarkIdentityPersisted` and read back through
+`IdentityIsPersisted`. Until that declaration, two separately constructed entities
+are two entities and only their references distinguish them.
+
+**Why no value test could work.** Every candidate marker for "no row yet" is a real
+key: `Portals.PortalID` seeds at `-1`, and `Roles.RoleID`, `Tabs.TabID` and
+`Modules.ModuleID` each seed at `0`. An `IsTransient()`, `IsNew` or
+`Identity == default` predicate would report the first module, the first page and
+the first portal of every installation as unsaved. `dbo.ModuleDefinitions`,
+`dbo.DesktopModules` and `dbo.PortalDesktopModules` seed at `1` instead, so the
+decision is genuinely per column and no single value rule spans the aggregate.
+
+**Preserved, not corrected.** The asymmetry itself is recorded as knowledge rather
+than repaired in the legacy tree, per Minimal Change Clause item 1.
+
+**Where it is asserted.**
+`Tab_ZeroIsARealPageAndTheLegacyConstructorCouldNotSayOtherwise`,
+`IdentitySeeds_DifferPerTableSoZeroIsAKeyForSomeTablesAndNotOthers` and
+`Entities_DeclareNoWayToDeduceWhetherARowExistsFromItsKey`.
+
+### `ModuleInfo._DesktopModuleID` defaulted to `0` while its five sibling identifiers defaulted to `-1`
+
+**Legacy behaviour.** The constructor at `ModuleInfo.vb:L102-L125`, under the
+author's own comment "initialize the properties that can be null in the database",
+seeded `_PortalID`, `_TabID`, `_TabModuleID`, `_ModuleID` and `_ModuleDefID` with
+`Null.NullInteger`. A sixth identifier field, `_DesktopModuleID` (declared at
+`L72`), was **not** seeded and therefore started at `0` — a value that is a
+legitimate key elsewhere in the schema. One class thus treated five identifiers as
+absent at `-1` and a sixth as absent at `0`.
+
+**Target behaviour.** Annotated in place and not fixed, per Minimal Change Clause
+item 1 — and there is nothing to fix, because `DesktopModuleID` is not a
+`dbo.Modules` column. It belongs to `dbo.ModuleDefinitions` and appears on
+`ModuleDefinition`, so the four-way split removed the surface the inconsistency
+lived on and it is unobservable in the target.
+
+**Where it is asserted.**
+`Module_PreservesTheLegacyDesktopModuleIdInconsistencyAsKnowledgeOnly`.
+
+### `Tab.IsVisible` follows the store default, not the legacy object default
+
+**Legacy behaviour.** `TabInfo`'s constructor left `_IsVisible` unseeded, so a
+legacy in-memory page started **hidden**, while any row inserted without naming the
+column started **visible**: `DF_Tabs_IsVisible DEFAULT (1)` at
+`01.00.00.SqlDataProvider:L497`, reasserted at `03.01.01.SqlDataProvider:L1286`.
+
+**Target behaviour.** `Tab.IsVisible` is initialised to `true`, reproducing the
+store default.
+
+**Why the store wins here.** A store default is only reached for a column omitted
+from the insert, and a `bool` cannot distinguish "not supplied" from "explicitly
+false", so expressing the default in the mapping instead would silently store a
+request for a hidden page as visible. This is the same object-versus-store
+disagreement already recorded for `TabModule.DisplaySyndicate`, resolved in the
+opposite direction and for that reason.
+
+**Where it is asserted.** `Tab_IsVisibleAndUndeletedByDefault`.
+
+### `SecurityAccessLevel` and `TabType` have no target enumeration
+
+**Legacy behaviour.** `ModuleInfo.ControlType` was typed `SecurityAccessLevel`,
+declared in `Library/Components/Security/PortalSecurity.vb` as
+`Public Enum SecurityAccessLevel As Integer` with explicit negative members:
+`ControlPanel = -3`, `SkinObject = -2`, `Anonymous = -1`, `View = 0`, `Edit = 1`,
+`Admin = 2`, `Host = 3`. `TabInfo.TabType` was typed `TabType`, declared at
+`TabInfo.vb:L32-L38` with implicit ordinals `File = 0`, `Normal = 1`, `Tab = 2`,
+`Url = 3`, `Member = 4`, so `default(TabType)` was `File` rather than `Normal`.
+
+**Target behaviour.** Neither type exists in `backend/src/DnnMigration.Domain/Enums/`.
+`ModuleControl.ControlType` is carried as the plain `int` the column declares, and
+`TabType` has no counterpart at all because it was never stored — it was computed
+from the page's URL.
+
+**Why nothing is fabricated.** Naming an enumeration the technical specification
+never listed would be an invention, and the measured legacy values are recorded
+here and inline instead. `Anonymous = -1` is worth stating explicitly: it is a
+further distinct meaning of `-1` in this domain, alongside the generic integer
+sentinel, a real portal key, the all-users role identifier, a root page's parent
+and the capability-mask guard. Because the legacy sentinel convention treated the
+numerically lowest enumeration member as the absent value, an enumeration here
+would have made `ControlPanel(-3)` the absent access level rather than `View(0)` —
+an accident an untyped integer cannot cause.
+
+**Where it is asserted.** `ModuleControl_AccessLevelStaysAStoredInteger` round-trips
+all seven measured values through the integer property, and
+`DomainEnums_DeclareNoTypeForTheTwoLegacyEnumerationsThatStayedBehind` asserts the
+absence of both types by assembly lookup, so adding either one later is a
+deliberate decision that must revisit that test.
+
+### `PortalDesktopModuleInfo.FriendlyName` and `PortalName` were join projections, not columns
+
+**Legacy behaviour.** The class declared five properties, but
+`dbo.PortalDesktopModules` has three columns.
+`02.02.02.SqlDataProvider` creates it with `PortalDesktopModuleID`, `PortalID` and
+`DesktopModuleID` and nothing else, while its `GetPortalDesktopModules` procedure in
+the same script selects `PortalDesktopModules.*, PortalName, FriendlyName` across
+joins to `Portals` and `DesktopModules`. The legacy reflection hydrator filled all
+five properties indiscriminately, which is how a result-set shape came to be
+mistaken for an entity shape.
+
+**Target behaviour.** `PortalDesktopModule` declares the three columns only.
+Neither name may be added back as a scalar, because a scalar would be a column the
+table does not have. Their only legacy purpose was display text for an
+administrator's picker, so they belong on an Application-layer DTO composed from
+the entity's `Portal` and `DesktopModule` references.
+
+**Where it is asserted.** `PortalDesktopModule_CarriesExactlyTheThreeTableColumns`,
+which also shows the display name still reachable through the principal.
+
+### The legacy empty-string sentinel is not reinstated as a property initialiser
+
+**Legacy behaviour.** `Null.NullString` is the **empty string**, not `Nothing`, so
+once a value was read back a SQL `NULL` and a zero-length string were
+indistinguishable. `ModuleInfo.vb:L110-L121` seeded ten string members with it, and
+`TabInfo.vb:L86-L105` seeded eleven.
+
+**Target behaviour.** Absence is `null`; no string property in the module aggregate
+carries a `string.Empty` initialiser, and none may acquire one. A value of
+`string.Empty` that a caller or a row genuinely supplies is preserved exactly and is
+never collapsed to `null` — which is what keeps "stored, but blank" recordable,
+notably in the two settings stores, whose value columns are `NOT NULL`.
+
+**Where it is asserted.** `Module_DoesNotReinstateTheLegacyEmptyStringSentinel`,
+`Placement_ChromeStringsAreNullWhenUnsetAndPreserveAStoredEmptyString`,
+`Tab_ReplacesTheSixteenSentinelInitialisationsWithNullability` and
+`SettingValues_KeepTheEmptyStringRatherThanBecomingNull`. The date half of the same
+rule is asserted by
+`Module_ExpressesDateAbsenceAsNullRatherThanAsTheLegacyMinimumDate`, which also
+records that the legacy absence test compared **only the date part**, so any time of
+day on `DateTime.MinValue` read as absent; that truncation is not reproduced.

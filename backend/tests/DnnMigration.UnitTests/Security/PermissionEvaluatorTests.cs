@@ -1,3 +1,4 @@
+using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
 using DnnMigration.Domain.Abstractions.Repositories;
@@ -136,21 +137,48 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// Both catalogue filters reach the store exactly as supplied.
+    /// A definition filter reaches the store as supplied, and a code filter narrows what it returned.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy reader took both filters in one call because a null in either argument was
+    /// a wildcard. The repository contract that replaces it declares the definition-scoped read the
+    /// provider actually had, so the definition goes to the store and the code narrows the result. The
+    /// narrowing is asserted rather than assumed: a definition declares a handful of entries, and a
+    /// filter that reached the store but was then ignored would look like a working query.
+    /// </remarks>
     [Fact]
-    public async Task Catalogue_PassesBothFiltersToTheStoreUnchanged()
+    public async Task Catalogue_PassesTheDefinitionFilterToTheStoreAndAppliesTheCodeFilter()
     {
         Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 1,
+                PermissionCode = "SYSTEM_MODULE_DEFINITION",
+                ModuleDefinitionId = 42,
+                PermissionKey = PermissionKey.VIEW,
+            },
+            new Permission
+            {
+                PermissionId = 2,
+                PermissionCode = "SOME_OTHER_CODE",
+                ModuleDefinitionId = 42,
+                PermissionKey = PermissionKey.EDIT,
+            },
+        ];
 
-        await harness.Service.GetPermissionKeysAsync("SYSTEM_MODULE_DEFINITION", 42, CancellationToken.None);
+        Result<IReadOnlyList<string>> result = await harness.Service
+            .GetPermissionKeysAsync("SYSTEM_MODULE_DEFINITION", 42, CancellationToken.None);
 
         harness.Permissions.Verify(
-            permissions => permissions.ListAsync(
-                "SYSTEM_MODULE_DEFINITION",
+            permissions => permissions.GetByModuleDefinitionIdAsync(
                 42,
                 It.IsAny<CancellationToken>()),
             Times.Once());
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal(new[] { "VIEW" }, "the entry under the other code is filtered away");
     }
 
     /// <summary>
@@ -178,18 +206,82 @@ public class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(FilterInvalidCode);
         result.Reason!.Message.Should().Contain("omit it");
         harness.Permissions.Verify(
-            permissions => permissions.ListAsync(
-                It.IsAny<string?>(),
-                It.IsAny<int?>(),
+            permissions => permissions.GetByModuleDefinitionIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.GetByCodeAndKeyAsync(
+                It.IsAny<string>(),
+                It.IsAny<PermissionKey>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
     }
 
     /// <summary>
-    /// Omitting the code filter is accepted.
+    /// A code filter on its own is answered by asking the store once per key in the closed set.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: "which keys exist under this code" is exactly the question the legacy code-and-key
+    /// reader answered, one key at a time, so the service asks it once per member of the closed
+    /// PermissionKey enumeration - four reads, bounded by the schema rather than by the data. Only the
+    /// keys the store actually reported are returned, which is what distinguishes this answer from the
+    /// unfiltered one below.
+    /// </remarks>
     [Fact]
-    public async Task Catalogue_AcceptsAnAbsentCodeFilter()
+    public async Task Catalogue_AnswersACodeFilterFromTheCodeAndKeyRead()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            new Permission
+            {
+                PermissionId = 1,
+                PermissionCode = "SYSTEM_TAB",
+                ModuleDefinitionId = -1,
+                PermissionKey = PermissionKey.VIEW,
+            },
+            new Permission
+            {
+                PermissionId = 2,
+                PermissionCode = "SYSTEM_TAB",
+                ModuleDefinitionId = -1,
+                PermissionKey = PermissionKey.EDIT,
+            },
+        ];
+
+        Result<IReadOnlyList<string>> result = await harness.Service
+            .GetPermissionKeysAsync("SYSTEM_TAB", null, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal(new[] { "EDIT", "VIEW" }, "the answer is ordinally ordered");
+
+        harness.Permissions.Verify(
+            permissions => permissions.GetByCodeAndKeyAsync(
+                "SYSTEM_TAB",
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(Enum.GetValues<PermissionKey>().Length));
+        harness.Permissions.Verify(
+            permissions => permissions.GetByModuleDefinitionIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// Omitting both filters is accepted and answered from the closed key set without a store read.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy reader answered this by passing a null in both arguments, which its body
+    /// treated as a wildcard over the whole table. The repository contract takes no wildcard, and it
+    /// does not need to: Permission.PermissionKey IS the closed PermissionKey enumeration, so the
+    /// enumeration is the complete vocabulary any catalogue row could carry. Asking the store would put
+    /// a question whose answer the schema already fixes, and would answer "everything" with less than
+    /// everything on an installation whose catalogue is missing a row.
+    /// </remarks>
+    [Fact]
+    public async Task Catalogue_AnswersAnAbsentFilterFromTheClosedKeySet()
     {
         Harness harness = Harness.Ready();
 
@@ -199,9 +291,19 @@ public class PermissionEvaluatorTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Should().Equal(new[] { "EDIT", "READ", "VIEW", "WRITE" });
+
         harness.Permissions.Verify(
-            permissions => permissions.ListAsync(null, null, It.IsAny<CancellationToken>()),
-            Times.Once());
+            permissions => permissions.GetByModuleDefinitionIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.GetByCodeAndKeyAsync(
+                It.IsAny<string>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -242,22 +344,22 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "EDIT", "VIEW" });
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectivePortalPermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectivePortalPermissionKeysAsync(
                 PortalId,
                 UserId,
                 It.IsAny<IReadOnlyCollection<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Once());
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectiveModulePermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectiveModulePermissionKeysAsync(
                 It.IsAny<int>(),
                 It.IsAny<int?>(),
                 It.IsAny<IReadOnlyCollection<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectiveTabPermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
                 It.IsAny<int>(),
                 It.IsAny<int?>(),
                 It.IsAny<IReadOnlyCollection<string>>(),
@@ -411,8 +513,8 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "EDIT", "READ", "VIEW", "WRITE" });
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectivePortalPermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectivePortalPermissionKeysAsync(
                 It.IsAny<int>(),
                 It.IsAny<int?>(),
                 It.IsAny<IReadOnlyCollection<string>>(),
@@ -429,6 +531,18 @@ public class PermissionEvaluatorTests
     /// into a not-found. It also means the endpoint cannot be used by a host account to discover which
     /// module identifiers exist, which is consistent with the refusal-not-absence rule the protected routes
     /// follow.
+    /// <para>
+    /// MIGRATION: a host account is answered with the whole closed key set rather than with whichever
+    /// keys the catalogue table happens to contain. That reproduces the legacy rule rather than departing
+    /// from it: PortalSecurity.IsInRoles returned true for a host account at PortalSecurity.vb:L123
+    /// before examining a single grant, so the legacy answer was "everything" and was never derived from
+    /// the catalogue at all. Since Permission.PermissionKey IS the closed enumeration, the enumeration is
+    /// what "everything" means, and it is also the only answer the permission repository's contract can
+    /// support - that contract mirrors the legacy provider blocks, which offered no unfiltered catalogue
+    /// read. A catalogue-derived answer would additionally under-report on any installation whose
+    /// catalogue is missing a row, which is the one case where the two answers differ and the one case
+    /// where "everything" must not shrink.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task EffectiveKeys_ForAHostAccountIgnoreAnUnresolvableScope()
@@ -437,9 +551,8 @@ public class PermissionEvaluatorTests
         harness.Account.IsSuperUser = true;
         harness.Catalogue = [Entry(PermissionKey.VIEW)];
         harness.Modules
-            .Setup(modules => modules.GetAsync(
+            .Setup(modules => modules.GetByIdAsync(
                 It.IsAny<int>(),
-                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync((Module?)null);
 
@@ -450,7 +563,18 @@ public class PermissionEvaluatorTests
             cancellationToken: CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(new[] { "VIEW" });
+        result.Value.Should().Equal(
+            new[] { "EDIT", "READ", "VIEW", "WRITE" },
+            "a host account holds every key, and the single-entry catalogue fixture must not narrow that");
+
+        // The scope was never resolved, which is the property this test exists to pin.
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectiveModulePermissionKeysAsync(
+                It.IsAny<int>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
     }
 
     /// <summary>
@@ -470,8 +594,8 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "EDIT" });
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectiveModulePermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectiveModulePermissionKeysAsync(
                 ModuleId,
                 UserId,
                 It.IsAny<IReadOnlyCollection<string>>(),
@@ -535,8 +659,8 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Equal(new[] { "VIEW" });
-        harness.Permissions.Verify(
-            permissions => permissions.ListEffectiveTabPermissionKeysAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
                 TabId,
                 UserId,
                 It.IsAny<IReadOnlyCollection<string>>(),
@@ -685,8 +809,8 @@ public class PermissionEvaluatorTests
             cancellationToken: CancellationToken.None);
 
         result.Value.Should().Equal(new[] { "VIEW" });
-        harness.Permissions.Verify(
-            permissions => permissions.HasTabPermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
                 It.IsAny<int>(),
                 It.IsAny<PermissionKey>(),
                 It.IsAny<int?>(),
@@ -716,8 +840,8 @@ public class PermissionEvaluatorTests
             cancellationToken: CancellationToken.None);
 
         result.Value.Should().Equal(new[] { "VIEW" });
-        harness.Permissions.Verify(
-            permissions => permissions.HasTabPermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
                 SecondTabId,
                 It.IsAny<PermissionKey>(),
                 It.IsAny<int?>(),
@@ -770,7 +894,7 @@ public class PermissionEvaluatorTests
 
         result.Value.Should().Equal(new[] { "VIEW" });
         harness.Modules.Verify(
-            modules => modules.ListPlacementsAsync(ModuleId, It.IsAny<CancellationToken>()),
+            modules => modules.GetTabModulesByModuleIdAsync(ModuleId, It.IsAny<CancellationToken>()),
             Times.Once());
     }
 
@@ -820,8 +944,8 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().Be(pageGrantsView);
-        harness.Permissions.Verify(
-            permissions => permissions.HasModulePermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasModulePermissionAsync(
                 It.IsAny<int>(),
                 It.IsAny<PermissionKey>(),
                 It.IsAny<int?>(),
@@ -856,8 +980,8 @@ public class PermissionEvaluatorTests
 
         result.Value.Should().BeTrue(
             "only the view permission is inherited from the page; editing is decided by the module");
-        harness.Permissions.Verify(
-            permissions => permissions.HasModulePermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasModulePermissionAsync(
                 ModuleId,
                 key,
                 UserId,
@@ -890,9 +1014,8 @@ public class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(KeyInvalidCode);
         result.Reason!.Message.Should().Contain("99");
         harness.Modules.Verify(
-            modules => modules.GetAsync(
+            modules => modules.GetByIdAsync(
                 It.IsAny<int>(),
-                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()),
             Times.Never(),
             "a malformed request is refused before anything is read");
@@ -940,8 +1063,8 @@ public class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().BeTrue();
-        harness.Permissions.Verify(
-            permissions => permissions.HasTabPermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
                 TabId,
                 key,
                 UserId,
@@ -958,9 +1081,8 @@ public class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
         harness.Modules
-            .Setup(modules => modules.GetAsync(
+            .Setup(modules => modules.GetByIdAsync(
                 It.IsAny<int>(),
-                It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync((Module?)null);
 
@@ -1073,16 +1195,16 @@ public class PermissionEvaluatorTests
 
         moduleAnswer.Value.Should().BeTrue();
         tabAnswer.Value.Should().BeTrue();
-        harness.Permissions.Verify(
-            permissions => permissions.HasModulePermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasModulePermissionAsync(
                 It.IsAny<int>(),
                 It.IsAny<PermissionKey>(),
                 It.IsAny<int?>(),
                 It.IsAny<IReadOnlyCollection<string>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
-        harness.Permissions.Verify(
-            permissions => permissions.HasTabPermissionAsync(
+        harness.Evaluator.Verify(
+            evaluator => evaluator.HasTabPermissionAsync(
                 It.IsAny<int>(),
                 It.IsAny<PermissionKey>(),
                 It.IsAny<int?>(),
@@ -1169,7 +1291,13 @@ public class PermissionEvaluatorTests
         result.IsFailure.Should().BeTrue();
         result.Reason!.Code.Should().Be(PortalNotFoundCode);
         harness.Permissions.Verify(
-            permissions => permissions.DeleteUserPermissionsAsync(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByUserIdAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()),
@@ -1204,7 +1332,13 @@ public class PermissionEvaluatorTests
         result.IsFailure.Should().BeTrue();
         result.Reason!.Code.Should().Be(UserNotFoundCode);
         harness.Permissions.Verify(
-            permissions => permissions.DeleteUserPermissionsAsync(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByUserIdAsync(
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()),
@@ -1225,8 +1359,18 @@ public class PermissionEvaluatorTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        // MIGRATION: both grant tables are cleaned, because the legacy provider declared the removal
+        //            as two members over two tables - DeleteModulePermissionsByUserID at core
+        //            DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305. A grant left
+        //            behind on either table would outlive the account that held it.
         harness.Permissions.Verify(
-            permissions => permissions.DeleteUserPermissionsAsync(
+            permissions => permissions.DeleteModulePermissionsByUserIdAsync(
+                PortalId,
+                UserId,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Permissions.Verify(
+            permissions => permissions.DeleteTabPermissionsByUserIdAsync(
                 PortalId,
                 UserId,
                 It.IsAny<CancellationToken>()),
@@ -1268,7 +1412,12 @@ public class PermissionEvaluatorTests
             cancellationToken: CancellationToken.None);
 
         hostAnswer.IsSuccess.Should().BeTrue(hostAnswer.Reason?.ToString());
-        hostAnswer.Value.Should().Equal(new[] { "VIEW" });
+
+        // MIGRATION: the host answer is the closed key set, for the reason set out on
+        //            EffectiveKeys_ForAHostAccountIgnoreAnUnresolvableScope. What this test pins is that
+        //            the host account was RESOLVED from outside the tenant at all; the ordinary account
+        //            below is not.
+        hostAnswer.Value.Should().Equal(new[] { "EDIT", "READ", "VIEW", "WRITE" });
 
         Harness outsider = Harness.Ready();
         outsider.Users
@@ -1307,6 +1456,7 @@ public class PermissionEvaluatorTests
     public void Service_RequiresEveryCollaborator()
     {
         Mock<IPermissionRepository> permissions = new();
+        Mock<IPermissionEvaluator> evaluator = new();
         Mock<IPortalRepository> portals = new();
         Mock<IModuleRepository> modules = new();
         Mock<ITabRepository> tabs = new();
@@ -1317,37 +1467,43 @@ public class PermissionEvaluatorTests
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                null!, portals.Object, modules.Object, tabs.Object, users.Object, clock.Object, options);
+                null!, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object, clock.Object, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, null!, modules.Object, tabs.Object, users.Object, clock.Object, options);
+                permissions.Object, null!, portals.Object, modules.Object, tabs.Object, users.Object, clock.Object, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, portals.Object, null!, tabs.Object, users.Object, clock.Object, options);
+                permissions.Object, evaluator.Object, null!, modules.Object, tabs.Object, users.Object, clock.Object, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, portals.Object, modules.Object, null!, users.Object, clock.Object, options);
+                permissions.Object, evaluator.Object, portals.Object, null!, tabs.Object, users.Object, clock.Object, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, portals.Object, modules.Object, tabs.Object, null!, clock.Object, options);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, null!, users.Object, clock.Object, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, portals.Object, modules.Object, tabs.Object, users.Object, null!, options);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, null!, clock.Object, options);
+        });
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = new PermissionService(
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object, null!, options);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object,
+                evaluator.Object,
                 portals.Object,
                 modules.Object,
                 tabs.Object,
@@ -1426,6 +1582,7 @@ public class PermissionEvaluatorTests
             PortalOptions = new PortalOptions();
 
             Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
+            Evaluator = new Mock<IPermissionEvaluator>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
@@ -1434,6 +1591,7 @@ public class PermissionEvaluatorTests
 
             Service = new PermissionService(
                 Permissions.Object,
+                Evaluator.Object,
                 Portals.Object,
                 Modules.Object,
                 Tabs.Object,
@@ -1471,6 +1629,8 @@ public class PermissionEvaluatorTests
         public bool TabGrant { get; set; }
 
         public Mock<IPermissionRepository> Permissions { get; }
+
+        public Mock<IPermissionEvaluator> Evaluator { get; }
 
         public Mock<IPortalRepository> Portals { get; }
 
@@ -1514,14 +1674,13 @@ public class PermissionEvaluatorTests
                 .ReturnsAsync(() => harness.AssignedRoles);
 
             harness.Modules
-                .Setup(modules => modules.GetAsync(
+                .Setup(modules => modules.GetByIdAsync(
                     It.IsAny<int>(),
-                    It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Module);
 
             harness.Modules
-                .Setup(modules => modules.ListPlacementsAsync(
+                .Setup(modules => modules.GetTabModulesByModuleIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.StoredPlacements);
@@ -1530,15 +1689,28 @@ public class PermissionEvaluatorTests
                 .Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Tab);
 
+            // MIGRATION: the catalogue is no longer one wildcard-tolerant read. The repository
+            //            contract mirrors the legacy provider, which offered a definition-scoped read
+            //            and a code-and-key read, so the service composes the three question shapes
+            //            from those two. Both are stubbed from the same Catalogue fixture.
             harness.Permissions
-                .Setup(permissions => permissions.ListAsync(
-                    It.IsAny<string?>(),
-                    It.IsAny<int?>(),
+                .Setup(permissions => permissions.GetByModuleDefinitionIdAsync(
+                    It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Catalogue);
 
             harness.Permissions
-                .Setup(permissions => permissions.ListEffectivePortalPermissionKeysAsync(
+                .Setup(permissions => permissions.GetByCodeAndKeyAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((string code, PermissionKey key, CancellationToken _) => harness.Catalogue
+                    .Where(entry => entry.PermissionKey == key
+                        && string.Equals(entry.PermissionCode, code, StringComparison.OrdinalIgnoreCase))
+                    .ToList());
+
+            harness.Evaluator
+                .Setup(evaluator => evaluator.ListEffectivePortalPermissionKeysAsync(
                     It.IsAny<int>(),
                     It.IsAny<int?>(),
                     It.IsAny<IReadOnlyCollection<string>>(),
@@ -1547,8 +1719,8 @@ public class PermissionEvaluatorTests
                     (_, _, roleNames, _) => harness.Capture(roleNames))
                 .ReturnsAsync(() => harness.PortalKeys);
 
-            harness.Permissions
-                .Setup(permissions => permissions.ListEffectiveModulePermissionKeysAsync(
+            harness.Evaluator
+                .Setup(evaluator => evaluator.ListEffectiveModulePermissionKeysAsync(
                     It.IsAny<int>(),
                     It.IsAny<int?>(),
                     It.IsAny<IReadOnlyCollection<string>>(),
@@ -1557,8 +1729,8 @@ public class PermissionEvaluatorTests
                     (_, _, roleNames, _) => harness.Capture(roleNames))
                 .ReturnsAsync(() => harness.ModuleKeys);
 
-            harness.Permissions
-                .Setup(permissions => permissions.ListEffectiveTabPermissionKeysAsync(
+            harness.Evaluator
+                .Setup(evaluator => evaluator.ListEffectiveTabPermissionKeysAsync(
                     It.IsAny<int>(),
                     It.IsAny<int?>(),
                     It.IsAny<IReadOnlyCollection<string>>(),
@@ -1567,8 +1739,8 @@ public class PermissionEvaluatorTests
                     (_, _, roleNames, _) => harness.Capture(roleNames))
                 .ReturnsAsync(() => harness.TabKeys);
 
-            harness.Permissions
-                .Setup(permissions => permissions.HasModulePermissionAsync(
+            harness.Evaluator
+                .Setup(evaluator => evaluator.HasModulePermissionAsync(
                     It.IsAny<int>(),
                     It.IsAny<PermissionKey>(),
                     It.IsAny<int?>(),
@@ -1578,8 +1750,8 @@ public class PermissionEvaluatorTests
                     (_, _, _, roleNames, _) => harness.Capture(roleNames))
                 .ReturnsAsync(() => harness.ModuleGrant);
 
-            harness.Permissions
-                .Setup(permissions => permissions.HasTabPermissionAsync(
+            harness.Evaluator
+                .Setup(evaluator => evaluator.HasTabPermissionAsync(
                     It.IsAny<int>(),
                     It.IsAny<PermissionKey>(),
                     It.IsAny<int?>(),
@@ -1595,11 +1767,18 @@ public class PermissionEvaluatorTests
                     CancellationToken token) => harness.AnswerPage(tabId, key));
 
             harness.Permissions
-                .Setup(permissions => permissions.DeleteUserPermissionsAsync(
+                .Setup(permissions => permissions.DeleteModulePermissionsByUserIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(1);
+                .Returns(Task.CompletedTask);
+
+            harness.Permissions
+                .Setup(permissions => permissions.DeleteTabPermissionsByUserIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
 
             return harness;
         }
