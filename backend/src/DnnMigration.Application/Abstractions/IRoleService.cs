@@ -374,9 +374,9 @@ public interface IRoleService
     /// scoping.
     /// </param>
     /// <param name="roleId">
-    /// Identifier of the role to update. Authoritative; any identifier carried by
-    /// <paramref name="request"/> must agree with it, and a disagreement is a
-    /// request-shape validation failure at the boundary rather than a reason code.
+    /// Identifier of the role to update. Authoritative, and the sole source of the
+    /// role's identity: the request contract carries no identifier of its own, so
+    /// there is nothing for it to disagree with.
     /// </param>
     /// <param name="request">The replacement state for the role.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
@@ -384,17 +384,29 @@ public interface IRoleService
     /// A successful outcome carrying the updated role, so the caller can answer an
     /// update request with 200 and the new state; or a failed outcome carrying
     /// <c>portal.not_found</c>, <c>role.not_found</c> when the portal has no such
-    /// role, <c>role_group.not_found</c> when a role group is named but does not
-    /// exist in that portal, or <c>role.name_duplicate</c> when the new name is
-    /// already taken by a different role in the same portal.
+    /// role, or <c>role_group.not_found</c> when a role group is named but does not
+    /// exist in that portal.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Replaces RoleController.vb:L254, which accepted a whole legacy entity and
     /// returned nothing at all, so a caller could not tell an applied update from a
     /// silently discarded one. Changing the billing or trial terms here does not
     /// retrospectively re-compute the expiry of assignments already in force; the
     /// terms are re-read on the next assignment or renewal, which is the legacy
     /// behaviour and is preserved deliberately.
+    /// </para>
+    /// <para>
+    /// The role's NAME is not updatable, and consequently no duplicate-name reason
+    /// code is reachable from this member - unlike the creating member, which
+    /// reports one. Renaming was never a legacy workflow: the edit screen revealed a
+    /// read-only label and hid the name textbox for an existing role, and disabled
+    /// the name's required-field validator with it
+    /// (<c>Website/admin/Security/EditRoles.ascx.vb:L131-L134</c>); the legacy
+    /// membership data contract declared no name parameter on its update member; and
+    /// the terminal <c>UpdateRole</c> procedure omits the column from its assignment
+    /// list. An update therefore PRESERVES the stored name.
+    /// </para>
     /// </remarks>
     Task<Result<RoleDetailDto>> UpdateRoleAsync(
         int portalId,

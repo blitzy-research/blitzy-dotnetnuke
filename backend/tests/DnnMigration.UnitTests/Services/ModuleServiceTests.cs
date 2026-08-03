@@ -770,7 +770,6 @@ public class ModuleServiceTests
         Harness harness = Harness.Ready();
         CreateModuleRequest request = ValidCreateRequest();
         request.ModuleTitle = "Announcements";
-        request.PaneName = "LeftPane";
         request.ModuleOrder = 4;
         request.InheritViewPermissions = false;
         request.Visibility = ModuleVisibility.Minimized;
@@ -795,7 +794,9 @@ public class ModuleServiceTests
 
         TabModule placement = stored.TabModules.Should().ContainSingle().Which;
         placement.TabId.Should().Be(TabId);
-        placement.PaneName.Should().Be("LeftPane");
+        placement.PaneName.Should().Be(
+            DefaultPaneName,
+            "the creation contract carries no pane, so the write path always uses the content pane");
         placement.ModuleOrder.Should().Be(4);
         placement.CacheTime.Should().Be(120);
         placement.IconFile.Should().Be("icon.gif");
@@ -804,20 +805,25 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A module that asks for no cache lifetime inherits the definition's default.
+    /// A module that asks for no cache lifetime stores zero rather than inheriting the definition's
+    /// default, because a blank legacy cache field stored literally zero.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreateModule_TakesTheDefinitionsDefaultCacheTimeWhenNoneWasAsked()
+    public async Task CreateModule_StoresZeroCacheTimeRatherThanTheDefinitionsDefault()
     {
         Harness harness = Harness.Ready();
         harness.DefinitionCatalogue[0].DefaultCacheTime = 300;
         CreateModuleRequest request = ValidCreateRequest();
-        request.CacheTime = null;
+        request.CacheTime = 0;
 
         await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
 
-        harness.AddedModules.Single().TabModules.Single().CacheTime.Should().Be(300);
+        harness.AddedModules.Single().TabModules.Single().CacheTime.Should().Be(
+            0,
+            "zero means \"do not cache\" and is a real submitted value, so the definition's own default "
+            + "period must never be substituted for it - doing so would silently enable caching on a "
+            + "module the caller asked not to cache");
     }
 
     /// <summary>
@@ -838,23 +844,23 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A blank pane name falls back to the default content pane, which is the pane every shipped skin
-    /// declares.
+    /// Every created placement lands in the default content pane, because the creation contract
+    /// deliberately accepts no pane at all.
     /// </summary>
-    /// <param name="submitted">The blank pane name to submit.</param>
     /// <returns>A task representing the assertion.</returns>
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task CreateModule_SubstitutesTheDefaultPaneWhenNoneWasNamed(string submitted)
+    [Fact]
+    public async Task CreateModule_AlwaysPlacesTheModuleInTheDefaultPane()
     {
         Harness harness = Harness.Ready();
         CreateModuleRequest request = ValidCreateRequest();
-        request.PaneName = submitted;
 
         await harness.Service.CreateModuleAsync(PortalId, request, CancellationToken.None);
 
-        harness.AddedModules.Single().TabModules.Single().PaneName.Should().Be(DefaultPaneName);
+        harness.AddedModules.Single().TabModules.Single().PaneName.Should().Be(
+            DefaultPaneName,
+            "the pane belongs to the excluded Web Forms pane-layout surface and the legacy value came "
+            + "from the skin's pane picker, yet the column is not nullable - so the write path supplies "
+            + "the content pane every shipped skin declares");
     }
 
     /// <summary>
@@ -2689,11 +2695,11 @@ public class ModuleServiceTests
                 .ReturnsAsync(() => harness.PortalRow);
 
             harness.Tabs
-                .Setup(t => t.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(t => t.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int tabId, CancellationToken _) =>
                     harness.TabsById.TryGetValue(tabId, out Tab? found) ? found : null);
             harness.Tabs
-                .Setup(t => t.ListAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+                .Setup(t => t.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.TenantTabs);
 
             harness.Modules

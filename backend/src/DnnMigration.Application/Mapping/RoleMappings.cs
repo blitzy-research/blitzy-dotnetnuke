@@ -155,17 +155,36 @@ public static class RoleMappings
     /// <param name="role">The tracked role to modify.</param>
     /// <param name="request">The submitted values.</param>
     /// <remarks>
+    /// <para>
     /// Neither the role's own identifier nor its portal is written from the request: both arrive from
     /// the route, and the request contract deliberately carries neither.
+    /// </para>
+    /// <para>
+    /// The role's NAME is likewise not written from the request, because the update contract does not
+    /// carry one. The tracked entity's existing name is passed straight back through, so an update
+    /// preserves it.
+    /// </para>
     /// </remarks>
     public static void ApplyUpdate(Role role, UpdateRoleRequest request)
     {
         ArgumentNullException.ThrowIfNull(role);
         ArgumentNullException.ThrowIfNull(request);
 
+        // MIGRATION: the stored name is passed through unchanged rather than taken from the request,
+        // because renaming a role was never a legacy workflow. The edit screen revealed a read-only
+        // label and hid the name textbox whenever it was editing an existing role
+        // (Website/admin/Security/EditRoles.ascx.vb L131-L134), the legacy membership data contract
+        // declared no parameter for the name on its update member
+        // (Library/Providers/MembershipProviders/DataProvider/DataProvider.vb L97), the provider
+        // never passed one (DNNRoleProvider.vb L325), and the terminal stored procedure omits the
+        // column from its assignment list altogether
+        // (Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider L454). Passing
+        // the entity's own value keeps this projection total - every writable member of the role is
+        // still assigned exactly once - without inventing a rename capability the application never
+        // had.
         ApplyCore(
             role,
-            request.RoleName,
+            role.RoleName,
             request.Description,
             request.RoleGroupId,
             request.IsPublic,

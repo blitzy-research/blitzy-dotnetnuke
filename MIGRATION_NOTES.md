@@ -4968,3 +4968,465 @@ selecting the substituted sentinel, which was correct only because both happen t
 tables. The division follows the legacy provider's own grouping, so no member of either contract
 reaches into the other aggregate and the settings tables are not split into repositories of their
 own.
+
+## The account aggregate — `UserInfo` and `UserMembership` merged onto one root
+
+**Target:** `backend/src/DnnMigration.Domain/Entities/User.cs`, asserted by
+`backend/tests/DnnMigration.UnitTests/Domain/UserTests.cs`
+**Legacy sources:** `Library/Components/Users/UserInfo.vb` (class at line 41, fourteen properties)
+and `Library/Components/Users/Membership/UserMembership.vb` (class at line 41, fifteen properties)
+
+### The merge, and why it is not a flattening
+
+`UserInfo` owned a `UserMembership` instance and a `UserProfile` instance and hydrated each of them
+from inside a property getter — lines 196-204 call `UserController.GetUserMembership` and lines
+237-245 call `ProfileController.GetUserProfile` — so reading a property performed database I/O. The
+target keeps the merged property set but deletes the mechanism: every getter is a field read, and
+composing the account row with the external credential store is an explicit, inspectable step in a
+repository method. Rule T8 applies: the workaround produced no target artefact.
+
+Where the merged properties landed is worth stating because it is easy to guess wrongly. Nine
+properties are the terminal `dbo.Users` columns; eleven are a read-only snapshot of facts held
+elsewhere; the per-tenant facts went to `UserPortal`, not here.
+
+### Credential facts are nullable, and absence is a third state
+
+The legacy membership object initialised its approval flag to `True` (`UserMembership.vb` line 45)
+and its lockout flag to `False` (line 53) — the only two inline initialisers it had. A port to
+non-nullable C# booleans would have defaulted approval to `false` and silently un-approved every
+account it constructed.
+
+The target does not merely avoid that trap, it removes the condition that created it.
+`User.IsApproved` and `User.IsLockedOut` are `bool?`. The account row lives in `dbo.Users` while the
+credentials live in the external ASP.NET membership tables, so an account materialised from its own
+row genuinely does not yet know whether it is approved, and `null` says exactly that.
+
+This is a deliberate divergence from the letter of the legacy default, and it is a strengthening.
+With three states each flag fails safe in *its own* direction from the same absent value:
+
+- `IsApproved == true` is `false` when unread, so an account nobody vouched for is never admitted.
+- `IsLockedOut == true` is `false` when unread, so an account nobody locked is never refused.
+
+A single non-nullable boolean cannot express both, because whichever value it defaults to is wrong
+for one of them — which is precisely why the legacy class needed two different initialisers to paper
+over the problem. An explicit `false` also stays distinguishable from "not read", so a caller can
+tell "reviewed and refused" from "nobody has looked".
+
+The one place a non-sentinel legacy default *does* survive as an initialiser is
+`UserPortal.IsAuthorised = true`. That flag is a column on a row which either exists with an answer
+or does not exist at all, so it has no third state to model, and the shipped baseline agrees with the
+default (`01.00.00.SqlDataProvider` line 7229 inserts the administrator's membership with the flag
+set).
+
+### `Email` — a legacy dual-write collapses to one property
+
+The legacy setter (`UserInfo.vb` lines 121-134) assigned the private field **and** assigned
+`Me.Membership.Email`, the source's own comment explaining the second write existed "in case
+developers have used this in their own code". The getter returned only the private field. The write
+was symmetric and the read was not, so assigning the membership copy directly left the account's own
+answer stale and the two could disagree indefinitely.
+
+Per Minimal Change Clause item 1 the asymmetry is recorded rather than characterised as a defect to
+be repaired in the legacy record: it was a deliberate backward-compatibility shim, and it has
+nothing left to be compatible with once there is one property. The target declares exactly one
+address member, and the test asserts that reflectively so a shadow copy cannot return.
+
+### `FirstName` and `LastName` are columns, not profile delegates
+
+The legacy properties had no backing fields — the given name at `UserInfo.vb` lines 144-151 read and
+wrote `Profile.FirstName`, and the family name at lines 178-185 did the same — so reading a name
+could trigger a profile fetch. Both are nevertheless genuine columns on the account table
+(`01.00.00.SqlDataProvider` lines 99-100), and the terminal view at `04.00.04.SqlDataProvider` lines
+777-778 selects both straight from it. The delegation was therefore pure cost: a database round trip
+for data already in hand. The target models the table.
+
+### The hydration flags and the composed objects are not reproduced
+
+Four legacy members existed only to service lazy hydration and none is carried forward: the
+membership object's `ObjectHydrated` (`UserMembership.vb` line 243), which the address setter at
+lines 344-354 flipped as a side effect of assigning a value; the profile's own `ObjectHydrated` and
+`IsDirty` (`UserProfile.vb` lines 271 and 237); and the account's `_RolesHydrated` field
+(`UserInfo.vb` line 58). The two composed objects they guarded go with them, as does the raw
+role-name array at line 261 — role membership is the assignment entity — and the credential at
+`UserMembership.vb` line 263, which is now a hash held in the external store.
+
+The account also declares no tenant identifier of its own. The legacy class carried one
+(`UserInfo.vb` line 219) and seeded it to `-1`, which is a real portal key; since the terminal view
+takes the tenant identifier and the authorisation flag from the membership join, a copy on the
+account row would be a second, contradictable source of truth.
+
+### `IPropertyAccess` and the Web Forms property-editor attributes are dropped
+
+The legacy class implemented `DotNetNuke.Services.Tokens.IPropertyAccess` (`UserInfo.vb` line 42,
+with `GetProperty` at line 426 and `Cacheability` at line 484) and decorated its properties with
+`Browsable`, `SortOrder`, `Required`, `MaxLength`, `IsReadOnly` and `RegularExpressionValidator`
+imported from `DotNetNuke.UI.WebControls`. Both the token-replacement subsystem and the control
+library are out of scope. The obligations those attributes expressed do not vanish: the wire shape
+belongs to the DTOs and every length, required and format rule belongs to a FluentValidation
+validator in the Application layer. They must not reappear as DataAnnotations — the Domain project
+declares no package reference at all, by design. The tests assert attribute emptiness at both type
+and property level.
+
+### Text is never seeded with the empty string, resolving a legacy self-contradiction
+
+The legacy tree disagreed with itself. The account constructor set six fields and left its four
+string fields alone (`UserInfo.vb` lines 64-73 over the fields at lines 48-51), so a freshly
+constructed account carried `Nothing` for its login name, display name and address. The module and
+page classes did the opposite and seeded their string fields to `Null.NullString`, which
+`Library/Components/Shared/Null.vb` line 71 defines as the **empty string**. Two aggregates in one
+codebase therefore disagreed about what "no text yet" looks like.
+
+The target resolves this in one direction rather than picking a winner: no string property on
+`User`, `Module` or `Tab` carries an initialiser, so a freshly constructed instance holds `null`
+everywhere and an empty string is always a value somebody stored. The nullable annotation states
+which columns may be absent in the store; the unannotated ones are `NOT NULL` and are assigned by
+whatever materialises the row, which is the case `CS8618` is suppressed for.
+
+### `UserCreateStatus` — the default value is deliberately not success
+
+**Target:** `backend/src/DnnMigration.Domain/Enums/UserCreateStatus.cs`
+**Legacy source:** `Library/Components/Users/Membership/UserCreateStatus.vb` lines 24-41
+
+Unlike `UserLoginStatus`, **no member of this enumeration was renamed** and all eighteen numeric
+values carry across unchanged, so there is no mapping table to give. What needs recording is a trap
+in the numbering itself: `Success` is **13**, and the zero member is `AddUser`.
+
+`UserController.vb` line 158 opens `CreateUser` with
+`Dim createStatus As UserCreateStatus = UserCreateStatus.AddUser` and line 163 then tests
+`If createStatus = UserCreateStatus.Success`, so zero is the deliberate "the provider has not
+answered yet" state and thirteen is the only affirmative one. C# initialises an enum field, array
+element or unassigned local to zero without complaint, so renumbering to put `Success` first — the
+ordering a reader who sorts members by importance would naturally produce — would make every
+default-initialised status report a created account.
+
+`Null.vb` lines 141-150 compound it: the legacy sentinel reader sorts an enumeration's values and
+returns the lowest, so the numerically lowest member is also what a null column reads back as. The
+lowest member and the default member therefore have to be the same non-affirmative one, and the tests
+assert that as well as the eighteen values individually.
+
+### `Null.NullByte` (255) has no target surface
+
+`Null.vb` line 46 defines the byte absence marker as `255` — the only entry in the legacy table that
+is a large positive number rather than a negative one, a type minimum or an empty value. No property
+on `User`, `UserPortal`, `UserProfileValue` or `ProfilePropertyDefinition` is byte-typed, so the
+marker has nowhere to land. This is asserted structurally rather than assumed, so that introducing a
+byte column later re-raises the question instead of inheriting an unexamined answer.
+
+The legacy dispatcher could not have applied the marker anyway: `Null.vb` line 125 reads
+`Case "system.Byte"` with a lower-case initial letter, which can never match the `"System.Byte"`
+that the reflected property type reports, and `Library/DotNetNuke.Library.vbproj` line 22 sets
+`<OptionCompare>Binary</OptionCompare>`. That branch is unreachable dead code. Recorded, not
+repaired, per Minimal Change Clause item 1 — and the file it lives in produces no target artefact.
+
+## Profile visibility and the profile definition
+
+**Targets:** `backend/src/DnnMigration.Domain/Entities/UserProfileValue.cs` and
+`backend/src/DnnMigration.Domain/Entities/ProfilePropertyDefinition.cs`
+**Legacy sources:** `Library/Components/Users/Profile/UserProfile.vb`,
+`Library/Components/Users/Profile/ProfilePropertyDefinition.vb`,
+`Library/Components/Users/UserVisibilityMode.vb`
+
+### Nineteen named properties become rows
+
+`UserProfile` exposed nineteen properties (lines 103-451) but held only three backing fields, because
+sixteen of them read and wrote through a single keyed collection (line 82). `UserProfileValue` makes
+that indirection explicit: the named properties become rows keyed by account and definition, and
+adding a twentieth profile question is a row in the definition table rather than a change to a class.
+
+The distinction between an empty answer and an unanswered question matters more here than anywhere
+else on the aggregate. Under the legacy textual marker, `''` and no answer at all were the same
+state, so a member who deliberately cleared a profile field could not be told from one who never
+filled it in. The target keeps them apart.
+
+### `UserVisibilityMode` has no target enumeration, and the visibility column stays an integer
+
+`UserVisibilityMode.vb` lines 23-26 declare three explicitly valued members — `AllUsers` 0,
+`MembersOnly` 1, `AdminOnly` 2. No counterpart is generated, and `UserProfileValue.Visibility` is a
+plain `int`. The reason is that the persisted column is **wider than the enumeration**: the legacy
+interpreter maps 0, 1, 2 and the legacy `-1` marker onto those three members and leaves every other
+number unmapped (`ProfilePropertyDefinition.vb` lines 353-358), so an enumeration here would publish
+that gap as though it were a complete contract and would let a number the database really holds
+surface as an undeclared member. The raw value is kept and its interpretation belongs to the layer
+that presents it.
+
+The only enumeration in the Domain project whose name contains the word is `ModuleVisibility`, which
+classifies whether a module is shown on a page and is unrelated. The absence of the account-visibility
+enumeration is asserted by name against the assembly, so it cannot be reintroduced unnoticed.
+
+### The visibility default: a three-way disagreement, resolved in favour of the store
+
+This is security-relevant and the framing matters, because the obvious reading of it is wrong.
+
+- The legacy **constructor** initialised the field to the most restrictive member,
+  `UserVisibilityMode.AdminOnly` (`ProfilePropertyDefinition.vb` line 61).
+- The **database** disagrees: the column is `int NOT NULL DEFAULT 0` (`04.00.04.SqlDataProvider`
+  line 1418), which is `AllUsers`.
+- The legacy **sentinel reader** agrees with the database and not with the constructor: for an
+  enumeration it returns the numerically lowest member (`Null.vb` lines 141-150), which is again
+  `AllUsers`.
+
+So two of the three legacy mechanisms say `0` and only the constructor said `2`, and real rows
+already depend on the `0` default — the upgrade that moved the flat address columns into this table
+inserts only four columns and leaves this one to the database (`03.02.03.SqlDataProvider` line 2094).
+The target follows the store.
+
+The consequence is stated plainly rather than left implicit: **an answer whose visibility nobody set
+is visible to everyone**, exactly as it already is for every row that upgrade path created.
+Restricting it is an application decision applied on write. No default assigned in the entity could
+express it without also being written on every insert, which would stop the column being the
+database's answer.
+
+`ProfilePropertyDefinition` stores no per-account visibility at all. The legacy class exposed a
+`Visibility` property of the enumeration type at line 336 that **no column of the definition table
+backs**, so it was never state of that entity; the definition stores only whether the question
+appears on the form, renamed from the legacy `Visible` (line 318) to `IsVisible` to read as a
+predicate while the column keeps its name.
+
+### `ProfilePropertyDefinition`'s parameterless constructor cannot be ported
+
+The legacy class had two constructors and the parameterless one is a layering violation. Lines 65-71
+call `PortalController.GetCurrentPortalSettings()` to discover which tenant the new definition
+belongs to, and that method is `CType(HttpContext.Current.Items("PortalSettings"), PortalSettings)`
+(`PortalController.vb` lines 1209-1210) — a domain constructor reading per-request web state. It then
+called an initialiser that read a module setting to choose the default visibility (lines 348-359).
+
+Neither survives, and neither could: the Domain project cannot reference `System.Web` or its
+ASP.NET Core equivalent, and Rule T1 makes that a compile-time guarantee rather than a convention.
+The target has the implicit parameterless constructor and nothing else — the tenant is assigned by
+the caller that knows it, and the per-tenant default visibility is configuration supplied by an
+Application service. The constructor surface is asserted reflectively (exactly one constructor,
+zero parameters) so the ambient read cannot creep back in.
+
+The legacy `-1` field initialisers at lines 47, 51 and 54 are likewise not reproduced: the two
+foreign keys become nullable, so absence is `null` and no real key value is reserved. That matters
+concretely for the module definition, since `dbo.ModuleDefinitions.ModuleDefID` is
+`int IDENTITY(1, 1)` (`01.00.00.SqlDataProvider` line 66) and `0` is not a real value there either.
+
+### The anchored name pattern and the editor metadata are not Domain concerns
+
+`PropertyName` carried `RegularExpressionValidator("^[a-zA-Z0-9._%\-+']+$")` at line 228 — anchored,
+in contrast to the email pattern's word boundaries, and using the same character class as an address
+local part. `DataType` carried `Editor("DotNetNuke.UI.WebControls.DNNListEditControl, DotNetNuke")`
+and `List(...)` at lines 88-90. The first is a validation rule and moves to a FluentValidation
+validator in the Application layer; the second named a control from the excluded control library. The
+Domain accepts any string, which the tests prove by storing a name that violates the legacy pattern
+and asserting it round-trips.
+
+## User profile contract — the repository contract
+
+### One contract spans both legacy provider stacks
+
+`IUserProfileRepository` is the only repository contract assembled from two different abstract
+provider classes, and the split is measured rather than assumed. The core provider at
+`Library/Components/Providers/Data/DataProvider.vb` declares 269 abstract members across 397 lines,
+of which the profile surface is the six *declaration* members at lines 251 to 256 alone — not one of
+its members reads or writes a profile *value*. The values come from a separate 131-line abstract
+class, `Library/Providers/MembershipProviders/DataProvider/DataProvider.vb`, whose `'Profile` block
+at line 117 declares exactly two members and which resolves through its own reflection-created
+accessor under the namespace `DotNetNuke.Security.Membership.Data` rather than the core
+`DotNetNuke.Data`. The 1,773-line `AspNetMembershipProvider` settles it: it invokes no stored
+procedure directly, and line 59 reads `Private Shared dataProvider As dataProvider =
+dataProvider.Instance()`, delegating entirely through that second accessor. Reading either provider
+alone would have produced a materially incomplete contract, so the two concerns are combined and no
+separate profile-declaration repository exists. Neither singleton is translated; constructor
+injection replaces both.
+
+### The serialized-blob personalization path is omitted entirely
+
+Four core members are dropped: `GetAllProfiles` (line 245), `GetProfile(UserId, PortalId)` (246),
+`AddProfile(UserId, PortalId)` (247) and `UpdateProfile(UserId, PortalId, ProfileData As String)`
+(248). The last argument names the representation — one opaque serialized string per user and portal
+— which was superseded by the per-property row model reached through membership lines 118 and 119,
+where each answer is its own `dbo.UserProfile` row keyed by `PropertyDefinitionID`. Two details
+confirm they are different generations of the same feature rather than complements: the block's own
+header at line 244 reads `' personalization`, not `' profile`, and the blob path is portal-scoped
+while the surviving reader takes the account alone. The `Personalization` subsystem is out of scope,
+and a blob payload cannot express the per-answer visibility or timestamp the row model carries as
+columns.
+
+### A cleared answer is blanked, not deleted — restoring the legacy write
+
+**This is the one behavioural difference in this area and it is a fidelity restoration.** No
+value-deletion member exists on the contract because none existed in the legacy surface: the
+membership `'Profile'` block declares only a reader and an upsert, and a case-insensitive sweep of
+all eighty-eight upgrade scripts across every naming form those scripts use finds no procedure that
+deletes a profile value and no `DELETE` statement against `dbo.UserProfile` at all. The write path
+was a single upsert, `UpdateUserProfileProperty`, which resolves a null or `-1` `@ProfileID` against
+the `(UserID, PropertyDefinitionID)` natural key (`04.00.04.SqlDataProvider` lines 1616 to 1620) and
+then branches to an `UPDATE` arm at line 1622 or an `INSERT` arm at line 1634. Clearing an answer was
+therefore an upsert carrying an empty value, which the legacy code could express because
+`Null.NullString` was the empty string rather than null.
+
+`UserService.UpdateProfileAsync` accordingly blanks a stored answer the submitted set omits instead
+of removing its row. The effective value reads back identically — `UserMappings.ToProfile` emits one
+entry per declaration and an absent or blank answer both surface as an empty string — while the row's
+visibility is carried forward and its timestamp refreshed, exactly as the legacy write did.
+Deleting the row would instead have reset the visibility to the tenant default and dropped the
+timestamp to null. Withdrawing a whole *declaration* does still discard its answers, but through the
+schema rather than through a member: `FK_UserProfile_ProfilePropertyDefinition` is declared
+`ON DELETE CASCADE` (`04.00.04.SqlDataProvider` line 1429), and the repository loads the dependent
+answers before staging the removal so the cascade is issued by the change tracker as well, which
+keeps the outcome identical on a provider that does not enforce the constraint itself.
+
+### The single upsert becomes two explicit members
+
+Membership line 119 `UpdateProfileProperty(ProfileId, UserId, PropertyDefinitionID, PropertyValue,
+Visibility, LastUpdatedDate)` splits into `AddProfileValueAsync` and `UpdateProfileValueAsync`,
+because the object-relational mapper tracks entity state explicitly and a caller that has just read
+a row already knows whether it exists. Both take the entity rather than six positional arguments.
+The `LastUpdatedDate` argument becomes a property rather than a parameter — `dbo.UserProfile` is the
+only in-scope table carrying that column, which arrived with the table at
+`03.02.03.SqlDataProvider` line 1372 — so no member of the contract accepts a date, and the caller
+stamps the row from the injected clock, which is what keeps time-dependent behaviour testable.
+Neither add member yields the generated key: the legacy procedures ended in `SCOPE_IDENTITY()`,
+whereas returning a key here would force a save and dissolve the unit-of-work commit boundary that
+tenant provisioning depends on.
+
+### The name lookup answers with the declaration rather than a boolean
+
+Core line 254 `GetPropertyDefinitionByName(portalId, name)` returned the row, and
+`GetDefinitionByNameAsync` preserves that. It matters for the caller it principally serves: refusing
+a duplicate name while *editing* a declaration means comparing the found declaration's identifier
+with the one being edited, and a boolean cannot express "found, but it is the row I am editing". The
+exclusion therefore stays in the service, where the edit is happening, rather than being pushed into
+persistence as an extra argument.
+
+### The catalogue read drops its `includeDeleted` argument
+
+`GetDefinitionsByPortalIdAsync` replaces core line 255 `GetPropertyDefinitionsByPortal(portalId)`,
+which took the tenant alone. Withdrawn declarations are excluded, which the contract states as an
+expectation of the implementation instead of exposing as a parameter; every call site had passed the
+same value, so no behaviour changes. A caller that needs a withdrawn declaration addresses it by key
+or by name, neither of which filters the flag. Filtering by category is likewise not offered:
+`ProfileController.vb` line 485 `GetPropertyDefinitionsByCategory` iterated an already-loaded
+collection and kept the matching entries, and `ProfilePropertyDefinitionCollection.GetByCategory`
+carried the same in-memory predicate a second time. Neither had a backing stored procedure, so a
+category view is an Application-layer projection and adding a repository member would invent
+persistence behaviour that never existed.
+
+### Orchestration and the one `ByRef` site move out
+
+`ProfileController.vb` line 226 `GetUserProfile(ByRef objUser As UserInfo)` is the only `ByRef`
+member in that 561-line controller, and it is orchestration rather than persistence — it mutated a
+`UserInfo` the caller already held. The contract answers with values and lets the caller compose
+them; no `out` or `ref` parameter appears anywhere in it. Line 334 `AddDefaultDefinitions` is
+excluded on the same principle: it resolved a data-type list and then wrote a batch of declarations
+one at a time, which makes it a sequence of calls to `AddDefinitionAsync` under one unit of work.
+`ProfilePropertyDefinitionCollection`, a 313-line `CollectionBase` subclass, and the controller's two
+reflection-hydrator call sites produce no target file; `IReadOnlyList<T>` and the mapper's
+materialiser replace them.
+
+## `UpdateRoleRequest` — the role name is not updatable, so the contract declares no `RoleName`
+
+**The update contract carries twelve members, one fewer than the creation contract, and the missing
+member is `RoleName`.** Renaming a role was never a workflow this application offered, so the
+migrated contract does not offer one either. Five independent findings establish that, and the last
+of them is decisive.
+
+The edit screen made the name read-only. At `Website/admin/Security/EditRoles.ascx.vb` lines
+131-134, whenever the screen was editing an existing role it revealed a display label, hid the name
+textbox and disabled `valRoleName` — the screen's only `RequiredFieldValidator` — then filled the
+label from the stored value at line 140. The legacy membership data contract declared no parameter
+for the name on its update member, at
+`Library/Providers/MembershipProviders/DataProvider/DataProvider.vb` line 97. The provider
+implementing that contract never passed one, at
+`Library/Providers/MembershipProviders/DNNMembershipProvider/DNNRoleProvider.vb` line 325, which
+forwards thirteen values and omits `role.RoleName`. The terminal stored procedure omits the column
+from its assignment list: `Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider`
+line 454 declares `@RoleId` plus exactly the twelve writable values, and its
+`UPDATE dbo.Roles SET ...` names twelve columns, none of them `RoleName`. And the screen applied its
+duplicate-name guard only when inserting — at `EditRoles.ascx.vb` lines 251-257 the add branch looks
+the name up and refuses on a hit, while the edit branch updates with no such check, an asymmetry that
+is coherent only because the name could not change.
+
+**The destructive DDL chain is what makes the fifth finding a terminal-state argument rather than a
+baseline one.** `UpdateRole` is created seven times across the eighty-eight scripts — at
+`01.00.00:L1790`, `01.00.04:L1439`, `01.00.08:L5294` and `:L7098`, `02.00.00:L4317`, `03.02.03:L416`
+and `04.00.04:L454` — under all four naming forms and in both letter cases. The `02.00.00` form
+**did** carry `@RoleName` and **did** write `set RoleName = @RoleName`; the later recreations removed
+it. Only the terminal form is meaningful, and a case-sensitive search for a single naming form finds
+none of these objects at all.
+
+### A latent legacy defect, annotated and NOT fixed
+
+The legacy save block still assigned the name unconditionally: `EditRoles.ascx.vb` line 237 reads
+`objRoleInfo.RoleName = txtRoleName.Text`, reading a textbox the same screen had hidden at line 133.
+A hidden Web Forms control renders nothing and therefore posts nothing, so the value assigned on
+every edit was the empty string — the `NullString` sentinel, which
+`Library/Components/Shared/Null.vb` lines 70-74 define as `""` rather than null. Written through to
+a `nvarchar(50) NOT NULL` column that would have been data corruption.
+
+**It never corrupted data, and the reason is worth recording, because it closes the question rather
+than leaving it open.** The layers beneath the assignment had nowhere to put the value: the
+membership contract declared no parameter for it and the terminal procedure assigned no such column.
+The empty string was a dead store, discarded before it reached SQL. The defect is annotated in place
+and deliberately not reproduced, as the Minimal Change Clause requires.
+
+Omitting the member means the migrated contract **cannot** express that store, which is the outcome
+the screen's own read-only label always expressed. The consequences are borne by the layers above:
+`Application/Mapping/RoleMappings.cs` passes the tracked entity's own `role.RoleName` back through
+`ApplyCore`, so the projection stays total while preserving the stored name;
+`Application/Services/RoleService.cs` supplies the stored name to its shape check, which also
+reproduces the disabled validator exactly; and the update path performs **no** portal-scoped
+uniqueness read, because a name that cannot change cannot begin to collide. The
+`role.name_duplicate` reason code is consequently unreachable from the update member and is reported
+only by the creating member, and `IRoleService` documents that asymmetry. The behavioural difference
+from the literal legacy code path is the dead store's disappearance, and nothing else.
+
+### The other divergences this contract carries
+
+`RoleId` and `PortalId` are both absent. Both arrive in the route
+`PUT /api/v1/portals/{portalId}/roles/{roleId}`, which makes the route authoritative: a value that
+does not exist cannot contradict it, so no reconciliation check is needed. The legacy screen carried
+a role identifier only because one postback served both creating and editing, overloading the value
+minus one as its add-versus-edit switch at lines 131 and 251; distinct routed endpoints remove that
+ambiguity. Accepting either would be an identity-tampering vector and, for the portal, a cross-tenant
+write vector. Note that the route identifier may legitimately be **zero**: `dbo.Roles.RoleID` is
+seeded `IDENTITY (0, 1)` at `01.00.00.SqlDataProvider` line 115, so no non-positive test may ever
+stand in for an absence test.
+
+`RsvpLink` is absent because it was never an input. `editroles.ascx` line 161 declares it
+`ReadOnly="True"` with no validator, the code-behind composed it at lines 165-167 from the redemption
+code and the request's domain name purely for display, the save path at line 247 wrote only the code,
+and no such column exists in any of the eighty-eight scripts. The client composes it from `RsvpCode`
+and its own origin.
+
+`RoleGroupId` is `int?`, where null means the role belongs to no group — the state the screen
+labelled "Global Roles". The screen posted minus one for that choice, yet minus one can never be
+stored, because `RoleGroups.RoleGroupID` is seeded `IDENTITY(0,1) NOT NULL` at `03.02.03:L18` and the
+foreign key added at `03.02.03:L37` would reject it. Minus one was the presentation encoding of a
+database null, translated in both directions by the provider layer. Zero is a **legitimate** group
+identifier, and the separate negative value the roles list screen used as an all-roles filter
+(`Roles.ascx.vb` line 112) is transient and never stored. None of this may be conflated with the
+unrelated permission rule, where a negative role identifier in `dbo.ModulePermissions` and
+`dbo.TabPermissions` denotes a real pseudo-principal that must never become null.
+
+Both fees are `decimal?`, superseding the legacy single-precision properties at `RoleInfo.vb` lines
+164 and 233 and the screen's single-precision parse at line 226. The chronology is the clearest Rule
+T4 demonstration in this contract: the baseline column was `decimal(5, 2)` at `01.00.00:L119`, a
+ceiling of 999.99, and `03.01.01:L1173` widened it to `money` with a store default of zero at
+`:L1177`. Both period members are `int?` on four-way evidence, the decisive strand being that the
+terminal projection emits SQL null for the billing period itself whenever the fee converts to zero,
+so null is the literal legacy value for a free role rather than a modernisation. Both flags are
+non-nullable `bool`, matching `bit NOT NULL` with a zero default at `01.00.08:L6831-L6832`,
+re-asserted at `03.01.01:L1174-L1175` and `:L1179-L1181`.
+
+`TrialFrequency` deliberately carries **no property initialiser**, which differs from how the
+creation path behaves. The screen defaulted the list to the no-trial code when adding a role
+(`EditRoles.ascx.vb` line 125) but **loaded the stored code** when editing one and gated the trial
+block's visibility on it (line 154). Defaulting here would overwrite a stored choice whenever a
+caller omitted the member, which on a replacement contract is the wrong direction. The no-trial code
+remains a real stored value and is never conflated with null; the legacy assignment path tests
+against it at `RoleController.vb` line 521 to decide whether the trial or the billing term governs
+expiry.
+
+Both frequency members share the one six-member Domain enumeration, and the codes are never renamed.
+The three string members are nullable, with the legacy absent value being `""` rather than null;
+`RoleMappings.cs` owns that translation and no serialisation attribute forces either. The legacy XML
+serialisation attributes are dropped. The contract declares no base type and does **not** inherit
+from `CreateRoleRequest`, even though it overlaps almost entirely — deriving from it would smuggle in
+the very member that must not exist, and the legacy tree shows the wider cost of that shortcut where
+`UserRoleInfo` inherits `RoleInfo` and an eight-column assignment presents twenty-three effective
+properties. No optimistic-concurrency member is invented, because no row-version, entity-tag or
+last-modified column exists on `dbo.Roles` in any of the eighty-eight scripts. The conditional-fee
+gating stays with the validator and the service; the contract is inert.

@@ -872,10 +872,14 @@ public class RoleServiceTests
     /// <param name="violation">The single field to spoil.</param>
     /// <param name="expectedMessage">The message the service is measured to report.</param>
     /// <returns>A task representing the assertion.</returns>
+    // MIGRATION: there are deliberately no name cases here, unlike the creation theory. The update
+    // contract carries no name, so the service checks the STORED name - which is already valid - and
+    // no submitted value can spoil it. This mirrors the legacy screen exactly: editing an existing
+    // role disabled the name's required-field validator
+    // (Website/admin/Security/EditRoles.ascx.vb L134), so the required and length rules genuinely did
+    // not apply on the edit path. The name-preservation behaviour that replaces them is asserted by
+    // its own tests below.
     [Theory]
-    [InlineData("blank-name", "Role Name Is Required.")]
-    [InlineData("whitespace-name", "Role Name Is Required.")]
-    [InlineData("long-name", "A role name may not exceed 50 characters.")]
     [InlineData("long-description", "A role description may not exceed 1000 characters.")]
     [InlineData("long-rsvp", "A subscription code may not exceed 50 characters.")]
     [InlineData("long-icon", "An icon reference may not exceed 100 characters.")]
@@ -895,15 +899,6 @@ public class RoleServiceTests
         UpdateRoleRequest request = ValidUpdateRequest();
         switch (violation)
         {
-            case "blank-name":
-                request.RoleName = string.Empty;
-                break;
-            case "whitespace-name":
-                request.RoleName = "   ";
-                break;
-            case "long-name":
-                request.RoleName = new string('r', 51);
-                break;
             case "long-description":
                 request.Description = new string('d', 1001);
                 break;
@@ -947,20 +942,19 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The shape is checked before the classification and before the name, so a request that is malformed
-    /// in several ways reports the shape first and reads nothing further.
+    /// The shape is checked before the classification, so a request that is malformed in several ways
+    /// reports the shape first and reads nothing further.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateRole_ChecksTheShapeBeforeTheGroupAndTheName()
+    public async Task UpdateRole_ChecksTheShapeBeforeTheGroup()
     {
         Harness harness = Harness.Ready();
         harness.LookupRole = StoredRole();
         harness.LookupGroup = null;
-        harness.NameTaken = true;
 
         UpdateRoleRequest request = ValidUpdateRequest();
-        request.RoleName = string.Empty;
+        request.Description = new string('d', 1001);
         request.RoleGroupId = RoleGroupId;
 
         await Assert.ThrowsAsync<DomainException>(
@@ -969,6 +963,24 @@ public class RoleServiceTests
         harness.Roles.Verify(
             r => r.GetGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// The update route never reads name uniqueness, because a name it cannot change cannot clash.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateRole_NeverReadsNameUniqueness()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = StoredRole();
+
+        await harness.Service.UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
+
+        // MIGRATION: the legacy screen applied its duplicate-name guard only when INSERTING - at
+        // Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks the name up and
+        // refuses on a hit, while the edit branch updates with no such check. The absence of this read
+        // is therefore the faithful behaviour, not a missing rule.
         harness.Roles.Verify(
             r => r.RoleNameExistsAsync(
                 It.IsAny<int>(),
@@ -979,42 +991,26 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The uniqueness check excludes the row being edited, so keeping a role's own name is not a clash.
+    /// An update succeeds and leaves the stored name untouched even when another role already holds
+    /// that name, because the update route neither accepts nor writes a name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateRole_ExcludesTheRoleItselfFromTheNameCheck()
+    public async Task UpdateRole_PreservesTheStoredNameEvenWhenAnotherRoleHoldsIt()
     {
         Harness harness = Harness.Ready();
-        harness.LookupRole = StoredRole();
-
-        await harness.Service.UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
-
-        harness.Roles.Verify(
-            r => r.RoleNameExistsAsync(PortalId, RoleName, RoleId, It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    /// <summary>
-    /// A name held by a different role is refused, with wording that distinguishes the clash from the one
-    /// the creation route reports.
-    /// </summary>
-    /// <returns>A task representing the assertion.</returns>
-    [Fact]
-    public async Task UpdateRole_RefusesADuplicateNameHeldByAnotherRole()
-    {
-        Harness harness = Harness.Ready();
-        harness.LookupRole = StoredRole();
+        Role tracked = StoredRole();
+        harness.LookupRole = tracked;
         harness.NameTaken = true;
 
         Result<RoleDetailDto> outcome = await harness.Service
             .UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
 
-        outcome.IsFailure.Should().BeTrue();
-        outcome.Reason!.Code.Should().Be(RoleNameDuplicateCode);
-        outcome.Reason!.Message.Should()
-            .Be($"Portal {PortalId} already has a different role named '{RoleName}'.");
-        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Reason.Should().BeNull();
+        tracked.RoleName.Should().Be(RoleName);
+        outcome.Value.RoleName.Should().Be(RoleName);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>
@@ -1029,7 +1025,6 @@ public class RoleServiceTests
         harness.LookupRole = tracked;
 
         UpdateRoleRequest request = ValidUpdateRequest();
-        request.RoleName = "Renamed";
         request.Description = "Changed.";
         request.IsPublic = false;
         request.AutoAssignment = true;
@@ -1043,7 +1038,10 @@ public class RoleServiceTests
             .UpdateRoleAsync(PortalId, RoleId, request, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        tracked.RoleName.Should().Be("Renamed");
+
+        // MIGRATION: the name is PRESERVED rather than replaced, because the update contract carries
+        // none and the projection passes the tracked entity's own value back through.
+        tracked.RoleName.Should().Be(RoleName);
         tracked.Description.Should().Be("Changed.");
         tracked.IsPublic.Should().BeFalse();
         tracked.AutoAssignment.Should().BeTrue();
@@ -1053,7 +1051,7 @@ public class RoleServiceTests
         tracked.RsvpCode.Should().Be("NEW");
         tracked.IconFile.Should().Be("new.gif");
         tracked.PortalId.Should().Be(PortalId);
-        outcome.Value.RoleName.Should().Be("Renamed");
+        outcome.Value.RoleName.Should().Be(RoleName);
     }
 
     /// <summary>
@@ -2785,7 +2783,8 @@ public class RoleServiceTests
     /// <returns>A well-formed update request.</returns>
     private static UpdateRoleRequest ValidUpdateRequest() => new()
     {
-        RoleName = RoleName,
+        // MIGRATION: no name is set, because the update contract deliberately declares none - the
+        // stored name is preserved instead. Contrast the creation factory, which must supply one.
         ServiceFee = 9.99m,
         BillingPeriod = 1,
         BillingFrequency = Frequency.Month,

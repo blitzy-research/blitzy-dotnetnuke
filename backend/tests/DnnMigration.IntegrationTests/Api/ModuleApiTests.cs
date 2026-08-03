@@ -268,15 +268,15 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>A create without a pane is rejected by the request validator.</summary>
+    /// <summary>A create with a negative cache period is rejected by the request validator.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task CreateModule_WithoutPane_ReturnsBadRequest()
+    public async Task CreateModule_WithNegativeCacheTime_ReturnsBadRequest()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
-        request.PaneName = string.Empty;
+        request.CacheTime = -30;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModulesRoute(_fixture.Seed.PortalId),
@@ -1166,7 +1166,6 @@ public sealed class ModuleApiTests
         ModuleDefId = _fixture.Seed.ModuleDefinitionId,
         TabId = tabId,
         ModuleTitle = "Integration Module " + Suffix(),
-        PaneName = "ContentPane",
         ModuleOrder = 2,
         AllTabs = false,
         InheritViewPermissions = true,

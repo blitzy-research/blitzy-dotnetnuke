@@ -200,7 +200,7 @@ public sealed class TabService : ITabService
     /// <inheritdoc />
     public async Task<Result<TabDetailDto?>> GetTabAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        Tab? tab = await _tabs.GetAsync(tabId, cancellationToken).ConfigureAwait(false);
+        Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
         if (tab is null)
         {
             // Absence is an ordinary outcome of a lookup, so it is reported as a success carrying no
@@ -220,7 +220,7 @@ public sealed class TabService : ITabService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        Tab? tab = await _tabs.GetAsync(tabId, cancellationToken).ConfigureAwait(false);
+        Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
         if (tab is null)
         {
             // Unlike the read member, a mutation names a resource it expects to act upon, so a
@@ -239,7 +239,7 @@ public sealed class TabService : ITabService
         // so it is read once here and reused. Pages in the recycle bin are included because they
         // still occupy positions in the legacy ordering, exactly as the legacy list did.
         IReadOnlyList<Tab> siblingSet = tab.PortalId is int owningPortalId
-            ? await _tabs.ListAsync(owningPortalId, includeDeleted: true, cancellationToken).ConfigureAwait(false)
+            ? await _tabs.GetByPortalIdAsync(owningPortalId, cancellationToken).ConfigureAwait(false)
             : Array.Empty<Tab>();
 
         Result<TabDetailDto>? parentRejection =
@@ -268,7 +268,7 @@ public sealed class TabService : ITabService
             // listing, so the ordering of the host tree is left untouched and only this page's own
             // depth and path are refreshed from its parent chain.
             Tab? parent = tab.ParentId is int hostParentId
-                ? await _tabs.GetAsync(hostParentId, cancellationToken).ConfigureAwait(false)
+                ? await _tabs.GetByIdAsync(hostParentId, cancellationToken).ConfigureAwait(false)
                 : null;
 
             tab.Level = parent is null ? RootLevel : parent.Level + 1;
@@ -303,10 +303,14 @@ public sealed class TabService : ITabService
     {
         // Pages in the recycle bin are excluded: this listing exists so that a caller can build the
         // navigation tree and so that the module screens can offer a placement target, and neither
-        // use admits a deleted page.
-        IReadOnlyList<Tab> tabs = await _tabs
-            .ListAsync(portalId, includeDeleted: false, cancellationToken)
+        // use admits a deleted page. The repository returns recycled pages because the legacy read
+        // did, so excluding them is this caller's policy and is applied here rather than asked of the
+        // contract.
+        IReadOnlyList<Tab> stored = await _tabs
+            .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
+
+        List<Tab> tabs = stored.Where(candidate => !candidate.IsDeleted).ToList();
 
         IReadOnlyCollection<int> parentIds = await _tabs
             .ListParentTabIdsAsync(portalId, cancellationToken)
@@ -376,7 +380,7 @@ public sealed class TabService : ITabService
         }
 
         Tab? parent = portalTabs.FirstOrDefault(candidate => candidate.TabId == parentId)
-            ?? await _tabs.GetAsync(parentId, cancellationToken).ConfigureAwait(false);
+            ?? await _tabs.GetByIdAsync(parentId, cancellationToken).ConfigureAwait(false);
 
         if (parent is null)
         {
@@ -445,7 +449,7 @@ public sealed class TabService : ITabService
 
             if (!byId.TryGetValue(nextId, out Tab? next))
             {
-                next = await _tabs.GetAsync(nextId, cancellationToken).ConfigureAwait(false);
+                next = await _tabs.GetByIdAsync(nextId, cancellationToken).ConfigureAwait(false);
             }
 
             current = next;
@@ -583,7 +587,7 @@ public sealed class TabService : ITabService
         const int MaxAncestorWalk = 64;
         for (int step = 0; step < MaxAncestorWalk && ancestorId is int currentId; step++)
         {
-            Tab? ancestor = await _tabs.GetAsync(currentId, cancellationToken).ConfigureAwait(false);
+            Tab? ancestor = await _tabs.GetByIdAsync(currentId, cancellationToken).ConfigureAwait(false);
             if (ancestor is null)
             {
                 break;

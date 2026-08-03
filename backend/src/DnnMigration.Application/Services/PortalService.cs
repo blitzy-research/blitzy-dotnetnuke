@@ -960,7 +960,13 @@ public sealed class PortalService : IPortalService
     /// </remarks>
     /// <remarks>
     /// The four numeric terms are compared against the value the update is actually going to write, not
-    /// against the submitted value alone. This request is a whole-row replacement, so an omitted numeric
+    /// against the submitted value alone, and they are compared by calling the very members that write
+    /// it - <see cref="PortalMappings.ClampFee"/> and <see cref="PortalMappings.ClampQuota"/> - rather
+    /// than by restating their arithmetic here. That is deliberate: this rule is only sound while the
+    /// comparison and the write agree, and routing both through one member makes them agree by
+    /// construction instead of by coincidence. A restated copy could drift, and the drift would not
+    /// break a build or a test - it would quietly admit the change this rule exists to refuse.
+    /// This request is a whole-row replacement, so an omitted numeric
     /// term is not "leave it alone": <see cref="PortalMappings.ApplyUpdate"/> substitutes zero for it,
     /// because the underlying columns cannot hold null. Testing <c>request.HostFee is decimal</c> and
     /// letting an omission through would therefore admit the exact change this rule exists to refuse — a
@@ -976,9 +982,9 @@ public sealed class PortalService : IPortalService
         }
 
         bool altered = PortalMappings.ClampFee(request.HostFee ?? 0m) != portal.HostFee
-            || Math.Max(request.HostSpace ?? 0, 0) != portal.HostSpace
-            || Math.Max(request.PageQuota ?? 0, 0) != portal.PageQuota
-            || Math.Max(request.UserQuota ?? 0, 0) != portal.UserQuota
+            || PortalMappings.ClampQuota(request.HostSpace ?? 0) != portal.HostSpace
+            || PortalMappings.ClampQuota(request.PageQuota ?? 0) != portal.PageQuota
+            || PortalMappings.ClampQuota(request.UserQuota ?? 0) != portal.UserQuota
             || request.SiteLogHistory != portal.SiteLogHistory
             || request.ExpiryDate != portal.ExpiryDate;
 

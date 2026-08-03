@@ -449,7 +449,7 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<ProfilePropertyDefinition> definitions =
-            await _profiles.ListDefinitionsAsync(portalId, includeDeleted: false, cancellationToken)
+            await _profiles.GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
                 .ConfigureAwait(false);
 
         int? profilePropertyDefinitionId = null;
@@ -508,7 +508,7 @@ public sealed class UserService : IUserService
             if (addressPropertyIds.Count > 0 || telephonePropertyId is not null)
             {
                 IReadOnlyList<UserProfileValue> values =
-                    await _profiles.ListValuesAsync(account.UserId, cancellationToken).ConfigureAwait(false);
+                    await _profiles.GetProfileValuesAsync(account.UserId, cancellationToken).ConfigureAwait(false);
 
                 address = ComposeAddress(values, addressPropertyIds);
 
@@ -1234,11 +1234,11 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<ProfilePropertyDefinition> definitions = await _profiles
-            .ListDefinitionsAsync(portalId, includeDeleted: false, cancellationToken)
+            .GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         IReadOnlyList<UserProfileValue> values =
-            await _profiles.ListValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
 
         int defaultVisibility =
             await ReadProfileDefaultVisibilityAsync(portalId, cancellationToken).ConfigureAwait(false);
@@ -1283,7 +1283,7 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<ProfilePropertyDefinition> definitions = await _profiles
-            .ListDefinitionsAsync(portalId, includeDeleted: false, cancellationToken)
+            .GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         var byDefinitionId = new Dictionary<int, ProfilePropertyDefinition>(definitions.Count);
@@ -1329,21 +1329,32 @@ public sealed class UserService : IUserService
         }
 
         IReadOnlyList<UserProfileValue> stored =
-            await _profiles.ListValuesAsync(userId, cancellationToken).ConfigureAwait(false);
+            await _profiles.GetProfileValuesAsync(userId, cancellationToken).ConfigureAwait(false);
 
         DateTime now = _clock.UtcNow;
         var retained = new HashSet<int>();
 
         foreach (UserProfileValue value in stored)
         {
-            if (!submitted.TryGetValue(value.PropertyDefinitionId, out UserProfileValueDto? property))
+            // MIGRATION: a stored answer the submitted set omits is BLANKED, not deleted. No legacy
+            // member and no procedure in the eighty-eight upgrade scripts ever removed a UserProfile
+            // row - the membership provider's profile block declares only a reader and an upsert
+            // (DataProvider.vb:L118 and L119), and clearing an answer was an upsert carrying an empty
+            // value, which the legacy code could express because Null.NullString was the empty
+            // string. Blanking therefore reproduces the legacy write exactly, keeping the row's
+            // visibility and refreshing its timestamp, where deleting would reset both.
+            UserProfileValueDto replacement =
+                submitted.TryGetValue(value.PropertyDefinitionId, out UserProfileValueDto? property)
+                    ? property
+                    : Cleared(value);
+
+            if (property is not null)
             {
-                _profiles.RemoveValue(value);
-                continue;
+                retained.Add(value.PropertyDefinitionId);
             }
 
-            retained.Add(value.PropertyDefinitionId);
-            WriteProfileValue(value, property, now);
+            WriteProfileValue(value, replacement, now);
+            await _profiles.UpdateProfileValueAsync(value, cancellationToken).ConfigureAwait(false);
         }
 
         foreach (KeyValuePair<int, UserProfileValueDto> property in submitted)
@@ -1360,7 +1371,7 @@ public sealed class UserService : IUserService
             };
 
             WriteProfileValue(value, property.Value, now);
-            _profiles.AddValue(value);
+            await _profiles.AddProfileValueAsync(value, cancellationToken).ConfigureAwait(false);
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -1410,7 +1421,7 @@ public sealed class UserService : IUserService
         CancellationToken cancellationToken = default)
     {
         ProfilePropertyDefinition? definition = await _profiles
-            .GetDefinitionAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         // MIGRATION: PortalId is int? because 03.03.03 lines 77-83 made the column nullable and
@@ -1449,9 +1460,12 @@ public sealed class UserService : IUserService
             throw new DomainException("A profile property name is required.");
         }
 
+        // MIGRATION: the duplicate test reads the declaration rather than asking for a boolean,
+        // matching core DataProvider.vb:L254 GetPropertyDefinitionByName, which returned the row. On
+        // a create there is nothing to exclude, so any match at all is a collision.
         if (await _profiles
-            .DefinitionNameExistsAsync(portalId, definition.PropertyName, null, cancellationToken)
-            .ConfigureAwait(false))
+            .GetDefinitionByNameAsync(portalId, definition.PropertyName, cancellationToken)
+            .ConfigureAwait(false) is not null)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionDuplicateNameCode,
@@ -1460,7 +1474,7 @@ public sealed class UserService : IUserService
         }
 
         ProfilePropertyDefinition created = UserMappings.ToNewDefinition(portalId, definition);
-        _profiles.AddDefinition(created);
+        await _profiles.AddDefinitionAsync(created, cancellationToken).ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         _cache.InvalidateProfileDefinitions(portalId);
 
@@ -1485,7 +1499,7 @@ public sealed class UserService : IUserService
         ArgumentNullException.ThrowIfNull(definition);
 
         ProfilePropertyDefinition? stored = await _profiles
-            .GetDefinitionAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (stored is null || stored.PortalId != portalId)
@@ -1501,9 +1515,15 @@ public sealed class UserService : IUserService
             throw new DomainException("A profile property name is required.");
         }
 
-        if (await _profiles
-            .DefinitionNameExistsAsync(portalId, definition.PropertyName, propertyDefinitionId, cancellationToken)
-            .ConfigureAwait(false))
+        // MIGRATION: the same read-the-row test as on create, except that here the declaration being
+        // edited must not collide with itself. A boolean answer could not express "found, but it is
+        // the row I am editing", which is exactly why the legacy exclusion argument is not pushed down
+        // into the repository: the caller knows which row it is editing and compares identifiers here.
+        ProfilePropertyDefinition? sameName = await _profiles
+            .GetDefinitionByNameAsync(portalId, definition.PropertyName, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (sameName is not null && sameName.PropertyDefinitionId != propertyDefinitionId)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
                 ProfileDefinitionDuplicateNameCode,
@@ -1512,6 +1532,7 @@ public sealed class UserService : IUserService
         }
 
         UserMappings.ApplyDefinitionUpdate(stored, definition);
+        await _profiles.UpdateDefinitionAsync(stored, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -1546,7 +1567,7 @@ public sealed class UserService : IUserService
         CancellationToken cancellationToken = default)
     {
         ProfilePropertyDefinition? definition = await _profiles
-            .GetDefinitionAsync(propertyDefinitionId, cancellationToken)
+            .GetDefinitionByIdAsync(propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
         if (definition is null || definition.PortalId != portalId)
@@ -1557,12 +1578,15 @@ public sealed class UserService : IUserService
                     $"Profile property definition {propertyDefinitionId} does not exist in portal {portalId}."));
         }
 
-        foreach (UserProfileValue value in definition.ProfileValues.ToList())
-        {
-            _profiles.RemoveValue(value);
-        }
-
-        _profiles.RemoveDefinition(definition);
+        // MIGRATION: the answers recorded against the declaration are NOT removed one at a time here.
+        // FK_UserProfile_ProfilePropertyDefinition is declared ON DELETE CASCADE
+        // (04.00.04.SqlDataProvider:L1429), and the repository loads the answers before staging the
+        // removal, so the change tracker cascades them as explicit statements on any provider that
+        // does not enforce the constraint itself. An explicit loop here would duplicate that work,
+        // and no value-deletion member exists on the contract because the legacy surface had none.
+        await _profiles
+            .DeleteDefinitionAsync(definition.PropertyDefinitionId, cancellationToken)
+            .ConfigureAwait(false);
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         _cache.InvalidateProfileDefinitions(portalId);
 
@@ -1979,7 +2003,7 @@ public sealed class UserService : IUserService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ProfilePropertyDefinition> definitions = await _profiles
-            .ListDefinitionsAsync(portalId, includeDeleted: false, cancellationToken)
+            .GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         int defaultVisibility =
@@ -2059,6 +2083,33 @@ public sealed class UserService : IUserService
         row.Visibility = property.Visibility;
         row.LastUpdatedDate = utcNow;
     }
+
+    /// <summary>
+    /// Builds the submission that clears a stored profile answer without discarding its row.
+    /// </summary>
+    /// <param name="row">The stored answer being cleared.</param>
+    /// <returns>A submission carrying an empty value and the row's existing visibility.</returns>
+    /// <remarks>
+    /// MIGRATION: this is how the legacy application cleared a profile answer, and it is why no
+    /// value-deletion member exists on the repository contract. The membership provider declared only
+    /// a reader and an upsert for profile values (<c>DataProvider.vb:L118</c> and <c>L119</c>), and a
+    /// sweep of all eighty-eight upgrade scripts finds no procedure that deletes a
+    /// <c>UserProfile</c> row and no <c>DELETE</c> statement against that table. An answer was
+    /// cleared by upserting an empty value, which was representable because the legacy
+    /// <c>Null.NullString</c> sentinel was the empty string rather than null.
+    /// <para>
+    /// The stored visibility is carried forward rather than reset, because the legacy upsert wrote
+    /// the property's own visibility and clearing an answer never re-decided who could see the
+    /// property. The timestamp is refreshed by <see cref="WriteProfileValue"/>, as the legacy write
+    /// refreshed it on every call.
+    /// </para>
+    /// </remarks>
+    private static UserProfileValueDto Cleared(UserProfileValue row) => new()
+    {
+        PropertyDefinitionId = row.PropertyDefinitionId,
+        PropertyValue = string.Empty,
+        Visibility = row.Visibility,
+    };
 
     /// <summary>
     /// Writes one module setting, updating the stored row when it already exists.

@@ -983,7 +983,7 @@ public class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
         harness.Tabs
-            .Setup(tabs => tabs.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Tab?)null);
 
         Result<bool> result = await harness.Service.HasTabPermissionAsync(
@@ -1527,7 +1527,7 @@ public class PermissionEvaluatorTests
                 .ReturnsAsync(() => harness.StoredPlacements);
 
             harness.Tabs
-                .Setup(tabs => tabs.GetAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Tab);
 
             harness.Permissions

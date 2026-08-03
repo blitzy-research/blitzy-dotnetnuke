@@ -28,14 +28,30 @@ namespace DnnMigration.UnitTests.Validation;
 /// </remarks>
 public class CreateRoleRequestValidatorTests
 {
-    private const string RoleNameRequired = "Role Name Is Required.";
+    // Every string below is the legacy ErrorMessage attribute of the named validator on
+    // Website/admin/Security/editroles.ascx, reproduced word for word with only the leading markup
+    // tag removed. Do NOT reword any of them to read more naturally: the wording is the parity
+    // assertion, and two of the five deliberately disagree with the operator they accompany.
 
+    // valRoleName, editroles.ascx L31.
+    private const string RoleNameRequired = "You Must Enter a Valid Name";
+
+    // valServiceFee2, editroles.ascx L95. Message and operator agree.
     private const string ServiceFeeNegative = "Service Fee Must Be Greater Than or Equal to Zero";
 
-    private const string BillingPeriodNotPositive = "Billing Period Must Be Greater Than Zero";
+    // valBillingPeriod2, editroles.ascx L113. The operator at L114 is GreaterThan against 0, so the
+    // rule is strictly positive while this text says "or Equal to". The legacy defect is reproduced
+    // rather than repaired, so this constant must keep the legacy wording even though the constant's
+    // NAME describes the operator.
+    private const string BillingPeriodNotPositive =
+        "Billing Period Must Be Greater Than or Equal to Zero";
 
-    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than or Equal to Zero";
+    // valTrialFee2, editroles.ascx L127. The operator at L128 is GreaterThanEqual against 0, so zero
+    // is accepted while this text says "Greater Than Zero" - the same class of legacy defect, in the
+    // opposite direction, and likewise reproduced rather than repaired.
+    private const string TrialFeeNegative = "Trial Fee Must Be Greater Than Zero";
 
+    // valTrialPeriod2, editroles.ascx L145. Message and operator agree.
     private const string TrialPeriodNotPositive = "Trial Period Must Be Greater Than Zero";
 
     private const string BillingFrequencyInvalid =
@@ -274,6 +290,53 @@ public class CreateRoleRequestValidatorTests
             BillingFrequencyInvalid,
             "the frequency members carry stored characters rather than ordinals, so zero is not a member "
             + "and a caller that sent it has sent something the column cannot hold");
+    }
+
+    /// <summary>
+    /// The two frequency codes that DotNetNuke itself seeds are refused on the write path, which
+    /// pins the one real limitation of modelling the column as a closed enumeration.
+    /// </summary>
+    /// <param name="storedCode">The seeded character, as it sits in the shipped baseline data.</param>
+    /// <remarks>
+    /// <para>
+    /// <c>01.00.00.SqlDataProvider</c> L7192 seeds <c>Administrators</c> with <c>'4'</c> and L7194
+    /// seeds <c>Registered Users</c> with <c>'0'</c>. Neither is one of the six documented codes, the
+    /// legacy screen tolerated both by looking a stored code up and selecting it only when the lookup
+    /// returned something (<c>EditRoles.ascx.vb</c> L149-L151), and the columns carry no check
+    /// constraint (<c>char(1) NULL</c> at L120 and L122), so the database accepts them.
+    /// </para>
+    /// <para>
+    /// This test therefore asserts what IS true rather than what would be convenient: because the
+    /// contract models the column as <see cref="BillingFrequency"/>, and that enumeration cannot
+    /// represent either character, a caller CREATING a role at one of those codes is refused. That is
+    /// the intended outcome for a write - no new role should be created at an undocumented
+    /// frequency - and it is recorded here so the boundary is not later loosened in the mistaken
+    /// belief that it would help the seeded rows. It would not: tolerance for existing rows has to
+    /// live on the READ path, in the enumeration and the mapper, and loosening this rule would only
+    /// permit new rows to be created at codes nothing can interpret.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData('4')]
+    [InlineData('0')]
+    public void Frequencies_RefuseTheSeededCodesOnTheWritePath(char storedCode)
+    {
+        BillingFrequency seeded = (BillingFrequency)storedCode;
+
+        Enum.IsDefined(seeded).Should().BeFalse(
+            "the shipped seed codes are outside the six documented members, which is the whole point");
+
+        CreateRoleRequest request = new()
+        {
+            RoleName = "Administrators",
+            BillingFrequency = seeded,
+            TrialFrequency = seeded,
+        };
+
+        IReadOnlyList<string> messages = Messages(request);
+
+        messages.Should().Contain(BillingFrequencyInvalid);
+        messages.Should().Contain(TrialFrequencyInvalid);
     }
 
     /// <summary>

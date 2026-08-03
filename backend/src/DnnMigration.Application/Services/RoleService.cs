@@ -321,8 +321,14 @@ public sealed class RoleService : IRoleService
         // The update path carries the shape rules itself, because the request contract has no dedicated
         // validator: the legacy edit screen used one set of validator controls for both creating and
         // editing a role, so the rules are identical on both paths and are enforced here for the edit.
+        //
+        // MIGRATION: the stored name is supplied to the shape check rather than a submitted one,
+        // because the update contract carries no name. This also reproduces the legacy screen's own
+        // behaviour precisely: editing an existing role DISABLED the name's required-field validator
+        // (Website/admin/Security/EditRoles.ascx.vb L134), so the name rule genuinely did not apply on
+        // the edit path. The remaining nine checks are unaffected.
         EnsureRoleShapeIsValid(
-            request.RoleName,
+            role.RoleName,
             request.Description,
             request.RsvpCode,
             request.IconFile,
@@ -344,18 +350,14 @@ public sealed class RoleService : IRoleService
             }
         }
 
-        // The role being edited is excluded from the uniqueness read, so that saving a role without
-        // renaming it does not collide with itself.
-        bool nameTaken = await _roles
-            .RoleNameExistsAsync(portalId, request.RoleName, roleId, cancellationToken)
-            .ConfigureAwait(false);
-        if (nameTaken)
-        {
-            return Result<RoleDetailDto>.Failure(
-                RoleNameDuplicateCode,
-                $"Portal {portalId} already has a different role named '{request.RoleName}'.");
-        }
-
+        // MIGRATION: no portal-scoped uniqueness read on the update path, and its absence is
+        // deliberate rather than an omission. The legacy screen applied its duplicate-name guard only
+        // when inserting: at Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks
+        // the name up first and refuses on a hit, while the edit branch calls the update member with
+        // no such check. That asymmetry is coherent precisely because the name could not change on an
+        // edit, and the same now holds here - the update contract carries no name and the projection
+        // passes the stored one through - so a name that cannot change cannot begin to collide. The
+        // creation path keeps the rule and remains the sole reporter of a duplicate name.
         RoleMappings.ApplyUpdate(role, request);
 
         // MIGRATION: the legacy update member wrote the role and nothing else. Turning the

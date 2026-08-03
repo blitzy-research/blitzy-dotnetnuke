@@ -1,109 +1,188 @@
 <div class="data-table__container">
-  <table class="data-table">
+  <!--
+    `aria-rowcount` reports the rows of the CURRENT PAGE plus the heading row. The pager
+    is a sibling and reports the whole match set; this table must not claim knowledge of
+    rows it was never handed.
+  -->
+  <table class="data-table" [attr.aria-rowcount]="ariaRowCount()">
     <!--
-      Always present, so the table has an accessible name however it is reached. The
-      visually-hidden treatment keeps it out of the painted output without removing it
-      from the accessibility tree - which `display: none` or `visibility: hidden` would
-      do.
+      The accessible name arrives by PROJECTION, not by an input: the public surface is
+      closed at five inputs, and every further affordance is projected. A feature writes
+      `<span dataTableCaption>Portals</span>` and gets a real `caption` element.
+
+      Kept out of the painted output but present in the accessibility tree, so a reader
+      who reaches the table directly still learns what it lists. `display: none` and
+      `visibility: hidden` would remove it from the tree as well as the page.
     -->
-    <caption
-      class="data-table__caption"
-      [class.data-table__caption--hidden]="!captionVisible"
-    >
-      {{ caption }}
+    <caption class="data-table__caption">
+      <ng-content select="[dataTableCaption]" />
     </caption>
 
+    <!--
+      Track sizes live here and nowhere else, so no cell rule carries a size. This is also
+      what makes the row-level render virtualisation safe: with a fixed table layout the
+      columns are sized from this group rather than from cell content, so rows whose
+      layout is skipped while off screen cannot shift the columns as they scroll in.
+    -->
+    <colgroup>
+      @for (track of columnWidths(); track track.key) {
+        <col [style.inline-size]="track.width" />
+      }
+    </colgroup>
+
     <thead>
-      <tr>
-        @for (column of columns; track trackByColumnKey($index, column)) {
+      <tr class="data-table__header-row" [attr.aria-rowindex]="headerRowIndex">
+        @for (cell of headerCells(); track cell.key) {
           <!--
-            `scope="col"` is what lets assistive technology name a cell by its column
-            when a person reads across a row. `aria-sort` is applied only to a column
-            that offers sorting, and reports `none` for the sortable columns that are
-            not currently sorted.
+            `scope="col"` is what lets assistive technology name a cell by its column when
+            a reader moves across a row. `aria-sort` is omitted entirely for a column that
+            offers no sorting, because `none` would claim it is sortable.
           -->
           <th
             scope="col"
             class="data-table__header"
-            [class]="alignClassFor(column)"
-            [attr.aria-sort]="ariaSortFor(column)"
+            [attr.data-align]="cell.align"
+            [attr.aria-sort]="cell.ariaSort"
           >
-            @if (column.sortable) {
+            @if (cell.sortable) {
               <!--
-                A real button, with an explicit type so it cannot submit a surrounding
-                form. Native activation covers both Enter and Space and needs no key
-                handling of its own.
+                A real button with an explicit type, so it cannot submit a surrounding
+                form and so Enter and Space both activate it with no key handling here.
+                Disabled while a request is in flight, which matches the component's own
+                refusal to queue a second ordering.
               -->
               <button
                 class="data-table__sort"
                 type="button"
-                [disabled]="loading"
-                (click)="requestSort(column)"
+                [disabled]="isLoading()"
+                (click)="activateSort(cell)"
               >
-                <span class="data-table__sort-label">{{ column.header }}</span>
+                <span [class.data-table__label--hidden]="cell.labelVisible === false">{{
+                  cell.label
+                }}</span>
+
                 <!--
                   Hidden from assistive technology: `aria-sort` on the heading already
-                  conveys the direction, and announcing the glyph as well would state it
-                  twice.
+                  conveys the direction, and announcing the glyph too would state it twice.
                 -->
-                @if (isSorted(column)) {
-                  <span class="data-table__sort-indicator" aria-hidden="true">{{
-                    sortIndicatorFor(column)
-                  }}</span>
+                @if (cell.sorted) {
+                  <span class="data-table__sort-indicator" aria-hidden="true">
+                    @if (cell.ariaSort === 'ascending') {
+                      &#x25B2;
+                    } @else {
+                      &#x25BC;
+                    }
+                  </span>
                 }
               </button>
             } @else {
-              {{ column.header }}
+              <span [class.data-table__label--hidden]="cell.labelVisible === false">{{
+                cell.label
+              }}</span>
             }
           </th>
         }
       </tr>
     </thead>
 
-    <tbody>
-      @if (loading) {
+    <tbody class="data-table__body">
+      @if (isLoading()) {
         <!--
-          One spanning cell rather than a skeleton of empty cells, so assistive
-          technology reads a single status rather than a row of blanks. The live region
-          announces the transition without moving focus.
+          One spanning cell rather than a skeleton of empty cells, so a screen reader reads
+          a single status instead of a row of blanks. The indicator is rendered with NO
+          bindings so it uses its own default label and lands in its announced mode; it
+          carries its own status role, so nothing is added here.
         -->
-        <tr>
-          <td class="data-table__message" [attr.colspan]="columnCount" aria-live="polite">
-            {{ labels.loading }}
+        <tr [attr.aria-rowindex]="messageRowIndex">
+          <td class="data-table__message" [attr.colspan]="columnSpan()">
+            <app-loading-spinner />
           </td>
         </tr>
-      } @else if (isEmpty) {
-        <tr>
-          <td class="data-table__message" [attr.colspan]="columnCount">
-            {{ emptyMessage }}
+      } @else if (isEmpty()) {
+        <!--
+          Also rendered with NO bindings, relying on its own default wording: this
+          component has no `emptyMessage` input, because the surface is closed at five. A
+          feature that needs particular wording renders the empty state itself.
+        -->
+        <tr [attr.aria-rowindex]="messageRowIndex">
+          <td class="data-table__message" [attr.colspan]="columnSpan()">
+            <app-empty-state />
           </td>
         </tr>
       } @else {
-        @for (row of rows; track $index) {
-          <tr class="data-table__row">
-            @for (column of columns; track trackByColumnKey($index, column)) {
-              <td class="data-table__cell" [class]="alignClassFor(column)">
-                @if (selectable && $first) {
+        <!--
+          Tracked by the ROW OBJECT, never by an identifier member and never by index. The
+          legacy identity seeds make both zero and minus one legitimate keys, so any
+          truthiness or sign test on an identifier would mis-key the first role, page or
+          module row with no error at all.
+
+          The row is a tab stop so selection is reachable from the keyboard, and the
+          selected state is published through `aria-current` rather than by colour alone.
+          The trade-off is accepted deliberately: the alternative is a mouse-only row,
+          which is not an option.
+        -->
+        @for (bodyRow of bodyRows(); track bodyRow.row) {
+          <tr
+            class="data-table__row"
+            tabindex="0"
+            [attr.aria-rowindex]="bodyRow.ariaRowIndex"
+            [attr.aria-current]="bodyRow.row === selectedRow() ? 'true' : null"
+            [class.data-table__row--selected]="bodyRow.row === selectedRow()"
+            (click)="activateRow(bodyRow.row)"
+            (keydown)="activateRowFromKeyboard(bodyRow.row, $event)"
+          >
+            @for (cell of bodyRow.cells; track cell.key) {
+              @switch (cell.kind) {
+                @case ('actions') {
                   <!--
-                    The row's primary action lives in the first cell as a real button.
-                    A clickable `tr` was rejected: it cannot be reached from the keyboard
-                    without putting a tab stop on an element assistive technology does not
-                    announce as actionable, or without overriding the table's own roles
-                    and losing the row-and-column relationships the native element
-                    provides. The button's accessible name is the cell's own text, which
-                    is the record's identifying value.
+                    Row commands are interactive elements INSIDE an activatable row, so
+                    both event families are stopped here. Without that, pressing Edit or
+                    Delete would bubble to the row and select it as well - and pairing a
+                    delete with a selection is the worst of the possibilities.
                   -->
-                  <button
-                    class="data-table__row-action"
-                    type="button"
-                    (click)="selectRow(row)"
+                  <td
+                    class="data-table__cell data-table__cell--actions"
+                    [attr.data-align]="cell.align"
+                    (click)="blockRowActivation($event)"
+                    (keydown)="blockRowActivation($event)"
                   >
-                    {{ cellText(row, column) }}
-                  </button>
-                } @else {
-                  {{ cellText(row, column) }}
+                    <!--
+                      The commands are laid out by this wrapper, not by the cell. A
+                      `td` that is made a flex container stops being a table cell and
+                      drops out of the row's layout altogether, so the flex context has
+                      to live one level in.
+                    -->
+                    <div class="data-table__actions">
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </div>
+                  </td>
                 }
-              </td>
+                @case ('template') {
+                  <td class="data-table__cell" [attr.data-align]="cell.align">
+                    @if (cell.template !== null && cell.context !== null) {
+                      <ng-container
+                        [ngTemplateOutlet]="cell.template"
+                        [ngTemplateOutletContext]="cell.context"
+                      />
+                    }
+                  </td>
+                }
+                @default {
+                  <!--
+                    Already-formatted text, produced once inside the row projection. No
+                    function is called from here: a template-invoked formatter would re-run
+                    on every change-detection pass and defeat the push strategy.
+                  -->
+                  <td class="data-table__cell" [attr.data-align]="cell.align">
+                    {{ cell.text }}
+                  </td>
+                }
+              }
             }
           </tr>
         }

@@ -680,10 +680,17 @@ public static class ApiResults
     };
 
     /// <summary>The reason tokens that mean the request conflicts with the current state.</summary>
+    /// <remarks>
+    /// <c>in_use</c> belongs here rather than with the request-correction default. A removal refused
+    /// because the thing is still referenced - a role group that still classifies a role - is a
+    /// perfectly well formed request that the STATE of the resource declines, which is the definition of
+    /// a conflict, and releasing the references makes the identical request succeed. Classifying it as a
+    /// bad request would tell the caller to edit a request that has nothing wrong with it.
+    /// </remarks>
     private static readonly string[] ConflictTokens =
     {
         "duplicate", "already_exists", "already_registered", "already_required", "unchanged",
-        "not_different", "conflict",
+        "not_different", "conflict", "in_use",
     };
 
     /// <summary>The reason tokens that mean the caller is not permitted to do this.</summary>

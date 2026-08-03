@@ -118,8 +118,9 @@ public class ModuleTests
         // PRIMARY KEY CLUSTERED (ModuleID, SettingName). So this entity deliberately derives from
         // nothing and exposes no Identity, no Id and no ModuleSettingId: inventing one would assert a
         // column the table does not have, and it would compete with the explicit composite key that
-        // the Infrastructure mapping declares. Contrast TabModuleSetting below, which does carry an
-        // identity member - the two settings entities are shaped differently on purpose.
+        // the Infrastructure mapping declares. TabModuleSetting below is shaped identically and for
+        // the same reason - both settings tables are keyed by (owner, name) and neither carries a
+        // surrogate column - so the two are asserted the same way rather than differently.
         typeof(ModuleSetting).BaseType.Should().Be(typeof(object));
         typeof(ModuleSetting).GetProperty("Identity").Should().BeNull();
         typeof(ModuleSetting).GetProperty("Id").Should().BeNull();
@@ -202,7 +203,8 @@ public class ModuleTests
     }
 
     /// <summary>
-    /// A placement setting is identified by its owning placement together with its name.
+    /// A placement setting is identified by its owning placement together with its name, and carries
+    /// that pair as two plain columns rather than as an identity member.
     /// </summary>
     [Fact]
     public void PlacementSettingIdentity_IsTheCompositeKey()
@@ -214,13 +216,29 @@ public class ModuleTests
             SettingValue = "True",
         };
 
-        setting.Identity.Should().Be((1, "hideAdminBorder"));
-        setting.Should().NotBe(new TabModuleSetting
-        {
-            TabModuleId = 2,
-            SettingName = "hideAdminBorder",
-            SettingValue = "True",
-        });
+        // MIGRATION: dbo.TabModuleSettings has no surrogate key either. It is created at
+        // 03.00.01.SqlDataProvider lines 722-727 with exactly three NOT NULL columns and keyed at
+        // lines 730-735 as PRIMARY KEY CLUSTERED (TabModuleID, SettingName); 03.00.09.SqlDataProvider
+        // lines 331-333 drop and re-add that key under an object-qualifier-aware name without
+        // changing its shape. So, exactly as for ModuleSetting above, the entity derives from nothing
+        // and exposes no Identity, no Id and no TabModuleSettingId - the row's identity is the pair of
+        // key columns, and the key itself is declared by the Infrastructure mapping.
+        typeof(TabModuleSetting).BaseType.Should().Be(typeof(object));
+        typeof(TabModuleSetting).GetProperty("Identity").Should().BeNull();
+        typeof(TabModuleSetting).GetProperty("Id").Should().BeNull();
+        typeof(TabModuleSetting).GetProperty("TabModuleSettingId").Should().BeNull();
+        typeof(TabModuleSetting).GetProperties().Select(property => property.Name).Should()
+            .BeEquivalentTo("TabModuleId", "SettingName", "SettingValue", "TabModule");
+
+        // The key is asserted directly against the two columns it is built from. One is a placement
+        // and the other a name, so a setting keeps its meaning only while both travel together.
+        CompositeKeyOf(setting).Should().Be((1, "hideAdminBorder"));
+        CompositeKeyOf(setting).Should().NotBe(CompositeKeyOf(NewPlacementSetting(2, "hideAdminBorder")));
+        CompositeKeyOf(setting).Should().NotBe(CompositeKeyOf(NewPlacementSetting(1, "hideadminborder")));
+
+        // Two instances carrying the same key are still two distinct objects. With no identity-based
+        // equality on this type, reconciling them is the change tracker's work, not the entity's.
+        setting.Should().NotBeSameAs(NewPlacementSetting(1, "hideAdminBorder"));
     }
 
     /// <summary>
@@ -361,4 +379,25 @@ public class ModuleTests
     /// <returns>The <c>(ModuleID, SettingName)</c> pair the clustered key is built from.</returns>
     private static (int ModuleId, string SettingName) CompositeKeyOf(ModuleSetting setting) =>
         (setting.ModuleId, setting.SettingName);
+
+    /// <summary>
+    /// Builds a placement setting carrying the supplied composite key.
+    /// </summary>
+    /// <param name="tabModuleId">The owning placement.</param>
+    /// <param name="settingName">The setting name.</param>
+    /// <returns>The setting.</returns>
+    private static TabModuleSetting NewPlacementSetting(int tabModuleId, string settingName) => new()
+    {
+        TabModuleId = tabModuleId,
+        SettingName = settingName,
+        SettingValue = "irrelevant",
+    };
+
+    /// <summary>
+    /// Projects the two columns that make up a placement setting's composite primary key.
+    /// </summary>
+    /// <param name="setting">The setting to read.</param>
+    /// <returns>The <c>(TabModuleID, SettingName)</c> pair the clustered key is built from.</returns>
+    private static (int TabModuleId, string SettingName) CompositeKeyOf(TabModuleSetting setting) =>
+        (setting.TabModuleId, setting.SettingName);
 }

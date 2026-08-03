@@ -244,7 +244,7 @@ public sealed class PermissionService : IPermissionService
 
         if (tabId is int scopedTabId)
         {
-            Tab? tab = await _tabs.GetAsync(scopedTabId, cancellationToken).ConfigureAwait(false);
+            Tab? tab = await _tabs.GetByIdAsync(scopedTabId, cancellationToken).ConfigureAwait(false);
             if (tab is null || !BelongsToPortal(tab.PortalId, portalId))
             {
                 return Result<IReadOnlyList<string>>.Failure(
@@ -380,7 +380,7 @@ public sealed class PermissionService : IPermissionService
                 FormattableString.Invariant($"Permission key {(int)permissionKey} is not defined."));
         }
 
-        Tab? tab = await _tabs.GetAsync(tabId, cancellationToken).ConfigureAwait(false);
+        Tab? tab = await _tabs.GetByIdAsync(tabId, cancellationToken).ConfigureAwait(false);
         if (tab is null || !BelongsToPortal(tab.PortalId, portalId))
         {
             return Result<bool>.Failure(

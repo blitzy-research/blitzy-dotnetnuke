@@ -554,7 +554,7 @@ public class UserServiceTests
 
         outcome.Value.Items.Should().HaveCount(2);
         harness.Profiles.Verify(
-            p => p.ListValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            p => p.GetProfileValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -2332,7 +2332,7 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(ProfileRequiredPropertyMissingCode);
         outcome.Reason!.Message.Should().Be("Profile property \"City\" is required.");
         harness.AddedValues.Should().BeEmpty();
-        harness.RemovedValues.Should().BeEmpty();
+        harness.UpdatedValues.Should().BeEmpty();
     }
 
     /// <summary>
@@ -2360,8 +2360,14 @@ public class UserServiceTests
         harness.ValuesByUserId[UserId]
             .Single(value => value.PropertyDefinitionId == StreetPropertyId)
             .PropertyValue.Should().Be("Fleet Street");
-        harness.RemovedValues.Should().ContainSingle()
-            .Which.PropertyDefinitionId.Should().Be(CityPropertyId);
+        // The omitted City answer is BLANKED rather than deleted - the legacy write path had no
+        // delete for a value row, and clearing was an upsert carrying an empty value. Both stored
+        // rows are therefore staged as updates, and the one that was dropped from the submission
+        // reads back empty.
+        harness.UpdatedValues.Select(value => value.PropertyDefinitionId)
+            .Should().BeEquivalentTo(new[] { StreetPropertyId, CityPropertyId });
+        harness.UpdatedValues.Single(value => value.PropertyDefinitionId == CityPropertyId)
+            .PropertyValue.Should().BeEmpty();
         harness.AddedValues.Should().ContainSingle()
             .Which.PropertyDefinitionId.Should().Be(TelephonePropertyId);
         harness.AddedValues[0].UserId.Should().Be(UserId);
@@ -2595,7 +2601,7 @@ public class UserServiceTests
     public async Task CreateProfilePropertyDefinition_RefusesADuplicateName()
     {
         Harness harness = Harness.Ready();
-        harness.DefinitionNameTaken = true;
+        harness.DefinitionNameOwnerId = StreetPropertyId;
 
         Result<ProfilePropertyDefinitionDto> outcome = await harness.Service
             .CreateProfilePropertyDefinitionAsync(PortalId, DefinitionRequest("Street"), CancellationToken.None);
@@ -2604,9 +2610,13 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(ProfileDefinitionDuplicateNameCode);
         outcome.Reason!.Message.Should()
             .Be($"Portal {PortalId} already declares a profile property named \"Street\".");
+
+        // The check reads the declaration rather than asking for a boolean, matching the legacy
+        // provider member, and on a create there is nothing to exclude so any match is a clash.
         harness.Profiles.Verify(
-            p => p.DefinitionNameExistsAsync(PortalId, "Street", null, It.IsAny<CancellationToken>()),
+            p => p.GetDefinitionByNameAsync(PortalId, "Street", It.IsAny<CancellationToken>()),
             Times.Once);
+        harness.AddedDefinitions.Should().BeEmpty();
     }
 
     /// <summary>
@@ -2707,6 +2717,11 @@ public class UserServiceTests
         Harness harness = Harness.Ready();
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
 
+        // The name IS held - by the very declaration being edited. The exclusion is therefore a real
+        // identifier comparison rather than a flag: the lookup answers with the declaration, and the
+        // service permits the write because the holder is the row it is editing.
+        harness.DefinitionNameOwnerId = StreetPropertyId;
+
         Result<ProfilePropertyDefinitionDto> permitted = await harness.Service
             .UpdateProfilePropertyDefinitionAsync(
                 PortalId,
@@ -2716,14 +2731,14 @@ public class UserServiceTests
 
         permitted.IsSuccess.Should().BeTrue();
         harness.Profiles.Verify(
-            p => p.DefinitionNameExistsAsync(
+            p => p.GetDefinitionByNameAsync(
                 PortalId,
                 "Street",
-                StreetPropertyId,
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
-        harness.DefinitionNameTaken = true;
+        // Now the name is held by a DIFFERENT declaration, which is a genuine clash.
+        harness.DefinitionNameOwnerId = CityPropertyId;
 
         Result<ProfilePropertyDefinitionDto> refused = await harness.Service
             .UpdateProfilePropertyDefinitionAsync(
@@ -2815,7 +2830,7 @@ public class UserServiceTests
         Result foreign = await harness.Service
             .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
         foreign.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
-        harness.RemovedDefinitions.Should().BeEmpty();
+        harness.DeletedDefinitionIds.Should().BeEmpty();
     }
 
     /// <summary>
@@ -2836,8 +2851,14 @@ public class UserServiceTests
             .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        harness.RemovedValues.Should().HaveCount(2);
-        harness.RemovedDefinitions.Should().ContainSingle().Which.Should().BeSameAs(definition);
+
+        // The declaration is withdrawn by identifier, matching the legacy procedure, and its two
+        // recorded answers travel with it: FK_UserProfile_ProfilePropertyDefinition is declared
+        // ON DELETE CASCADE and the repository loads the answers before staging the removal, so the
+        // service issues no per-answer deletion of its own and none is asserted here.
+        harness.DeletedDefinitionIds.Should().Equal(new[] { StreetPropertyId });
+        definition.ProfileValues.Should().HaveCount(2);
+        harness.UpdatedValues.Should().BeEmpty();
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
         harness.InvalidatedProfileDefinitionsPortalIds.Should().Equal(new[] { PortalId });
     }
@@ -3066,9 +3087,9 @@ public class UserServiceTests
             RemovedMemberships = [];
             RemovedAssignments = [];
             AddedValues = [];
-            RemovedValues = [];
+            UpdatedValues = [];
             AddedDefinitions = [];
-            RemovedDefinitions = [];
+            DeletedDefinitionIds = [];
             AddedSettings = [];
             HashedSecrets = [];
             CreatedCredentials = [];
@@ -3164,7 +3185,7 @@ public class UserServiceTests
 
         public ProfilePropertyDefinition? LookupDefinition { get; set; }
 
-        public bool DefinitionNameTaken { get; set; }
+        public int? DefinitionNameOwnerId { get; set; }
 
         public Dictionary<int, List<UserProfileValue>> ValuesByUserId { get; }
 
@@ -3216,11 +3237,11 @@ public class UserServiceTests
 
         public List<UserProfileValue> AddedValues { get; }
 
-        public List<UserProfileValue> RemovedValues { get; }
+        public List<UserProfileValue> UpdatedValues { get; }
 
         public List<ProfilePropertyDefinition> AddedDefinitions { get; }
 
-        public List<ProfilePropertyDefinition> RemovedDefinitions { get; }
+        public List<int> DeletedDefinitionIds { get; }
 
         public List<ModuleSetting> AddedSettings { get; }
 
@@ -3434,40 +3455,83 @@ public class UserServiceTests
                     return Task.FromResult(true);
                 });
 
+            // The declaration catalogue is unpaged and excludes withdrawn declarations, which the
+            // repository contract states rather than exposing as a parameter, so the double takes no
+            // includeDeleted argument.
             harness.Profiles
-                .Setup(p => p.ListDefinitionsAsync(
+                .Setup(p => p.GetDefinitionsByPortalIdAsync(
                     It.IsAny<int>(),
-                    It.IsAny<bool>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Definitions.ToList());
             harness.Profiles
-                .Setup(p => p.GetDefinitionAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetDefinitionByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.LookupDefinition);
+
+            // The name lookup answers with the DECLARATION, as the legacy provider member did, so a
+            // caller editing a declaration can tell a real clash from the row it is already editing.
+            // DefinitionNameOwnerId names which declaration currently holds the submitted name, and
+            // null leaves the name free.
             harness.Profiles
-                .Setup(p => p.DefinitionNameExistsAsync(
+                .Setup(p => p.GetDefinitionByNameAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
-                    It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.DefinitionNameTaken);
+                .ReturnsAsync((int _, string name, CancellationToken _) =>
+                    harness.DefinitionNameOwnerId is int owner ? Definition(owner, name) : null);
+
             harness.Profiles
-                .Setup(p => p.ListValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Setup(p => p.GetProfileValuesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int userId, CancellationToken _) =>
                     harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
                         ? values.ToList()
                         : []);
             harness.Profiles
-                .Setup(p => p.AddValue(It.IsAny<UserProfileValue>()))
-                .Callback<UserProfileValue>(harness.AddedValues.Add);
+                .Setup(p => p.AddProfileValueAsync(
+                    It.IsAny<UserProfileValue>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((UserProfileValue value, CancellationToken _) =>
+                {
+                    harness.AddedValues.Add(value);
+                    return Task.CompletedTask;
+                });
+
+            // An answer the submitted set omits is BLANKED through the update member rather than
+            // deleted, because no legacy member ever removed a UserProfile row.
             harness.Profiles
-                .Setup(p => p.RemoveValue(It.IsAny<UserProfileValue>()))
-                .Callback<UserProfileValue>(harness.RemovedValues.Add);
+                .Setup(p => p.UpdateProfileValueAsync(
+                    It.IsAny<UserProfileValue>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((UserProfileValue value, CancellationToken _) =>
+                {
+                    harness.UpdatedValues.Add(value);
+                    return Task.CompletedTask;
+                });
+
             harness.Profiles
-                .Setup(p => p.AddDefinition(It.IsAny<ProfilePropertyDefinition>()))
-                .Callback<ProfilePropertyDefinition>(harness.AddedDefinitions.Add);
+                .Setup(p => p.AddDefinitionAsync(
+                    It.IsAny<ProfilePropertyDefinition>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((ProfilePropertyDefinition definition, CancellationToken _) =>
+                {
+                    harness.AddedDefinitions.Add(definition);
+                    return Task.CompletedTask;
+                });
             harness.Profiles
-                .Setup(p => p.RemoveDefinition(It.IsAny<ProfilePropertyDefinition>()))
-                .Callback<ProfilePropertyDefinition>(harness.RemovedDefinitions.Add);
+                .Setup(p => p.UpdateDefinitionAsync(
+                    It.IsAny<ProfilePropertyDefinition>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            // Removal is addressed by identifier, matching the legacy procedure, and the answers
+            // recorded against the declaration cascade inside the repository rather than being
+            // removed one at a time by the service.
+            harness.Profiles
+                .Setup(p => p.DeleteDefinitionAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Returns((int propertyDefinitionId, CancellationToken _) =>
+                {
+                    harness.DeletedDefinitionIds.Add(propertyDefinitionId);
+                    return Task.CompletedTask;
+                });
 
             harness.Roles
                 .Setup(r => r.ListAutoAssignedAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))

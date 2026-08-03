@@ -251,23 +251,36 @@ public static class ModuleMappings
     /// Builds the page placement that a creation request asks for.
     /// </summary>
     /// <param name="request">The submitted creation request.</param>
-    /// <param name="defaultCacheTime">The definition's default cache period, used when the request names none.</param>
     /// <returns>An unsaved placement, whose module reference the write path attaches.</returns>
     /// <remarks>
-    /// A caching period the caller did not supply falls back to the definition's own default rather
-    /// than to zero, because zero means "do not cache" and would silently change a module's behaviour.
-    /// A negative period is clamped away for the same reason.
+    /// The pane is supplied here rather than taken from the request, because the creation contract
+    /// deliberately does not accept one: the pane is part of the excluded Web Forms pane-layout and
+    /// skinning surface, while the column behind it is nevertheless not nullable. Every created
+    /// placement therefore lands in the conventional content pane, which is the pane every legacy
+    /// skin declares. A negative caching period is clamped to zero; zero itself is a real value
+    /// meaning "do not cache" and is passed through untouched.
     /// </remarks>
-    public static TabModule ToNewPlacement(CreateModuleRequest request, int defaultCacheTime)
+    // MIGRATION: THE PANE IS NO LONGER CALLER-SUPPLIED, AND THE CACHE PERIOD NO LONGER FALLS BACK TO
+    //   THE DEFINITION'S DEFAULT. Both follow from the creation contract's measured member set. The
+    //   legacy pane value came from the skin's pane picker rather than from a field a user typed, so
+    //   it belongs to the excluded skinning surface; the column is nevertheless NOT NULL, which is
+    //   why a value is supplied here rather than omitted. The cache period is now a non-nullable
+    //   integer because the legacy screen stored LITERALLY ZERO for a blank box rather than a
+    //   sentinel, so there is no "unspecified" state to fall back FROM - substituting the
+    //   definition's default for a submitted zero would silently enable caching on a module the
+    //   caller asked not to cache. A definition whose default cache period is -1 means "caching not
+    //   applicable"; that is metadata a client reads from the definition contract, never a
+    //   server-side substitution applied here.
+    public static TabModule ToNewPlacement(CreateModuleRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         return new TabModule
         {
             TabId = request.TabId,
-            PaneName = string.IsNullOrWhiteSpace(request.PaneName) ? DefaultPaneName : request.PaneName,
+            PaneName = DefaultPaneName,
             ModuleOrder = request.ModuleOrder,
-            CacheTime = Math.Max(request.CacheTime ?? defaultCacheTime, 0),
+            CacheTime = Math.Max(request.CacheTime, 0),
             IconFile = request.IconFile,
             Visibility = request.Visibility,
             DisplayTitle = request.DisplayTitle,

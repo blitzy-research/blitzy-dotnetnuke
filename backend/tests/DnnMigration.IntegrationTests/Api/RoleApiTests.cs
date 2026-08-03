@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Domain.Enums;
@@ -409,7 +410,10 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("Role Name Is Required.");
+
+        // The wording is valRoleName's own, from Website/admin/Security/editroles.ascx L31, with only
+        // the leading markup tag removed. Do not reword it: the string is the parity assertion.
+        body.Should().Contain("You Must Enter a Valid Name");
     }
 
     /// <summary>A negative service fee is rejected by the request validator.</summary>
@@ -451,7 +455,12 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("Billing Period Must Be Greater Than Zero");
+
+        // valBillingPeriod2 (editroles.ascx L113-L114) declares Operator="GreaterThan" against 0 while
+        // its ErrorMessage says "or Equal to". The operator is the behaviour and a zero is refused; the
+        // wording is carried across unchanged because a legacy defect is annotated, not repaired. Do
+        // not "fix" this string to agree with the rule.
+        body.Should().Contain("Billing Period Must Be Greater Than or Equal to Zero");
     }
 
     /// <summary>An update answers <c>200 OK</c> and the new state survives a read.</summary>
@@ -462,9 +471,11 @@ public sealed class RoleApiTests
         using HttpClient client = _fixture.CreateHostClient();
         RoleDetailDto created = await CreateRoleAsync(client);
 
+        // MIGRATION: no name is submitted, because the update contract declares none - the legacy edit
+        // screen made the name read-only and the terminal UpdateRole procedure omits the column from its
+        // assignment list. The re-read below asserts the stored name survives untouched.
         var request = new UpdateRoleRequest
         {
-            RoleName = created.RoleName,
             Description = "Amended by the integration suite.",
             IsPublic = true,
             AutoAssignment = false,
@@ -537,7 +548,6 @@ public sealed class RoleApiTests
 
         var request = new UpdateRoleRequest
         {
-            RoleName = created.RoleName,
             Description = created.Description,
             IsPublic = created.IsPublic,
             AutoAssignment = created.AutoAssignment,
@@ -588,26 +598,62 @@ public sealed class RoleApiTests
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             RoleRoute(_fixture.Seed.PortalId, UnknownRoleId),
-            new UpdateRoleRequest { RoleName = "Absent" + Suffix() },
+            new UpdateRoleRequest { Description = "Absent" + Suffix() },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>Renaming a role onto another role's name in the same tenant answers <c>409 Conflict</c>.</summary>
+    /// <summary>
+    /// The update route cannot rename a role: a body that carries a name has that name ignored, the
+    /// stored name survives, and no name clash can therefore be reported.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the end-to-end proof of a deliberate contract decision, and it is asserted from a RAW
+    /// JSON body rather than a typed object because the point is precisely that a name on the wire has
+    /// nowhere to land: <c>UpdateRoleRequest</c> declares no such member, so the serialiser discards it.
+    /// A typed request could not express the attempt at all.
+    /// </para>
+    /// <para>
+    /// The name submitted below is another role's name in the same tenant - the case that would once
+    /// have answered 409 Conflict. It now answers 200 OK with the original name intact, which is the
+    /// legacy behaviour: the edit screen made the name read-only, the terminal <c>UpdateRole</c>
+    /// procedure omits the column from its assignment list, and the legacy edit branch performed no
+    /// uniqueness check at all.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task UpdateRole_RenamingOntoAnExistingName_ReturnsConflict()
+    public async Task UpdateRole_CannotRenameAndIgnoresASubmittedName()
     {
         using HttpClient client = _fixture.CreateHostClient();
         RoleDetailDto created = await CreateRoleAsync(client);
 
-        using HttpResponseMessage response = await client.PutAsJsonAsync(
-            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
-            new UpdateRoleRequest { RoleName = IntegrationSeed.SubscribersRoleName },
-            ApiTestFixture.Json);
+        using var body = new StringContent(
+            $"{{\"roleName\":\"{IntegrationSeed.SubscribersRoleName}\","
+                + "\"description\":\"A name was submitted and must be ignored.\","
+                + "\"isPublic\":false,\"autoAssignment\":false}",
+            Encoding.UTF8,
+            "application/json");
 
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        using HttpResponseMessage response = await client.PutAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
+            body);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unrenameable name cannot clash, so no conflict is reachable here");
+
+        RoleDetailDto updated = await ReadDetailAsync(response);
+        updated.RoleName.Should().Be(created.RoleName, "the update route never writes a name");
+        updated.Description.Should().Be("A name was submitted and must be ignored.");
+
+        string storedName = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [RoleName] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        storedName.Should().Be(created.RoleName, "the stored column is untouched by an update");
     }
 
     /// <summary>
@@ -1021,8 +1067,15 @@ public sealed class RoleApiTests
     /// no longer exists.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The refusal is a <c>409 Conflict</c>, not a <c>400 Bad Request</c>. The request is well formed - it
+    /// addresses a group that exists in a portal the caller administers - and it is the STATE of that group
+    /// that declines it, which is exactly what a conflict reports. The assertion at the end of this test
+    /// proves the distinction matters: once the role is removed the identical request succeeds, so nothing
+    /// about the request needed correcting.
+    /// </remarks>
     [Fact]
-    public async Task DeleteRoleGroup_WhileItStillClassifiesARole_ReturnsBadRequest()
+    public async Task DeleteRoleGroup_WhileItStillClassifiesARole_ReturnsConflict()
     {
         using HttpClient client = _fixture.CreateHostClient();
         RoleGroupDto group = await CreateRoleGroupAsync(client);
@@ -1044,7 +1097,7 @@ public sealed class RoleApiTests
         using HttpResponseMessage refused = await client.DeleteAsync(
             RoleGroupRoute(_fixture.Seed.PortalId, group.RoleGroupId));
 
-        refused.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
 
         string body = await refused.Content.ReadAsStringAsync();
         body.Should().Contain("still classifies");

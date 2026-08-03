@@ -26,15 +26,18 @@ namespace DnnMigration.Application.Validation;
 // Tabs.TabID is IDENTITY (0, 1) so 0 is a genuine page and only a negative value is rejected. Getting
 // this backwards - rejecting TabId of 0 - would make the very first page of a portal unusable.
 //
-// MIGRATION: PaneName is required here even though it appears on no legacy validator, because
-// TabModules.PaneName is nvarchar(50) NOT NULL and the legacy screen supplied it implicitly from the
-// skin's pane picker rather than from a text field a user could blank. Its absence is now expressible,
-// so it is asserted.
+// MIGRATION: THERE IS NO PANE RULE, BECAUSE THE CREATION CONTRACT CARRIES NO PANE. The pane is part
+// of the excluded Web Forms pane-layout and skinning surface: the legacy screen took it from the
+// skin's pane picker rather than from a field a user could type into or blank. TabModules.PaneName is
+// nevertheless nvarchar(50) NOT NULL, so the projection layer supplies the conventional content pane
+// on every create. Nothing about the pane is therefore assertable here, and no rule pretends to be.
 //
-// MIGRATION: the non-negative cache-time rule is a deliberate, documented divergence. valCacheTime
-// checked integrality only, so the legacy screen accepted a negative cache lifetime; nothing honours
-// one, and ModuleDefinitions.DefaultCacheTime is int NOT NULL with a default of 0. Rejecting it at the
-// boundary is recorded as an intentional strengthening.
+// MIGRATION: the non-negative cache-time rule is a deliberate, documented divergence, and it is now
+// unconditional because the member is a non-negotiable integer rather than an optional one. The
+// legacy valCacheTime checked integrality only, so the screen accepted a negative cache lifetime;
+// nothing honours one, and ModuleDefinitions.DefaultCacheTime is int NOT NULL with a default of 0.
+// Zero is NOT rejected: a blank legacy field stored literally zero, meaning "do not cache", so zero
+// is a legitimate submitted value and only negatives are refused.
 //
 // MIGRATION: the start-before-end rule is likewise new. The legacy screen validated each date's format
 // independently and never compared them, so an end date before a start date was storable and produced a
@@ -53,14 +56,12 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
 {
     private const string ModuleDefinitionRequiredMessage = "A module definition must be selected.";
     private const string TabRequiredMessage = "A page must be selected.";
-    private const string PaneRequiredMessage = "A pane must be selected.";
     private const string VisibilityInvalidMessage = "Visibility must be Maximized, Minimized or None.";
     private const string CacheTimeNegativeMessage = "Invalid Cache Time";
     private const string EndBeforeStartMessage = "The end date must not precede the start date.";
 
     // Measured terminal column widths.
     private const int ModuleTitleMaximumLength = 256;
-    private const int PaneNameMaximumLength = 50;
     private const int IconFileMaximumLength = 100;
 
     /// <summary>
@@ -82,10 +83,6 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
         RuleFor(request => request.ModuleTitle)
             .MaximumLength(ModuleTitleMaximumLength);
 
-        RuleFor(request => request.PaneName)
-            .NotEmpty().WithMessage(PaneRequiredMessage)
-            .MaximumLength(PaneNameMaximumLength);
-
         RuleFor(request => request.IconFile)
             .MaximumLength(IconFileMaximumLength);
 
@@ -93,8 +90,7 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
             .IsInEnum().WithMessage(VisibilityInvalidMessage);
 
         RuleFor(request => request.CacheTime)
-            .GreaterThanOrEqualTo(0).WithMessage(CacheTimeNegativeMessage)
-            .When(request => request.CacheTime.HasValue);
+            .GreaterThanOrEqualTo(0).WithMessage(CacheTimeNegativeMessage);
 
         RuleFor(request => request.EndDate)
             .GreaterThanOrEqualTo(request => request.StartDate!.Value)

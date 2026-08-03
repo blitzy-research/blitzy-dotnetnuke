@@ -830,14 +830,14 @@ public class MappingTests
 
         RoleMappings.ApplyUpdate(
             updated,
-            new UpdateRoleRequest { RoleName = "Odd", ServiceFee = -5m, TrialFee = -1m });
+            new UpdateRoleRequest { ServiceFee = -5m, TrialFee = -1m });
 
         updated.ServiceFee.Should().Be(0m);
         updated.TrialFee.Should().Be(0m);
     }
 
     /// <summary>
-    /// Applying a role update overwrites every term and leaves identity and ownership alone.
+    /// Applying a role update overwrites every term and leaves identity, ownership and the name alone.
     /// </summary>
     [Fact]
     public void RoleApplyUpdate_OverwritesEveryTermAndLeavesIdentityAlone()
@@ -846,7 +846,6 @@ public class MappingTests
 
         UpdateRoleRequest request = new()
         {
-            RoleName = "Platinum Members",
             Description = "The dearest tier",
             RoleGroupId = null,
             IsPublic = false,
@@ -863,7 +862,10 @@ public class MappingTests
 
         RoleMappings.ApplyUpdate(role, request);
 
-        role.RoleName.Should().Be("Platinum Members");
+        // MIGRATION: the name is PRESERVED, not overwritten. The update contract declares no name
+        // because the legacy edit screen made it read-only and the terminal UpdateRole procedure omits
+        // the column from its assignment list, so the projection passes the stored value through.
+        role.RoleName.Should().Be("Gold Members", "an update cannot rename a role");
         role.Description.Should().Be("The dearest tier");
         role.RoleGroupId.Should().BeNull("clearing the group is a legitimate edit");
         role.IsPublic.Should().BeFalse();
@@ -1446,55 +1448,59 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A new placement takes the page from the request and substitutes for an omitted pane and period.
+    /// A new placement takes the page from the request and supplies the pane itself, because the
+    /// creation contract deliberately carries no pane.
     /// </summary>
     [Fact]
-    public void ModuleToNewPlacement_SubstitutesForAnOmittedPaneAndPeriod()
+    public void ModuleToNewPlacement_SuppliesThePaneAndCarriesTheSubmittedPeriod()
     {
         CreateModuleRequest request = new()
         {
             ModuleDefId = 4,
             TabId = 7,
-            PaneName = "   ",
             ModuleOrder = 6,
-            CacheTime = null,
+            CacheTime = 180,
             IconFile = "new.gif",
             Visibility = ModuleVisibility.None,
             DisplayTitle = false,
         };
 
-        TabModule placement = ModuleMappings.ToNewPlacement(request, defaultCacheTime: 180);
+        TabModule placement = ModuleMappings.ToNewPlacement(request);
 
         placement.TabId.Should().Be(7);
         placement.PaneName.Should().Be(
             DefaultPaneName,
-            "a skin always has a content pane, so a blank pane falls back to it rather than placing the "
-            + "module nowhere");
+            "the pane belongs to the excluded skinning surface, so the create path always places the "
+            + "module in the content pane rather than letting the caller choose");
         placement.ModuleOrder.Should().Be(6);
-        placement.CacheTime.Should().Be(
-            180,
-            "the create path falls back to the definition's own default period");
+        placement.CacheTime.Should().Be(180, "a submitted period is carried through unchanged");
         placement.IconFile.Should().Be("new.gif");
         placement.Visibility.Should().Be(ModuleVisibility.None);
         placement.DisplayTitle.Should().BeFalse();
     }
 
     /// <summary>
-    /// A new placement keeps a supplied pane and period and floors a negative period.
+    /// A new placement preserves a zero caching period as "do not cache" and floors a negative one.
     /// </summary>
     [Fact]
-    public void ModuleToNewPlacement_KeepsASuppliedPaneAndFloorsANegativePeriod()
+    public void ModuleToNewPlacement_PreservesZeroAndFloorsANegativePeriod()
     {
-        CreateModuleRequest supplied = new() { TabId = 7, PaneName = "RightPane", CacheTime = 45 };
+        CreateModuleRequest omitted = new() { TabId = 7 };
 
-        TabModule placement = ModuleMappings.ToNewPlacement(supplied, defaultCacheTime: 180);
+        TabModule placement = ModuleMappings.ToNewPlacement(omitted);
 
-        placement.PaneName.Should().Be("RightPane");
-        placement.CacheTime.Should().Be(45);
+        placement.CacheTime.Should().Be(
+            0,
+            "a blank legacy cache field stored literally zero, meaning \"do not cache\", so zero is a "
+            + "real submitted value and is never substituted for the definition's default");
+        placement.ModuleOrder.Should().Be(
+            -1,
+            "an omitted order keeps the append-at-bottom command the legacy create branched on");
+        placement.DisplayTitle.Should().BeTrue("the legacy container default is on");
 
         CreateModuleRequest negative = new() { TabId = 7, CacheTime = -30 };
 
-        ModuleMappings.ToNewPlacement(negative, defaultCacheTime: 180).CacheTime.Should().Be(0);
+        ModuleMappings.ToNewPlacement(negative).CacheTime.Should().Be(0);
     }
 
     /// <summary>
@@ -1630,7 +1636,7 @@ public class MappingTests
             () => { _ = ModuleMappings.ToSettings(module, placement, [], null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = ModuleMappings.ToDto(null!, null); });
         Assert.Throws<ArgumentNullException>(() => { _ = ModuleMappings.ToNewModule(-1, null!); });
-        Assert.Throws<ArgumentNullException>(() => { _ = ModuleMappings.ToNewPlacement(null!, 0); });
+        Assert.Throws<ArgumentNullException>(() => { _ = ModuleMappings.ToNewPlacement(null!); });
         Assert.Throws<ArgumentNullException>(
             () => ModuleMappings.ApplyUpdate(null!, placement, new UpdateModuleRequest()));
         Assert.Throws<ArgumentNullException>(

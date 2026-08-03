@@ -422,7 +422,7 @@ public sealed class ModuleService : IModuleService
                     $"Module definition {request.ModuleDefId} does not exist or is not available to portal {portalId}."));
         }
 
-        Tab? tab = await _tabs.GetAsync(request.TabId, cancellationToken).ConfigureAwait(false);
+        Tab? tab = await _tabs.GetByIdAsync(request.TabId, cancellationToken).ConfigureAwait(false);
         if (tab is null || tab.PortalId != portalId)
         {
             return Result<ModuleDetailDto>.Failure(
@@ -431,7 +431,7 @@ public sealed class ModuleService : IModuleService
         }
 
         Module module = ModuleMappings.ToNewModule(portalId, request);
-        TabModule placement = ModuleMappings.ToNewPlacement(request, definition.DefaultCacheTime);
+        TabModule placement = ModuleMappings.ToNewPlacement(request);
         module.TabModules.Add(placement);
 
         var affectedTabIds = new HashSet<int> { placement.TabId };
@@ -445,7 +445,7 @@ public sealed class ModuleService : IModuleService
                     continue;
                 }
 
-                TabModule additional = ModuleMappings.ToNewPlacement(request, definition.DefaultCacheTime);
+                TabModule additional = ModuleMappings.ToNewPlacement(request);
                 additional.TabId = target.TabId;
                 module.TabModules.Add(additional);
                 affectedTabIds.Add(target.TabId);
@@ -1360,12 +1360,18 @@ public sealed class ModuleService : IModuleService
             .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
+        // The repository returns recycled pages, because the legacy read applied no predicate to
+        // IsDeleted and projected the column instead. A content page offered as a placement target must
+        // not be one sitting in the recycle bin, so that exclusion is applied here alongside the
+        // administrative one rather than asked of the contract.
         IReadOnlyList<Tab> tabs = await _tabs
-            .ListAsync(portalId, includeDeleted: false, cancellationToken)
+            .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
         int? adminTabId = portal?.AdminTabId;
-        return tabs.Where(tab => !IsAdministrative(tab, adminTabId)).ToList();
+        return tabs
+            .Where(tab => !tab.IsDeleted && !IsAdministrative(tab, adminTabId))
+            .ToList();
     }
 
     /// <summary>
