@@ -43,6 +43,9 @@ function loginResponse(accessToken: string, refreshToken: string): ApiResponse<L
       refreshToken,
       mustChangePassword: false,
       passwordExpiring: false,
+      // All three advisory flags are always present on the wire: the API serialises with
+      // its ignore condition set to never, so a `false` is transmitted rather than omitted.
+      mustUpdateProfile: false,
       user: USER,
     },
   };
@@ -140,13 +143,38 @@ describe('AuthService', () => {
       expect((error as HttpErrorResponse).status).toBe(401);
     });
 
-    it('passes the tenant through when one is stated explicitly', async () => {
+    // The tenant is deliberately NOT a member of the request contract, so there is no
+    // "passes the tenant through" case to assert here. The server marks its portal
+    // property as ignored for serialisation, which means a value placed in the body
+    // cannot be bound at all: the tenant is resolved per request from the host, and the
+    // explicit fallback travels in the query string rather than the body. Accepting it
+    // from a body would be a tenant-crossing vector. See `LoginRequest` in
+    // `../models/auth.model`.
+    it('transmits an empty verification code as an empty string rather than dropping it', async () => {
+      // Empty-string fidelity. The legacy absent-text sentinel WAS the empty string, and
+      // the legacy screen branched on `txtVerification.Text <> ""` to tell a missing code
+      // from a wrong one, so `''` and absent are equivalent in meaning but must not be
+      // silently rewritten into one another on the way out.
       const pending = firstValueFrom(
-        service.login({ username: 'admin', password: 'secret', portalId: 3 }),
+        service.login({ username: 'admin', password: 'secret', verificationCode: '' }),
       );
 
       const request = http.expectOne(AUTH_ENDPOINTS.login);
-      expect(request.request.body).toEqual({ username: 'admin', password: 'secret', portalId: 3 });
+      expect(request.request.body).toEqual({
+        username: 'admin',
+        password: 'secret',
+        verificationCode: '',
+      });
+
+      request.flush(loginResponse('access-1', 'refresh-1'));
+      await pending;
+    });
+
+    it('omits the verification code entirely when none is supplied', async () => {
+      const pending = firstValueFrom(service.login({ username: 'admin', password: 'secret' }));
+
+      const request = http.expectOne(AUTH_ENDPOINTS.login);
+      expect(Object.keys(request.request.body as object)).not.toContain('verificationCode');
 
       request.flush(loginResponse('access-1', 'refresh-1'));
       await pending;

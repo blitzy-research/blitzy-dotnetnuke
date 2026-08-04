@@ -57,6 +57,9 @@ function loginResponse(accessToken: string, refreshToken: string): ApiResponse<L
       refreshToken,
       mustChangePassword: false,
       passwordExpiring: false,
+      // All three advisory flags are always present on the wire: the API serialises with
+      // its ignore condition set to never, so a `false` is transmitted rather than omitted.
+      mustUpdateProfile: false,
       user: USER,
     },
   };

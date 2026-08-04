@@ -201,6 +201,8 @@ describe('TokenStorageService', () => {
         refreshToken: 'refresh-9',
         mustChangePassword: true,
         passwordExpiring: true,
+        // Set on the RESPONSE, deliberately not carried into the session below.
+        mustUpdateProfile: true,
         user: USER,
       };
 
@@ -237,6 +239,7 @@ describe('TokenStorageService', () => {
         refreshToken: 'refresh-10',
         mustChangePassword: false,
         passwordExpiring: false,
+        mustUpdateProfile: false,
         user: USER,
       };
 
