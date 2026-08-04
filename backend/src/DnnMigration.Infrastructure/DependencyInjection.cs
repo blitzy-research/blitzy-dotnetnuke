@@ -1,6 +1,6 @@
 // MIGRATION: this file is the composition root of the infrastructure layer and has no legacy
 // counterpart. The legacy application declared fourteen provider families in configuration and
-// activated each one by name - Library/Components/Providers/Data/DataProvider.vb:L31-L50 read a type,
+// activated each one by name - Library/Components/Providers/Data/DataProvider.vb:L29-L50 read a type,
 // namespace and assembly out of Website/release.config and constructed it through reflection inside a
 // static constructor, publishing the result through a Shared accessor. Three consequences followed, and
 // all three are retired here. A misconfigured provider surfaced as a reflection failure on first use
@@ -8,6 +8,23 @@
 // the lifetime of every provider was "one per application domain, forever", which is why so much legacy
 // data-access code had to be static. Every dependency below is declared explicitly, with a lifetime
 // chosen deliberately, and a missing registration now fails when the host is built.
+//
+// MIGRATION: the reflection call and the Shared accessor are DELETED, NOT TRANSLATED. There is no
+// Instance() equivalent anywhere in this solution and no service-locator of any kind: a collaborator
+// arrives through a constructor or it does not arrive. Correspondingly, the fourteen defaultProvider
+// declarations counted in Website/release.config do not survive as fourteen registrations. Provider
+// indirection is REMOVED rather than REPRODUCED - what was configuration-selected late binding becomes
+// either a single registration below or a typed IOptions<T> value bound by the api layer, so a setting
+// that used to name a type now only carries data.
+//
+// MIGRATION: the 269 MustOverride members of that one abstract class - measured, in a 397-line file -
+// are DECOMPOSED BY AGGREGATE BOUNDARY into the nine focused repository interfaces registered below,
+// and ONLY THE IN-SCOPE SUBSET of those members is realised. The god-interface is not recreated as a
+// nine-part copy of itself: each contract carries the operations of one aggregate, which is what makes
+// a repository substitutable in a test and what stops an unrelated schema change rippling through an
+// interface that every caller depends on. Members belonging to the excluded subsystems - scheduling,
+// search, logging, caching and friendly-URL providers among them - are deliberately absent rather than
+// stubbed, because a stub that silently succeeds is worse than a compile error.
 //
 // MIGRATION: three collaborators this layer could plausibly own are deliberately registered elsewhere,
 // and the reasons are worth stating because their absence here looks like an omission.
@@ -47,20 +64,11 @@ namespace DnnMigration.Infrastructure;
 /// </summary>
 public static class DependencyInjection
 {
-    /// <summary>The connection-string name this layer reads.</summary>
-    /// <remarks>
-    /// MIGRATION: the legacy name was <c>SiteSqlServer</c> (<c>Website/release.config:L21-L26</c>). The
-    /// modern key is <c>ConnectionStrings:Default</c>, which a container overrides as the environment
-    /// variable <c>ConnectionStrings__Default</c> - the exact form the compose file supplies. Published
-    /// as a constant so the design-time factory, the host and any diagnostic all spell it once.
-    /// </remarks>
-    public const string ConnectionStringName = "Default";
-
     /// <summary>The name under which the entity-framework connectivity probe is registered.</summary>
-    public const string DatabaseHealthCheckName = "database";
+    private const string DatabaseHealthCheckName = "database";
 
     /// <summary>The name under which the raw SQL Server connectivity probe is registered.</summary>
-    public const string SqlServerHealthCheckName = "sqlserver";
+    private const string SqlServerHealthCheckName = "sqlserver";
 
     /// <summary>The schema holding the migrations-history table.</summary>
     /// <remarks>
@@ -104,91 +112,36 @@ public static class DependencyInjection
         return services;
     }
 
-    /// <summary>Registers one business controller under the name a module declares.</summary>
-    /// <typeparam name="TController">
-    /// The controller type. It becomes resolvable in its own right, so it may depend on scoped services
-    /// such as a unit of work.
-    /// </typeparam>
-    /// <param name="services">The collection to add to.</param>
-    /// <param name="businessControllerClass">
-    /// The value stored in <c>DesktopModules.BusinessControllerClass</c> that this controller answers to. Matched
-    /// case-insensitively, because the stored column is free text that module manifests hand-entered.
-    /// </param>
-    /// <returns>The same collection, so registration can be chained.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="services"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException"><paramref name="businessControllerClass"/> is blank.</exception>
-    /// <remarks>
-    /// <para>
-    /// This is the only way a controller enters the map, and calling it is a code change - which is the
-    /// whole point. MIGRATION: the legacy path treated a database column as an instruction to load an
-    /// assembly and construct an arbitrary type by name, so a row a tenant administrator could edit
-    /// decided which code ran in the server process. Here the set is closed before the first request and
-    /// an unrecognised stored name resolves to nothing at all.
-    /// </para>
-    /// <para>
-    /// The controller is registered scoped, not singleton. A business controller that touches module
-    /// content needs the same unit of work as the request that invoked it, and the factory resolves it
-    /// from a scope created for the call precisely so that works.
-    /// </para>
-    /// <para>
-    /// The map itself is empty in this installation, and that is a finished state rather than a gap:
-    /// every bundled module is out of scope for this migration, and most modules declare no business
-    /// controller at all, so every lifecycle member correctly reports a successful no-op.
-    /// </para>
-    /// </remarks>
-    public static IServiceCollection AddModuleBusinessController<TController>(
-        this IServiceCollection services,
-        string businessControllerClass)
-        where TController : class
-    {
-        ArgumentNullException.ThrowIfNull(services);
-
-        if (string.IsNullOrWhiteSpace(businessControllerClass))
-        {
-            throw new ArgumentException(
-                "A business-controller registration must carry a non-blank name.",
-                nameof(businessControllerClass));
-        }
-
-        services.AddScoped<TController>();
-
-        // M-08: filed under the normalised name with .NET 8 keyed registration, which is the platform
-        // primitive for "resolve the service filed under this name" and replaces the hand-built
-        // name-to-type dictionary the factory used to carry (Rule T8 - adopt the primitive, delete the
-        // workaround). The key is normalised through the factory's own method so that registration and
-        // lookup cannot disagree, and so the case-insensitive matching the legacy column lookup performed
-        // survives keyed resolution's case-sensitive key equality.
-        //
-        // Registered as a FACTORY over the concrete registration rather than as the concrete type itself.
-        // The factory resolves a service selected by name and cannot know the type, so it asks for the
-        // object filed under the key; routing that through the concrete scoped registration is what keeps
-        // one instance per scope rather than one per lookup.
-        services.AddKeyedScoped<object>(
-            ModuleBusinessControllerFactory.RegistrationKey(businessControllerClass)!,
-            (provider, _) => provider.GetRequiredService<TController>());
-
-        return services;
-    }
-
     /// <summary>Reads the connection string, failing fast when it is absent.</summary>
     /// <param name="configuration">The host configuration.</param>
     /// <returns>The configured connection string.</returns>
     /// <exception cref="InvalidOperationException">No connection string is configured.</exception>
     /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy name was <c>SiteSqlServer</c>, declared twice as a connection string and
+    /// twice again as an appSetting in <c>Website/release.config</c> (L24, L29, L36, L38). The modern key
+    /// is <c>ConnectionStrings:Default</c>, which a container overrides as the environment variable
+    /// <c>ConnectionStrings__Default</c> - the exact form the compose file supplies from
+    /// <c>DB_CONNECTION_STRING</c>. This is the ONLY configuration key this layer reads; everything else
+    /// it needs arrives as a bound <c>IOptions&lt;T&gt;</c> value, so configuration-shape knowledge stays
+    /// in the layer that owns configuration.
+    /// </para>
+    /// <para>
     /// The message names the key in both its configuration and its environment-variable spelling, and
     /// never echoes a value: a connection string carries a password, so it must not reach a log, an
     /// exception message or a health-check response.
+    /// </para>
     /// </remarks>
     private static string ReadConnectionString(IConfiguration configuration)
     {
-        string? connectionString = configuration.GetConnectionString(ConnectionStringName);
+        string? connectionString = configuration.GetConnectionString("Default");
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
                 "No database connection string is configured. Supply it as "
-                + $"'ConnectionStrings:{ConnectionStringName}' in configuration, or as the environment "
-                + $"variable 'ConnectionStrings__{ConnectionStringName}' in a container.");
+                + "'ConnectionStrings:Default' in configuration, or as the environment "
+                + "variable 'ConnectionStrings__Default' in a container.");
         }
 
         return connectionString;
@@ -258,6 +211,20 @@ public static class DependencyInjection
                     sql.ExecutionStrategy(dependencies => new TransactionAwareExecutionStrategy(dependencies));
                 }));
 
+        // MIGRATION: registering this makes IUnitOfWork.SaveChangesAsync THE SINGLE TRANSACTIONAL COMMIT
+        // POINT for work that the legacy code committed one statement at a time. The case that proves the
+        // need is CreatePortal at Library/Components/Portal/PortalController.vb:L980 - fifteen positional
+        // parameters - which writes across FIVE tables in sequence: Portals (through the two-argument
+        // CreatePortal overload), then ProfilePropertyDefinition (CreateProfileDefinitions), then Tabs,
+        // Modules and Roles (ParseTemplate), then Users (UserController.UpdateUser at :L1126), and finally
+        // PortalAlias (AddPortalAlias at :L1134). NO TRANSACTION SPANS ANY OF IT: searching that entire
+        // 1,632-line file for a transaction of any kind returns nothing, so a failure at the fourth write
+        // left a portal with no administrator and no alias - reachable by nobody, deletable through no
+        // screen. Those writes now stage against one change tracker and commit or reverse together.
+        //
+        // The legacy code also cleared caches mid-sequence, at :L1128 DataCache.ClearHostCache(True) and
+        // :L1131 DataCache.RemoveCache("GetRoles") - that is, BEFORE the alias write it depended on had
+        // happened. Cache invalidation now follows a successful commit rather than racing it.
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         // The collaborator that reaches the external ASP.NET membership tables. Scoped, because it works
@@ -378,8 +345,9 @@ public static class DependencyInjection
     /// </para>
     /// <para>
     /// The host-settings service is scoped because it reads through the scoped context. The module
-    /// business-controller factory and its registry are singletons because the map is fixed at start-up;
-    /// the factory nonetheless resolves each controller from a scope created for the call.
+    /// business-controller factory is scoped as well, so any controller it resolves shares the caller's
+    /// request scope and unit of work. The set of controller types is fixed at start-up; its immutability
+    /// does not require the factory that consumes a request scope to be a singleton.
     /// </para>
     /// <para>
     /// The audit sink is a singleton because it holds no per-request state - every fact it needs arrives
@@ -422,6 +390,17 @@ public static class DependencyInjection
         // scope, so a lifecycle operation shares the request's database context and therefore its unit of
         // work. A singleton factory holding the root provider would resolve controllers outside the request
         // scope, and content a controller wrote would then commit independently of the caller's transaction.
+        //
+        // MIGRATION: the factory resolves from a CLOSED set, and that set is EMPTY in this installation -
+        // a finished state rather than a gap. The legacy path treated Modules.BusinessControllerClass, a
+        // database column, as an instruction to load an assembly and construct an arbitrary type by name
+        // (Framework.Reflection.CreateObject at Library/Components/Modules/ModuleController.vb:L231,L431
+        // and EventMessageProcessor.vb:L32,L52,L77), so a row an administrator could edit decided which
+        // code ran in the server process. Every bundled module is out of scope for this migration and most
+        // declared no controller at all, so each lifecycle member correctly reports a successful no-op and
+        // an unrecognised stored name resolves to nothing. Admitting a controller is therefore a CODE
+        // change, not a data change - which is the whole point, and is why no public registration hook is
+        // published here for a caller to widen the set at run time.
         services.AddScoped<IModuleBusinessControllerFactory, ModuleBusinessControllerFactory>();
     }
 

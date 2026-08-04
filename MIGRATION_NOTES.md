@@ -3827,16 +3827,18 @@ nothing declared what it depended on, and assembly probing left the set of loada
 implementations open.
 
 **Target behaviour.** Every concrete Infrastructure type is internal, and the assembly
-exports exactly one public type: the registration entry point `AddInfrastructure`. Nothing
-outside the assembly can name an implementation, let alone construct one. The clock, cache
-service, password hasher, refresh-token store and tenant-snapshot factory are each
-registered there against a Domain-layer contract. Because those contracts must be visible
-from the Domain layer, the refresh-token vocabulary — the subject snapshot, the three result
-types and the outcome enumeration — moved out of the Infrastructure implementation file and
-into the Domain layer alongside the store abstraction. The token service is deliberately
-not registered: its contract exists but no implementation of it exists in this solution
-yet, and registering a placeholder would satisfy the container while failing every caller
-at runtime.
+exports exactly one public type: `DependencyInjection`, whose only declared public method is
+`AddInfrastructure`. Nothing outside the assembly can name an implementation, let alone
+construct one. The context, unit of work and nine aggregate repositories are scoped behind
+Domain-layer contracts; the password hasher, clock, cache, refresh-token store and token
+service are singletons. `JwtTokenService` reaches scoped entitlement data through
+`IServiceScopeFactory` for each refresh instead of capturing a repository in its constructor.
+The fourteen provider declarations do not become fourteen replacement switches: each legacy
+family becomes either one explicit container registration or a typed option value bound by
+the API layer, so provider indirection is removed rather than reproduced. The 269-member
+provider contract is decomposed by aggregate boundary, with only the in-scope subset
+implemented; portal creation then stages its five-table write and commits it through the
+single unit-of-work boundary described in “Portal persistence contract” above.
 
 **Why.** A caller that cannot name the password hasher cannot come to depend on which
 algorithm is in use, and a caller that cannot name the token store cannot come to depend on
