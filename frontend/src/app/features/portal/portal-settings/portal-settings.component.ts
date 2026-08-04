@@ -12,15 +12,13 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
 import {
-  BANNER_ADVERTISING_MODE,
-  USER_REGISTRATION_MODE,
+  BannerAdvertisingMode,
+  UserRegistrationMode,
 } from '../../../core/models/portal.model';
 import type {
-  BannerAdvertisingMode,
   PortalSettings,
   PortalSettingsLookups,
   UpdatePortalRequest,
-  UserRegistrationMode,
 } from '../../../core/models/portal.model';
 import type { SelectOption } from '../../../core/models/select-option.model';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
@@ -396,10 +394,10 @@ export class PortalSettingsComponent {
       nonNullable: true,
       validators: [Validators.maxLength(FILE_NAME_MAX)],
     }),
-    bannerAdvertising: new FormControl<BannerAdvertisingMode>(BANNER_ADVERTISING_MODE.none, {
+    bannerAdvertising: new FormControl<BannerAdvertisingMode>(BannerAdvertisingMode.None, {
       nonNullable: true,
     }),
-    userRegistration: new FormControl<UserRegistrationMode>(USER_REGISTRATION_MODE.none, {
+    userRegistration: new FormControl<UserRegistrationMode>(UserRegistrationMode.NoRegistration, {
       nonNullable: true,
     }),
     splashTabId: new FormControl<number | null>(null, { nonNullable: true }),
@@ -461,9 +459,9 @@ export class PortalSettingsComponent {
    * `Host.Text`.
    */
   protected readonly bannerChoices: readonly RadioChoice<BannerAdvertisingMode>[] = [
-    { value: BANNER_ADVERTISING_MODE.none, label: 'None' },
-    { value: BANNER_ADVERTISING_MODE.site, label: 'Site' },
-    { value: BANNER_ADVERTISING_MODE.host, label: 'Host' },
+    { value: BannerAdvertisingMode.None, label: 'None' },
+    { value: BannerAdvertisingMode.Site, label: 'Site' },
+    { value: BannerAdvertisingMode.Host, label: 'Host' },
   ];
 
   /**
@@ -472,10 +470,10 @@ export class PortalSettingsComponent {
    * `Public.Text` and `Verified.Text`.
    */
   protected readonly registrationChoices: readonly RadioChoice<UserRegistrationMode>[] = [
-    { value: USER_REGISTRATION_MODE.none, label: 'None' },
-    { value: USER_REGISTRATION_MODE.private, label: 'Private' },
-    { value: USER_REGISTRATION_MODE.public, label: 'Public' },
-    { value: USER_REGISTRATION_MODE.verified, label: 'Verified' },
+    { value: UserRegistrationMode.NoRegistration, label: 'None' },
+    { value: UserRegistrationMode.PrivateRegistration, label: 'Private' },
+    { value: UserRegistrationMode.PublicRegistration, label: 'Public' },
+    { value: UserRegistrationMode.VerifiedRegistration, label: 'Verified' },
   ];
 
   /**
@@ -692,7 +690,7 @@ export class PortalSettingsComponent {
       return false;
     }
 
-    return this.held?.bannerAdvertising === BANNER_ADVERTISING_MODE.host;
+    return this.held?.bannerAdvertising === BannerAdvertisingMode.Host;
   }
 
   /** The site's immutable identifier, for the read-only Site Details row. */

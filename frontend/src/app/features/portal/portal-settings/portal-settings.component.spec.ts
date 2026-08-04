@@ -1,8 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import {
-  BANNER_ADVERTISING_MODE,
-  USER_REGISTRATION_MODE,
+  BannerAdvertisingMode,
+  UserRegistrationMode,
 } from '../../../core/models/portal.model';
 import type {
   PortalSettings,
@@ -30,8 +30,8 @@ function settingsOf(overrides: Partial<PortalSettings> = {}): PortalSettings {
     logoFile: 'logo.gif',
     backgroundFile: 'bg.gif',
     expiryDate: '2027-03-01T00:00:00',
-    userRegistration: USER_REGISTRATION_MODE.public,
-    bannerAdvertising: BANNER_ADVERTISING_MODE.site,
+    userRegistration: UserRegistrationMode.PublicRegistration,
+    bannerAdvertising: BannerAdvertisingMode.Site,
     currency: 'GBP',
     administratorId: 42,
     hostFee: 19.5,
@@ -448,7 +448,7 @@ describe('PortalSettingsComponent', () => {
     it('selects the held banner mode', () => {
       const chosen = radios('bannerAdvertising').filter((radio) => radio.checked);
       expect(chosen.length).toBe(1);
-      expect(radios('bannerAdvertising').indexOf(chosen[0])).toBe(BANNER_ADVERTISING_MODE.site);
+      expect(radios('bannerAdvertising').indexOf(chosen[0])).toBe(BannerAdvertisingMode.Site);
     });
 
     it('writes the appearance fields once the section is opened', () => {
@@ -465,7 +465,7 @@ describe('PortalSettingsComponent', () => {
 
       const chosen = radios('userRegistration').filter((radio) => radio.checked);
       expect(chosen.length).toBe(1);
-      expect(radios('userRegistration').indexOf(chosen[0])).toBe(USER_REGISTRATION_MODE.public);
+      expect(radios('userRegistration').indexOf(chosen[0])).toBe(UserRegistrationMode.PublicRegistration);
     });
 
     it('offers the empty choice first on every select', () => {
@@ -621,7 +621,7 @@ describe('PortalSettingsComponent', () => {
   describe('banner lock', () => {
     it('locks the control and shows the advisory for a site operator when host-managed', () => {
       setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BANNER_ADVERTISING_MODE.host }));
+      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
 
       expect(q('.portal-settings__notice')).not.toBeNull();
       expect((q('.portal-settings__notice')!.textContent ?? '').trim()).toBe(
@@ -634,7 +634,7 @@ describe('PortalSettingsComponent', () => {
 
     it('leaves the control open for a site operator when it is site-managed', () => {
       setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BANNER_ADVERTISING_MODE.site }));
+      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Site }));
 
       expect(q('.portal-settings__notice')).toBeNull();
       for (const radio of radios('bannerAdvertising')) {
@@ -644,7 +644,7 @@ describe('PortalSettingsComponent', () => {
 
     it('never locks the control for a host operator, even when host-managed', () => {
       setInput('canEditHostFields', true);
-      setInput('settings', settingsOf({ bannerAdvertising: BANNER_ADVERTISING_MODE.host }));
+      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
 
       expect(q('.portal-settings__notice')).toBeNull();
       for (const radio of radios('bannerAdvertising')) {
@@ -654,7 +654,7 @@ describe('PortalSettingsComponent', () => {
 
     it('re-evaluates the lock when the privilege changes', () => {
       setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BANNER_ADVERTISING_MODE.host }));
+      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
       expect(radios('bannerAdvertising')[0].disabled).toBeTrue();
 
       setInput('canEditHostFields', true);
@@ -667,11 +667,11 @@ describe('PortalSettingsComponent', () => {
       component.save.subscribe((request) => emitted.push(request));
 
       setInput('canEditHostFields', false);
-      setInput('settings', settingsOf({ bannerAdvertising: BANNER_ADVERTISING_MODE.host }));
+      setInput('settings', settingsOf({ bannerAdvertising: BannerAdvertisingMode.Host }));
       submit();
 
       expect(emitted.length).toBe(1);
-      expect(emitted[0].bannerAdvertising).toBe(BANNER_ADVERTISING_MODE.host);
+      expect(emitted[0].bannerAdvertising).toBe(BannerAdvertisingMode.Host);
     });
   });
 
@@ -833,11 +833,11 @@ describe('PortalSettingsComponent', () => {
     it('keeps a chosen registration mode a number', () => {
       tabs()[1].click();
       fixture.detectChanges();
-      radios('userRegistration')[USER_REGISTRATION_MODE.verified].click();
+      radios('userRegistration')[UserRegistrationMode.VerifiedRegistration].click();
       fixture.detectChanges();
       submit();
 
-      expect(emitted[0].userRegistration).toBe(USER_REGISTRATION_MODE.verified);
+      expect(emitted[0].userRegistration).toBe(UserRegistrationMode.VerifiedRegistration);
       expect(typeof emitted[0].userRegistration).toBe('number');
     });
 

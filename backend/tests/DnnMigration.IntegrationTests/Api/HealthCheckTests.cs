@@ -27,6 +27,21 @@ public sealed class HealthCheckTests
 
     /// <summary>The endpoint answers without credentials, because the container probe sends none.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The status is asserted exactly rather than as "healthy or unavailable". A 503 would be a legitimate
+    /// answer from a deployment whose database is unreachable, but not from this one: the fixture provisions
+    /// the database before the host starts and fails loudly if it cannot, so here a 503 would report a
+    /// broken fixture and accepting it would hide that. What must never appear is a 401, a 403, a 404 or a
+    /// redirect, and the exact assertion rules out all four at once.
+    /// <para>
+    /// The redirect half is worth stating separately because it is a container obligation rather than a
+    /// preference. The probe is <c>wget --spider</c> against plain HTTP inside the image - Alpine ships no
+    /// curl - and the front-end service declares <c>depends_on</c> with condition <c>service_healthy</c>. An
+    /// unguarded <c>UseHttpsRedirection</c> would answer 307 with a <c>Location</c> pointing at an https
+    /// authority the container does not serve, the probe would never succeed, and the front end would never
+    /// start. The client does not follow redirects, so a 307 surfaces here as a 307 instead of being chased.
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task Health_WithoutCredentials_ReturnsOk()
     {
@@ -35,6 +50,9 @@ public sealed class HealthCheckTests
         using HttpResponseMessage response = await client.GetAsync(new Uri("/health", UriKind.Relative));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.Location.Should().BeNull(
+            "the container probe follows nothing, so a redirect here would leave the API permanently "
+            + "unhealthy and the front-end service would never start");
     }
 
     /// <summary>
@@ -98,5 +116,35 @@ public sealed class HealthCheckTests
         response.Headers.TryGetValues("X-Correlation-Id", out IEnumerable<string>? values).Should().BeTrue();
         values.Should().NotBeNull();
         values!.Single().Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// A caller-supplied correlation identifier is adopted and echoed back unchanged, rather than being
+    /// replaced by one the server generated.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the half of the contract the assertion above cannot reach. A middleware that ignored the
+    /// inbound header and generated an identifier on every request would still satisfy "a response carries
+    /// one", while breaking the only thing the header is for: following a single request across the client,
+    /// the proxy and the API in one search. Asserting the echoed value equals the value sent is what
+    /// distinguishes the two, and it is asserted through the anonymous client because correlation must not
+    /// depend on being authenticated.
+    /// </remarks>
+    [Fact]
+    public async Task Health_EchoesTheSuppliedCorrelationIdentifier()
+    {
+        const string Supplied = "health-round-trip-6f2a1c";
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+        using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, new Uri("/health", UriKind.Relative)),
+            Supplied);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        ApiTestFixture.ReadCorrelationId(response).Should().Be(
+            Supplied,
+            "the identifier a caller supplies is what every log line for that request must carry");
     }
 }

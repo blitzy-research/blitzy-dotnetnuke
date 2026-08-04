@@ -4,7 +4,6 @@ using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Common;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -148,8 +147,15 @@ public sealed class ProblemDetailDisclosureTests
             + "examining anything and would pass vacuously");
 
         // The instance the container built, so an instance member is invoked on a real collaborator set
-        // rather than on something this test assembled.
-        object target = _fixture.Services.GetRequiredService<IModuleBusinessControllerFactory>();
+        // rather than on something this test assembled. It is resolved inside a SCOPE rather than from the
+        // root provider, because the factory is registered scoped - as it must be, since it reaches the
+        // per-request data context - and the root provider has no scope to hand it. The host now validates
+        // scopes, so resolving it from the root fails outright; before that it happened to work while
+        // quietly keeping a request-lifetime service alive for the whole run, which is the captive
+        // dependency the validation exists to prevent. The scope stays open for the loop below, so the
+        // instance under examination is not disposed underneath it.
+        using ScopedServices scope = _fixture.CreateScopedServices();
+        object target = scope.Resolve<IModuleBusinessControllerFactory>();
 
         Exception probe = new InvalidOperationException(
             OuterSentinel,

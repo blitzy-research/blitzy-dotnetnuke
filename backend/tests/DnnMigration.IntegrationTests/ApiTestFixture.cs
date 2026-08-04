@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DnnMigration.Application.Serialization;
+using DnnMigration.Domain.Abstractions.Repositories;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -79,6 +80,18 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     public const string AllowedOrigin = "http://localhost:4200";
 
     /// <summary>
+    /// Header carrying the correlation identifier, on the way in and on the way back out.
+    /// </summary>
+    /// <remarks>
+    /// One spelling, declared once. The correlation middleware accepts a caller-supplied value and echoes
+    /// whatever it settled on, so the same header name is both the request and the response half of the
+    /// round trip, and a suite that misspelled either half would assert nothing while appearing to pass -
+    /// a request header nothing reads is simply ignored, and <c>TryGetValues</c> on a misspelled response
+    /// header just answers false.
+    /// </remarks>
+    public const string CorrelationIdHeader = "X-Correlation-Id";
+
+    /// <summary>
     /// Password of every seeded account. It satisfies the legacy policy carried forward verbatim -
     /// minimum length seven, no non-alphanumeric requirement - with room to spare.
     /// </summary>
@@ -109,6 +122,35 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     private IntegrationSeed? _seed;
 
     /// <summary>
+    /// Initialises a new instance of the <see cref="ApiTestFixture"/> class and fixes the client behaviour
+    /// every suite depends on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Redirects are never followed.</strong> The default client follows up to seven of them, which
+    /// would make a suite assert against the response at the END of a redirect chain while believing it was
+    /// asserting against the response the endpoint returned. That is not hypothetical here: an unguarded
+    /// <c>UseHttpsRedirection</c> answers 307 to every plain-HTTP request, the test server listens on no
+    /// socket and so cannot serve the https authority it points at, and the failure would name the wrong
+    /// cause. Following is therefore disabled so that a 3xx is reported as a 3xx - and it costs nothing,
+    /// because the redirect-free contract is what the suite is asserting and the <c>Location</c> header is
+    /// only ever read off a 201, which no client auto-follows.
+    /// </para>
+    /// <para>
+    /// <strong>The base address is bound to the seeded alias.</strong> The alias-resolution middleware reads
+    /// the tenant from the request's host name, and the test server takes that host name from the client's
+    /// base address rather than from a socket. Deriving it from <see cref="TestHost"/> - the same constant the
+    /// seed registers as a portal alias - makes the two impossible to drift apart. It happens to equal the
+    /// framework default, which is exactly why stating it matters: a silent default is not a guarantee.
+    /// </para>
+    /// </remarks>
+    public ApiTestFixture()
+    {
+        ClientOptions.AllowAutoRedirect = false;
+        ClientOptions.BaseAddress = new Uri($"http://{TestHost}/", UriKind.Absolute);
+    }
+
+    /// <summary>
     /// Serialiser settings matching what the API is configured with: web naming, and enums as strings.
     /// </summary>
     public static JsonSerializerOptions Json { get; } = BuildJsonOptions();
@@ -132,10 +174,25 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// discriminators their columns store and their Angular models consume, so no converter claims
     /// them and none should.
     /// </para>
+    /// <para>
+    /// <strong>Nothing is ever omitted from a payload, and that is a rule rather than a default.</strong>
+    /// The ignore condition is stated explicitly even though <see cref="JsonSerializerDefaults.Web"/>
+    /// already leaves it at <see cref="JsonIgnoreCondition.Never"/>, because the two alternatives - the
+    /// conditions that drop a null on write and that drop a default on write - are precisely the ones this
+    /// suite exists to keep out. MIGRATION: the legacy sentinel table represents "absent" as the empty string for
+    /// text and as -1 for integers, and both are real values here: <c>Portals.PortalID</c> is
+    /// <c>IDENTITY(-1, 1)</c> so -1 identifies the first portal, <c>Roles.RoleID</c> and <c>Tabs.TabID</c>
+    /// are <c>IDENTITY(0, 1)</c> so zero identifies the first row, and <c>Portals.HostFee</c> holds a fee as
+    /// text whose seeded value is the empty string. Omitting defaults would erase all four from the wire and
+    /// a test client that did so would silently stop asserting on them.
+    /// </para>
     /// </remarks>
     private static JsonSerializerOptions BuildJsonOptions()
     {
-        JsonSerializerOptions options = new(JsonSerializerDefaults.Web);
+        JsonSerializerOptions options = new(JsonSerializerDefaults.Web)
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        };
 
         DnnJsonConverters.AddTo(options);
 
@@ -272,6 +329,78 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     }
 
     /// <summary>
+    /// Attaches a caller-supplied correlation identifier to a request and hands the request back.
+    /// </summary>
+    /// <param name="request">The request to stamp.</param>
+    /// <param name="correlationId">The identifier to send.</param>
+    /// <returns>The same request, so a call can be written inline at the send site.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="correlationId"/> is blank.</exception>
+    /// <remarks>
+    /// The header is added rather than set through the default headers of a client, because the round trip
+    /// is a property of one request: a client-wide default would send the same identifier on every request a
+    /// suite makes and an assertion that the response echoed it could then be satisfied by a value the test
+    /// under examination never sent.
+    /// </remarks>
+    public static HttpRequestMessage WithCorrelationId(HttpRequestMessage request, string correlationId)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(correlationId);
+
+        request.Headers.Remove(CorrelationIdHeader);
+        request.Headers.Add(CorrelationIdHeader, correlationId);
+
+        return request;
+    }
+
+    /// <summary>
+    /// Reads the correlation identifier a response carries.
+    /// </summary>
+    /// <param name="response">The response to read.</param>
+    /// <returns>
+    /// The identifier, or <see langword="null"/> when the response carried none - which is itself a
+    /// contract failure, because every response is required to carry one.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="response"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// Absence is returned rather than thrown so that a suite can assert on it directly and report "no
+    /// correlation identifier" instead of failing with an exception from the helper, which would name the
+    /// helper rather than the contract.
+    /// </remarks>
+    public static string? ReadCorrelationId(HttpResponseMessage response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        return response.Headers.TryGetValues(CorrelationIdHeader, out IEnumerable<string>? values)
+            ? values.FirstOrDefault()
+            : null;
+    }
+
+    /// <summary>
+    /// Opens a dependency-injection scope on the host's container.
+    /// </summary>
+    /// <returns>A scope the caller owns and must dispose.</returns>
+    /// <remarks>
+    /// Every repository, the unit of work and the tenant context are registered SCOPED, mirroring their
+    /// per-request lifetime, so a test that reaches for one has to establish a scope first. This is the same
+    /// container the request pipeline resolves from - nothing is substituted - which is what makes a
+    /// resolution here evidence about production composition. Prefer
+    /// <see cref="CreateScopedServices"/> when the contracts wanted are the common four.
+    /// </remarks>
+    public IServiceScope CreateScope() => Services.CreateScope();
+
+    /// <summary>
+    /// Opens a dependency-injection scope and exposes the persistence contracts a suite reaches for.
+    /// </summary>
+    /// <returns>A scope handle the caller owns and must dispose.</returns>
+    /// <remarks>
+    /// A convenience over <see cref="CreateScope"/> that removes the resolve-by-hand step, and a guard
+    /// rail with it: the accessors are typed, so a contract that was renamed or unregistered fails to
+    /// compile or fails loudly on first touch rather than being resolved under a string.
+    /// </remarks>
+    public ScopedServices CreateScopedServices() => new(CreateScope());
+
+    /// <summary>
     /// Configuration the test host runs with, keyed by environment-variable name.
     /// </summary>
     /// <returns>The environment overrides the host reads.</returns>
@@ -282,6 +411,14 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// </remarks>
     public IReadOnlyDictionary<string, string?> HostConfiguration() => new Dictionary<string, string?>
     {
+        // MIGRATION: the legacy application read its connection string from the named entry
+        // <add name="SiteSqlServer" connectionString="Data Source=.\SQLExpress;Integrated Security=True;
+        // User Instance=True;AttachDBFilename=|DataDirectory|Database.mdf;" /> in Website/release.config
+        // L21-L26 - a file-attached SQL Server Express user instance, resolved through
+        // ConfigurationManager. That name is superseded by ConnectionStrings:Default, spelled
+        // ConnectionStrings__Default as an environment variable, which is the form docker-compose supplies
+        // and therefore the form the suite supplies too. The value here is the throwaway database this run
+        // provisioned, so the production registration binds to a real server without being altered.
         ["ConnectionStrings__Default"] = Database.ConnectionString,
         ["Jwt__Secret"] = SigningSecret,
         ["Jwt__Issuer"] = Issuer,
@@ -291,6 +428,23 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         ["Cors__AllowedOrigins__0"] = AllowedOrigin,
         ["RateLimiting__Authentication__PermitLimit"] = PermissiveAuthenticationRateLimit,
         ["RateLimiting__Authentication__WindowSeconds"] = "60",
+
+        // MIGRATION: the credential policy is carried forward from the legacy membership provider
+        // VERBATIM - Website/release.config L237-L247 registers AspNetSqlMembershipProvider with
+        // minRequiredPasswordLength="7", minRequiredNonalphanumericCharacters="0",
+        // requiresQuestionAndAnswer="false" and requiresUniqueEmail="false". It is pinned here rather than
+        // inherited from appsettings.json so that the policy the suite proves is the legacy one whatever a
+        // deployment overlay later says, and so that a reader can see the four values being asserted
+        // against. Tightening any of them would be a migration that locked existing accounts out of an
+        // installation, which is a decision for an operator and not a side effect of a port.
+        // The names are the option PROPERTY names - MinRequiredPasswordLength, not MinimumLength - because
+        // binding matches property names and a plausible-looking alternative spelling binds to nothing at
+        // all, leaving the shipped default in force and the override silently inert.
+        ["PasswordPolicy__MinRequiredPasswordLength"] = "7",
+        ["PasswordPolicy__MinRequiredNonAlphanumericCharacters"] = "0",
+        ["PasswordPolicy__RequiresQuestionAndAnswer"] = "false",
+        ["PasswordPolicy__RequiresUniqueEmail"] = "false",
+
         // The key is Https:RedirectEnabled, read by ApplicationBuilderExtensions through the constant
         // HttpsRedirectionSectionName. Setting Security__EnableHttpsRedirection instead would be inert,
         // because nothing reads that key, and the suite would silently fall back to the shipped default.
@@ -352,6 +506,24 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
 
         builder.UseEnvironment("Testing");
 
+        // The container is validated rather than merely built, and this is the only place in the delivery
+        // where that happens: the Development environment turns scope validation on by default, but this host
+        // runs as Testing and production runs as Production, so neither would.
+        //
+        // ValidateOnBuild constructs a call site for every registration at build time, so a service whose
+        // dependency was never registered - or a SINGLETON that captures a SCOPED one, which is a captive
+        // dependency and outlives the scope it came from - fails here, naming the pair, instead of surfacing
+        // later as a repository quietly shared between requests. ValidateScopes then forbids resolving a
+        // scoped service straight from the root provider, which is the same fault committed by hand.
+        //
+        // Both are deliberately enabled on the shared host rather than on a dedicated one, so that every
+        // suite in the run pays for the guarantee once and no composition change can slip past it.
+        builder.UseDefaultServiceProvider((_, options) =>
+        {
+            options.ValidateScopes = true;
+            options.ValidateOnBuild = true;
+        });
+
         builder.ConfigureServices(services =>
             services.AddSingleton<ILogEventSink>(RecordedLogs.Sink));
     }
@@ -377,6 +549,20 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         // ValidateOnStart. A missing or short signing secret therefore fails the fixture with the
         // configuration message rather than failing every test with a connection error.
         _ = Services;
+
+        // And then the composition itself is exercised once, inside a scope, because building the host
+        // proves only that the registrations are well formed. Constructing the four contracts every suite
+        // depends on proves they can actually be built - a repository whose constructor argument is
+        // unregistered, or which cannot obtain the context, fails here with the container's own message
+        // instead of failing an unrelated assertion halfway through the run. It is one scope and four
+        // resolutions, so the cost is negligible against the diagnosis it buys.
+        using (ScopedServices probe = CreateScopedServices())
+        {
+            _ = probe.Portals;
+            _ = probe.Users;
+            _ = probe.Roles;
+            _ = probe.UnitOfWork;
+        }
     }
 
     /// <summary>Shuts the host down and removes the database.</summary>
@@ -765,6 +951,65 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
             _previous.Clear();
         }
     }
+}
+
+/// <summary>
+/// A dependency-injection scope on the host's container, with the persistence contracts a suite reaches for
+/// exposed as typed members.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The contracts below are registered SCOPED, because each of them ultimately reaches the same per-request
+/// data context. A test therefore cannot resolve one from the root provider, and the handle exists so that
+/// the scope it does need is opened, named and disposed in one place instead of being reconstructed at every
+/// site.
+/// </para>
+/// <para>
+/// Each accessor resolves on read rather than eagerly at construction, so opening a handle costs nothing for
+/// the contracts a test does not touch. Because the registrations are scoped, two reads of the same accessor
+/// inside one handle return the SAME instance - which is the behaviour a test wants when it writes through
+/// the unit of work and then reads back through a repository, since both are working over one context.
+/// Crossing that boundary requires a second handle, exactly as crossing a request boundary would.
+/// </para>
+/// <para>
+/// <strong>The data context itself is deliberately not reachable from here.</strong> It is declared
+/// <c>internal</c> to the Infrastructure assembly so that no layer above it can see a <c>DbContext</c> at
+/// all, and this type names none of the members that would work around that. What a test gets is the same
+/// abstraction the application gets, which is what makes an assertion made through it evidence about
+/// production behaviour.
+/// </para>
+/// </remarks>
+public sealed class ScopedServices : IDisposable
+{
+    private readonly IServiceScope _scope;
+
+    internal ScopedServices(IServiceScope scope) => _scope = scope;
+
+    /// <summary>The scoped provider, for a contract this type exposes no member for.</summary>
+    public IServiceProvider ServiceProvider => _scope.ServiceProvider;
+
+    /// <summary>The portal repository.</summary>
+    public IPortalRepository Portals => Resolve<IPortalRepository>();
+
+    /// <summary>The user repository.</summary>
+    public IUserRepository Users => Resolve<IUserRepository>();
+
+    /// <summary>The role repository.</summary>
+    public IRoleRepository Roles => Resolve<IRoleRepository>();
+
+    /// <summary>The unit of work, which is the only way a write reaches the database.</summary>
+    public IUnitOfWork UnitOfWork => Resolve<IUnitOfWork>();
+
+    /// <summary>Resolves any registered contract from this scope.</summary>
+    /// <typeparam name="T">The contract to resolve.</typeparam>
+    /// <returns>The resolved service.</returns>
+    /// <exception cref="InvalidOperationException">The contract is not registered.</exception>
+    public T Resolve<T>()
+        where T : notnull =>
+        _scope.ServiceProvider.GetRequiredService<T>();
+
+    /// <summary>Disposes the scope, and with it everything resolved from it.</summary>
+    public void Dispose() => _scope.Dispose();
 }
 
 /// <summary>

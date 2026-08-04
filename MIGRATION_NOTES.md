@@ -2993,6 +2993,51 @@ means the startup guard in `AddInfrastructure` names both `ConnectionStrings:Def
 `ConnectionStrings__Default` and stops, which is a better first experience than a driver-level login
 failure.
 
+### The local launch profile binds 8080, not the 5000 the prior guide documents, and no IIS profile is carried forward
+
+**Legacy behaviour.** There was no launch profile, because there was nothing to launch. The legacy
+application was an IIS application, not a process: `Website/release.config:L253` declares
+`<probing privatePath="bin;bin\HttpModules;bin\Providers;bin\Modules;bin\Support;" />`, and the port,
+the host header and the application root were properties of an IIS site defined outside the
+repository. A developer attached to that site; they did not choose a port.
+
+**Target behaviour.** `backend/src/DnnMigration.Api/Properties/launchSettings.json` declares one
+profile, `DnnMigration.Api`, which binds `http://localhost:8080`, sets
+`ASPNETCORE_ENVIRONMENT=Development`, and opens `/swagger`. It declares no `iisSettings` block and no
+`IIS Express` profile: the probing path above has no successor, and the target is Kestrel behind
+nginx.
+
+**Why 8080 and not 5000.** `docs/project-guide.md:L171-L172` documents the prior run as starting on
+`http://localhost:5000`, the framework default, and that value is deliberately not adopted. The
+decisive reason is `frontend/src/environments/environment.development.ts:L25`, which sets
+`apiBaseUrl: 'http://localhost:8080/api/v1'` as an absolute URL because `ng serve` has no proxy in
+front of it. A local API on any other port answers the development front end with a refused
+connection, and no build step, unit test or linter reports it. The same number is fixed everywhere
+else it appears: `docker/api.Dockerfile:L69` sets `ASPNETCORE_URLS=http://+:8080` and `:L73` exposes
+8080, `docker/nginx.conf:L61` proxies `/api/` to `http://api:8080/api/`, `docker-compose.yml:L24`
+publishes `8080:8080`, and the end-to-end gate probes `http://localhost:8080/health`. Keeping the
+local port equal to the container port also keeps the profile honest about a constraint the
+container enforces: `docker/api.Dockerfile:L39` creates `appuser` with `adduser -D -u 1000 appuser`
+and `:L63` switches to it, and an unprivileged process cannot bind a port below 1024, so no profile
+here may nominate one. `docs/project-guide.md` is a prior-run planning artefact and is reference
+only; its own parenthetical, "or configured port", concedes the point.
+
+**Two removals.** The file previously carried a top-level `$schema` key pointing at a remote schema
+store; it is dropped, because a tracked file should not make a developer's tooling depend on a
+network fetch to describe six well-known keys. A second profile that existed only to bind the
+container port is dropped as redundant once the primary profile binds 8080.
+
+**What the file deliberately does not contain.** No secret of any kind - no `Jwt__Secret`, no
+`ConnectionStrings__Default`, not even a placeholder. This file is tracked, and a tracked sample is
+how a real value eventually arrives; the legacy repository is the proof, since
+`Website/development.config:L89-L90` commits both a `validationKey` and the 3DES `decryptionKey`
+that, with `passwordFormat="Encrypted"` and `enablePasswordRetrieval="true"`
+(`Website/release.config:L239-L245`), decrypts every stored password - and it is the *development*
+file that leaks the most. Both values reach the host from the developer's own environment instead.
+Nothing functional depends on this file existing: every validation gate builds, tests or runs the
+container, `WebApplicationFactory<Program>` never reads it, and `dotnet run --no-launch-profile`
+with the two variables exported is the supported equivalent.
+
 ## Request validation, credentials and wire contracts
 
 ### Password recovery by security question is not carried forward, and neither is a server-generated password
@@ -10138,3 +10183,308 @@ also why the twelve `Website/admin/Users/*.ascx.vb` code-behinds are treated as 
 endpoint and screen semantics rather than as candidates for line-by-line translation.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+## The account service: the permission cascade reaches its owner, and five omissions are named
+
+**Why this is one entry.** Every difference below was found while completing
+`backend/src/DnnMigration.Application/Services/UserService.cs`, the port of
+`Library/Components/Users/UserController.vb` — 1,372 lines, 64 public members, every one of them
+`Shared`. They share a theme: in each case the legacy behaviour was *measured*, and the target either
+routes it somewhere better or declines to carry it forward. None of them is a silent absorption.
+
+### The user-deletion permission cascade is orchestrated through the permission contract
+
+**Legacy behaviour.** `UserController.vb:L200` cleared the account's direct grants by calling two
+separate provider members before removing the account — `DeleteModulePermissionsByUserID`, reached
+from `ModulePermissionController.vb:L218`, and `DeleteTabPermissionsByUserID`, reached from
+`TabPermissionController.vb:L209`. Each took the account **object** and read the portal off it.
+
+**What it did.** The delivered account service issued those two table deletes itself, against the
+grant repository. That worked, and it was committed and tested — but it put a second copy of a
+permission rule inside a service whose subject is accounts. The rule in question is not incidental:
+only grants made **directly** to the account may be removed, because a grant the account receives
+**through a role** belongs to the role, and removing it would strip every other holder of that role.
+Two copies of that rule are free to drift, and the drift would be invisible until the day one of them
+was updated.
+
+**What it does now.** The cascade is one call to `IPermissionService.DeleteUserPermissionsAsync`,
+which is the member that owns both grant tables and states that rule once. The account identifier
+crosses the boundary as an `int`, never as an entity — which is what makes it impossible to repeat the
+legacy mistake of reading the portal off the object and widening the removal to every portal the
+account belongs to. The call **stages** rather than commits, so it still joins the single
+`SaveChangesAsync` at the foot of the delete and an abandoned deletion leaves the grants in place.
+
+**The divergence, and it is a fix.** The refusal is now **propagated**. The two repository calls
+returned `Task` and reported nothing, so a cascade that failed could not be detected; the consolidated
+member returns `Result`, and a failure abandons the deletion with the account wholly intact. The
+alternative — committing an account row as deleted while its grants remained — is the single outcome
+the cascade exists to prevent, because a later account reusing the identifier would inherit them.
+
+**A documentation defect closed with it.** `Api/Controllers/PermissionsController.cs:62` already
+asserted this collaboration in prose — *"DeleteUserPermissionsAsync by UserService as part of the
+user-deletion cascade. Nothing is orphaned by their absence here"* — while no such call existed. The
+contract documentation and the code now agree, and `DeleteUserPermissionsAsync` has the production
+caller its own documentation claims for it.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/tests/DnnMigration.UnitTests/Services/UserServiceTests.cs`.
+
+### The membership-settings read is not cached, and the legacy expiry it drops was three minutes, not sixty
+
+**Legacy behaviour.** `GetUserSettings` at `UserController.vb:L656-L670` cached its answer under the
+key `SettingsKey(portalId)` — `"UserSettings|" + portalId`, composed at `L924` — and the expiry is the
+reason this entry exists. It is `TimeSpan.FromMinutes(Globals.PerformanceSetting)`: the performance
+setting is **the whole timeout**, not a multiplier over a 20-minute base as at every other caching
+site in the legacy tree. `Globals.PerformanceSetting` resolves an absent host setting to **3**, so the
+real legacy lifetime of this entry was **three minutes** against the sixty the usual convention would
+imply.
+
+**Target behaviour.** The read is not cached. It resolves the tenant's "User Accounts" module by
+definition name and reads ordinary module settings against it, exactly as the legacy did, and returns
+a **successful result whose value is `null`** when the tenant has no such module — the legacy returned
+`Nothing` in that case and its callers fell back to their own defaults, so reporting a failure would
+change behaviour those screens depended upon. As in the legacy, an absence is never cached.
+
+**Why the cache is not reproduced, and it is a correctness reason rather than a performance one.** The
+caching abstraction classifies a key by **declared prefix family** in order to scope its invalidation,
+and `"UserSettings|"` is not one of the declared families, so `InvalidatePortal` could not evict this
+entry. The rows behind it are *ordinary module settings* on the account module instance, writable
+through the module service as well as through the settings-write member beside the read, so an entry
+only the account service knew how to evict would go stale on a write the account service never saw.
+The sibling module service records the same decision, for the same reason, for the analogous
+`GetModuleSettings<id>` and `GetTabModuleSettings<id>` keys. What is cached instead is the
+profile-definition catalogue, which is installation-time reference data with both a declared family
+and a declared eviction member — and which correctly uses the **conventional** `20 ×` multiplier.
+
+**The measurement is recorded so it is not "corrected".** Anyone reintroducing this cache must
+reproduce **three minutes** and must not normalise it to `20 × multiplier`, which would multiply the
+staleness window twentyfold.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### Defect 1: the legacy credential predicate overwrote its verdict, and the defect is annotated rather than fixed
+
+**Legacy behaviour.** `ValidatePassword` at `UserController.vb:L1067` evaluated three rules, but its
+third rule **assigned** its verdict rather than accumulating it. A credential that failed the minimum
+length rule and then matched the configured strength expression was therefore reported **valid** — the
+earlier failure was overwritten.
+
+**Why nothing in `Library/` changes.** Per AAP §0.9.1 a discovered defect is annotated in place and not
+fixed. The legacy tree is a read-only reference input and remains byte-identical.
+
+**Why the defect is dormant, and what the target does.** No strength expression is configured in this
+installation, so the third rule never runs and the legacy and target verdicts agree on every input this
+configuration can produce. The target evaluates the rules in order and returns on the first refusal,
+which is evidently what the legacy code was reaching for. Were a strength expression ever configured,
+the target would refuse a short credential that the legacy predicate accepted — recorded here rather
+than left to be discovered in production.
+
+**Where enforcement lives.** The legacy predicate was **public**, and therefore a second policy free to
+diverge from the one the screens declared; it is not exposed on the target contract at all. Declarative
+request validation in `Application/Validation/` owns enforcement. The service retains a **private**
+guard that reads the **same bound `PasswordPolicyOptions` instance** those validators read, so there is
+one policy with one source: it hardcodes no threshold, adds no rule the options do not declare, and
+skips the non-alphanumeric and strength rules unless the configuration asks for them. Its purpose is
+that a credential write is never performed merely because a validator happened to be wired at the HTTP
+boundary — the service is also reachable from a test, a seeder, or a future host with no such pipeline.
+The legacy policy itself is preserved verbatim from `Website/release.config:L242-L245`: minimum length
+seven, zero required non-alphanumeric characters, no question-and-answer requirement, and electronic
+mail uniqueness not enforced. Tightening a policy during a migration locks out existing account
+holders, so any hardening is a separate and explicit decision.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The ambient caller and tenant accessors are gone, and the never-null account sentinel with them
+
+**Legacy behaviour.** `GetCurrentUserInfo` at `UserController.vb:L381` read the acting account out of
+per-request state — `HttpContext.Current.Items("UserInfo")`, falling back to
+`Thread.CurrentPrincipal.Identity` when there was no request at all — and on every miss returned a
+**newly constructed empty account** rather than nothing. The delete at `L237` separately reached
+`PortalController.GetCurrentPortalSettings`, purely to label its audit entry; that accessor read
+`HttpContext.Current.Items("PortalSettings")`, a mutable per-request composite whose `ActiveTab`
+callers could reassign mid-request.
+
+**Target behaviour.** Neither accessor is reproduced. The acting caller arrives through the injected
+`ICurrentUser` abstraction and every member takes the identifiers it acts on as explicit arguments,
+`portalId` first. No `PortalSettings` type appears anywhere on the service — and could not, because the
+layer graph gives the Application project a reference to Domain only.
+
+**The divergence.** The **never-null contract is deliberately not carried forward.** Returning a hollow
+account made "nobody is signed in" indistinguishable from "an account with no identifier", so a caller
+that forgot to test the identifier silently operated as an anonymous ghost. Absence is now reported as
+absence.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The profile-definition surface is definition management, not a read-only lookup
+
+**The ambiguity.** The plan describes this surface two ways: AAP §0.5.1.4 calls the API surface a
+*"Lookup surface"*, while AAP §0.5.1.8 calls the client feature *"Definition management"*. The
+reconciliation is recorded here so it is not re-litigated downstream.
+
+**The reading, and what settles it.** **Definition management.** `IUserService` declares a create, an
+update and a delete for profile property definitions alongside the two reads, so read-only is not an
+available interpretation of the contract. The legacy source agrees:
+`Website/admin/Users/ProfileDefinitions.ascx.vb` is a management grid with add, edit, reorder and
+delete commands and `EditProfileDefinition.ascx.vb` is its editor, so a read-only surface would have
+**lost a workflow the legacy application offered** — which UI functional parity forbids. The narrower
+phrase is best read as describing how the definitions are *consumed* by the profile screens, which do
+only read them.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### Nine further legacy members are omitted, and the omissions are named
+
+**What is not ported, and why.** `DeleteUsers` (`L273`) and `DeleteUnauthorizedUsers` (`L293`), the
+bulk sweeps — a reachable "remove every account in this tenant" operation is a defect rather than a
+feature, and neither has an endpoint in the target API. `SetAuthCookie` (`L919`), **whose body is empty
+in this checkout**, wrote a forms-authentication cookie that has no counterpart under bearer
+authentication. `GeneratePassword` (`L314`, `L330`) — a generated credential has to be transmitted to
+be useful, which reintroduces exactly the disclosure that dropping retrieval removed.
+`GetUserCreateStatus` (`L598`) mapped a status to a message drawn from the excluded localisation
+mechanism; the status becomes a stable failure code and the wording is authored in the client.
+`GetUserMembership` (`L638`) was a `Sub` that mutated the account it was handed and reported nothing at
+all; the membership facts it fetched are materialised on the account by the repository read path.
+`GetOnlineUsers` (`L415`) is excluded with the users-online subsystem and `GetSuperUsers` (`L1331`)
+with host-level administration. `UpdateDisplayNames` (`L1259`) is a bulk maintenance sweep with no
+endpoint. `GetUserCountByPortal` (`L582`) is omitted as **redundant rather than excluded**: the paged
+envelope the listing member returns already carries the tenant-wide total, so a second member
+answering the same question from a different query would be a second source of truth for one number.
+The hydration and provider-synchronisation switches go with them — `isHydrated`, `hydrateRoles`,
+`ProgressiveHydration`, `SynchronizeUsers` and `AddToMembershipProvider` — because the shape of a
+response is settled by its data transfer object, never by a caller-supplied switch. The caching
+*members* (`GetCachedUser` `L350`, `SettingsKey` `L924`, `GetCacheKey` `L1310`, `CacheKey` `L1315`) and
+the two stateful controller properties that callers configured before invoking a method
+(`DisplayFormat` `L1210`, `PortalId` `L1219`) are gone; the service holds no mutable state of any kind.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The Option Strict asymmetry is resolved towards the stricter side
+
+**Legacy behaviour.** The class library was compiled with Option Strict **on**
+(`Library/DotNetNuke.Library.vbproj:L24` — note that `L23` is `OptionExplicit`, so a citation of `L23`
+for Option Strict is off by one, and the correction is recorded here). The admin code-behinds this
+service absorbs its rules from were compiled with `strict="false"`
+(`Website/release.config:L125`) — Option Strict **off** — and could therefore rely on late binding and
+implicit narrowing that C# rejects outright.
+
+**Target behaviour.** Every such conversion is made explicit. Text arriving from a stored module
+setting is parsed with an invariant culture and an explicit fallback rather than coerced, so a value
+the legacy screen would have silently collapsed to `0` or `""` is either parsed or refused. This is
+also why the twelve `Website/admin/Users/*.ascx.vb` code-behinds are treated as reference inputs for
+endpoint and screen semantics rather than as candidates for line-by-line translation.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The development overlay carries three log levels and nothing else, and the legacy development file's committed validation key is not among them
+
+**Legacy behaviour.** `Website/release.config` and `Website/development.config` are the same
+444-line and 442-line file differing in only six places, and exactly two of those six carry
+meaning. `Website/development.config:L89` hard-codes
+`validationKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902"` where the release file at `:L90` sets
+`validationKey="AutoGenerate,IsolateApps"`; both then share
+`decryptionKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902F8D923AC"` with `decryption="3DES"`
+(`development.config:L90-L91`), which combined with `passwordFormat="Encrypted"` and
+`enablePasswordRetrieval="true"` (`release.config:L239-L245`) decrypts every stored password. The
+development file is therefore the *more* exposed of the two: it commits the signing key as well as
+the decryption key. The other four differences are `objectQualifier="dnn_"` against `""`
+(`development.config:L352` against `release.config:L354`), `<trust level="Medium" originUrl=".*" />`
+active at `development.config:L121` but commented out at `release.config:L122`,
+`<compilation debug="true" strict="false">` against `debug="false" strict="false"`
+(`development.config:L123`, `release.config:L125`), and two whitespace-only hunks.
+
+**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.Development.json` is eleven lines
+and declares one section:
+
+```json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Debug",
+      "Override": {
+        "Microsoft.AspNetCore": "Information",
+        "Microsoft.EntityFrameworkCore.Database.Command": "Warning"
+      }
+    }
+  }
+}
+```
+
+No signing key, no connection string, no `Jwt` section of any kind. `ConnectionStrings__Default`
+and `Jwt__Secret` arrive from the environment in development exactly as they do in production, and
+both are startup-validated, so a developer who supplies neither is told which key is missing rather
+than being handed a working default that hides the requirement. The section that is declared exists
+in the base file, which keeps the overlay to genuine deltas: everything else - the two empty
+secrets, the password policy, the single permitted cross-origin caller, the credential rate limit,
+the console sink and its compact-JSON formatter - is inherited unchanged.
+
+**Why each of the six legacy differences produces no key here.** The committed keys are the whole
+point of not carrying them forward, and "it is only development" is precisely the reasoning that put
+a 3DES key into source control in the first place. `objectQualifier` is answered by Fluent mapping
+rather than configuration, for the reasons set out two sections above. `<trust level="Medium">` has
+no counterpart at all: code access security was removed from .NET with the move off the .NET
+Framework, partial trust is not a concept the modern runtime implements, and a `Trust` or
+`TrustLevel` key would describe a sandbox that cannot exist - isolation is now the container
+boundary and the unprivileged user the API image runs as. The `strict="false"` half of the
+compilation element is not a setting to port but a warning about the *source* it governed: the
+thirty-nine admin code-behinds compiled with Option Strict off while
+`Library/DotNetNuke.Library.vbproj:L23-L24` compiled the class library with `OptionExplicit` and
+`OptionStrict` on, so those code-behinds may legally contain late binding and implicit narrowing
+that C# rejects outright, and every such conversion had to be made explicit during translation. The
+`debug="true"` half maps to the build configuration and to the developer exception page the
+framework installs from the environment name alone; it is deliberately **not** expressed as a
+`DetailedErrors` key, because `GlobalExceptionHandler` takes `IProblemDetailsService` and
+`ProblemDetailsFactory` and no environment abstraction, so the RFC 7807 response shape is identical
+in every environment by construction, and a key nothing reads is worse than no key.
+
+**Why the SQL-command channel stays closed even in development.** At `Information` the
+`Microsoft.EntityFrameworkCore.Database.Command` category writes the command text together with its
+parameter list, and on the authentication and user-management paths that list is where credentials
+and tokens would be. `Warning` is therefore restated in the overlay rather than merely inherited,
+so that the level appears in the same block that relaxes the two levels around it - the place a
+reviewer looks to check it was not relaxed as well. The consequence is accepted deliberately:
+generated SQL does not appear in a development log, and a developer who needs it enables
+sensitive-data logging locally rather than lowering a level in a tracked file. Verified by running
+the host in development against a live SQL Server: with the shipped value the login path produced
+twenty `Database.Connection`, twelve `Query` and one `ChangeTracking` event at `Debug` and **zero**
+`Database.Command` events, and with the level lowered to `Information` the same request produced
+four `Executed DbCommand` entries carrying `Parameters=[...]` and the full statement. The two
+levels that *are* relaxed are bounded: `Default` at `Debug` buys the value-free Entity Framework
+Core diagnostics that make a mapping against the legacy schema inspectable, and the
+`Microsoft.AspNetCore` override at `Information` restores the framework's per-request entry while
+simultaneously holding the whole ASP.NET Core namespace above `Debug`, since a Serilog override
+applies to the longest matching prefix. Neither appears in the production overlay, and neither may
+be copied into it.
+
+### `TrustServerCertificate=True` belongs to a development connection string only
+
+**Legacy behaviour.** Transport security did not arise. `Website/release.config:L25` and `:L36`
+both point at `Data Source=.\SQLExpress;Integrated Security=True;User Instance=True;`
+`AttachDBFilename=|DataDirectory|Database.mdf;` - a local file-attached SQL Server Express 2005
+instance - and the commented alternative at `:L30` is `Server=(local);Database=DotNetNuke;uid=;pwd=;`.
+The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
+no setting existed to relax.
+
+**Target behaviour.** `Microsoft.Data.SqlClient` 5.2.3, which `DnnMigration.Infrastructure` pins,
+defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
+A developer running SQL Server locally with a self-signed certificate may add
+`TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
+only place it is acceptable. It must never appear in a production connection string, where it
+silently disables the validation that makes encryption worth having, and it appears in no tracked
+file in this repository: `appsettings.json` declares the connection string as an empty value,
+`appsettings.Development.json` declares no connection string at all, and
+`appsettings.Production.json` declares none either. Neither `User Instance` nor `AttachDBFilename`
+is carried forward in any form; both are SQL Server Express 2005 features with no counterpart in a
+containerised deployment.
+
+**Why the development overlay ships no connection string, credential-free or otherwise.** A sample
+value in a tracked file is how a real one eventually arrives there, which is the reasoning already
+recorded for the base file. A credential-free
+`Server=localhost;Database=DotNetNuke;Trusted_Connection=True` template was considered and rejected
+for a second, concrete reason: integrated authentication is not how this project's own development
+database is reached - that is a SQL Server container addressed over TCP with a password supplied
+from an untracked file - so the template would fail on the very machine it was meant to help, and
+the only edit that would make it work is the one edit that must never be made. Leaving the key out
+means the startup guard in `AddInfrastructure` names both `ConnectionStrings:Default` and
+`ConnectionStrings__Default` and stops, which is a better first experience than a driver-level login
+failure.
