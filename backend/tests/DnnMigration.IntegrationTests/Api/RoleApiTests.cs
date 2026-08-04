@@ -3,9 +3,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Role;
-using DnnMigration.Application.Dtos.User;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -45,6 +47,78 @@ public sealed class RoleApiTests
 
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
     private const int UnknownPortalId = 987654;
+
+    // MIGRATION - WHY NO MEDIA TYPE IS ASSERTED ANYWHERE IN THIS SUITE, stated from a measurement rather
+    // than assumed. RFC 7807 nominates application/problem+json, and it would be natural to pin it here.
+    // The framework answers application/json instead for a CONTROLLER-produced problem document, because
+    // the class-level [Produces("application/json")] declaration constrains content negotiation for every
+    // response the action can produce, the error ones included. Measured directly: every refusal on these
+    // resources carries application/json. Neither value may be asserted. Pinning RFC 7807's value would
+    // fail on a correct build, and pinning the value the framework currently emits would CEMENT the
+    // deviation and make correcting it later look like a regression. The deviation is recorded in the
+    // repository migration notes, and the sibling problem-details and portal suites take the same position
+    // for the same reason. What this suite asserts instead is the substance: the document's own members -
+    // type, title, status and the per-field errors object - because those are what a client reads, and a
+    // response that regressed to a bare status, a raw string or a differently shaped object would fail on
+    // them whatever media type it claimed.
+
+    /// <summary>The prefix a failure code is built into as the problem document's <c>type</c>.</summary>
+    /// <remarks>
+    /// The whole value is what a client branches on, so the tests that care about WHICH refusal occurred
+    /// assert the type rather than the status: several distinct reasons share one status code, and a
+    /// bare status cannot tell a duplicate name apart from a group that still classifies a role.
+    /// </remarks>
+    private const string ProblemTypePrefix = "urn:dnnmigration:error:";
+
+    // =============================================================================================
+    // THE FIVE VALIDATION MESSAGES, VERBATIM. Every string below is the wording declared by
+    // Website/admin/Security/editroles.ascx, reproduced character for character. They are restated
+    // here rather than referenced because the parity obligation is that the WORDING an operator reads
+    // is unchanged, and a test that read the constant the production code applies would pass however
+    // that constant were reworded. Do not "correct" any of them: two are defective on purpose, and
+    // the defect is preserved deliberately (see the two notes below).
+    //
+    // MIGRATION: the leading markup tag is STRIPPED. Every legacy ErrorMessage began with a literal
+    // "<br>" - for example ErrorMessage="<br>You Must Enter a Valid Name" at editroles.ascx L31 -
+    // because the text was written straight into the page's markup and needed a line break ahead of
+    // it. In a machine-readable problem document an HTML tag is neither markup nor data, so the tag
+    // goes and the wording after it stays. Note also that this screen uses the non-self-closing
+    // "<br>" spelling throughout, in contrast to Website/admin/Users/User.ascx.vb L187 which uses
+    // "<br/>"; neither spelling survives, so the inconsistency is moot rather than reproduced.
+    // =============================================================================================
+
+    /// <summary>valRoleName's wording (<c>editroles.ascx</c> L31), the screen's one presence check.</summary>
+    private const string RoleNameRequiredMessage = "You Must Enter a Valid Name";
+
+    /// <summary>valServiceFee2's wording (<c>editroles.ascx</c> L95), whose operator agrees with it.</summary>
+    private const string ServiceFeeNegativeMessage = "Service Fee Must Be Greater Than or Equal to Zero";
+
+    /// <summary>valBillingPeriod2's wording (<c>editroles.ascx</c> L113).</summary>
+    /// <remarks>
+    /// MIGRATION - DISCOVERED LEGACY DEFECT, PRESERVED RATHER THAN REPAIRED. This message says "or Equal
+    /// to" while the validator beside it declares <c>Operator="GreaterThan" ValueToCompare="0"</c>
+    /// (<c>editroles.ascx</c> L114). The two disagree, and the OPERATOR is the real rule: a submitted zero
+    /// is refused. The migration discipline for a discovered defect is to annotate it, not to fix it -
+    /// rewording the text would change what an operator reads, and relaxing the operator would accept a
+    /// billing cycle of zero units, which could never advance an expiry date. The boundary theory below
+    /// pins the operator; this constant pins the wording.
+    /// </remarks>
+    private const string BillingPeriodNotPositiveMessage =
+        "Billing Period Must Be Greater Than or Equal to Zero";
+
+    /// <summary>valTrialFee2's wording (<c>editroles.ascx</c> L127).</summary>
+    /// <remarks>
+    /// MIGRATION - THE SAME DEFECT IN THE OPPOSITE DIRECTION, treated identically. This message says
+    /// "Greater Than Zero" while the validator declares <c>Operator="GreaterThanEqual"
+    /// ValueToCompare="0"</c> (<c>editroles.ascx</c> L128), so zero IS accepted - a free trial is a real
+    /// configuration. Tightening the rule to match the text would refuse every free trial the legacy
+    /// screen allowed, which is why the accepted-boundary theory below asserts that a trial fee of zero
+    /// is created rather than refused.
+    /// </remarks>
+    private const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than Zero";
+
+    /// <summary>valTrialPeriod2's wording (<c>editroles.ascx</c> L145), where text and operator agree.</summary>
+    private const string TrialPeriodNotPositiveMessage = "Trial Period Must Be Greater Than Zero";
 
     private readonly ApiTestFixture _fixture;
 
@@ -696,7 +770,11 @@ public sealed class RoleApiTests
             duplicate,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        // The failure code is asserted, not merely the status. Several distinct refusals answer 409 on
+        // these resources - a duplicate role name, a duplicate group name and a group that still
+        // classifies a role - so a client that branched on the status alone could not tell them apart.
+        // The code travels as the problem document's type, which is what makes the branch possible.
+        await ShouldCarryFailureCodeAsync(response, HttpStatusCode.Conflict, "role.name_duplicate");
 
         string body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("already has a role named");
@@ -797,13 +875,15 @@ public sealed class RoleApiTests
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-
-        string body = await response.Content.ReadAsStringAsync();
-
         // The wording is valRoleName's own, from Website/admin/Security/editroles.ascx L31, with only
-        // the leading markup tag removed. Do not reword it: the string is the parity assertion.
-        body.Should().Contain("You Must Enter a Valid Name");
+        // the leading markup tag removed. Do not reword it: the string is the parity assertion. The
+        // document is read as a document rather than as text, so the member the caller must correct is
+        // named and the wording is compared exactly - a substring match over the raw body could not tell
+        // the migrated text apart from the legacy text with its markup tag still attached.
+        await ShouldReportFieldAsync(
+            response,
+            nameof(CreateRoleRequest.RoleName),
+            RoleNameRequiredMessage);
     }
 
     /// <summary>A negative service fee is rejected by the request validator.</summary>
@@ -821,10 +901,10 @@ public sealed class RoleApiTests
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-
-        string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("Service Fee Must Be Greater Than or Equal to Zero");
+        await ShouldReportFieldAsync(
+            response,
+            nameof(CreateRoleRequest.ServiceFee),
+            ServiceFeeNegativeMessage);
     }
 
     /// <summary>A billing period of zero is rejected, because a period must be a positive count.</summary>
@@ -842,15 +922,14 @@ public sealed class RoleApiTests
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-
-        string body = await response.Content.ReadAsStringAsync();
-
         // valBillingPeriod2 (editroles.ascx L113-L114) declares Operator="GreaterThan" against 0 while
         // its ErrorMessage says "or Equal to". The operator is the behaviour and a zero is refused; the
         // wording is carried across unchanged because a legacy defect is annotated, not repaired. Do
         // not "fix" this string to agree with the rule.
-        body.Should().Contain("Billing Period Must Be Greater Than or Equal to Zero");
+        await ShouldReportFieldAsync(
+            response,
+            nameof(CreateRoleRequest.BillingPeriod),
+            BillingPeriodNotPositiveMessage);
     }
 
     /// <summary>An update answers <c>200 OK</c> and the new state survives a read.</summary>
@@ -1456,7 +1535,16 @@ public sealed class RoleApiTests
             _fixture.Seed.AdministratorRoleId,
             _fixture.Seed.AdminUserId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // MIGRATION: the legacy screen answered a refusal with
+        // Response.Redirect(NavigateURL("Access Denied"), True) - a redirect to an HTML page no
+        // programmatic caller can interpret, which also conflated "you did not say who you are" with
+        // "you may not do this". The target answers a plain 403 carrying a machine-readable code, and
+        // the code is what separates a protected assignment from a caller who does not administer the
+        // tenant: both answer 403, and only the type tells them apart.
+        await ShouldCarryFailureCodeAsync(
+            response,
+            HttpStatusCode.Forbidden,
+            "role_assignment.protected");
 
         string body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("protected");
@@ -1491,7 +1579,10 @@ public sealed class RoleApiTests
             _fixture.Seed.RegisteredRoleId,
             _fixture.Seed.MemberUserId));
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        await ShouldCarryFailureCodeAsync(
+            response,
+            HttpStatusCode.Forbidden,
+            "role_assignment.protected");
     }
 
     /// <summary>The account-roles projection answers <c>404 Not Found</c> for an unknown account.</summary>
@@ -1729,7 +1820,12 @@ public sealed class RoleApiTests
             new CreateRoleGroupRequest { RoleGroupName = first.RoleGroupName },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        // A group name collision carries its own code, distinct from a role name collision, so the two
+        // are distinguishable to a client even though both answer 409.
+        await ShouldCarryFailureCodeAsync(
+            response,
+            HttpStatusCode.Conflict,
+            "role_group.name_duplicate");
     }
 
     /// <summary>
@@ -1767,7 +1863,10 @@ public sealed class RoleApiTests
         using HttpResponseMessage refused = await client.DeleteAsync(
             RoleGroupRoute(_fixture.Seed.PortalId, group.RoleGroupId));
 
-        refused.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        // The third of the three 409 reasons on these resources, and the one a client is most likely to
+        // want to act on differently - it can be resolved by reclassifying the roles, whereas a name
+        // collision can only be resolved by choosing another name.
+        await ShouldCarryFailureCodeAsync(refused, HttpStatusCode.Conflict, "role_group.in_use");
 
         string body = await refused.Content.ReadAsStringAsync();
         body.Should().Contain("still classifies");
@@ -2070,6 +2169,1047 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    // =============================================================================================
+    // THE FEE-VERSUS-PERIOD ASYMMETRY. This is the sharpest parity obligation on these resources and
+    // the one a plausible-looking validator gets wrong: the two FEES admit zero and the two PERIODS
+    // do not. Measured verbatim in Website/admin/Security/editroles.ascx:
+    //   valServiceFee2   L96   Operator="GreaterThanEqual" ValueToCompare="0"   -> zero ACCEPTED
+    //   valBillingPeriod2 L114 Operator="GreaterThan"      ValueToCompare="0"   -> zero REFUSED
+    //   valTrialFee2     L128  Operator="GreaterThanEqual" ValueToCompare="0"   -> zero ACCEPTED
+    //   valTrialPeriod2  L146  Operator="GreaterThan"      ValueToCompare="0"   -> zero REFUSED
+    // A validator that applied ">= 0" to all four would pass every negative-value test in this suite
+    // and would still be wrong, because it would accept a billing cycle of zero units. A validator
+    // that applied "> 0" to all four would be wrong in the other direction, because it would refuse
+    // every free role and every free trial the legacy screen allowed. Both boundaries are therefore
+    // asserted for all four members: four accepted cases and eight refused ones.
+    // =============================================================================================
+
+    /// <summary>
+    /// A fee of exactly zero is accepted on both fee members, which is the <c>GreaterThanEqual</c>
+    /// boundary, and the value survives as zero rather than being erased.
+    /// </summary>
+    /// <param name="onServiceFee">
+    /// <see langword="true"/> to exercise the service fee, <see langword="false"/> for the trial fee.
+    /// </param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The trial-fee half of this theory is the case the wording actively argues against: valTrialFee2's
+    /// message reads "Trial Fee Must Be Greater Than Zero" while its operator admits zero. The operator
+    /// wins, so a free trial is created - and that is why the defect is annotated rather than repaired.
+    /// </para>
+    /// <para>
+    /// The second assertion is the sentinel half of the same fact. Serialisation is configured with the
+    /// <c>Never</c> ignore condition, so a zero is written as a zero and an absent fee is written as an
+    /// explicit null; the two are different states and a caller must be able to tell them apart. A role
+    /// with NO charge is not a role charged NOTHING, which is exactly the distinction the legacy encoding
+    /// could not express - Null.vb declares NullSingle as Single.MinValue (L51), so an unset fee arrived
+    /// as a huge negative magnitude indistinguishable from a real one.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateRole_WithAFeeOfZero_IsCreatedCarryingThatFee(bool onServiceFee)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest request = NewRoleRequest();
+        if (onServiceFee)
+        {
+            request.ServiceFee = 0m;
+        }
+        else
+        {
+            request.TrialFee = 0m;
+        }
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the comparison validator behind this member is GreaterThanEqual against zero, so a free "
+            + "role and a free trial are configurations the legacy screen accepted");
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+
+        decimal? submitted = onServiceFee ? created.ServiceFee : created.TrialFee;
+        decimal? omitted = onServiceFee ? created.TrialFee : created.ServiceFee;
+
+        submitted.Should().Be(0m, "a submitted zero is a value and must not be read back as absence");
+        omitted.Should().BeNull("a fee that was never supplied stays absent rather than becoming zero");
+    }
+
+    /// <summary>
+    /// A negative fee is refused on both fee members, naming the offending member and carrying the
+    /// legacy wording, and nothing reaches the store.
+    /// </summary>
+    /// <param name="onServiceFee">
+    /// <see langword="true"/> to exercise the service fee, <see langword="false"/> for the trial fee.
+    /// </param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION - THE SAME FIELD HAS TWO LEGACY BEHAVIOURS, and this test pins which one this resource
+    /// implements. The role editor REFUSED a negative fee outright (valServiceFee2 at
+    /// <c>editroles.ascx</c> L96, valTrialFee2 at L128), while the portal-creation path SILENTLY CLAMPED
+    /// one up to zero - <c>Library/Components/Portal/PortalController.vb</c> L395 and L398 read
+    /// <c>CType(IIf(serviceFee &lt; 0, 0, serviceFee), Single)</c>. Both survive in the target, on the
+    /// paths that owned them: the write contracts here refuse, and the clamp lives in
+    /// <c>Application/Mapping/RoleMappings.cs</c> where the template-driven path reaches it. The final
+    /// assertion below is what makes the choice observable rather than merely stated - a clamping write
+    /// path would have created a role priced at zero, so proving no row exists proves the refusal was a
+    /// refusal. (The legacy <c>IIf</c> is a FUNCTION and evaluates both arms, so it is not a
+    /// short-circuiting conditional; the arms here are side-effect-free, which is the only reason the
+    /// two are equivalent.)
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateRole_WithAFeeBelowZero_NamesTheMemberAndStoresNothing(bool onServiceFee)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest request = NewRoleRequest();
+        if (onServiceFee)
+        {
+            request.ServiceFee = -0.01m;
+        }
+        else
+        {
+            request.TrialFee = -0.01m;
+        }
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        await ShouldReportFieldAsync(
+            response,
+            onServiceFee ? nameof(CreateRoleRequest.ServiceFee) : nameof(CreateRoleRequest.TrialFee),
+            onServiceFee ? ServiceFeeNegativeMessage : TrialFeeNegativeMessage);
+
+        int stored = await CountRolesNamedAsync(request.RoleName);
+
+        stored.Should().Be(
+            0,
+            "the role write paths refuse a negative fee rather than clamping it, so a refused request "
+            + "must leave no row behind at all");
+    }
+
+    /// <summary>
+    /// A period that is not strictly positive is refused on both period members, naming the offending
+    /// member and carrying the legacy wording.
+    /// </summary>
+    /// <param name="onBillingPeriod">
+    /// <see langword="true"/> to exercise the billing period, <see langword="false"/> for the trial period.
+    /// </param>
+    /// <param name="period">The value submitted: the zero boundary, and one below it.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The zero cases are the load-bearing ones. Zero is precisely where a "greater than or equal to"
+    /// rule and a "greater than" rule disagree, so a validator that had copied the fee rule onto the
+    /// periods would accept these two submissions and every other assertion in this suite would still
+    /// pass. The billing half additionally carries the defective wording described on
+    /// <see cref="BillingPeriodNotPositiveMessage"/>: the message promises to admit zero and the
+    /// operator refuses it, and the operator is the rule.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(true, -1)]
+    [InlineData(false, 0)]
+    [InlineData(false, -1)]
+    public async Task CreateRole_WithAPeriodThatIsNotPositive_NamesTheMember(bool onBillingPeriod, int period)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest request = NewRoleRequest();
+        if (onBillingPeriod)
+        {
+            request.BillingPeriod = period;
+        }
+        else
+        {
+            request.TrialPeriod = period;
+        }
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        await ShouldReportFieldAsync(
+            response,
+            onBillingPeriod
+                ? nameof(CreateRoleRequest.BillingPeriod)
+                : nameof(CreateRoleRequest.TrialPeriod),
+            onBillingPeriod ? BillingPeriodNotPositiveMessage : TrialPeriodNotPositiveMessage);
+    }
+
+    /// <summary>
+    /// A period of one - the smallest strictly positive value, and therefore the accepted boundary - is
+    /// created and carries the submitted period and frequency.
+    /// </summary>
+    /// <param name="onBillingPeriod">
+    /// <see langword="true"/> to exercise the billing term, <see langword="false"/> for the trial term.
+    /// </param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The counterpart of the refusal above, and necessary rather than decorative: a rule mistakenly
+    /// written as "greater than one" would refuse this submission while passing every refusal assertion
+    /// in this suite. The measured legacy default for both periods was one
+    /// (<c>EditRoles.ascx.vb</c> L212-L214 and L222-L224 substitute a period of one alongside the never
+    /// code when a block is left blank), so this is the value the legacy screen wrote most often.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateRole_WithAPeriodOfOne_IsCreatedCarryingThatPeriod(bool onBillingPeriod)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest request = NewRoleRequest();
+        if (onBillingPeriod)
+        {
+            request.ServiceFee = 5m;
+            request.BillingPeriod = 1;
+            request.BillingFrequency = BillingFrequency.Month;
+        }
+        else
+        {
+            request.TrialFee = 0m;
+            request.TrialPeriod = 1;
+            request.TrialFrequency = BillingFrequency.Week;
+        }
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "one is the smallest period the strictly-positive comparison admits");
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+
+        if (onBillingPeriod)
+        {
+            created.BillingPeriod.Should().Be(1);
+            created.BillingFrequency.Should().Be(BillingFrequency.Month);
+            created.TrialPeriod.Should().BeNull("an unsupplied term stays absent");
+        }
+        else
+        {
+            created.TrialPeriod.Should().Be(1);
+            created.TrialFrequency.Should().Be(BillingFrequency.Week);
+            created.BillingPeriod.Should().BeNull("an unsupplied term stays absent");
+        }
+    }
+
+    /// <summary>
+    /// A fee far above the baseline column's 999.99 limit is accepted and round-trips exactly, because
+    /// the terminal column is <c>money</c> and no legacy validator bounded either fee above.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION - A CEILING THAT NO LONGER APPLIES, REFUTED BY MEASUREMENT RATHER THAN ASSUMED AWAY.
+    /// The baseline schema declares <c>[ServiceFee] [decimal](5, 2)</c>
+    /// (<c>01.00.00.SqlDataProvider</c> L119), which caps a fee at 999.99, and it would be easy to carry
+    /// that cap forward as a validation rule. Only the TERMINAL schema state is meaningful, and the
+    /// destructive upgrade chain retypes the column: <c>01.00.04</c> L1326 and <c>01.00.05</c> L2752
+    /// rebuild it as <c>money</c> while converting existing values, and <c>03.01.01</c> L1173 settles it
+    /// with <c>ALTER COLUMN [ServiceFee] [money] NULL</c>, adding a zero default at L1177. TrialFee was
+    /// <c>money</c> from birth (<c>01.00.08</c> L6830). Enforcing 999.99 would refuse a fee an
+    /// installation has been able to charge for many versions.
+    /// </para>
+    /// <para>
+    /// The <c>MaxLength="50"</c> attribute on the fee text boxes (<c>editroles.ascx</c> L89 and L122) is
+    /// likewise not a ceiling: it bounded how many CHARACTERS could be typed into a text box, which is a
+    /// text-entry width and is meaningless for a decimal member.
+    /// </para>
+    /// <para>
+    /// The value is read back out of the column itself as well as off the wire, because a truncating or
+    /// rounding write would leave the response correct and the stored row wrong.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_WithAFeeAboveTheBaselineColumnLimit_IsCreatedAndStoredExactly()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        const decimal baselineCeiling = 999.99m;
+        const decimal wellAboveIt = 1_000_000.99m;
+
+        CreateRoleRequest atTheBaselineCeiling = NewRoleRequest();
+        atTheBaselineCeiling.ServiceFee = baselineCeiling;
+
+        using HttpResponseMessage accepted = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            atTheBaselineCeiling,
+            ApiTestFixture.Json);
+
+        accepted.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await ReadDetailAsync(accepted)).ServiceFee.Should().Be(baselineCeiling);
+
+        CreateRoleRequest aboveTheBaselineCeiling = NewRoleRequest();
+        aboveTheBaselineCeiling.ServiceFee = wellAboveIt;
+        aboveTheBaselineCeiling.TrialFee = wellAboveIt;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            aboveTheBaselineCeiling,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the terminal column is money, so the baseline decimal(5, 2) limit is not a rule this API "
+            + "may enforce");
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+        created.ServiceFee.Should().Be(wellAboveIt);
+        created.TrialFee.Should().Be(wellAboveIt);
+
+        decimal persisted = await _fixture.Database.ScalarAsync<decimal>(
+            "SELECT [ServiceFee] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        persisted.Should().Be(
+            wellAboveIt,
+            "the column stores the amount as submitted rather than truncating it to the baseline scale");
+    }
+
+    /// <summary>
+    /// A fee the <c>money</c> column cannot represent is refused as a field-level failure naming the
+    /// member, rather than reaching the provider and surfacing as a server fault.
+    /// </summary>
+    /// <param name="onServiceFee">
+    /// <see langword="true"/> to exercise the service fee, <see langword="false"/> for the trial fee.
+    /// </param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Representability, not a price ceiling - the distinction matters, because the test above proves no
+    /// business maximum exists. What is refused here is an amount the column cannot hold AT ALL, and the
+    /// reason to refuse it at the boundary is the shape of the answer: unbounded, the value reached the
+    /// database client and came back as a 500 naming no field, which tells a caller nothing it can act
+    /// on. The bound is taken from the shared storage-range constants rather than restated as a literal,
+    /// so the test cannot drift away from the rule it is asserting.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateRole_WithAFeeTheColumnCannotHold_NamesTheMember(bool onServiceFee)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        decimal unrepresentable = SqlServerRange.MaximumMoney + 1m;
+
+        CreateRoleRequest request = NewRoleRequest();
+        if (onServiceFee)
+        {
+            request.ServiceFee = unrepresentable;
+        }
+        else
+        {
+            request.TrialFee = unrepresentable;
+        }
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        // The refusal is a field-level answer naming the member, which is the whole point: unbounded, the
+        // value reached the database client and came back as a server fault naming nothing at all.
+        await ShouldNameFieldAsync(
+            response,
+            onServiceFee ? nameof(CreateRoleRequest.ServiceFee) : nameof(CreateRoleRequest.TrialFee));
+    }
+
+    /// <summary>
+    /// Identifier zero addresses a real role, over both the nested and the flat address, because
+    /// <c>Roles.RoleID</c> is declared <c>IDENTITY (0, 1)</c>.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION - THE SENTINEL COLLISION, ASSERTED RATHER THAN DESCRIBED. Rule T7 keeps sentinels at the
+    /// boundary and out of the domain, and the reason it matters here is arithmetic: the legacy
+    /// absent-integer marker is -1 (<c>Library/Components/Shared/Null.vb</c> L41-L45) while
+    /// <c>Roles.RoleID</c> is seeded at zero
+    /// (<c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> L115), so the
+    /// FIRST role an installation ever creates is numbered 0 - the shipped Administrators role holds
+    /// exactly that value at L7192, and the shipped portal row points at it through
+    /// <c>AdministratorRoleId = 0</c>, a genuine foreign key to a genuine row.
+    /// </para>
+    /// <para>
+    /// Zero is consequently NOT absence, and the failure this test exists to catch is the one that looks
+    /// harmless: a route constraint with a lower bound, a guard written as
+    /// <c>if (roleId &lt;= 0) return NotFound()</c>, or a client-side falsiness test would each make the
+    /// tenant's own administrators role unreachable while every other assertion in this suite kept
+    /// passing. The identifier is also read off the RAW body, because a typed round trip through the same
+    /// serialiser would pass whether or not the member survived.
+    /// </para>
+    /// <para>
+    /// The identity seed is asserted first rather than taken on trust. Each run provisions a freshly
+    /// named database and seeds three roles into it, so the administrators role genuinely occupies the
+    /// seed value; if that ever stopped being true this test would still be correct but would no longer
+    /// be exercising zero, and the assertion says so.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetRole_ForTheIdentitySeededRole_ResolvesIdentifierZero()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        int lowest = await _fixture.Database.ScalarAsync<int>(
+            "SELECT MIN([RoleID]) FROM [dbo].[Roles];",
+            new Dictionary<string, object?>());
+
+        lowest.Should().Be(
+            0,
+            "Roles.RoleID is IDENTITY(0, 1), so the first role stored in a fresh database is numbered "
+            + "zero rather than one");
+
+        _fixture.Seed.AdministratorRoleId.Should().Be(
+            0,
+            "the administrators role is the first row this suite inserts, so it is the one that occupies "
+            + "the identity seed and therefore the one that proves zero is addressable");
+
+        using HttpResponseMessage nested = await client.GetAsync(
+            RoleRoute(_fixture.Seed.PortalId, 0));
+
+        nested.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "zero is a role key and must not be read as an absent identifier");
+
+        RoleDetailDto read = await ReadDetailAsync(nested);
+        read.RoleId.Should().Be(0);
+        read.RoleName.Should().Be(IntegrationSeed.AdministratorsRoleName);
+
+        string body = await nested.Content.ReadAsStringAsync();
+        body.Should().Contain(
+            "\"roleId\":0",
+            "the identifier reaches the wire as an explicit zero rather than being omitted as a default");
+
+        using HttpResponseMessage flat = await client.GetAsync(new Uri("/api/v1/roles/0", UriKind.Relative));
+
+        flat.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the {roleId:int} route constraint carries no lower bound, so the flat address resolves zero "
+            + "as well");
+
+        (await ReadDetailAsync(flat)).RoleId.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A role that belongs to no group carries an explicit <c>null</c> group reference, and the legacy
+    /// minus-one marker for that state is refused rather than tunnelled through the contract.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy layer had one value standing for three things. The editor's group drop-down
+    /// offered "Global Roles" as -1 and that was a real, selectable choice
+    /// (<c>EditRoles.ascx.vb</c> L75); the portal-creation path assigned the same number as the "no
+    /// group" marker - <c>Library/Components/Portal/PortalController.vb</c> L392 reads
+    /// <c>objRoleInfo.RoleGroupID = Null.NullInteger</c>; and -1 is simultaneously the generic
+    /// absent-integer sentinel. Here absence is <c>null</c> and nothing else.
+    /// </para>
+    /// <para>
+    /// The marker never reached the column even in the legacy application, and the schema is what
+    /// guarantees it: <c>FK_Roles_RoleGroups</c> constrains the column to a real group row
+    /// (<c>03.02.03.SqlDataProvider</c> L37, re-added at <c>04.00.04</c> L70) while
+    /// <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1)</c>, so no group can bear -1 and the marker
+    /// was converted to a database null on the way down. This API converts it to a refusal instead,
+    /// which is strictly more informative and is asserted below - the alternative, quietly treating -1
+    /// as "no group", would let a caller store one meaning and read back another.
+    /// </para>
+    /// <para>
+    /// The absent case is read off the raw body deliberately. Serialisation is configured with the
+    /// <c>Never</c> ignore condition, so an absent group is written as <c>"roleGroupId":null</c> rather
+    /// than being dropped from the document; a client can therefore tell "no group" from "the server did
+    /// not tell me", which an omitted member cannot express.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RoleDetail_KeepsAnAbsentGroupExplicitAndRefusesTheLegacyMarker()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        RoleDetailDto ungrouped = await CreateRoleAsync(client);
+        ungrouped.RoleGroupId.Should().BeNull("no group was nominated, so the role belongs to none");
+
+        using HttpResponseMessage read = await client.GetAsync(
+            RoleRoute(_fixture.Seed.PortalId, ungrouped.RoleId));
+
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string body = await read.Content.ReadAsStringAsync();
+        body.Should().Contain(
+            "\"roleGroupId\":null",
+            "absence is stated explicitly rather than expressed by a missing member");
+
+        int storedGroups = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[RoleGroups] WHERE [RoleGroupID] = -1;",
+            new Dictionary<string, object?>());
+
+        storedGroups.Should().Be(
+            0,
+            "RoleGroups.RoleGroupID is IDENTITY(0, 1) and FK_Roles_RoleGroups constrains the role's "
+            + "column to a real group, so the legacy minus-one marker is unrepresentable at the store");
+
+        CreateRoleRequest withTheMarker = NewRoleRequest();
+        withTheMarker.RoleGroupId = -1;
+
+        using HttpResponseMessage refused = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            withTheMarker,
+            ApiTestFixture.Json);
+
+        await ShouldCarryFailureCodeAsync(
+            refused,
+            HttpStatusCode.NotFound,
+            "role_group.not_found");
+
+        (await CountRolesNamedAsync(withTheMarker.RoleName)).Should().Be(
+            0,
+            "a refused group reference must not fall back to storing the role ungrouped");
+    }
+
+    /// <summary>
+    /// A role really does travel with the group it was created in, whatever that group's identifier, so
+    /// a group key of zero is carried rather than treated as absence.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion of the assertion above. <c>RoleGroups.RoleGroupID</c> is seeded at zero as well, so
+    /// the group reference has the same collision the role key has and neither the request contract nor
+    /// the validator may bound it - the validator records exactly that, and this test is what would fail
+    /// if a bound were ever added. The identifier is compared to the one the group resource issued rather
+    /// than to a literal, because which number the store assigns is the store's business.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRole_InARoleGroup_CarriesTheGroupIdentifierWhateverItsMagnitude()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        RoleGroupDto group = await CreateRoleGroupAsync(client);
+
+        group.RoleGroupId.Should().BeGreaterThanOrEqualTo(
+            0,
+            "the group key is IDENTITY(0, 1), so zero is its first legitimate value");
+
+        CreateRoleRequest request = NewRoleRequest();
+        request.RoleGroupId = group.RoleGroupId;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        RoleDetailDto created = await ReadDetailAsync(response);
+        created.RoleGroupId.Should().Be(group.RoleGroupId);
+
+        int persisted = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [RoleGroupID] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        persisted.Should().Be(group.RoleGroupId, "the reference is stored as submitted");
+    }
+
+    /// <summary>
+    /// The listing answers with the paging companion beside the records, carrying a real total and the
+    /// coordinates the caller asked for.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The envelope is the contract: <c>items</c> beside <c>meta</c>, with the total across every page in
+    /// the companion rather than as a sibling of the records. The total is asserted to be a real count
+    /// and specifically NOT -1, because the legacy paging idiom passed the total back through a
+    /// by-reference argument and used the absent-integer marker for "not counted"; an envelope that
+    /// published that marker would give a client a page count of minus one page.
+    /// </para>
+    /// <para>
+    /// The page index is read back rather than assumed. The base is zero here - index 0 is the first
+    /// page - and the assertion is written against what the caller sent rather than against a constant,
+    /// so it states that the coordinates are echoed without restating the base in a second place.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListRoles_CarriesThePagingCompanionWithARealTotal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        const int pageIndex = 0;
+        const int pageSize = 2;
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles"
+            + $"?pageIndex={Route(pageIndex)}&pageSize={Route(pageSize)}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<RoleListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Meta.Should().NotBeNull("the paging facts travel in a companion object, not as siblings");
+
+        page.TotalCount.Should().BeGreaterThanOrEqualTo(
+            3,
+            "the tenant is seeded with an administrators, a registered-users and a subscribers role");
+        page.TotalCount.Should().NotBe(
+            -1,
+            "the legacy by-reference total used the absent-integer marker, and the envelope publishes a "
+            + "count instead");
+
+        page.PageIndex.Should().Be(pageIndex, "the coordinates a caller sends are echoed back");
+        page.PageSize.Should().Be(pageSize);
+        page.Items.Should().HaveCountLessThanOrEqualTo(pageSize);
+        page.Items.Should().NotBeEmpty("a tenant with three roles has a non-empty first page");
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("\"items\":");
+        body.Should().Contain("\"meta\":");
+        body.Should().Contain("\"totalCount\":");
+    }
+
+    /// <summary>
+    /// The free-text filter narrows both the records and the reported total, and a filter that matches
+    /// nothing is a successful empty page rather than a failure.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The total is the point of the second half. A filtered listing that narrowed its records while
+    /// reporting the unfiltered total would drive a client's pager to offer pages that do not exist, and
+    /// an empty result must report zero rather than the absent-integer marker.
+    /// </para>
+    /// <para>
+    /// MIGRATION - MEASURED BEHAVIOUR, AND IT DISAGREES WITH THE PROSE THAT DESCRIBES IT. The role
+    /// listing matches a fragment ANYWHERE in the name: <c>Application/Services/RoleService.cs</c> L436
+    /// to L440 applies <c>RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase)</c>. The account
+    /// listing genuinely is a prefix match - <c>Infrastructure/Repositories/UserRepository.cs</c> L234
+    /// applies <c>StartsWith</c> - and the role controller's own summary claims the same of this
+    /// endpoint, so the description and the behaviour do not agree. The behaviour is what a client
+    /// experiences, so the behaviour is what is pinned here, and the mid-string case is asserted
+    /// explicitly so that a later change of semantics is a failing test rather than a silent change of
+    /// contract. Nothing is repaired: the legacy role screen declared NO search control at all
+    /// (<c>Website/admin/Security/roles.ascx</c> contains no filter input), so there is no legacy
+    /// behaviour that either reading would violate, and altering a net-new search from a test is not this
+    /// file's business.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListRoles_FiltersByNameAndNarrowsTheReportedTotal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        RoleDetailDto created = await CreateRoleAsync(client);
+
+        PagedEnvelope<RoleListItemDto> exact = await ListRolesAsync(client, created.RoleName);
+
+        exact.Items.Should().ContainSingle(item => item.RoleId == created.RoleId);
+        exact.TotalCount.Should().Be(
+            exact.Items.Count,
+            "a filtered listing reports the filtered total, not the unfiltered one");
+
+        PagedEnvelope<RoleListItemDto> unmatched = await ListRolesAsync(
+            client,
+            "no-role-bears-this-name-" + Suffix());
+
+        unmatched.Items.Should().BeEmpty();
+        unmatched.TotalCount.Should().Be(
+            0,
+            "nothing matched is a successful empty page reporting zero, never the absent-integer marker");
+
+        // The measured mid-string case. The created name is "ITest Role <suffix>", so a fragment taken
+        // from inside the suffix cannot be a prefix of it.
+        string midStringFragment = created.RoleName[^6..];
+
+        PagedEnvelope<RoleListItemDto> withinTheName = await ListRolesAsync(client, midStringFragment);
+
+        withinTheName.Items.Should().Contain(
+            item => item.RoleId == created.RoleId,
+            "the role filter matches anywhere within the name, which is what the service applies");
+    }
+
+    /// <summary>
+    /// A caller-supplied correlation identifier comes back exactly once on a success and is still
+    /// present on a deliberately failed request; one is minted when the caller supplies none; and an
+    /// unusable value is replaced rather than echoed, without becoming a refusal of its own.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The failure half is the half that matters. A correlation identifier exists so that the one
+    /// exchange a caller wants to report - the one that went wrong - can be found in a log, so a header
+    /// attached only to successful responses would be present exactly when it is not needed. The problem
+    /// document's own detail text points the caller at this header, which would be a dead reference if
+    /// the header were absent.
+    /// </para>
+    /// <para>
+    /// The single-value assertion is not pedantry either: a middleware that appended rather than assigned
+    /// would produce two values on a request that already carried one, and a client reading the first
+    /// would silently disagree with a log written from the second.
+    /// </para>
+    /// <para>
+    /// The oversize value exercises the sanitiser. The header is bounded at 128 characters and confined
+    /// to printable ASCII, because a value copied into a log line is a header-injection vector; an
+    /// unusable value is therefore REPLACED with a minted one rather than echoed, and - equally
+    /// important - it does not turn the request into a 400. Rejecting the exchange over a diagnostic
+    /// header would let a caller break its own request with a value that has no bearing on what it asked
+    /// for.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RoleRequests_RoundTripTheCorrelationIdentifierIncludingOnFailure()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string supplied = "role-suite-" + Suffix();
+
+        using var successRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            RolesRoute(_fixture.Seed.PortalId));
+
+        using HttpResponseMessage success = await client.SendAsync(
+            ApiTestFixture.WithCorrelationId(successRequest, supplied));
+
+        success.StatusCode.Should().Be(HttpStatusCode.OK);
+        ApiTestFixture.ReadCorrelationId(success).Should().Be(supplied);
+        success.Headers.GetValues(ApiTestFixture.CorrelationIdHeader).Should().HaveCount(
+            1,
+            "the header is assigned rather than appended, so a supplied value is not duplicated");
+
+        string onFailure = "role-suite-failure-" + Suffix();
+
+        using var failureRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            RoleRoute(_fixture.Seed.PortalId, UnknownRoleId));
+
+        using HttpResponseMessage failure = await client.SendAsync(
+            ApiTestFixture.WithCorrelationId(failureRequest, onFailure));
+
+        failure.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        ProblemDetails? refusal = await failure.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        refusal.Should().NotBeNull("the failure this identifier is meant to trace is a problem document");
+
+        ApiTestFixture.ReadCorrelationId(failure).Should().Be(
+            onFailure,
+            "the identifier a caller quotes when reporting a problem must survive the problem");
+
+        using HttpResponseMessage minted = await client.GetAsync(RolesRoute(_fixture.Seed.PortalId));
+
+        minted.StatusCode.Should().Be(HttpStatusCode.OK);
+        ApiTestFixture.ReadCorrelationId(minted).Should().NotBeNullOrWhiteSpace(
+            "every response carries an identifier, including one the caller did not name");
+
+        using var oversizeRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            RolesRoute(_fixture.Seed.PortalId));
+
+        string oversize = new('x', 129);
+
+        using HttpResponseMessage sanitised = await client.SendAsync(
+            ApiTestFixture.WithCorrelationId(oversizeRequest, oversize));
+
+        sanitised.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unusable diagnostic header is replaced, never allowed to refuse the request it rode in on");
+
+        string? replacement = ApiTestFixture.ReadCorrelationId(sanitised);
+        replacement.Should().NotBeNullOrWhiteSpace();
+        replacement.Should().NotBe(oversize, "a value beyond the bound is replaced rather than echoed");
+    }
+
+    /// <summary>
+    /// The role resource publishes no address for the operations that belong elsewhere or nowhere.
+    /// </summary>
+    /// <param name="path">The address that must not resolve to a role operation.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// An absent endpoint is normally invisible to a test suite, which is exactly why it drifts back in.
+    /// Each address below was a candidate this resource deliberately does not serve, and each is refused
+    /// with a status that means "no such thing here" rather than answered.
+    /// </para>
+    /// <para>
+    /// Role GROUP management is the first pair: a group's rules are rules about the roles it classifies,
+    /// so the same application contract serves both, but the ADDRESSES are separate and the group ones
+    /// live under the kebab-cased <c>role-groups</c> collection. The remaining addresses are the
+    /// subscription and housekeeping surfaces: the legacy member-services screen subscribed and
+    /// unsubscribed an account through the very same assignment operation the two membership actions
+    /// already expose, so it earns no address of its own; a role's invitation code is stored and returned
+    /// but redeeming it is not an operation here; there is no billing-transaction action, because no
+    /// billing subsystem is in scope; and there is neither a cache-invalidation action nor a bulk action,
+    /// because invalidation belongs to the service that performs a write and a bulk endpoint would be a
+    /// second, weaker copy of every rule the single-item endpoints enforce.
+    /// </para>
+    /// <para>
+    /// A credentialled administrator issues these probes on purpose. An anonymous caller would be refused
+    /// by the policy before routing had anything to say, so the refusal would prove nothing about which
+    /// addresses exist.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/v1/roles/groups")]
+    [InlineData("/api/v1/roles/0/groups")]
+    [InlineData("/api/v1/roles/0/rsvp")]
+    [InlineData("/api/v1/roles/0/redeem")]
+    [InlineData("/api/v1/roles/0/transactions")]
+    [InlineData("/api/v1/roles/0/services")]
+    [InlineData("/api/v1/roles/cache")]
+    [InlineData("/api/v1/roles/bulk")]
+    [InlineData("/api/v1/users/1/services")]
+    public async Task RoleResource_PublishesNoAddressForTheOperationsItDoesNotOwn(string path)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(path, UriKind.Relative));
+
+        response.StatusCode.Should().BeOneOf(
+            [HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed],
+            "an address this resource does not serve must not resolve to one that it does");
+    }
+
+    /// <summary>
+    /// Removing a paid membership whose trial has been consumed back-dates the expiry to yesterday and
+    /// keeps the row, rather than deleting it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the successor of <c>Library/Components/Security/Roles/RoleController.vb</c> L495-L496,
+    /// where cancelling a used paid trial reads
+    /// <c>userRole.ExpiryDate = DateAdd(DateInterval.Day, -1, Date.Today())</c> and updates the row
+    /// instead of deleting it. Two facts are preserved and both are asserted. The row SURVIVES, because
+    /// the trial-used flag lives on it and losing the row would let a cancelled subscriber restart a paid
+    /// trial. And "expire now" is implemented as YESTERDAY rather than as the current instant, with the
+    /// time component truncated away, so the membership reads as already expired for the whole of the
+    /// current day rather than only after the current hour.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy stamp was <c>Date.Today()</c>, which is server-LOCAL, while the injected
+    /// clock is UTC only. For the same real instant the two can name different calendar days either side
+    /// of Greenwich. That is accepted deliberately - a local-zone stamp is not comparable between hosts -
+    /// and it is why the expected day is captured either side of the call rather than computed once: the
+    /// two bounds coincide except across a UTC midnight, where both are correct answers.
+    /// </para>
+    /// <para>
+    /// The trial flag is set with a direct statement because no endpoint writes it: a new membership is
+    /// recorded with the flag clear, and the legacy subscription flow that consumed a trial is out of
+    /// scope. Only a stored row can therefore put the removal path on this branch.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RemoveAssignment_ForAPaidMembershipWithAUsedTrial_ExpiresItRatherThanDeletingIt()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest paid = NewRoleRequest();
+        paid.ServiceFee = 25m;
+        paid.BillingPeriod = 1;
+        paid.BillingFrequency = BillingFrequency.Month;
+
+        using HttpResponseMessage createdResponse = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            paid,
+            ApiTestFixture.Json);
+
+        createdResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        RoleDetailDto role = await ReadDetailAsync(createdResponse);
+
+        using HttpResponseMessage assigned = await client.PostAsJsonAsync(
+            RoleUsersRoute(_fixture.Seed.PortalId, role.RoleId),
+            new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+            ApiTestFixture.Json);
+
+        assigned.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            UPDATE [dbo].[UserRoles]
+               SET [IsTrialUsed] = 1
+             WHERE [RoleID] = @roleId AND [UserID] = @userId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["roleId"] = role.RoleId,
+                ["userId"] = _fixture.Seed.MemberUserId,
+            });
+
+        DateTime before = DateTime.UtcNow.Date;
+
+        using HttpResponseMessage removed = await client.DeleteAsync(
+            RoleUserRoute(_fixture.Seed.PortalId, role.RoleId, _fixture.Seed.MemberUserId));
+
+        DateTime after = DateTime.UtcNow.Date;
+
+        removed.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "the account no longer holds the role, whichever arm the service took");
+
+        (await CountAssignmentsAsync(role.RoleId)).Should().Be(
+            1,
+            "the row is retained so the trial-used fact is not lost");
+
+        DateTime expiry = await _fixture.Database.ScalarAsync<DateTime>(
+            """
+            SELECT [ExpiryDate]
+            FROM [dbo].[UserRoles]
+            WHERE [RoleID] = @roleId AND [UserID] = @userId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["roleId"] = role.RoleId,
+                ["userId"] = _fixture.Seed.MemberUserId,
+            });
+
+        expiry.TimeOfDay.Should().Be(
+            TimeSpan.Zero,
+            "the legacy value carried no time component, and the truncation is preserved so the "
+            + "membership reads as expired for the whole of the current day");
+
+        expiry.Should().BeOneOf(
+            before.AddDays(-1),
+            after.AddDays(-1));
+    }
+
+    /// <summary>
+    /// A one-time term derives the far-future perpetual expiry rather than an offset from today.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The sixth frequency code, and the one a four-code reading of the legacy switch loses. The
+    /// authority is <c>RoleController.vb</c> L541-L546, whose six arms are <c>N</c> for no expiry,
+    /// <c>O</c> for <c>New System.DateTime(9999, 12, 31)</c>, and <c>D</c>, <c>W</c>, <c>M</c> and
+    /// <c>Y</c> for a period in days, weeks, months and years. A migration that carried only the four
+    /// offset codes would leave <c>O</c> falling through the switch onto the null-date marker set ahead
+    /// of it at L538 - that is, onto <c>DateTime.MinValue</c> - and a perpetual membership would read as
+    /// one that expired at the beginning of time.
+    /// </para>
+    /// <para>
+    /// The date also reaches the wire unrounded, which the storage bound makes possible: SQL Server's
+    /// <c>datetime</c> tops out at 9999-12-31, so the sentinel is storable exactly rather than being
+    /// clamped to something near it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Assignment_ForAOneTimeTerm_DerivesThePerpetualExpiry()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateRoleRequest oneTime = NewRoleRequest();
+        oneTime.ServiceFee = 10m;
+        oneTime.BillingPeriod = 1;
+        oneTime.BillingFrequency = BillingFrequency.OneTime;
+
+        using HttpResponseMessage createdResponse = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            oneTime,
+            ApiTestFixture.Json);
+
+        createdResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        RoleDetailDto role = await ReadDetailAsync(createdResponse);
+        role.BillingFrequency.Should().Be(BillingFrequency.OneTime);
+
+        using HttpResponseMessage assigned = await client.PostAsJsonAsync(
+            RoleUsersRoute(_fixture.Seed.PortalId, role.RoleId),
+            new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+            ApiTestFixture.Json);
+
+        assigned.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        RoleMembershipDto membership = await ReadSingleMembershipAsync(client, role.RoleId);
+
+        membership.ExpiryDate.Should().NotBeNull(
+            "a one-time term is perpetual, which is a date rather than the absence of one");
+        membership.ExpiryDate!.Value.Date.Should().Be(
+            new DateTime(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc).Date,
+            "the legacy one-time arm assigns 9999-12-31, and the value travels rather than being rounded");
+    }
+
+    /// <summary>
+    /// A role whose stored frequency is a character the vocabulary never declared can still be updated,
+    /// not merely read.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The write-path companion of the read tolerance asserted elsewhere in this suite, and it is a
+    /// distinct guarantee: an update reads the stored row, applies the submitted state and writes it
+    /// back, so a materialisation that faulted on the stored character would make such a role
+    /// permanently uneditable - the one state from which an operator could not repair it.
+    /// </para>
+    /// <para>
+    /// The characters planted here are the ones the product itself ships:
+    /// <c>01.00.00.SqlDataProvider</c> L7192 seeds the Administrators role with <c>'4'</c> and L7194
+    /// seeds Registered Users with <c>'0'</c>, and neither is among the six the switch at
+    /// <c>RoleController.vb</c> L541-L546 handles. The column is plain <c>char(1) NULL</c> throughout the
+    /// upgrade chain with no check constraint, and the legacy editor deliberately tolerated an unknown
+    /// code by leaving its drop-down unselected (<c>EditRoles.ascx.vb</c> L149-L151 and L157-L159), so
+    /// tolerance on the read and write paths is parity rather than leniency.
+    /// </para>
+    /// <para>
+    /// The submitted frequency is one of the six, because the write CONTRACT is closed over the
+    /// enumeration - an undeclared code cannot be sent, only encountered. What is under test is
+    /// therefore the transition out of the undeclared state, which is exactly the repair an operator
+    /// would attempt.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRole_WithAnUnrecognisedStoredFrequency_IsStillWritable()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        RoleDetailDto created = await CreateRoleAsync(client);
+
+        await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Roles] SET [BillingFrequency] = '4', [TrialFrequency] = '0' "
+            + "WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        var request = new UpdateRoleRequest
+        {
+            RoleName = created.RoleName,
+            Description = "Repaired by the integration suite.",
+            ServiceFee = 1m,
+            BillingPeriod = 1,
+            BillingFrequency = BillingFrequency.Year,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            RoleRoute(_fixture.Seed.PortalId, created.RoleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a row a legacy installation already holds must be repairable rather than a server fault");
+
+        RoleDetailDto updated = await ReadDetailAsync(response);
+        updated.BillingFrequency.Should().Be(BillingFrequency.Year);
+        updated.Description.Should().Be(request.Description);
+
+        string storedCode = await _fixture.Database.ScalarAsync<string>(
+            "SELECT [BillingFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId;",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId });
+
+        storedCode.Should().Be("Y", "the undeclared character is replaced by the submitted code");
+    }
+
     /// <summary>
     /// Reads a role's memberships and returns the one held by the seeded member account.
     /// </summary>
@@ -2165,13 +3305,13 @@ public sealed class RoleApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        using System.Text.Json.JsonDocument document =
-            System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        using JsonDocument document =
+            JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
         // The created representation travels inside the shared success envelope, so every member is one
         // level down under "data". Read as raw JSON rather than through a typed envelope because only two
         // members are wanted, and naming them here proves the envelope member name as a side effect.
-        System.Text.Json.JsonElement created = document.RootElement.GetProperty("data");
+        JsonElement created = document.RootElement.GetProperty("data");
 
         return new IsolatedTenant(
             created.GetProperty("portalId").GetInt32(),
@@ -2236,6 +3376,157 @@ public sealed class RoleApiTests
 
         detail.Should().NotBeNull();
         return detail!;
+    }
+
+    /// <summary>Reads one page of the tenant's roles through the free-text filter.</summary>
+    /// <param name="client">A client holding the administrators role.</param>
+    /// <param name="query">The filter text, sent as supplied and escaped for transport.</param>
+    /// <returns>The page, as it travels on the wire.</returns>
+    /// <remarks>
+    /// The page size is stated explicitly so that a filtered assertion is never satisfied merely because
+    /// the default window happened to exclude the rows that would have contradicted it.
+    /// </remarks>
+    private async Task<PagedEnvelope<RoleListItemDto>> ListRolesAsync(HttpClient client, string query)
+    {
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/roles"
+            + $"?pageIndex=0&pageSize=100&query={Uri.EscapeDataString(query)}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<RoleListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        return page!;
+    }
+
+    /// <summary>Counts the roles the seeded tenant holds under one name.</summary>
+    /// <param name="roleName">The name to count.</param>
+    /// <returns>The number of matching rows, which is zero when a write was refused.</returns>
+    /// <remarks>
+    /// Read straight from the column rather than through the API, because the question being asked is
+    /// whether a REFUSED request left anything behind, and a refusal that had quietly written a row would
+    /// be invisible to a listing filtered by the same rules that produced the refusal.
+    /// </remarks>
+    private Task<int> CountRolesNamedAsync(string roleName) => _fixture.Database.ScalarAsync<int>(
+        "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleName] = @roleName AND [PortalID] = @portalId;",
+        new Dictionary<string, object?>
+        {
+            ["roleName"] = roleName,
+            ["portalId"] = _fixture.Seed.PortalId,
+        });
+
+    /// <summary>
+    /// Asserts that a response is the declared field-error document, naming one member and carrying one
+    /// message exactly.
+    /// </summary>
+    /// <param name="response">The response to inspect.</param>
+    /// <param name="member">The member the document must attribute the failure to.</param>
+    /// <param name="message">The message the document must carry for that member.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// Three things are asserted where a weaker test asserts one. The STATUS says the request was refused.
+    /// The DOCUMENT SHAPE says the refusal is an RFC 7807 document rather than a shape of the endpoint's
+    /// own - a 400 carrying a bare status, a raw string or an object of its own devising would satisfy
+    /// every status assertion in this suite while breaking the single error contract every client is
+    /// written against. And the per-member <c>errors</c> entry says WHICH value the caller must correct,
+    /// which is the whole reason the document has that member: an error naming nothing leaves a caller
+    /// guessing.
+    /// </para>
+    /// <para>
+    /// The message is compared as an exact element rather than by substring, because that is the only
+    /// comparison that can tell the migrated wording apart from the legacy wording with its leading
+    /// markup tag still attached - and telling those two apart is precisely the parity obligation.
+    /// </para>
+    /// </remarks>
+    private static async Task ShouldReportFieldAsync(
+        HttpResponseMessage response,
+        string member,
+        string message)
+    {
+        ValidationProblemDetails problem = await ShouldNameFieldAsync(response, member);
+
+        problem.Errors[member].Should().Contain(
+            message,
+            "the wording travels to the operator, so it must be the legacy wording exactly");
+    }
+
+    /// <summary>
+    /// Asserts that a response is the declared field-error document attributing a failure to one member,
+    /// without constraining the wording.
+    /// </summary>
+    /// <param name="response">The response to inspect.</param>
+    /// <param name="member">The member the document must attribute the failure to.</param>
+    /// <returns>The document, so a caller can assert further on it.</returns>
+    /// <remarks>
+    /// Separate from the wording-bearing form for the one rule whose message is composed at run time from
+    /// the storage bounds rather than carried across from a legacy screen. Restating that text here would
+    /// duplicate a computation rather than pin a legacy contract, and would fail the moment the bounds
+    /// were formatted differently - so the member is asserted and the wording is left to the rule.
+    /// </remarks>
+    private static async Task<ValidationProblemDetails> ShouldNameFieldAsync(
+        HttpResponseMessage response,
+        string member)
+    {
+        response.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "a value that breaks a declared rule is refused at the boundary, not further in");
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("a refusal carries a problem document rather than an empty body");
+        problem!.Status.Should().Be(StatusCodes.Status400BadRequest);
+        problem.Type.Should().NotBeNullOrWhiteSpace("the envelope names the problem type");
+        problem.Title.Should().NotBeNullOrWhiteSpace("the envelope carries a human-readable title");
+        problem.Errors.Should().ContainKey(
+            member,
+            "the document attributes the failure to the member the caller sent");
+
+        return problem;
+    }
+
+    /// <summary>
+    /// Asserts that a response is a problem document carrying one status and one named failure code.
+    /// </summary>
+    /// <param name="response">The response to inspect.</param>
+    /// <param name="status">The status the refusal must carry.</param>
+    /// <param name="code">The failure code, without the shared prefix.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// The code is a stable, named string rather than a number, and it is what a client branches on. The
+    /// status alone is not enough on these resources: three different reasons answer <c>409</c> - a role
+    /// name already taken, a group name already taken and a group that still classifies a role - and two
+    /// answer <c>403</c>, a protected assignment and a caller who does not administer the tenant. The
+    /// document's <c>type</c> is where the difference is legible.
+    /// </para>
+    /// <para>
+    /// The prefix is applied here rather than written into each call site so that the codes read as the
+    /// codes the application services actually declare.
+    /// </para>
+    /// </remarks>
+    private static async Task ShouldCarryFailureCodeAsync(
+        HttpResponseMessage response,
+        HttpStatusCode status,
+        string code)
+    {
+        response.StatusCode.Should().Be(status);
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("a refusal is published as a problem document whatever its cause");
+        problem!.Status.Should().Be(
+            (int)status,
+            "the document restates its own status, so a client reading the body agrees with the status line");
+        problem.Title.Should().NotBeNullOrWhiteSpace("the envelope carries a human-readable title");
+        problem.Type.Should().Be(
+            ProblemTypePrefix + code,
+            "the failure code is what lets a client tell one refusal from another that shares its status");
     }
 
     /// <summary>Builds the collection route for a tenant's roles.</summary>

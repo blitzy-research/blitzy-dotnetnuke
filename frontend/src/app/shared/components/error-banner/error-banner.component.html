@@ -12,7 +12,36 @@
 -->
 <div class="error-banner-live" role="alert" aria-live="assertive" aria-atomic="true">
   @if (hasProblem()) {
-    <div class="error-banner">
+    <!--
+      The severity is carried as a data attribute on THIS element rather than on the
+      host, so the live region stays free of it and keeps painting nothing while it is
+      empty. An attribute rather than a class list because the band is a three-way
+      state, not three independent booleans, and one binding cannot leave two bands
+      applied at once; it also states the state in the same form as the sibling
+      primitives' `data-size` and `data-align`.
+    -->
+    <div class="error-banner" [attr.data-severity]="severity()">
+      <!--
+        The severity as a WORD, and it is not decoration. The `--color-danger` token
+        measures 4.0:1 on the background - below the 4.5:1 that normal text needs -
+        and its own annotation requires an error state to carry a non-colour cue as
+        well, "an icon or the word itself". This is that cue, so the band is legible
+        without perceiving the colour, and it is announced along with the message.
+        It replaces the per-severity icon the excluded legacy renderer used, and
+        unlike an image it cannot fail to load.
+      -->
+      <p class="error-banner__severity">{{ severityLabel() }}</p>
+
+      @if (hasTitle()) {
+        <!--
+          The problem TYPE, shown only when it says something the sentence below does
+          not. Rendered when the document carried both a title and a distinct detail,
+          which is the legacy Heading-and-Message pairing the excluded renderer's
+          three-argument overload took.
+        -->
+        <p class="error-banner__title">{{ title() }}</p>
+      }
+
       <!--
         The summary is a paragraph, not a heading. It is transient page state rather
         than a section of the document, so putting it in the outline would add and
@@ -34,6 +63,17 @@
             }
           }
         </dl>
+      }
+
+      @if (hasTraceId()) {
+        <!--
+          The server's own identifier for this request, and the only diagnostic shown.
+          It is quotable in a support report and means nothing to anyone without the
+          server's logs, which is exactly why it is safe to show where a stack trace
+          was not. It stays inside the atomic region so that a person using a screen
+          reader can report it too.
+        -->
+        <p class="error-banner__trace">Reference: {{ traceId() }}</p>
       }
     </div>
   }

@@ -1,10 +1,12 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using DnnMigration.Application.Dtos.Auth;
 using DnnMigration.Application.Dtos.User;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
 
@@ -55,6 +57,15 @@ public sealed class AuthApiTests
     /// The failed-attempt threshold the password policy defaults to, which is what the seeded configuration
     /// leaves in force.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this is the TARGET's default in force, and deliberately not presented as a ported legacy
+    /// value. The legacy lockout policy was never stated: <c>passwordAttemptThreshold</c> and
+    /// <c>passwordAttemptWindow</c> appear in <c>Website/release.config</c> only inside the descriptive
+    /// comment above the provider element (L220-L232) and are absent from the element itself (L237-L247), so
+    /// the platform's own implicit defaults applied and no configured number exists to preserve. What is
+    /// asserted here is therefore that the configured threshold is ENFORCED, never that this particular
+    /// number is what the legacy installation used.
+    /// </remarks>
     private const int MaxInvalidPasswordAttempts = 5;
 
     /// <summary>A BCrypt cost below the hasher's own, so a credential stored at it must be replaced.</summary>
@@ -78,6 +89,89 @@ public sealed class AuthApiTests
 
     /// <summary>The mode the seed tenant holds, restored after any test that raises it.</summary>
     private const int DefaultRegistrationMode = 0;
+
+    /// <summary>
+    /// The media-type suffix every refusal on this controller has to carry.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The SUFFIX is asserted rather than the exact type, and that is a measured position rather than a
+    /// weaker assertion for convenience. RFC 7807 section 3 fixes <c>application/problem+json</c>, and the
+    /// documents this surface returns ARE RFC 7807 documents - but the framework serves them as
+    /// <c>application/json</c>, because the controller declares <c>[Produces("application/json")]</c> and a
+    /// produces declaration constrains every result the controller returns, refusals included. Measured, not
+    /// assumed: asserting the RFC type here failed against the delivered pipeline with
+    /// <c>application/json</c>.
+    /// </para>
+    /// <para>
+    /// Pinning the current value would cement that deviation, and pinning the RFC value would fail against
+    /// the pipeline as delivered - which is the same conclusion the sibling problem-document contract suite
+    /// recorded for the same reason. Correcting it is a change to the controller's produces declaration and
+    /// therefore not this suite's to make. The suffix still carries real content: it fails if a refusal ever
+    /// arrives as a rendered page or as plain text, which is the failure mode that actually costs a client
+    /// its error handling.
+    /// </para>
+    /// </remarks>
+    private const string JsonMediaTypeSuffix = "json";
+
+    /// <summary>
+    /// The member name the account-name rule attributes its failure to, spelled as the validator reports
+    /// it.
+    /// </summary>
+    private const string UsernameMember = "Username";
+
+    /// <summary>The member name the credential rule attributes its failure to.</summary>
+    private const string PasswordMember = "Password";
+
+    /// <summary>The exact wording the account-name rule carries to the operator.</summary>
+    private const string MissingUsernameMessage = "A username is required.";
+
+    /// <summary>The exact wording the credential rule carries to the operator.</summary>
+    private const string MissingPasswordMessage = "A password is required.";
+
+    /// <summary>
+    /// The one extension member the problem-document factory adds, which joins a caller's report of a
+    /// refusal to the entry the server recorded.
+    /// </summary>
+    private const string TraceIdExtension = "traceId";
+
+    /// <summary>
+    /// The greatest length at which the correlation middleware still trusts an inbound identifier.
+    /// </summary>
+    private const int MaximumCorrelationIdLength = 128;
+
+    /// <summary>
+    /// Account name the product was distributed with for a tenant administrator, and therefore the name
+    /// the weak-credential advisory recognises.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The shipped credential for this account was the account name itself, so this one constant serves as
+    /// both. That is deliberate rather than convenient: the account name has to appear here because the
+    /// advisory keys on it, and reusing it as the credential means these tests introduce NO credential
+    /// material into the repository that reading the account name did not already reveal. The service
+    /// itself holds the two credentials only as SHA-256 fingerprints for the same reason, and that
+    /// constant is the authority - this test drives the rule rather than restating it.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy comparison was <c>UserController.vb:L1145</c>, which tested the name with
+    /// VB's <c>=</c> under binary comparison and was therefore case-sensitive. The target compares
+    /// case-insensitively, so the exact casing used here is not what makes the advisory fire.
+    /// </para>
+    /// </remarks>
+    private const string ShippedAdministratorAccountName = "admin";
+
+    /// <summary>
+    /// Account name the product was distributed with for the installation host, which is also its shipped
+    /// credential. See <see cref="ShippedAdministratorAccountName"/>.
+    /// </summary>
+    private const string ShippedHostAccountName = "host";
+
+    /// <summary>
+    /// A path segment under the controller's route that names no operation, used to prove the surface is
+    /// closed rather than served by a catch-all.
+    /// </summary>
+    private const string UndeclaredOperationSegment = "operation-this-controller-does-not-declare";
 
     private readonly ApiTestFixture _fixture;
 
@@ -114,6 +208,16 @@ public sealed class AuthApiTests
             DateTime.UtcNow,
             "exactly one expiry is published, as an absolute instant in UTC, so a client can schedule a "
             + "refresh instead of discovering expiry through a rejected request");
+
+        // MIGRATION: the legacy session lifetime was the forms-authentication ticket's, declared as
+        // <forms name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/> at
+        // Website/release.config:L147 - sixty minutes, which is the value the token lifetime option carries
+        // forward. The number is NOT asserted here: this host deliberately configures a different lifetime so
+        // that no suite depends on the shipped one, so asserting sixty would be asserting the fixture rather
+        // than the parity. What is asserted is the property the legacy cookie had and this contract must keep -
+        // that a session expires, at a stated instant, known to the client in advance. The cookie's own
+        // settings (L214-L216) have no counterpart at all and are replaced by the bearer token wholesale.
+
 
         // The response publishes no bearer-scheme member, no remaining-seconds duration and no refresh
         // token expiry. The scheme is fixed by this contract rather than restated per response, a single
@@ -237,6 +341,12 @@ public sealed class AuthApiTests
         wrongCredential.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         unknownAccount.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
+        // The media type is part of the indistinguishability: two refusals that agreed on every member but
+        // were served as different types would still tell a caller which branch it had reached.
+        wrongCredential.Content.Headers.ContentType?.MediaType.Should().EndWith(JsonMediaTypeSuffix);
+        unknownAccount.Content.Headers.ContentType?.MediaType.Should().Be(
+            wrongCredential.Content.Headers.ContentType?.MediaType);
+
         // Every part of the document that describes the outcome must match. The trace identifier is
         // deliberately excluded because it is minted per request and carries no outcome information, so
         // comparing whole bodies would compare a value that is required to differ.
@@ -336,6 +446,30 @@ public sealed class AuthApiTests
 
     /// <summary>A locked account is refused generically when the caller is not entitled to the reason.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION - THE ONE DELIBERATE BEHAVIOURAL REVERSAL ON THIS SURFACE, AND THE REASON THIS TEST
+    /// EXISTS. The legacy screen computed
+    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c> at
+    /// <c>Login.ascx.vb:L187</c>, and the enclosing <c>If</c> at L168 intercepted only
+    /// <c>LOGIN_USERNOTAPPROVED</c>. Read against the seven members of <c>UserLoginStatus</c> - measured
+    /// verbatim as 0 through 6 - that expression admits <c>LOGIN_USERLOCKEDOUT</c>, which is 3: a locked
+    /// account was therefore SIGNED IN, exactly as a successful one was. Only 0 and 4 refused.
+    /// </para>
+    /// <para>
+    /// The migration discipline says to annotate a discovered defect rather than to fix it. This is the
+    /// documented exception, on the same ground as the tenant-alias match: reproducing it would carry an
+    /// AUTHENTICATION BYPASS into new code, and a lockout that admits the caller is not a lockout at all.
+    /// The target refuses instead - and refuses without comparing the credential, so the account cannot be
+    /// used as an oracle for whether a guess was right. The refusal is the same one an unknown account and a
+    /// wrong credential receive, which is what the two assertions below pin: the shared code, and the absence
+    /// of the word that would disclose the reason.
+    /// </para>
+    /// <para>
+    /// The reason is not withheld from everyone - the companion test proves an entitled caller is told - so
+    /// this is a disclosure boundary rather than a silence.
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task Login_ForALockedAccount_IsGenericToAnAnonymousCaller()
     {
@@ -1201,7 +1335,20 @@ public sealed class AuthApiTests
 
         using HttpResponseMessage stillAccepted = await bearer.GetAsync(MeRoute);
 
-        stillAccepted.StatusCode.Should().Be(HttpStatusCode.OK);
+        stillAccepted.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "there is no registry of withdrawn access tokens and none may be introduced, so the reduction "
+            + "against the legacy cookie sign-out is asserted rather than papered over");
+
+        // Withdrawing the SAME value a second time answers alike. A token that had genuinely been revoked is
+        // the case an unknown value cannot stand in for, and answering differently for it would tell an
+        // anonymous caller that this value had once been live.
+        using HttpResponseMessage alreadyRevoked = await client.PostAsJsonAsync(
+            LogoutRoute,
+            new RefreshTokenRequest { RefreshToken = issued.RefreshToken },
+            ApiTestFixture.Json);
+
+        alreadyRevoked.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
     /// <summary>
@@ -1221,16 +1368,19 @@ public sealed class AuthApiTests
 
         blank.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
+        string neverIssued = "never-issued-" + Suffix();
+
         using HttpResponseMessage unknown = await client.PostAsJsonAsync(
             LogoutRoute,
-            new RefreshTokenRequest { RefreshToken = "never-issued-" + Suffix() },
+            new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
         unknown.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
+        // The SAME value again, so this arm asserts repetition rather than a second unknown value.
         using HttpResponseMessage repeated = await client.PostAsJsonAsync(
             LogoutRoute,
-            new RefreshTokenRequest { RefreshToken = "never-issued-" + Suffix() },
+            new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
         repeated.StatusCode.Should().Be(HttpStatusCode.NoContent);
@@ -1304,12 +1454,521 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
+    /// A submission carrying neither credential member is refused as a field-error document that names both
+    /// members, is served as a problem document and preserves the request's trace identifier.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The two single-member tests above prove each rule fires. This one proves the DOCUMENT, which is a
+    /// separate contract: a client renders the per-member messages beside the fields the operator filled
+    /// in, so the dictionary keys are as load-bearing as the status, and a refusal that named no member
+    /// would leave the operator nothing to correct. The key set is asserted as EXACTLY the two members,
+    /// because a document that also attributed a failure to something the caller never sent would be
+    /// telling the operator to correct a field that is not on the form.
+    /// </para>
+    /// <para>
+    /// MIGRATION: these two rules were <c>asp:RequiredFieldValidator</c> controls rendered through the
+    /// validation summary beside the legacy sign-in form (<c>Login.ascx</c>), so their wording travelled to
+    /// the operator. It still does, and it is asserted as an exact string rather than as a substring for
+    /// that reason - equivalent error messages are required, not merely equivalent statuses.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Login_WithNeitherMemberSupplied_ReportsBothOfThemInTheProblemDocument()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest { Username = string.Empty, Password = string.Empty },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.Content.Headers.ContentType?.MediaType.Should().EndWith(
+            JsonMediaTypeSuffix,
+            "a field-error refusal is a JSON document a client parses, never a rendered page");
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be((int)HttpStatusCode.BadRequest);
+        problem.Title.Should().NotBeNullOrWhiteSpace();
+
+        problem.Errors.Should().ContainKey(UsernameMember);
+        problem.Errors.Should().ContainKey(PasswordMember);
+        problem.Errors[UsernameMember].Should().Contain(MissingUsernameMessage);
+        problem.Errors[PasswordMember].Should().Contain(MissingPasswordMessage);
+        problem.Errors.Should().HaveCount(
+            2,
+            "the document attributes a failure to each member the caller actually sent and to nothing "
+            + "else - the tenant is assigned by the controller and the verification code is only ruled on "
+            + "when one is supplied");
+
+        problem.Extensions.Should().ContainKey(
+            TraceIdExtension,
+            "the trace identifier is the one extension the factory adds, and it is what joins a caller's "
+            + "report of a refused submission to the entry the server recorded");
+    }
+
+    /// <summary>
+    /// A caller-supplied correlation identifier is echoed on an accepted sign-in, one is minted when the
+    /// caller supplies none, and one is present on a refusal as well.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The refusal half is the one worth having. The response header is registered through a starting
+    /// callback BEFORE the pipeline continues, so it survives a short-circuit: an operator diagnosing a
+    /// sign-in that was refused is exactly the caller who needs the identifier, and a middleware that only
+    /// stamped successful responses would fail them at the moment it mattered.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy sign-in path recorded nothing an operator could correlate - there are no audit
+    /// calls anywhere in <c>Login.ascx.vb</c>, so both the trail and the identifier that joins a response to
+    /// it are net-new here rather than ported. Nothing in the legacy source is the predecessor of this
+    /// assertion.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Login_EchoesASuppliedCorrelationIdMintsOneWhenAbsentAndCarriesOneOnARefusal()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        string supplied = "auth-accepted-" + Suffix();
+
+        using HttpRequestMessage accepted = new(HttpMethod.Post, LoginRoute(_fixture.Seed.PortalId))
+        {
+            Content = JsonContent.Create(
+                new LoginRequest
+                {
+                    Username = IntegrationSeed.AdminUserName,
+                    Password = ApiTestFixture.KnownPassword,
+                },
+                options: ApiTestFixture.Json),
+        };
+
+        using CorrelatedResponse echoed = await AuthenticatedClientFactory
+            .SendWithCorrelationIdAsync(client, accepted, supplied);
+
+        echoed.Response.StatusCode.Should().Be(HttpStatusCode.OK);
+        echoed.ReceivedCorrelationId.Should().Be(supplied);
+        echoed.RoundTripped.Should().BeTrue();
+
+        // Nothing is supplied here, so the response has to carry an identifier the server minted.
+        using HttpResponseMessage minted = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = IntegrationSeed.AdminUserName,
+                Password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        minted.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string? generated = ApiTestFixture.ReadCorrelationId(minted);
+
+        generated.Should().NotBeNullOrWhiteSpace(
+            "every response carries an identifier, whether or not the caller brought one");
+        generated.Should().NotBe(supplied, "the minted value belongs to this request alone");
+
+        string refusedCorrelationId = "auth-refused-" + Suffix();
+
+        using HttpRequestMessage refused = new(HttpMethod.Post, LoginRoute(_fixture.Seed.PortalId))
+        {
+            Content = JsonContent.Create(
+                new LoginRequest
+                {
+                    Username = "no_such_account_" + Suffix(),
+                    Password = ApiTestFixture.KnownPassword,
+                },
+                options: ApiTestFixture.Json),
+        };
+
+        using CorrelatedResponse denial = await AuthenticatedClientFactory
+            .SendWithCorrelationIdAsync(client, refused, refusedCorrelationId);
+
+        denial.Response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        denial.Response.Content.Headers.ContentType?.MediaType.Should().EndWith(JsonMediaTypeSuffix);
+        denial.ReceivedCorrelationId.Should().Be(
+            refusedCorrelationId,
+            "the identifier is registered on the response before the pipeline continues, so a refused "
+            + "request is correlatable too");
+    }
+
+    /// <summary>
+    /// An unusable correlation identifier is replaced rather than echoed, and does not turn a good
+    /// submission into a refusal.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// An inbound identifier is caller-controlled and is written into log lines, so a value that is too long
+    /// to be trusted is discarded and a fresh one minted - never sanitised and kept, and never echoed. The
+    /// second half of the assertion matters as much as the first: a correlation identifier is a diagnostic
+    /// concern, so refusing the request over one would let a caller deny itself service by sending a long
+    /// header.
+    /// </remarks>
+    [Fact]
+    public async Task Login_WithAnUnusableCorrelationId_MintsAReplacementAndStillAnswers()
+    {
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        string overlong = new('a', MaximumCorrelationIdLength + 1);
+
+        using HttpRequestMessage request = new(HttpMethod.Post, LoginRoute(_fixture.Seed.PortalId))
+        {
+            Content = JsonContent.Create(
+                new LoginRequest
+                {
+                    Username = IntegrationSeed.AdminUserName,
+                    Password = ApiTestFixture.KnownPassword,
+                },
+                options: ApiTestFixture.Json),
+        };
+
+        using CorrelatedResponse correlated = await AuthenticatedClientFactory
+            .SendWithCorrelationIdAsync(client, request, overlong);
+
+        correlated.Response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unusable correlation identifier is a diagnostic concern and must never refuse a request");
+
+        correlated.ReceivedCorrelationId.Should().NotBeNullOrWhiteSpace();
+        correlated.ReceivedCorrelationId.Should().NotBe(
+            overlong,
+            "an untrusted inbound value is discarded and replaced rather than echoed back");
+        correlated.ReceivedCorrelationId!.Length.Should().BeLessThanOrEqualTo(MaximumCorrelationIdLength);
+    }
+
+    /// <summary>
+    /// The shipped tenant-administrator credential is ACCEPTED and carries the change advisory. It is not
+    /// a refusal.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>UserController.vb</c> L1144-L1148 REPLACED an already-successful status with
+    /// <c>LOGIN_INSECUREADMINPASSWORD</c>, and <c>Login.ascx.vb:L187</c> then computed
+    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c> - so the caller was signed
+    /// in. Status five was a success variant, never a denial, and this test exists to keep it one: turning
+    /// the advisory into a refusal would lock an installation out of the very account it begins with, which
+    /// is the opposite of the remediation the legacy intended.
+    /// </para>
+    /// <para>
+    /// The advisory travels as the forced-change flag on the accepted response, which is the legacy
+    /// remediation intent expressed in the target's own vocabulary. No legacy status ordinal reaches the
+    /// wire, so nothing here asserts on the integer five - the three enumerations this vertical touches
+    /// number themselves incompatibly (one seeds success at thirteen, one at zero and one counts
+    /// downwards through negatives), which is precisely why the assertion is on the named outcome.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Login_WithTheShippedAdministratorCredential_IsAcceptedAndCarriesTheChangeAdvisory()
+    {
+        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        await CreateShippedAccountAsync(administrator, ShippedAdministratorAccountName);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = ShippedAdministratorAccountName,
+                Password = ShippedAdministratorAccountName,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the weak-credential outcome is an advisory on an accepted sign-in, exactly as the legacy made "
+            + "it, and refusing it would lock an installation out of its administrator");
+
+        LoginResponse issued = await ReadLoginAsync(response);
+
+        issued.AccessToken.Should().NotBeNullOrWhiteSpace("the session is genuinely issued, not withheld");
+        issued.MustChangePassword.Should().BeTrue(
+            "the advisory reaches the client as the forced-change flag, which is how the legacy "
+            + "remediation intent survives without a status ordinal on the wire");
+        issued.User.Username.Should().Be(ShippedAdministratorAccountName);
+        issued.User.IsSuperUser.Should().BeFalse("this is the tenant administrator, not the host account");
+    }
+
+    /// <summary>
+    /// The shipped host credential is likewise ACCEPTED with the change advisory, and is reported as a host
+    /// caller.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the second half of the same legacy rule, <c>UserController.vb</c> L1149-L1152, which
+    /// promoted a superuser success to <c>LOGIN_INSECUREHOSTPASSWORD</c>. It is asserted separately from the
+    /// administrator case because the legacy promoted from a DIFFERENT starting status and the target
+    /// preserves that: the host arm is reached only for an account the store marks as a superuser, so a
+    /// single test could not distinguish the two rules.
+    /// </remarks>
+    [Fact]
+    public async Task Login_WithTheShippedHostCredential_IsAcceptedAndCarriesTheChangeAdvisory()
+    {
+        using HttpClient administrator = _fixture.CreateAdministratorClient();
+        await CreateShippedAccountAsync(administrator, ShippedHostAccountName);
+        await PromoteToSuperUserAsync(ShippedHostAccountName);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest
+            {
+                Username = ShippedHostAccountName,
+                Password = ShippedHostAccountName,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        LoginResponse issued = await ReadLoginAsync(response);
+
+        issued.AccessToken.Should().NotBeNullOrWhiteSpace();
+        issued.MustChangePassword.Should().BeTrue();
+        issued.User.IsSuperUser.Should().BeTrue(
+            "the host arm of the advisory is reached from the superuser outcome, so a caller that was not "
+            + "reported as one would mean the wrong arm fired");
+    }
+
+    /// <summary>
+    /// Two accounts may share one electronic-mail address, and both of them can sign in.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>Website/release.config</c> L244 registers the membership provider with
+    /// <c>requiresUniqueEmail="false"</c>, so a legacy installation's data may already hold duplicates.
+    /// The policy is carried forward verbatim rather than tightened, because tightening it during a
+    /// migration would refuse accounts that exist and refuse sign-ins that used to succeed. This test is
+    /// the guard against a well-meant hardening: the creation must be ACCEPTED, never answered as a
+    /// conflict.
+    /// </para>
+    /// <para>
+    /// The sign-in half is what makes this an authentication test rather than an account-administration
+    /// one. An address that identifies two accounts cannot be what resolves a credential, so both accounts
+    /// have to be reachable by their own names and each has to receive its own session.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Login_ForTwoAccountsSharingOneEmailAddress_AcceptsBoth()
+    {
+        using HttpClient administrator = _fixture.CreateAdministratorClient();
+
+        string shared = "shared.address." + Suffix() + "@example.com";
+
+        // Each creation asserts the created status internally, which is the "never a conflict" half of the
+        // contract: a duplicate address that was refused would fail here rather than below.
+        UserDetailDto first = await CreateUserAsync(administrator, email: shared);
+        UserDetailDto second = await CreateUserAsync(administrator, email: shared);
+
+        first.Email.Should().Be(shared);
+        second.Email.Should().Be(shared);
+        second.UserId.Should().NotBe(first.UserId);
+        second.Username.Should().NotBe(first.Username);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        LoginResponse firstSession = await SignInAsync(client, first.Username);
+        LoginResponse secondSession = await SignInAsync(client, second.Username);
+
+        firstSession.User.UserId.Should().Be(first.UserId);
+        secondSession.User.UserId.Should().Be(second.UserId);
+        secondSession.AccessToken.Should().NotBe(
+            firstSession.AccessToken,
+            "each account receives its own session, so a shared address cannot merge two identities");
+    }
+
+    /// <summary>
+    /// None of the three responses that carry a session publishes credential material of any kind.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy provider was registered with <c>enablePasswordRetrieval="true"</c> and
+    /// <c>passwordFormat="Encrypted"</c> (<c>Website/release.config</c> L239 and L245) - reversible
+    /// triple-DES storage, with the very key that reversed it committed to source control at L91-L93 - so a
+    /// legacy installation could hand a stored credential back. Reversible storage is replaced by one-way
+    /// BCrypt hashing and retrieval is deliberately NOT carried forward: no operation returns a credential,
+    /// and this test asserts that absence positively rather than leaving it to the reader to notice that no
+    /// such endpoint was written. The upgrade path for credentials already stored is the lazy re-hash the
+    /// sibling test pins, never a decrypt-and-rewrite.
+    /// </para>
+    /// <para>
+    /// The scan walks every member name in each document rather than checking the two documented shapes,
+    /// because the failure this guards against is an ADDED member - a hash echoed back on a session
+    /// response, or a credential reflected into a nested projection - and a shape-by-shape assertion would
+    /// not see one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Auth_PublishesNoCredentialMaterialOnAnyOfItsResponses()
+    {
+        using HttpClient administrator = _fixture.CreateAdministratorClient();
+
+        // An account of this test's own, because the exchange below rotates a refresh token and a replay of
+        // a rotated one withdraws every session the account holds. Using a seeded persona would make another
+        // suite's session collateral.
+        UserDetailDto account = await CreateUserAsync(administrator);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage signIn = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest { Username = account.Username, Password = ApiTestFixture.KnownPassword },
+            ApiTestFixture.Json);
+
+        signIn.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Read once, into a string, and deserialise from it. The response stream is not rewindable, so a
+        // second read of the same content would fail for a reason unrelated to the contract.
+        string signInBody = await signIn.Content.ReadAsStringAsync();
+
+        AssertPublishesNoCredentialMember(signInBody, "the sign-in response");
+        signInBody.Should().NotContain(
+            ApiTestFixture.KnownPassword,
+            "the submitted credential is never reflected back, not even inside an unrelated member");
+
+        ApiEnvelope<LoginResponse>? envelope =
+            JsonSerializer.Deserialize<ApiEnvelope<LoginResponse>>(signInBody, ApiTestFixture.Json);
+
+        envelope.Should().NotBeNull();
+
+        LoginResponse issued = envelope!.Data;
+
+        issued.RefreshToken.Should().NotBeNullOrWhiteSpace();
+
+        using HttpResponseMessage rotated = await client.PostAsJsonAsync(
+            RefreshRoute,
+            new RefreshTokenRequest { RefreshToken = issued.RefreshToken },
+            ApiTestFixture.Json);
+
+        rotated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        AssertPublishesNoCredentialMember(
+            await rotated.Content.ReadAsStringAsync(),
+            "the token-exchange response");
+
+        using HttpClient bearer = AuthenticatedClientFactory.Authenticate(
+            _fixture.CreateAnonymousClient(),
+            issued.AccessToken);
+
+        using HttpResponseMessage snapshot = await bearer.GetAsync(MeRoute);
+
+        snapshot.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        AssertPublishesNoCredentialMember(
+            await snapshot.Content.ReadAsStringAsync(),
+            "the caller-description response");
+    }
+
+    /// <summary>
+    /// The controller publishes the four operations it declares and nothing else, and each of those is bound
+    /// to its own method.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// A closed surface is a security property rather than tidiness. The legacy application reached its
+    /// credential features through several pages, and the ones that are out of scope here must not be quietly
+    /// reachable through a catch-all route that answered anything under the controller's prefix. Three probes
+    /// establish it, and the first two are deliberately made by DIFFERENT callers because the answer differs
+    /// by caller.
+    /// </para>
+    /// <para>
+    /// <strong>An anonymous caller is refused before the address is even judged.</strong> The authorisation
+    /// options declare a fallback policy requiring an authenticated caller, which applies to anything that
+    /// carries no authorisation metadata of its own - including a request that matched no operation at all.
+    /// Measured rather than assumed: this probe was first written expecting a not-found answer and the
+    /// pipeline answered 401. That is the stronger behaviour and is asserted as the contract it is, because it
+    /// means an anonymous caller cannot use the surface as a directory of which addresses exist.
+    /// </para>
+    /// <para>
+    /// <strong>An authenticated caller reaches the routing answer</strong>, and that is where the closed
+    /// surface is actually proved: a path naming no operation is not found rather than served, so no
+    /// catch-all stands behind this prefix. The third probe addresses a DECLARED path with the wrong method,
+    /// which must be refused as such - a sign-in served over a retrieval verb would put a credential in a
+    /// request line, where it reaches proxy logs and browser history.
+    /// </para>
+    /// <para>
+    /// The undeclared segment is deliberately a name no feature could ever carry. Probing for the specific
+    /// out-of-scope legacy paths by name would put those names into this file, which is exactly what a reader
+    /// auditing the surface should not find here.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Auth_DeclaresNoOperationBeyondTheFourItPublishes()
+    {
+        Uri undeclared = new("/api/v1/auth/" + UndeclaredOperationSegment, UriKind.Relative);
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage unauthenticated = await anonymous.PostAsJsonAsync(
+            undeclared,
+            new RefreshTokenRequest { RefreshToken = "unused-by-an-unrouted-address" },
+            ApiTestFixture.Json);
+
+        unauthenticated.StatusCode.Should().Be(
+            HttpStatusCode.Unauthorized,
+            "the fallback policy demands an authenticated caller for anything that declares no "
+            + "authorisation of its own, so an anonymous caller cannot probe which addresses exist");
+
+        using HttpClient caller = _fixture.CreateHostClient();
+
+        using HttpResponseMessage posted = await caller.PostAsJsonAsync(
+            undeclared,
+            new RefreshTokenRequest { RefreshToken = "unused-by-an-unrouted-address" },
+            ApiTestFixture.Json);
+
+        posted.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "nothing under the controller's prefix is served by a catch-all");
+
+        using HttpResponseMessage fetched = await caller.GetAsync(undeclared);
+
+        fetched.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        using HttpResponseMessage wrongMethod = await caller.GetAsync(LoginRoute(_fixture.Seed.PortalId));
+
+        wrongMethod.StatusCode.Should().Be(
+            HttpStatusCode.MethodNotAllowed,
+            "each declared address is bound to exactly one method, so a credential cannot be submitted in "
+            + "a request line");
+    }
+
+    /// <summary>
     /// Sign-in is rate limited per caller address, and a rejected attempt states how long to wait.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A second host is built for this test because the shared host runs with a deliberately permissive
     /// limit. The limiter reads its options while services are composed, so the override must be in force
-    /// before the host is constructed - which is why the client is created inside the scope.
+    /// before the host is constructed - which is why the client is created inside the scope. Building a
+    /// dedicated host is also what keeps this test from spending the shared budget every other suite signs in
+    /// against, and the attempts below name an account that does not exist so that exhausting the window
+    /// cannot lock a real one out as a side effect.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this window IS the compensating control for a deleted defence. The legacy screen guarded
+    /// sign-in with a human-verification challenge - <c>Login.ascx.vb:L162</c> ran the credential check only
+    /// when <c>(UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)</c> held - and that control is
+    /// excluded here with the rest of the legacy control library. The challenge answered automated guessing;
+    /// so does a per-caller budget, and unlike the challenge it applies to every caller rather than only to
+    /// the tenants that switched it on. The exchange is deliberate and is recorded rather than absorbed: no
+    /// verification field exists on the sign-in contract, and none should be looked for.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the other argument that disappears from <c>Login.ascx.vb:L164</c> is the literal
+    /// authentication-type <c>"DNN"</c>. The legacy passed it so a provider could be selected; there is one
+    /// token path here, so the contract carries no such member and a caller cannot choose how it is
+    /// authenticated. Neither this test nor any other may assert one exists.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1389,8 +2048,20 @@ public sealed class AuthApiTests
     /// <summary>Creates an account through the API and returns its representation.</summary>
     /// <param name="client">A client holding the administrators role.</param>
     /// <param name="authorize">Whether the account is approved on creation.</param>
+    /// <param name="username">
+    /// The account name, or <see langword="null"/> for a generated one. Named explicitly only by the tests
+    /// that need a name a rule recognises, since the recognised names are not unique to a test run.
+    /// </param>
+    /// <param name="email">
+    /// The electronic-mail address, or <see langword="null"/> for a generated one. Supplied explicitly by
+    /// the test that proves two accounts may share one.
+    /// </param>
     /// <returns>The created account.</returns>
-    private async Task<UserDetailDto> CreateUserAsync(HttpClient client, bool authorize = true)
+    private async Task<UserDetailDto> CreateUserAsync(
+        HttpClient client,
+        bool authorize = true,
+        string? username = null,
+        string? email = null)
     {
         string suffix = Suffix();
 
@@ -1398,11 +2069,11 @@ public sealed class AuthApiTests
             UsersRoute(_fixture.Seed.PortalId),
             new CreateUserRequest
             {
-                Username = "itest_auth_" + suffix,
+                Username = username ?? "itest_auth_" + suffix,
                 FirstName = "Integration",
                 LastName = "Signin",
                 DisplayName = "Integration Signin " + suffix,
-                Email = "itest.auth." + suffix + "@example.com",
+                Email = email ?? "itest.auth." + suffix + "@example.com",
                 Password = ApiTestFixture.KnownPassword,
                 ConfirmPassword = ApiTestFixture.KnownPassword,
                 Authorize = authorize,
@@ -1416,6 +2087,147 @@ public sealed class AuthApiTests
         created.Should().NotBeNull();
         return created!;
     }
+
+    /// <summary>
+    /// Creates an account under one of the names the product was distributed with, holding that name as its
+    /// credential, so that the weak-credential advisory applies to it.
+    /// </summary>
+    /// <param name="administrator">A client holding the administrators role.</param>
+    /// <param name="accountName">The shipped account name, which is also the shipped credential.</param>
+    /// <returns>A task representing the creation.</returns>
+    /// <remarks>
+    /// <para>
+    /// The credential is WRITTEN into the store rather than submitted, and that is forced rather than
+    /// preferred: the policy carried forward from <c>Website/release.config</c> L242 requires seven
+    /// characters, both shipped values are shorter, and the account-creation rules reproduce that policy
+    /// verbatim - so the API correctly refuses to set either of them. Reaching the state a legacy
+    /// installation is actually in therefore means writing the stored value, which is also what keeps the
+    /// short credential out of every request this suite makes.
+    /// </para>
+    /// <para>
+    /// The stored value is written at the hasher's own cost and digest, so verification succeeds and the
+    /// lazy cost upgrade is not triggered as a side effect - that upgrade has its own test and this one
+    /// must not depend on it.
+    /// </para>
+    /// </remarks>
+    private async Task CreateShippedAccountAsync(HttpClient administrator, string accountName)
+    {
+        UserDetailDto created = await CreateUserAsync(administrator, username: accountName);
+
+        created.Username.Should().Be(accountName);
+
+        await WriteStoredHashAsync(
+            accountName,
+            BCrypt.Net.BCrypt.EnhancedHashPassword(
+                accountName,
+                CurrentWorkFactor,
+                BCrypt.Net.HashType.SHA384));
+    }
+
+    /// <summary>Marks an account as an installation-wide host account by writing the store directly.</summary>
+    /// <param name="userName">The account name.</param>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// There is no endpoint that grants installation-wide authority, and there should not be one, so the
+    /// state is established by writing the single column the sign-in path reads. That column is the whole of
+    /// the distinction: a host account reaches the superuser outcome, which is the arm the host half of the
+    /// weak-credential advisory is promoted from.
+    /// </remarks>
+    private async Task PromoteToSuperUserAsync(string userName)
+    {
+        int affected = await _fixture.Database.ExecuteAsync(
+            """
+            UPDATE [dbo].[Users]
+            SET [IsSuperUser] = 1
+            WHERE LOWER([Username]) = LOWER(@userName);
+            """,
+            new Dictionary<string, object?> { ["userName"] = userName });
+
+        affected.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Asserts that a response document publishes no member whose name suggests credential material.
+    /// </summary>
+    /// <param name="payload">The response body.</param>
+    /// <param name="description">What the document is, so a failure names the operation.</param>
+    /// <remarks>
+    /// The whole document is walked, including nested objects and arrays, because the member this guards
+    /// against is one nobody meant to add.
+    /// </remarks>
+    private static void AssertPublishesNoCredentialMember(string payload, string description)
+    {
+        using JsonDocument document = JsonDocument.Parse(payload);
+
+        IReadOnlyList<string> published = FindCredentialMembers(document.RootElement);
+
+        published.Should().BeEmpty(
+            "{0} must publish no credential material, and credentials are one-way hashed with no "
+            + "retrieval operation anywhere in this surface",
+            description);
+    }
+
+    /// <summary>Collects the names of any members that could carry credential material.</summary>
+    /// <param name="node">The element to walk.</param>
+    /// <returns>The offending member names, empty when there are none.</returns>
+    private static List<string> FindCredentialMembers(JsonElement node)
+    {
+        List<string> found = [];
+
+        switch (node.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (JsonProperty member in node.EnumerateObject())
+                {
+                    if (CarriesCredentialMaterial(member))
+                    {
+                        found.Add(member.Name);
+                    }
+
+                    found.AddRange(FindCredentialMembers(member.Value));
+                }
+
+                break;
+
+            case JsonValueKind.Array:
+                foreach (JsonElement item in node.EnumerateArray())
+                {
+                    found.AddRange(FindCredentialMembers(item));
+                }
+
+                break;
+
+            default:
+                break;
+        }
+
+        return found;
+    }
+
+    /// <summary>Reports whether a member both names and could carry credential material.</summary>
+    /// <param name="member">The member to judge.</param>
+    /// <returns><see langword="true"/> when the member must not appear on this surface.</returns>
+    /// <remarks>
+    /// <para>
+    /// The name is matched by containment and case-insensitively, so a nested or differently spelled member
+    /// is caught too. The VALUE has to be textual for the member to offend, and that qualification is the
+    /// whole precision of this check rather than a loophole in it: the accepted sign-in response is REQUIRED
+    /// to publish the forced-change and the approaching-expiry advisories, whose names unavoidably contain
+    /// the credential word and whose values are boolean flags carrying no material at all. Flagging those
+    /// would make this test demand the removal of the two members that carry the legacy remediation intent.
+    /// </para>
+    /// <para>
+    /// The bearer values a session response does carry are deliberately outside the vocabulary matched here.
+    /// They are values the caller is meant to hold, minted for it and short-lived; a stored credential is
+    /// not, which is the distinction this check draws.
+    /// </para>
+    /// </remarks>
+    private static bool CarriesCredentialMaterial(JsonProperty member) =>
+        member.Value.ValueKind == JsonValueKind.String
+        && (member.Name.Contains("password", StringComparison.OrdinalIgnoreCase)
+            || member.Name.Contains("credential", StringComparison.OrdinalIgnoreCase)
+            || member.Name.Contains("secret", StringComparison.OrdinalIgnoreCase)
+            || member.Name.Contains("answer", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Clears a lock by writing the credential store directly.
@@ -1552,15 +2364,15 @@ public sealed class AuthApiTests
     /// <returns>The problem type, title, status and detail, joined.</returns>
     private static async Task<string> ReadDenialAsync(HttpResponseMessage response)
     {
-        using System.Text.Json.JsonDocument document =
-            System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        using JsonDocument document =
+            JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        static string Read(System.Text.Json.JsonElement root, string name) =>
-            root.TryGetProperty(name, out System.Text.Json.JsonElement value)
+        static string Read(JsonElement root, string name) =>
+            root.TryGetProperty(name, out JsonElement value)
                 ? value.ToString()
                 : string.Empty;
 
-        System.Text.Json.JsonElement problem = document.RootElement;
+        JsonElement problem = document.RootElement;
 
         return string.Join(
             '|',

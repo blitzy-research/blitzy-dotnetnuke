@@ -61,6 +61,9 @@ public sealed class TabApiTests
     /// </summary>
     private const int UnauthenticatedRoleId = -3;
 
+    /// <summary>The media type an RFC 7807 problem document is served under when a caller asks for it.</summary>
+    private const string ProblemMediaType = "application/problem+json";
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="TabApiTests"/> class.</summary>
@@ -107,21 +110,23 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// A page in the recycle bin is still listed, carrying its own deletion flag, because the terminal
-    /// legacy read returns soft-deleted rows and projects that flag for the caller to act on.
+    /// A soft-deleted page is still listed, carrying its own deletion flag, because the terminal legacy read
+    /// returns soft-deleted rows and projects that flag for the caller to act on.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// This pins the answer to a question the listing cannot answer twice: a caller that receives a
-    /// filtered listing cannot tell a tenant with no recycled pages from a tenant whose recycled pages
-    /// were withheld from it. The page is recycled through the write endpoint rather than by a direct
-    /// insert so that the cached navigation is invalidated the way production invalidates it -
-    /// recycling a page behind the service's back would leave the assertion reading a stale entry and
-    /// passing for the wrong reason. It is restored the same way once asserted, which leaves the shared
+    /// filtered listing cannot tell a tenant with no soft-deleted pages from a tenant whose soft-deleted
+    /// pages were withheld from it. The page is marked deleted through the write endpoint rather than by a
+    /// direct insert so that the cached navigation is invalidated the way production invalidates it -
+    /// marking a page behind the service's back would leave the assertion reading a stale entry and
+    /// passing for the wrong reason. It is unmarked the same way once asserted, which leaves the shared
     /// tenant in the state every other page this suite creates leaves it in.
+    /// The restoring and emptying of soft-deleted pages have no endpoint here, and their absence is asserted
+    /// separately - this test is about the LISTING projecting the flag, not about a bin surface existing.
     /// </remarks>
     [Fact]
-    public async Task ListTabs_IncludesAPageInTheRecycleBin()
+    public async Task ListTabs_IncludesASoftDeletedPage()
     {
         string name = "IRecycled" + Suffix();
         int tabId = await CreateTabAsync(name);
@@ -1120,6 +1125,1132 @@ public sealed class TabApiTests
         refreshed.Should().NotContain(tab => tab.TabName == original);
     }
 
+    /// <summary>
+    /// Every write verb the legacy screens offered and this API does not is unroutable, on both page
+    /// addresses.
+    /// </summary>
+    /// <param name="method">The verb to attempt.</param>
+    /// <param name="template">The address to attempt it against, with the seeded identifiers substituted.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE STRUCTURAL ASSERTION THE WHOLE FILE EXISTS FOR. The page surface is deliberately three
+    /// routes - list a tenant's pages, read one page, update one page - and nothing else. A later change that
+    /// "helpfully" restores page creation or page deletion would widen the migration's scope silently, because
+    /// nothing else in the suite would notice: every other test here would keep passing. This test is the
+    /// tripwire, so it asserts the negative directly rather than inferring it from the absence of a positive.
+    /// </para>
+    /// <para>
+    /// <c>404 Not Found</c> is accepted alongside <c>405 Method Not Allowed</c> because which one the router
+    /// produces depends on whether any action is registered for the address at all - the bare page collection
+    /// address is registered for no verb and answers <c>404</c>, while the two addresses that do carry actions
+    /// answer <c>405</c> for a verb none of them declares. The assertion worth making is that no write reaches
+    /// a handler, not which refusal the router happens to select, so both are admitted and the two success
+    /// statuses a write would produce are excluded explicitly.
+    /// </para>
+    /// <para>
+    /// The caller is authenticated on purpose. An anonymous request to these same addresses answers
+    /// <c>401 Unauthorized</c>, which would satisfy a naive "not a success status" assertion while proving
+    /// nothing about routing: the challenge is issued before the router's verdict is visible. Authenticating
+    /// first removes that confound, so a refusal here is a statement about the route table.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: five write paths existed across the two legacy page screens and not one is reproduced.
+    // Creation was ManageTabs.ascx.vb:L314 (`objTabs.AddTab(objTab)`), which is why the page transfer folder
+    // declares three types and deliberately no create request. Deletion was Tabs.ascx.vb behind a
+    // special-page guard. Reordering was four separate commands, each a call to the seven-argument
+    // `UpdatePortalTabOrder` at TabController.vb:L550 whose trailing `Optional ByVal NewTab As Boolean = False`
+    // is exactly the implicit-default idiom the target refuses to carry forward; placement is now stated as
+    // named properties on the update request instead. Design propagation to child pages, the restoring and
+    // emptying of soft-deleted pages, and the page export and import screens are absent with the features they
+    // belong to. Every one of those absences is a scope decision, so each is asserted rather than assumed.
+    [Theory]
+    [InlineData("POST", "/api/v1/tabs")]
+    [InlineData("PUT", "/api/v1/tabs")]
+    [InlineData("PATCH", "/api/v1/tabs")]
+    [InlineData("DELETE", "/api/v1/tabs")]
+    [InlineData("POST", "/api/v1/tabs/{tabId}")]
+    [InlineData("PATCH", "/api/v1/tabs/{tabId}")]
+    [InlineData("DELETE", "/api/v1/tabs/{tabId}")]
+    [InlineData("POST", "/api/v1/portals/{portalId}/tabs")]
+    [InlineData("PUT", "/api/v1/portals/{portalId}/tabs")]
+    [InlineData("PATCH", "/api/v1/portals/{portalId}/tabs")]
+    [InlineData("DELETE", "/api/v1/portals/{portalId}/tabs")]
+    public async Task Tabs_DeclareNoCreateOrDeleteSurface(string method, string template)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpRequestMessage request = new(new HttpMethod(method), Address(template));
+        request.Content = JsonContent.Create(
+            new { tabName = "IShouldNotBeRoutable" + Suffix() },
+            options: ApiTestFixture.Json);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().BeOneOf(
+            [HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed],
+            "{0} {1} must reach no handler",
+            method,
+            template);
+
+        response.StatusCode.Should().NotBe(
+            HttpStatusCode.Created,
+            "a page creation surface is out of scope and must not appear");
+        response.StatusCode.Should().NotBe(
+            HttpStatusCode.NoContent,
+            "a page deletion surface is out of scope and must not appear");
+    }
+
+    /// <summary>
+    /// None of the page operations that belong to excluded features is addressable, under any verb.
+    /// </summary>
+    /// <param name="method">The verb to attempt.</param>
+    /// <param name="template">The address to attempt it against.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// These addresses are spelled the way a well-meaning extension would spell them, which is the point: the
+    /// risk this test guards against is not a typo but a plausible addition. Page reordering, propagating a
+    /// design to child pages, propagating grants to child pages, restoring or emptying soft-deleted pages,
+    /// mutating a page's grants, and page export and import are each excluded, and each exclusion is a
+    /// deliberate scope boundary rather than an unfinished edge.
+    /// </remarks>
+    // MIGRATION: page export and import are NOT the module export and import that this API does expose. The
+    // legacy pair Website/admin/Tabs/export.ascx and import.ascx transferred PAGES and lies outside this
+    // migration; the pair on the module surface transfers MODULE CONTENT and is in scope. Conflating them is
+    // the specific mistake this test forecloses, which is why the page-shaped addresses are asserted absent
+    // here rather than left to inference from the module suite's presence.
+    [Theory]
+    [InlineData("POST", "/api/v1/tabs/{tabId}/move")]
+    [InlineData("PUT", "/api/v1/tabs/{tabId}/order")]
+    [InlineData("POST", "/api/v1/tabs/{tabId}/copy-design-to-children")]
+    [InlineData("POST", "/api/v1/tabs/{tabId}/copy-permissions-to-children")]
+    [InlineData("POST", "/api/v1/tabs/{tabId}/restore")]
+    [InlineData("POST", "/api/v1/tabs/{tabId}/export")]
+    [InlineData("POST", "/api/v1/tabs/import")]
+    [InlineData("PUT", "/api/v1/tabs/{tabId}/permissions")]
+    [InlineData("POST", "/api/v1/portals/{portalId}/tabs/deleted")]
+    [InlineData("DELETE", "/api/v1/portals/{portalId}/tabs/deleted")]
+    public async Task Tabs_DeclareNoSurfaceForExcludedPageFeatures(string method, string template)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpRequestMessage request = new(new HttpMethod(method), Address(template));
+        request.Content = JsonContent.Create(new { }, options: ApiTestFixture.Json);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().BeOneOf(
+            [HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed],
+            "{0} {1} belongs to an excluded feature and must reach no handler",
+            method,
+            template);
+    }
+
+    /// <summary>
+    /// Renaming a page to a name a sibling already uses is accepted, because the legacy duplicate-path guard
+    /// never ran on an edit.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The measurement behind this: the duplicate-path refusal sat at
+    /// <c>Website/admin/Tabs/ManageTabs.ascx.vb</c> L279 inside <c>If String.IsNullOrEmpty(strAction)</c>,
+    /// while the edit branch was entered at L304 under <c>If strAction = "edit"</c>. The two conditions are
+    /// mutually exclusive, so the guard belonged to the create path exclusively - and the create path is not
+    /// exposed here. Reproducing the refusal on an update would therefore be STRICTER than the application
+    /// being migrated, which MC4 forbids just as firmly as it forbids being laxer.
+    /// </para>
+    /// <para>
+    /// The assertion is written as an exclusion of <c>409 Conflict</c> as well as an expectation of
+    /// <c>200 OK</c>, because a conflict status is precisely what a reader who had not measured the legacy
+    /// branch condition would add.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_WithANameASiblingAlreadyUses_IsAcceptedRatherThanConflicting()
+    {
+        string sharedName = "ITwin" + Suffix();
+        await CreateTabAsync(sharedName);
+        int secondTabId = await CreateTabAsync("IOther" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(secondTabId),
+            NewUpdateRequest(sharedName),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().NotBe(
+            HttpStatusCode.Conflict,
+            "the legacy duplicate-path guard was reachable only from the create path, which is out of scope");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto updated = await ReadDetailAsync(response);
+        updated.TabName.Should().Be(sharedName);
+    }
+
+    /// <summary>
+    /// The page whose identifier is the identity seed reads back normally, so zero is never mistaken for
+    /// "unspecified".
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>Tabs.TabID</c> is declared <c>IDENTITY (0, 1)</c> at
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> L140, so the first page
+    /// an installation ever creates carries zero. Zero is therefore a page, not a sentinel, and three separate
+    /// layers have to agree about that for this request to succeed: the route constraint has to admit it, the
+    /// authorisation handler has to parse it as a scope identifier rather than treating the absence of a
+    /// truthy value as no value at all, and the service has to look it up.
+    /// </para>
+    /// <para>
+    /// The seeded tenant's root page holds exactly this identifier, so the assertion is made against a real
+    /// row rather than a constructed one - and the identifier is read back off the representation, which is
+    /// what proves it survived the round trip instead of being coerced somewhere along it.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: the legacy tenant-resolution procedure got this wrong, and the defect is measurable. At
+    // 01.00.00.SqlDataProvider:L4587 `GetPortalSettings` guarded its ownership check with `if @TabID <> 0`,
+    // treating zero as "no page requested" in the very schema whose page identity column seeds at zero. The
+    // consequence was that a request for page zero fell through to the substitution branch at L4603 and was
+    // answered with `min(Tabs.TabID)` instead. The target has no such guard and no such substitution: zero
+    // addresses page zero.
+    [Fact]
+    public async Task GetTab_ForTheIdentitySeedIdentifier_TreatsZeroAsARealPage()
+    {
+        _fixture.Seed.RootTabId.Should().Be(
+            0,
+            "the seeded root page must occupy the identity seed for this assertion to be about zero at all");
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(0));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "page zero is a real page and must never be rejected as though the identifier were absent");
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.TabId.Should().Be(0);
+        detail.TabName.Should().Be(IntegrationSeed.RootTabName);
+    }
+
+    /// <summary>
+    /// The tenant whose identifier is the identity seed lists its pages normally, so minus one is never
+    /// mistaken for the legacy absent-integer sentinel.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <c>Portals.PortalID</c> is declared <c>IDENTITY (-1, 1)</c> at
+    /// <c>01.00.00.SqlDataProvider</c> L77, and <c>Library/Components/Shared/Null.vb</c> L41-L43 defines the
+    /// absent-integer sentinel as <c>-1</c>. The same value therefore means both "the first tenant ever
+    /// created" and "no value", and only the column it appears in distinguishes them. A route that rejected
+    /// <c>-1</c>, or a mapper that turned it into <see langword="null"/>, would make the seeded tenant
+    /// unreachable while every test using a later identifier kept passing.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_ForTheIdentitySeedTenant_TreatsMinusOneAsARealTenant()
+    {
+        _fixture.Seed.PortalId.Should().Be(
+            -1,
+            "the seeded tenant must occupy the identity seed for this assertion to be about minus one at all");
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabsRoute(-1));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "minus one is the first tenant identifier this schema issues, not an absent value");
+
+        List<TabListItemDto> tabs = await ReadListAsync(response);
+        tabs.Should().NotBeEmpty();
+    }
+
+    /// <summary>
+    /// A tenant identifier of zero is parsed and looked up like any other, and answers absence by naming the
+    /// identifier it could not find.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Zero is the second value that has to be proved harmless on this surface: it is the identifier the
+    /// shipped default tenant row was inserted with in the legacy product, and it is also what an uninitialised
+    /// integer holds. The refusal naming zero is what distinguishes "looked it up and found nothing" from
+    /// "discarded it as falsy" - the two are indistinguishable from the status code alone, which is why the
+    /// payload is inspected rather than only the status.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_ForATenantIdentifierOfZero_LooksItUpRatherThanDiscardingIt()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabsRoute(0));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "no tenant bears identifier zero in this database, which is an absence rather than a rejection");
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain("urn:dnnmigration:error:tab.portal_not_found");
+        payload.Should().Contain(
+            "0",
+            "naming the identifier is what proves it was parsed and searched for");
+    }
+
+    /// <summary>
+    /// A page that belongs to no tenant keeps its absent tenant as a null, rather than acquiring a sentinel.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <c>Tabs.PortalID</c> is nullable (<c>01.00.00.SqlDataProvider</c> L142) and the shipped seed used it:
+    /// the third seeded row, the host-level page, was inserted with an explicit <c>NULL</c> tenant at L7140.
+    /// The representation must carry that absence as an absence. Mapping it to the legacy absent-integer
+    /// sentinel would make a host-level page indistinguishable from a page owned by the first tenant this
+    /// schema issues, which is the identity seed and therefore also minus one.
+    /// </remarks>
+    [Fact]
+    public async Task GetTab_ForAPageWithNoTenant_PreservesTheAbsenceRatherThanASentinel()
+    {
+        int hostTabId = await CreateTenantlessTabAsync("IHostPage" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(hostTabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.PortalId.Should().BeNull("a page with no tenant has no tenant, not tenant minus one");
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain(
+            "\"portalId\":null",
+            "the absence has to survive serialisation as an explicit null member");
+        payload.Should().NotContain(
+            "\"portalId\":-1",
+            "the legacy absent-integer sentinel must not stand in for a genuine null");
+    }
+
+    /// <summary>
+    /// A page that belongs to no tenant is refused to a tenant administrator, so a host-level page is not
+    /// visible from inside every tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The host account still reads it - the companion test above - because a host account holds everything.
+    /// What is asserted here is that holding a tenant's administration does not, by itself, reach outside that
+    /// tenant.
+    /// </remarks>
+    // MIGRATION: this is a deliberate divergence and the legacy behaviour is measurable, so it is recorded
+    // rather than absorbed. `GetPortalSettings` verified page ownership with
+    // `where TabId = @TabId and ( Portals.PortalID = @PortalID or Tabs.PortalId is null )`
+    // (01.00.00.SqlDataProvider:L4593). The trailing disjunct made EVERY page with a null tenant visible from
+    // EVERY tenant, which is a cross-tenant read in a multi-tenant product. The target does not reproduce it:
+    // a host-level page is reachable by an installation-wide account and by nobody else. The divergence
+    // narrows access rather than widening it, and it is asserted here so that a later change which restores
+    // the disjunct fails a test instead of quietly reopening the path.
+    [Fact]
+    public async Task GetTab_ForAPageWithNoTenant_RefusesATenantAdministrator()
+    {
+        int hostTabId = await CreateTenantlessTabAsync("IHostPage" + Suffix());
+
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(hostTabId));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "administering one tenant must not confer a read on a page that belongs to no tenant");
+    }
+
+    /// <summary>
+    /// Submitted empty text is stored and returned as empty text, not converted into an absent value.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>Library/Components/Shared/Null.vb</c> L71-L73 defines the absent-string sentinel as the EMPTY
+    /// STRING rather than as a null, and the shipped seed relies on the distinction: the host-level page at
+    /// L7140 was inserted with <c>''</c> for its mobile name while its tenant column took an explicit
+    /// <c>NULL</c> on the same row. Empty and absent are therefore two states the data actually holds, and a
+    /// serialiser configured to omit empty or default members would collapse them into one.
+    /// </para>
+    /// <para>
+    /// The assertion is made twice - once on the write's own representation and once on a fresh read - because
+    /// a value can survive the response and still be lost on the way to storage, and only the second read
+    /// distinguishes those.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_WithEmptyText_KeepsItEmptyRatherThanAbsent()
+    {
+        int tabId = await CreateTabAsync("IEmpty" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        Dictionary<string, object?> body = new(StringComparer.Ordinal)
+        {
+            ["tabName"] = "IEmptyText" + Suffix(),
+            ["title"] = string.Empty,
+            ["url"] = string.Empty,
+            ["iconFile"] = string.Empty,
+        };
+
+        using HttpResponseMessage written = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            body,
+            ApiTestFixture.Json);
+
+        written.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string writtenPayload = await written.Content.ReadAsStringAsync();
+        writtenPayload.Should().Contain("\"title\":\"\"");
+        writtenPayload.Should().Contain("\"url\":\"\"");
+        writtenPayload.Should().Contain("\"iconFile\":\"\"");
+
+        using HttpResponseMessage reread = await client.GetAsync(TabRoute(tabId));
+
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto detail = await ReadDetailAsync(reread);
+        detail.Title.Should().Be(string.Empty, "empty text is a value, and it was the value submitted");
+        detail.Url.Should().Be(string.Empty);
+        detail.IconFile.Should().Be(string.Empty);
+    }
+
+    /// <summary>
+    /// The legacy absent-date sentinel is refused with the storable-range message rather than written to the
+    /// column.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <c>Null.vb</c> L66-L68 defines the absent-date sentinel as <c>Date.MinValue</c>, and
+    /// <c>ManageTabs.ascx.vb</c> L288-L296 assigned exactly that value whenever a date box was left blank. The
+    /// value cannot be stored in the column the migration is bound to, whose range begins in 1753, so the
+    /// sentinel is not merely unnecessary here - it is unrepresentable. Refusing it with a message that names
+    /// the range is what tells a caller to send an absent value instead of a minimum one.
+    /// </remarks>
+    // MIGRATION: the sentinel is not translated, and the reason is the Option Strict asymmetry recorded at
+    // Website/release.config:L125, `<compilation debug="false" strict="false">`. The legacy screens compiled
+    // with Option Strict OFF, so a blank box coercing itself into a minimum date raised nothing at all. Under
+    // the target's explicit conversions the same value has to be judged, and it is judged as out of range
+    // rather than silently clamped - a clamp would store a date the caller never chose.
+    [Fact]
+    public async Task UpdateTab_WithTheLegacyAbsentDateSentinel_IsRefusedAsUnstorable()
+    {
+        int tabId = await CreateTabAsync("ISentinelDate" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        Dictionary<string, object?> body = new(StringComparer.Ordinal)
+        {
+            ["tabName"] = "ISentinelDate" + Suffix(),
+
+            // DateTime.MinValue is precisely the legacy absent-date sentinel, written in the wire form the
+            // caller would send it in.
+            ["startDate"] = "0001-01-01T00:00:00",
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            body,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+
+        errors.Should().ContainKey(
+            "StartDate",
+            "the refusal has to name the member that carried the unstorable value");
+        errors["StartDate"].Should().Contain(
+            message => message.Contains("1753", StringComparison.Ordinal),
+            "the message has to state the range the column can hold");
+    }
+
+    /// <summary>
+    /// Omitting both dates stores no dates, rather than storing the legacy minimum-date sentinel.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion to the test above, and the half that pins the replacement rather than the rejection.
+    /// Absence is expressed by omission and lands in the column as a genuine <c>NULL</c>, which the stored
+    /// state is queried for directly - the representation alone could not distinguish a null column from a
+    /// column holding a value the projection chose not to emit.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_WithNoDates_StoresNoDates()
+    {
+        int tabId = await CreateTabAsync("INoDates" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest("INoDates" + Suffix()),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.StartDate.Should().BeNull();
+        detail.EndDate.Should().BeNull();
+
+        int rowsWithNullDates = await _fixture.Database.ScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM [dbo].[Tabs]
+            WHERE [TabID] = @tabId AND [StartDate] IS NULL AND [EndDate] IS NULL;
+            """,
+            new Dictionary<string, object?> { ["tabId"] = tabId });
+
+        rowsWithNullDates.Should().Be(
+            1,
+            "an omitted date must land as a null column, never as the legacy minimum-date sentinel");
+    }
+
+    /// <summary>
+    /// Both page routes are served from a host name that matches no configured alias.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The tenant-resolution stage sits after authentication and authorisation and is a pass-through for these
+    /// routes: the collection route names its tenant in the address, and the two single-page routes are marked
+    /// as taking their tenant from the caller's signed token. Neither consults the alias table, so neither can
+    /// be refused for a host name that resolves to nothing.
+    /// </para>
+    /// <para>
+    /// This matters beyond the pass-through itself. It is the reason no substring host can reach another
+    /// tenant's page through this surface: the mechanism the legacy substring predicate widened is not on the
+    /// path at all. Asserting the pass-through is therefore the honest way to state that property, because a
+    /// test that tried to observe alias matching here would be observing something these routes never do.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Tabs_AreServedFromAHostNameThatMatchesNoAlias()
+    {
+        using HttpClient client = _fixture.CreateHostClient("no-such-alias.invalid");
+
+        using HttpResponseMessage listed = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        listed.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the collection route names its tenant, so no alias has to resolve for it");
+
+        using HttpResponseMessage read = await client.GetAsync(TabRoute(_fixture.Seed.RootTabId));
+
+        read.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the single-page route takes its tenant from the token, so no alias has to resolve for it either");
+    }
+
+    /// <summary>
+    /// A host name that is a strict substring of a configured alias confers nothing: it serves the tenant the
+    /// request names and reaches no other.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The host used here, <c>localhos</c>, is a strict substring of the seeded alias <c>localhost</c>, which
+    /// is exactly the shape the legacy predicate matched. The caller is a genuine administrator of the seeded
+    /// tenant, so the first half of the assertion proves the request is not failing for some unrelated reason,
+    /// and the second half proves the substring bought no additional reach.
+    /// </remarks>
+    // MIGRATION: the legacy resolver matched `PortalAlias like '%' + @PortalAlias + '%'`
+    // (01.00.00.SqlDataProvider:L4582) and then took `min(PortalID)` of whatever matched (L4580). Two defects
+    // followed from those two lines together: a host that merely sat inside another tenant's alias resolved to
+    // that tenant, and when several matched, the winner was decided by identifier order rather than by
+    // correctness. The target matches an alias exactly, and this test states the consequence in terms a caller
+    // can observe. Per Rule T5 the improvement is annotated rather than smuggled in - it is the one discovered
+    // defect this migration corrects instead of merely recording, because carrying a cross-tenant
+    // mis-resolution into new code would be worse than diverging from the original.
+    [Fact]
+    public async Task Tabs_FromAHostNameThatIsASubstringOfAnAlias_ReachNoOtherTenant()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        int foreignPortalId = await CreateIsolatedPortalAsync(host);
+
+        using HttpClient substringHost = _fixture.CreateTenantClient(
+            ApiTestFixture.TestHost[..^1],
+            _fixture.Seed.PortalId,
+            _fixture.Seed.AdminUserId,
+            IntegrationSeed.AdminUserName);
+
+        using HttpResponseMessage own = await substringHost.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        own.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the caller administers the tenant the address names, so the request itself is sound");
+
+        using HttpResponseMessage foreign = await substringHost.GetAsync(TabsRoute(foreignPortalId));
+
+        foreign.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "a host name that is a substring of an alias must not resolve to the tenant that owns the alias");
+    }
+
+    /// <summary>
+    /// A page in another tenant is refused, and the refusal carries no page at all - it is never answered with
+    /// a different page.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The refusal status alone does not make this assertion: what has to be excluded is a SUCCESSFUL answer
+    /// carrying a substituted page, which is why the payload is inspected for the page members and for the
+    /// success envelope, and why the substituted candidate - the requesting tenant's own lowest page - is
+    /// named explicitly in the exclusion.
+    /// </remarks>
+    // MIGRATION: the legacy procedure substituted rather than refused. When its ownership check produced
+    // nothing, `if @VerifyTabID is null` at 01.00.00.SqlDataProvider:L4601 fell through to
+    // `select @TabID = min(Tabs.TabID)` at L4603, so a caller who asked for a page it was not entitled to was
+    // handed the tenant's lowest-numbered page instead, with no error and no indication that the answer was
+    // about a different page. That substitution is deliberately not reproduced. A request for a page outside
+    // the caller's tenant is refused, which is the answer that cannot be mistaken for success.
+    [Fact]
+    public async Task GetTab_ForAPageInAnotherTenant_IsRefusedAndNeverSubstituted()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        int foreignPortalId = await CreateIsolatedPortalAsync(host);
+        int foreignTabId = await CreateTabAsync("IForeign" + Suffix(), portalId: foreignPortalId);
+
+        using HttpClient administrator = _fixture.CreateAdministratorClient();
+
+        using HttpResponseMessage response = await administrator.GetAsync(TabRoute(foreignTabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().NotContain(
+            "\"tabId\"",
+            "a refusal must carry no page, least of all a page the caller did not ask for");
+        payload.Should().NotContain(
+            "\"data\"",
+            "the success envelope must not appear on a refusal");
+    }
+
+    /// <summary>
+    /// A blank page name is refused with a complete RFC 7807 validation document that names the offending
+    /// member and carries the legacy wording.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The companion theory above asserts only that a blank name is refused. This asserts WHAT the refusal
+    /// says, which is the part a client actually binds to: every mandated member is present, the per-field
+    /// dictionary names the member that failed, and the message is the one the legacy screen showed. A refusal
+    /// that omitted the field name would still be a 400 and would be useless to a form.
+    /// </para>
+    /// <para>
+    /// Note the key's casing. The dictionary is keyed by the MEMBER name rather than by the wire name, so the
+    /// key is <c>TabName</c> where the submitted member was <c>tabName</c>. That asymmetry is asserted rather
+    /// than corrected, because a client that guessed the wire spelling would fail to find its error.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: the wording is the legacy wording, with one deliberate removal. The markup literal at
+    // Website/admin/Tabs/managetabs.ascx L36-L37 reads `ErrorMessage="<br>Tab Name Is Required"`, but the
+    // resource entry that actually rendered - `valTabName.ErrorMessage` in
+    // Website/admin/Tabs/App_LocalResources/ManageTabs.ascx.resx - overrides it with
+    // `<br>Page Name Is Required`, and the resource wins at run time because the control carries
+    // `resourcekey="valTabName.ErrorMessage"`. The words a user saw are therefore "Page Name Is Required", and
+    // those are the words kept. The leading `<br>` is dropped: it is a fragment of HTML that existed only to
+    // separate the message from the box it sat beside in a rendered page, and an RFC 7807 message is data for a
+    // client to place, not markup to emit. Both halves of that decision are asserted here so neither can drift.
+    [Fact]
+    public async Task UpdateTab_WithABlankName_NamesTheMemberAndKeepsTheLegacyWording()
+    {
+        int tabId = await CreateTabAsync("IProblem" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            new UpdateTabRequest { TabName = string.Empty },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using System.Text.Json.JsonDocument document =
+            System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        System.Text.Json.JsonElement problem = document.RootElement;
+
+        foreach (string member in new[] { "type", "title", "status", "detail", "errors" })
+        {
+            problem.TryGetProperty(member, out _).Should().BeTrue(
+                "an RFC 7807 validation document must carry its {0} member",
+                member);
+        }
+
+        problem.GetProperty("status").GetInt32().Should().Be(400);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+
+        errors.Should().ContainKey("TabName");
+        errors["TabName"].Should().ContainSingle().Which.Should().Be(
+            "Page Name Is Required",
+            "the message is the legacy resource wording with the HTML separator removed");
+
+        errors["TabName"].Should().NotContain(
+            message => message.Contains("<br", StringComparison.Ordinal),
+            "an RFC 7807 message is data, not markup");
+    }
+
+    /// <summary>
+    /// A refusal produced inside the controller pipeline defaults to plain JSON and switches to the
+    /// problem media type when the caller asks for it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The two halves are one measurement. The page controller declares that it produces
+    /// <c>application/json</c>, and that declaration constrains every result the action pipeline formats -
+    /// including the automatic validation refusal - so the default media type on a 400 is
+    /// <c>application/json</c> even though the BODY is a problem document. Ask for the problem media type
+    /// explicitly and the same document is served under it.
+    /// </para>
+    /// <para>
+    /// Both halves are asserted because either alone reads as a defect. The default alone looks like a problem
+    /// document served under the wrong type; the negotiated form alone hides the constraint the controller
+    /// declaration imposes. Together they state the actual contract, and either changing would break a test.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_WhenRefused_ServesTheProblemDocumentUnderTheNegotiatedMediaType()
+    {
+        int tabId = await CreateTabAsync("IMediaType" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage defaulted = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            new UpdateTabRequest { TabName = string.Empty },
+            ApiTestFixture.Json);
+
+        defaulted.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        defaulted.Content.Headers.ContentType?.MediaType.Should().Be(
+            "application/json",
+            "the controller declares that it produces JSON, which constrains its formatted results");
+
+        using HttpRequestMessage negotiated = new(HttpMethod.Put, TabRoute(tabId))
+        {
+            Content = JsonContent.Create(
+                new UpdateTabRequest { TabName = string.Empty },
+                options: ApiTestFixture.Json),
+        };
+        negotiated.Headers.Add("Accept", ProblemMediaType);
+
+        using HttpResponseMessage requested = await client.SendAsync(negotiated);
+
+        requested.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        requested.Content.Headers.ContentType?.MediaType.Should().Be(
+            ProblemMediaType,
+            "a caller that asks for the problem media type receives the same document under it");
+    }
+
+    /// <summary>
+    /// An authorisation refusal is a problem document that discloses nothing about why it was refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Refusals are produced before the controller runs, so they are not constrained by the controller's
+    /// declared media type and always carry the problem type. What is asserted alongside the type is the
+    /// silence: no stack trace, no source path, no member name, no connection string, no signing material and
+    /// no reflected request content. A refusal that explained itself would describe the permission model to the
+    /// caller probing it.
+    /// </remarks>
+    // MIGRATION: the legacy screens refused by navigation, not by status. ManageTabs.ascx.vb L586 tested
+    // `PortalSecurity.IsInRoles(...)` twice and on failure ran
+    // `Response.Redirect(NavigateURL("Access Denied"), True)`, so a refused caller received a 302 to a page
+    // that rendered an apology. An API answers the caller instead of sending it elsewhere, so the redirect
+    // becomes a plain 403 carrying a problem document - which is also why no test here follows a redirect.
+    [Fact]
+    public async Task GetTab_WhenRefused_AnswersAProblemDocumentThatDisclosesNothing()
+    {
+        int tabId = await CreateTabAsync("IRefused" + Suffix());
+
+        using HttpClient client = MemberClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabRoute(tabId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        response.Content.Headers.ContentType?.MediaType.Should().Be(ProblemMediaType);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain("urn:dnnmigration:error:auth.not_permitted");
+
+        foreach (string forbidden in new[]
+        {
+            "stackTrace",
+            "StackTrace",
+            "at DnnMigration",
+            ".cs:line",
+            "Server=",
+            "Password=",
+            ApiTestFixture.SigningSecret,
+            "SELECT ",
+        })
+        {
+            payload.Should().NotContain(
+                forbidden,
+                "a refusal must not disclose {0}",
+                forbidden);
+        }
+    }
+
+    /// <summary>A caller-supplied correlation identifier is echoed back exactly once.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The header is registered on the response before the rest of the pipeline is awaited, so it is present
+    /// whatever the outcome. "Exactly once" is the part worth asserting: a stage that appended rather than
+    /// overwrote would produce two values, and a client reading the first would still see the right one while
+    /// a log correlating on the header saw two.
+    /// </remarks>
+    [Fact]
+    public async Task GetTab_EchoesTheSuppliedCorrelationIdExactlyOnce()
+    {
+        const string Supplied = "tab-round-trip-4d19ae";
+
+        using HttpClient client = _fixture.CreateHostClient();
+        using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, TabRoute(_fixture.Seed.RootTabId)),
+            Supplied);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CorrelationValues(response).Should().ContainSingle().Which.Should().Be(
+            Supplied,
+            "the identifier the caller supplied is the one every record of the request must carry");
+    }
+
+    /// <summary>A correlation identifier is generated when the caller supplies none.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListTabs_GeneratesACorrelationIdWhenTheCallerSuppliesNone()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CorrelationValues(response).Should().ContainSingle().Which.Should().NotBeNullOrWhiteSpace(
+            "a request that arrives without an identifier still has to be correlatable");
+    }
+
+    /// <summary>
+    /// An unusable correlation identifier is replaced rather than refused, so a bad header never costs the
+    /// caller its request.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The identifier is a diagnostic aid, not part of the request's meaning, so an unusable one is discarded
+    /// and a fresh one issued in its place. Refusing the request instead would let a header a caller may not
+    /// even know it is sending - injected by a proxy, for instance - break an otherwise valid call, and
+    /// keeping the unusable value would put unbounded caller-supplied text into every log line about the
+    /// request.
+    /// </remarks>
+    [Fact]
+    public async Task GetTab_WithAnOverlongCorrelationId_ReplacesItRatherThanRefusingTheRequest()
+    {
+        string overlong = new('c', 300);
+
+        using HttpClient client = _fixture.CreateHostClient();
+        using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, TabRoute(_fixture.Seed.RootTabId)),
+            overlong);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unusable diagnostic header must not turn a valid request into a refusal");
+
+        string echoed = CorrelationValues(response).Should().ContainSingle().Subject;
+        echoed.Should().NotBe(overlong, "an unusable identifier is discarded, not trimmed and kept");
+        echoed.Should().NotBeNullOrWhiteSpace();
+        echoed.Length.Should().BeLessThan(overlong.Length);
+    }
+
+    /// <summary>A correlation identifier is present on the refusal path too, not only on success.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the case the header exists for. A caller reporting that it was refused has nothing else to
+    /// quote, and an operator has nothing else to search on, so an identifier that appeared only on successful
+    /// responses would be missing from exactly the requests anyone needs to look up.
+    /// </remarks>
+    [Fact]
+    public async Task GetTab_CarriesACorrelationIdOnTheRefusalPath()
+    {
+        const string Supplied = "tab-refusal-8b2c07";
+
+        int tabId = await CreateTabAsync("ICorrelated" + Suffix());
+
+        using HttpClient client = MemberClient();
+        using HttpRequestMessage request = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, TabRoute(tabId)),
+            Supplied);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        response.Content.Headers.ContentType?.MediaType.Should().Be(ProblemMediaType);
+
+        CorrelationValues(response).Should().ContainSingle().Which.Should().Be(Supplied);
+    }
+
+    /// <summary>
+    /// The page listing is an unpaged collection: it carries no paging block and therefore no paging
+    /// sentinel.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The listing is complete by design, because each row carries its own parent, depth and ordinal and those
+    /// are coherent only over the whole set - a tree split across pages severs parents from their children. So
+    /// the envelope carries a null paging block rather than a page of one.
+    /// </para>
+    /// <para>
+    /// The absence of a total is what makes the legacy unpaged sentinel unrepresentable here. Where a count did
+    /// travel in the legacy code it travelled through a by-reference argument that carried <c>-1</c> to mean
+    /// "not counted", and a page-count member that inherited that convention would report minus one items. No
+    /// member exists to hold it, which is the strongest form the guarantee can take, and it is asserted on the
+    /// raw payload because a typed binding would silently default a member that is not there.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_AnswersAnUnpagedEnvelopeWithNoPagingSentinel()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().NotContain(
+            "\"totalCount\"",
+            "an unpaged collection declares no total, so it can hold no unpaged sentinel");
+        payload.Should().NotContain("\"pageIndex\"");
+        payload.Should().NotContain("\"pageSize\"");
+        payload.Should().NotContain(
+            ":-1",
+            "no negative numeric sentinel belongs anywhere in this representation");
+
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(payload);
+
+        document.RootElement.GetProperty("data").ValueKind.Should().Be(
+            System.Text.Json.JsonValueKind.Array,
+            "the collection travels under the success envelope's data member");
+        document.RootElement.GetProperty("meta").ValueKind.Should().Be(
+            System.Text.Json.JsonValueKind.Null,
+            "an unpaged collection carries no paging block");
+    }
+
+    /// <summary>Two identical listings return the same pages in the same order.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Legacy navigation order came from the stored ordinal, whose seeded values were 1, 23 and 1 across the
+    /// three shipped pages - so ordinals are neither dense nor unique across the table, and an ordering that
+    /// fell back on insertion order or on whatever the query planner returned would look stable in a small
+    /// database and reorder itself in a large one. Determinism is asserted rather than a specific sequence,
+    /// because every other test in this file may add pages and no absolute ordinal is anyone's contract.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_ReturnsADeterministicOrder()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage first = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        List<TabListItemDto> firstPass = await ReadListAsync(first);
+
+        using HttpResponseMessage second = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+        List<TabListItemDto> secondPass = await ReadListAsync(second);
+
+        secondPass.Select(tab => tab.TabId).Should().Equal(
+            firstPass.Select(tab => tab.TabId),
+            "navigation order must not depend on how the rows happened to be read");
+    }
+
+    /// <summary>
+    /// A reserved device name is refused whatever case it arrives in, because the legacy check ignored case.
+    /// </summary>
+    /// <param name="reservedName">The name to submit.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The rule exists because these names address devices rather than files on the platform the legacy
+    /// product ran on, so a page bearing one produced a path that could not be written. The legacy test was
+    /// <c>Regex.IsMatch(objTab.TabName, "^AUX$|^CON$|^LPT[1-9]$|^CON$|^COM[1-9]$|^NUL$",
+    /// RegexOptions.IgnoreCase)</c> at <c>Website/admin/Tabs/ManageTabs.ascx.vb</c> L272, and the
+    /// case-insensitivity flag is the part a reimplementation drops by accident - a case-sensitive port would
+    /// admit every lower-case spelling while passing an upper-case test.
+    /// </remarks>
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("con")]
+    [InlineData("Con")]
+    [InlineData("NUL")]
+    [InlineData("nul")]
+    [InlineData("AUX")]
+    [InlineData("aux")]
+    [InlineData("COM1")]
+    [InlineData("com9")]
+    [InlineData("LPT1")]
+    [InlineData("lPt9")]
+    public async Task UpdateTab_WithAReservedDeviceNameInAnyCase_IsRefused(string reservedName)
+    {
+        int tabId = await CreateTabAsync("IReserved" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest(reservedName),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "{0} is a reserved device name and the legacy check ignored case",
+            reservedName);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        payload.Should().Contain(
+            "urn:dnnmigration:error:tab.name_reserved",
+            "the refusal is reported as a stable named reason rather than as an opaque status");
+    }
+
+    /// <summary>
+    /// A name that merely begins with, ends with or extends a reserved device name is accepted, because the
+    /// legacy pattern was anchored at both ends.
+    /// </summary>
+    /// <param name="acceptableName">The name to submit.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the half that keeps the rule from being STRICTER than the application being migrated, which MC4
+    /// forbids as firmly as it forbids being laxer. Every alternative in the legacy pattern carried both
+    /// anchors, and the numeric alternatives admitted a single digit one through nine only - so a two-digit
+    /// port number and a zero were both legitimate page names. A containment test written in place of the
+    /// anchored one would refuse all of these and make perfectly ordinary pages unnameable.
+    /// </remarks>
+    [Theory]
+    [InlineData("CONSOLE")]
+    [InlineData("CONS")]
+    [InlineData("NULL")]
+    [InlineData("AUXILIARY")]
+    [InlineData("COM10")]
+    [InlineData("LPT0")]
+    public async Task UpdateTab_WithANameThatOnlyResemblesAReservedName_IsAccepted(string acceptableName)
+    {
+        int tabId = await CreateTabAsync("IResembles" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest(acceptableName),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "{0} matched no anchored alternative in the legacy pattern and must stay nameable",
+            acceptableName);
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.TabName.Should().Be(acceptableName);
+    }
+
+    /// <summary>
+    /// A start date later than the end date is accepted, because the legacy screen compared neither date
+    /// against the other.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The measured census is unambiguous: <c>Website/admin/Tabs/managetabs.ascx</c> declares exactly two date
+    /// validators, at L276-L278 and L288-L290, and both carry <c>Operator="DataTypeCheck" Type="Date"</c>. A
+    /// type check asks only whether the text parses as a date. There is no range operator, no comparison
+    /// between the two boxes and no required-field validator on either, so an inverted pair reached the legacy
+    /// controller and was stored.
+    /// </para>
+    /// <para>
+    /// Adding the comparison would be the more obviously "correct" rule and is exactly what MC4 forbids: a
+    /// rule the original did not have refuses input the original accepted, so stored data that the legacy
+    /// application produced could no longer be re-saved through the new one. The acceptance is therefore
+    /// asserted deliberately, and this test is what a future well-meaning tightening has to argue with.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_WithAStartDateAfterTheEndDate_IsAcceptedAsLegacyDid()
+    {
+        int tabId = await CreateTabAsync("IInverted" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        UpdateTabRequest request = NewUpdateRequest("IInverted" + Suffix());
+        request.StartDate = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
+        request.EndDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the legacy screen declared only a type check on each date, so an inverted pair was storable");
+
+        TabDetailDto detail = await ReadDetailAsync(response);
+        detail.StartDate.Should().Be(request.StartDate);
+        detail.EndDate.Should().Be(request.EndDate);
+    }
+
+    /// <summary>
+    /// Text that is not a date is refused, and the refusal names the member that could not be read.
+    /// </summary>
+    /// <param name="member">The date member to corrupt.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the target's equivalent of the two legacy type checks. The refusal happens while the body is
+    /// being read rather than while it is being validated, so the key naming the member is the document
+    /// pointer to it rather than the property name - a distinction a client binding errors back onto a form
+    /// has to know about, which is why it is asserted rather than approximated.
+    /// </remarks>
+    // MIGRATION: under Option Strict OFF (Website/release.config:L125) the legacy code-behind could hand
+    // arbitrary text to a date conversion at ManageTabs.ascx.vb:L289 and L294 and rely on the client-side
+    // validator having filtered it first. The target reads the body under explicit conversions, so unparseable
+    // text is refused at the boundary and never reaches a conversion at all.
+    [Theory]
+    [InlineData("startDate")]
+    [InlineData("endDate")]
+    public async Task UpdateTab_WithTextThatIsNotADate_IsRefusedNamingTheMember(string member)
+    {
+        int tabId = await CreateTabAsync("IBadDate" + Suffix());
+
+        using HttpClient client = _fixture.CreateHostClient();
+
+        Dictionary<string, object?> body = new(StringComparer.Ordinal)
+        {
+            ["tabName"] = "IBadDate" + Suffix(),
+            [member] = "the fourteenth of never",
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            TabRoute(tabId),
+            body,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+
+        errors.Keys.Should().Contain(
+            "$." + member,
+            "the member that could not be read has to be named in the per-field dictionary");
+    }
+
     /// <summary>Builds a write request whose fields are all explicit, so nothing is asserted by default.</summary>
     /// <param name="tabName">The page name.</param>
     /// <returns>The request.</returns>
@@ -1353,4 +2484,84 @@ public sealed class TabApiTests
     /// <summary>Produces a short random suffix for values that must not collide across tests.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
+
+    /// <summary>Resolves an address template against the seeded identifiers.</summary>
+    /// <param name="template">A template that may name the tenant or the page.</param>
+    /// <returns>A relative address.</returns>
+    /// <remarks>
+    /// Theory data has to be compile-time constant, but a meaningful refusal has to be asked of an address
+    /// that really exists - a verb refused on an address nobody could reach would prove nothing. Substituting
+    /// the seeded identifiers here is what lets the data stay declarative while the request stays real.
+    /// </remarks>
+    private Uri Address(string template) => new(
+        template
+            .Replace("{portalId}", Route(_fixture.Seed.PortalId), StringComparison.Ordinal)
+            .Replace("{tabId}", Route(_fixture.Seed.RootTabId), StringComparison.Ordinal),
+        UriKind.Relative);
+
+    /// <summary>
+    /// Inserts a page that belongs to no tenant, which the API exposes no route to create.
+    /// </summary>
+    /// <param name="tabName">The page name, kept free of non-word characters so its path is predictable.</param>
+    /// <returns>The new page identifier.</returns>
+    /// <remarks>
+    /// The shared page-creation helper cannot produce this row: it substitutes the seeded tenant whenever no
+    /// tenant is named, which is the right default everywhere else and exactly wrong here. A host-level page is
+    /// defined by its tenant column being genuinely null, so the column is written as null explicitly.
+    /// </remarks>
+    private async Task<int> CreateTenantlessTabAsync(string tabName) =>
+        await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Tabs]
+                ([TabOrder], [PortalID], [TabName], [IsVisible], [ParentId], [Level], [DisableLink],
+                 [Title], [IsDeleted], [TabPath], [IsSecure])
+            VALUES (1, NULL, @tabName, 1, NULL, 0, 0, @tabName, 0, N'//' + @tabName, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?> { ["tabName"] = tabName });
+
+    /// <summary>Reads the per-field dictionary out of an RFC 7807 validation document.</summary>
+    /// <param name="response">The refusal to read.</param>
+    /// <returns>The offending members, each with its messages.</returns>
+    /// <remarks>
+    /// Read from the raw document rather than through a typed problem-details binding, because the keys are the
+    /// subject of the assertions using this and a typed binding would normalise them. The comparer is ordinal
+    /// so that a key differing only in case counts as a different key, which is the whole point of asserting
+    /// the casing.
+    /// </remarks>
+    private static async Task<IReadOnlyDictionary<string, string[]>> ReadValidationErrorsAsync(
+        HttpResponseMessage response)
+    {
+        using System.Text.Json.JsonDocument document =
+            System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("errors", out System.Text.Json.JsonElement errors)
+            .Should()
+            .BeTrue("a validation refusal must carry the per-field errors member");
+
+        Dictionary<string, string[]> byMember = new(StringComparer.Ordinal);
+
+        foreach (System.Text.Json.JsonProperty member in errors.EnumerateObject())
+        {
+            byMember[member.Name] = member.Value
+                .EnumerateArray()
+                .Select(message => message.GetString() ?? string.Empty)
+                .ToArray();
+        }
+
+        return byMember;
+    }
+
+    /// <summary>Reads every correlation identifier a response carries, so duplicates are visible.</summary>
+    /// <param name="response">The response to read.</param>
+    /// <returns>The values, in the order the response carried them.</returns>
+    /// <remarks>
+    /// The shared fixture helper answers with the first value, which is the right shape for asserting WHICH
+    /// identifier came back but cannot distinguish one value from two identical ones. A stage that appended
+    /// instead of overwriting is exactly the defect worth catching, so the whole list is read here.
+    /// </remarks>
+    private static IReadOnlyList<string> CorrelationValues(HttpResponseMessage response) =>
+        response.Headers.TryGetValues(ApiTestFixture.CorrelationIdHeader, out IEnumerable<string>? values)
+            ? values.ToArray()
+            : [];
 }

@@ -1,53 +1,180 @@
 <div class="form-field">
   <!--
-    The label is a real `label` with a `for` target rather than a styled span, so
-    clicking it focuses the control and assistive technology names the control from
-    it. The target is the consumer's responsibility: this component cannot reach into
-    projected content to read or write an id.
+    The label and the help affordance share one row so that the affordance sits
+    beside the label text, where the legacy control put it.
+
+    MIGRATION: the affordance is a SIBLING of the `label`, not a child of it. The
+    legacy control nested it inside the element - `labelcontrol.ascx` L3-L5 sit
+    between the opening tag on L2 and the closing tag on L7 - which is invalid,
+    because a button may only be a label's descendant when it IS the labelled
+    control, and ambiguous, because a click anywhere inside a label is forwarded to
+    the control the label names. The un-nested arrangement is not invented here:
+    the legacy codebase already ships it in `Website/controls/helpbuttoncontrol.ascx`,
+    which is `labelcontrol.ascx` L3-L11 with the `<label>` wrapper removed.
   -->
-  <label class="form-field__label" [attr.for]="for">
-    {{ label }}
-    @if (required) {
+  <div class="form-field__label-row">
+    <!--
+      A real `label`, exactly as `labelcontrol.ascx:L2` rendered one, so clicking
+      the text focuses the control and assistive technology names the control from
+      it. Rendered unconditionally as the legacy control rendered it, so the field
+      keeps its shape when a caller supplies no text.
+
+      `for` is bound through `attr.` for two reasons: the DOM property is `htmlFor`
+      rather than `for`, so a property binding would not compile under strict
+      template checking; and an attribute binding removes the attribute entirely
+      when the component resolves it to null, which is what keeps `for=""` - a
+      reference that names nothing - off the 5 of 186 legacy labels that declare no
+      control association at all.
+
+      The `id` is bound because the projection group below is named from this
+      element, which is how every control in a multi-control field inherits the
+      field's name.
+    -->
+    <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
+      {{ labelText() }}
+      @if (required) {
+        <!--
+          MIGRATION: a net addition. The legacy screens expressed requiredness only
+          through a validator that rendered nothing until a postback failed, so
+          there is no legacy marker convention to carry across. The marker is
+          rendered twice over: a glyph for sighted readers, hidden from assistive
+          technology so it is not announced as punctuation, and a word for everyone
+          else, hidden visually so it does not disturb the label. Neither the glyph
+          nor its colour carries the meaning alone.
+
+          It stays inside the `label`, so the word joins the field's accessible
+          name and travels with it to the projection group. The caller still sets
+          `required` on the control itself; this marker cannot and does not.
+        -->
+        <span class="form-field__required">
+          <span aria-hidden="true">{{ requiredMarker }}</span>
+          <span class="form-field__required-text">{{ requiredText }}</span>
+        </span>
+      }
+    </label>
+
+    @if (hasHelp()) {
       <!--
-        Hidden from assistive technology on purpose. The projected control carries its
-        own `required` state, which is what is announced; announcing this marker as
-        well would say "required" twice for one field. It remains visible, because a
-        person scanning the form needs to see which fields they must complete before
-        they try to submit.
+        MIGRATION: a keyboard-reachable button, which reverses a legacy defect
+        rather than reproducing it. `labelcontrol.ascx` declares `tabindex="-1"`
+        twice - on the link button at L3 and again on the image inside it at L4 - so
+        the legacy affordance was operable by pointer only. A real `button` is
+        reachable by Tab and activated by both Enter and Space with no scripting,
+        and `type="button"` is explicit so it can never submit an ancestor form,
+        which is the faithful translation of the legacy `CausesValidation="False"`.
+
+        Its name is composed by reference from its own text plus the field's label,
+        so a screen reader announces "Help, Role Name" rather than the twentieth
+        undifferentiated "Help" on a long form, and no wording is invented to
+        achieve it.
+
+        MIGRATION: `~/images/help.gif` is not carried across - it is a 344-byte
+        raster and the only static binary in scope is the favicon - so the glyph is
+        an inline vector authored here. It declares no width or height, so the
+        stylesheet scales it with the button's typography; it is stroked and filled
+        in `currentColor`, so no colour is hardcoded in markup; and it is hidden
+        from the accessibility tree and made unfocusable so it can neither name the
+        button nor become a stray tab stop.
       -->
-      <span class="form-field__required" aria-hidden="true">{{ requiredMarker }}</span>
+      <button
+        class="form-field__help-toggle"
+        type="button"
+        [attr.aria-expanded]="helpExpanded()"
+        [attr.aria-controls]="helpControls()"
+        [attr.aria-labelledby]="helpToggleLabelledBy()"
+        (click)="toggleHelp()"
+      >
+        <svg
+          class="form-field__help-icon"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <circle cx="8" cy="4.9" r="0.85" fill="currentColor" stroke="none" />
+          <path d="M8 7.4v4.1" />
+        </svg>
+        <span class="form-field__help-toggle-text" [id]="helpToggleTextId()">{{
+          helpToggleText
+        }}</span>
+      </button>
     }
-  </label>
+  </div>
 
   <!--
-    The control slot. Unnamed and accepting any control, because the administration
-    screens use text, number, date, select, checkbox, radio and textarea controls and
-    a shared wrapper must not enumerate them.
+    The control slot. Unnamed and unconstrained, because a field routinely holds
+    SEVERAL controls: `editroles.ascx` L98-L115 puts a text box, a drop-down and two
+    validators under one label, and `roles.ascx` L5-L16 puts a drop-down, an edit
+    link and a delete button under another. Nothing here wraps, counts or reorders
+    the projected children, and no `&nbsp;` is emitted to separate them - the 70
+    literal ones in the legacy markup are replaced by the stylesheet's `gap`.
 
-    Appearance of the projected control is NOT styled from here - projected content
-    keeps the style scoping of the component that declares it - so control appearance
-    belongs to the global form stylesheet. Neither deep-descendant piercing nor
-    disabling per-component scoping is used to work around that.
+    MIGRATION: `role="group"` named from the label closes a legacy gap. The legacy
+    `ControlName` reached exactly one control, so the second control of a
+    multi-control field was announced with no field name at all. Naming the group
+    names every control inside it, and it changes no layout, no colour and no
+    spacing.
+
+    The description points only at regions that are actually rendered, so a
+    reference never resolves to nothing. Projected content keeps the scoping of the
+    component that declares it, so the appearance of the controls themselves belongs
+    to the global form stylesheet - no descendant piercing and no disabled
+    encapsulation is used to reach into them from here.
   -->
-  <div class="form-field__control">
+  <div
+    class="form-field__control"
+    role="group"
+    [attr.aria-labelledby]="groupLabelledBy()"
+    [attr.aria-describedby]="describedBy()"
+  >
     <ng-content />
   </div>
 
-  @if (hasHelp) {
+  @if (helpExpanded()) {
     <!--
-      Carries the derived help id so a consumer can point the control's
-      `aria-describedby` at it. Rendered after the control, matching reading order.
+      Revealed as a BLOCK below the control in normal flow, which is what the legacy
+      control did: the literal `<br />` on `labelcontrol.ascx:L8` proves the block
+      break, and `default.css:L424-L439` styles `.Help` as a bordered, filled box.
+      It is a disclosure, never a tool tip and never a pop-up. That `<br />` is not
+      reproduced - spacing here comes from the stylesheet.
+
+      The text is interpolated, so a resource value carrying markup is shown as
+      characters rather than executed. The component resolves legacy break markup
+      before it reaches here, so no reader ever sees the characters `<br>`.
     -->
-    <p class="form-field__help" [attr.id]="helpId">{{ help }}</p>
+    <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
   }
 
-  @if (hasError) {
+  @if (hasError()) {
     <!--
-      `role="alert"` announces the message when it appears, which is what makes a
-      validation failure discoverable without moving focus. The element is absent
-      while the field is valid rather than hidden, so it neither occupies space nor
-      sits in the accessibility tree as an empty node.
+      `role="alert"` rather than `aria-live="polite"`, and never both on one element:
+      a validation failure is the direct result of the person's own action and must
+      be discoverable without moving focus, which is precisely what an assertive
+      live region is for. It sits on the REGION rather than on each message, so two
+      messages arriving together are announced as one interruption instead of two.
+
+      The region is removed when the field becomes valid rather than emptied or
+      hidden, so it neither occupies space nor lingers in the accessibility tree.
+
+      SEVERAL messages, not one. `editroles.ascx` places two `CompareValidator`s on a
+      single control four separate times, and there is not one
+      `<asp:ValidationSummary>` anywhere in the 39 in-scope screens - so this region
+      is the only error surface the ported administration UI has, and a message
+      dropped here is a message nobody sees.
+
+      Tracked BY INDEX deliberately. The component neither reorders nor deduplicates
+      the messages, and identical messages are genuinely reachable, so tracking by
+      value would raise a duplicated-key error exactly when the server reported the
+      same failure twice.
     -->
-    <p class="form-field__error" [attr.id]="errorId" role="alert">{{ error }}</p>
+    <div class="form-field__errors" [id]="errorId()" role="alert">
+      @for (message of errorMessages(); track $index) {
+        <p class="form-field__error">{{ message }}</p>
+      }
+    </div>
   }
 </div>

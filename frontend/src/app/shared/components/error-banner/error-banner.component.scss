@@ -28,24 +28,93 @@
   display: block;
 }
 
+// The band-independent box. Every colour is set by one of the three severity rules
+// below, so nothing here declares one: a banner with no severity attribute would be a
+// defect in the paired template, and inheriting the surrounding text colour makes that
+// visible rather than papering over it with a default.
 .error-banner {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   margin-block-end: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) var(--border-style) var(--color-danger);
+  // Logical rather than the `padding` shorthand, so the inset follows the writing mode
+  // instead of the physical box - the convention every sibling primitive in this library
+  // already follows.
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
-  color: var(--color-danger);
   font-size: var(--font-size-md);
   line-height: var(--line-height-base);
 }
 
-// MIGRATION: the legacy validation summary rendered its messages in the error
-// colour on the page background, with no border and no surface of its own. The
-// border here is a net addition that groups the messages into one recognisable
-// region; the colour is the measured legacy error value carried across as a token.
+// The three severity bands.
+//
+// Every value is an existing design token. The colour vocabulary is CLOSED at the ten
+// members declared in the tokens partial and contains no warning colour, so no fourth
+// colour is invented here and nothing is hardcoded - which is the zero-hardcoded-values
+// rule applied where it is most tempting to break it.
+//
+// MIGRATION: the three bands reproduce what the excluded legacy renderer actually did,
+// which is measurable rather than inferred. That renderer set its heading class per
+// message type: `RedError` produced `NormalRed`, whose sole declaration carries the
+// comment "text style used for error messages" and the colour that became
+// --color-danger; `YellowWarning` produced the ordinary `Normal` class - NOT the red one
+// - alongside a yellow icon. So the legacy already distinguished a refusal from a fault,
+// and it did so by withholding the red rather than by introducing a second hue. These
+// rules do the same: only the danger band takes --color-danger, and the warning band
+// takes the informational hint surface that stands in for the legacy yellow icon while
+// leaving its text in the inherited colour, exactly as `Normal` did.
+/* BLITZY [A11Y]: --color-danger measures 4.0:1 on --color-background, below the 4.5:1
+   WCAG AA minimum for normal text, and bold weight is not a mitigation below 18.66px. It
+   is implemented EXACTLY as the design token specifies rather than darkened, because
+   design-system compliance outranks the generic accessibility minimum and the value is
+   the measured legacy error colour - silently altering it here would put a second,
+   undocumented red into the system. It clears the 3:1 threshold for non-text UI, which is
+   what the border relies on. The deferral is compensated rather than ignored: the band is
+   also stated as a word by .error-banner__severity, so nothing depends on perceiving this
+   colour. Flagged for designer review; the remedy belongs in the token, not here. */
+.error-banner[data-severity='danger'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.error-banner[data-severity='warning'] {
+  background-color: var(--color-surface-hint);
+}
+
+// MIGRATION: the calm band has NO legacy counterpart - the legacy message-type enum
+// declares no informational member - so it is styled as the quietest thing the token
+// vocabulary allows: the neutral surface, the decorative hairline, and inherited text.
+// A rate-limit refusal means the caller is early, and nothing about it should read as a
+// fault.
+.error-banner[data-severity='calm'] {
+  background-color: var(--color-surface);
+}
+
+// The severity word. Bold and first, because it is the non-colour cue that carries the
+// band for a reader who does not perceive the border or surface colour - a requirement
+// the --color-danger token states explicitly, having measured itself at 4.0:1 against
+// the background. It inherits the band's colour rather than setting its own.
+.error-banner__severity {
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+// The problem type, shown only when it is not simply repeating the sentence below it.
+// De-emphasised relative to that sentence: it names the class of failure, while the
+// sentence describes this occurrence.
+.error-banner__title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  overflow-wrap: break-word;
+}
+
+// MIGRATION: the legacy error surface rendered its messages in the error colour on the
+// page background, with no border and no surface of its own. The border and surface
+// here are a net addition that groups the messages into one recognisable region; the
+// colours are the measured legacy values carried across as tokens.
 .error-banner__message {
   margin: 0;
   font-weight: var(--font-weight-bold);
@@ -73,5 +142,21 @@
   // rather than being whatever the user agent chose.
   margin: 0;
   margin-inline-start: var(--space-3);
+  overflow-wrap: break-word;
+}
+
+// The trace reference. Deliberately the quietest thing in the banner: it is diagnostic
+// small print for a support report, not an explanation, so it takes the muted text
+// colour explicitly rather than inheriting the band's - de-emphasis is the whole point,
+// and a red reference string would compete with the message for attention.
+//
+// MIGRATION: this line replaces what the legacy error container put here for
+// super-users, which was the exception's full string form - the entire stack trace -
+// rendered as the message itself. An opaque identifier is the whole of what remains,
+// and it is shown to everyone rather than to a privileged few.
+.error-banner__trace {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
   overflow-wrap: break-word;
 }

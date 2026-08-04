@@ -931,11 +931,25 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A schedule that ends before it starts is refused before anything is read.
+    /// A schedule that ends before it starts is ACCEPTED, and both bounds are carried through unaltered.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this asserted a refusal until the refusal was measured against the screen it claimed to
+    /// preserve and found to have no counterpart there.
+    /// <c>Website/admin/Modules/modulesettings.ascx</c> declares exactly four validators - at L78-L79,
+    /// L88-L89, L137-L138 and L172-L173 - and every one is a <c>CompareValidator</c> with
+    /// <c>Operator="DataTypeCheck"</c>, which asserts only that the text parses as its declared type. No
+    /// validator on that page compares one control against another. <c>ModuleSettings.ascx.vb</c> L367-L375
+    /// then parses each bound independently and never compares them either. A window ending before it began
+    /// was therefore stored verbatim by the legacy application, so refusing it here would narrow the
+    /// accepted input set - which AAP Rule T5 and clauses MC3 and MC4 forbid as squarely as widening it.
+    /// The two neighbouring fields whose legacy validators are equally type-only are treated the same way
+    /// and pinned by their own facts: a negative cache period is stored, and a border outside the range its
+    /// own error message advertises is admitted.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task CreateModule_RefusesAScheduleThatEndsBeforeItStarts()
+    public async Task CreateModule_AcceptsAScheduleThatEndsBeforeItStarts()
     {
         Harness harness = Harness.Ready();
         CreateModuleRequest request = ValidCreateRequest();
@@ -945,12 +959,11 @@ public class ModuleServiceTests
         Result<ModuleDetailDto> outcome = await harness.Service
             .CreateModuleAsync(PortalId, request, CancellationToken.None);
 
-        outcome.IsFailure.Should().BeTrue();
-        outcome.Reason!.Code.Should().Be(RequestInvalidCode);
-        outcome.Reason!.Message.Should().Be("The start date must not be later than the end date.");
-        harness.Definitions.Verify(
-            d => d.GetModuleDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+        outcome.IsSuccess.Should().BeTrue(
+            "the legacy screen compared the two bounds nowhere, so refusing the pair would narrow the "
+            + "accepted input set");
+        outcome.Value.StartDate.Should().Be(request.StartDate);
+        outcome.Value.EndDate.Should().Be(request.EndDate);
     }
 
     /// <summary>
@@ -1480,11 +1493,19 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A schedule that ends before it starts is refused before the module is read.
+    /// A schedule that ends before it starts is ACCEPTED on the update path too, and both bounds persist.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: the same measurement recorded on the create-path fact governs here, and it must govern both
+    /// or the two paths would disagree about one field of one contract. The legacy screen behind both is the
+    /// same one - <c>Website/admin/Modules/modulesettings.ascx</c> served create and edit alike - and its four
+    /// <c>Operator="DataTypeCheck"</c> validators compare no control against another, while
+    /// <c>ModuleSettings.ascx.vb</c> L367-L375 parses each bound on its own. Refusing the pair would narrow
+    /// the accepted input set, which AAP Rule T5 and clauses MC3 and MC4 forbid.
+    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
-    public async Task UpdateModule_RefusesAScheduleThatEndsBeforeItStarts()
+    public async Task UpdateModule_AcceptsAScheduleThatEndsBeforeItStarts()
     {
         Harness harness = Harness.Ready();
         UpdateModuleRequest request = ValidUpdateRequest();
@@ -1494,11 +1515,10 @@ public class ModuleServiceTests
         Result<ModuleDetailDto?> outcome = await harness.Service
             .UpdateModuleAsync(PortalId, ModuleId, request, CancellationToken.None);
 
-        outcome.IsFailure.Should().BeTrue();
-        outcome.Reason!.Code.Should().Be(RequestInvalidCode);
-        harness.Modules.Verify(
-            m => m.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+        outcome.IsSuccess.Should().BeTrue(
+            "the create path admits the same pair, and one contract cannot hold two rules for one field");
+        outcome.Value!.StartDate.Should().Be(request.StartDate);
+        outcome.Value!.EndDate.Should().Be(request.EndDate);
     }
 
     /// <summary>

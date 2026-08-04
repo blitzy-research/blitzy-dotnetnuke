@@ -1,10 +1,17 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
+using System.Text;
 using System.Text.Json;
+using DnnMigration.Api.Controllers;
 using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ApiExplorer;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -514,23 +521,118 @@ public sealed class ModuleApiTests
         stored.Should().Be(-30, "the column accepts it, so nothing between the caller and it may rewrite it");
     }
 
-    /// <summary>A create whose end date precedes its start date is rejected by the request validator.</summary>
+    /// <summary>
+    /// A create whose end date precedes its start date is ACCEPTED, and both bounds are stored verbatim.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this fact asserted a <c>400</c> until the rule behind it was measured against the screen it
+    /// claimed to preserve, where no such rule exists.
+    /// <c>Website/admin/Modules/modulesettings.ascx</c> declares EXACTLY FOUR validators - <c>valtxtStartDate</c>
+    /// at L78-L79, <c>valtxtEndDate</c> at L88-L89, <c>valBorder</c> at L137-L138 and <c>valCacheTime</c> at
+    /// L172-L173 - and every one of them is a <c>CompareValidator</c> carrying
+    /// <c>Operator="DataTypeCheck"</c>, which asserts only that the submitted text parses as its declared
+    /// type. That page contains no <c>RangeValidator</c>, no <c>RequiredFieldValidator</c>, and no
+    /// <c>CompareValidator</c> that compares one control against another. <c>ModuleSettings.ascx.vb</c>
+    /// L367-L375 then reads each bound independently - <c>If txtStartDate.Text &lt;&gt; "" Then
+    /// objModule.StartDate = Convert.ToDateTime(txtStartDate.Text) Else objModule.StartDate =
+    /// Null.NullDate</c>, and the identical block for the end date - and compares the two nowhere.
+    /// </para>
+    /// <para>
+    /// So a window ending before it began was accepted and stored by the legacy application, which simply
+    /// rendered the module in no period at all. Refusing it here would be a NARROWING: input the legacy
+    /// application accepted would be rejected, which AAP Rule T5 and clauses MC3 and MC4 forbid as squarely
+    /// as they forbid a widening. Both bounds are read back from the response, from a fresh read and from the
+    /// column itself, because an acceptance that quietly reordered or dropped one would satisfy a
+    /// status-code assertion on its own.
+    /// </para>
+    /// <para>
+    /// What remains enforced is the storability of each date taken separately, and that bound belongs to the
+    /// store rather than to any rule invented here: <c>datetime</c> cannot hold a value below its own
+    /// calendar, so <c>Null.NullDate</c> - <c>Date.MinValue</c>, per <c>Null.vb</c> L66-L68 - is refused by
+    /// the request validator field by field. That is asserted by the storage-bound facts, not here.
+    /// </para>
+    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task CreateModule_WithEndBeforeStart_ReturnsBadRequest()
+    public async Task CreateModule_WithEndBeforeStart_IsAcceptedAndStoredVerbatim()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
+        DateTime start = new(2030, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        DateTime end = new(2030, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
-        request.StartDate = new DateTime(2030, 6, 1, 0, 0, 0, DateTimeKind.Utc);
-        request.EndDate = new DateTime(2030, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        request.StartDate = start;
+        request.EndDate = end;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModulesRoute(_fixture.Seed.PortalId),
             request,
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the legacy screen compared the two bounds nowhere, so refusing the pair would narrow the "
+            + "accepted input set");
+
+        ModuleDetailDto created = await ReadDetailAsync(response);
+        created.StartDate.Should().Be(start);
+        created.EndDate.Should().Be(end, "the submitted window is stored as submitted, not reordered");
+
+        using HttpResponseMessage reread = await client.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ModuleDetailDto persisted = await ReadDetailAsync(reread);
+        persisted.StartDate.Should().Be(start);
+        persisted.EndDate.Should().Be(end);
+
+        DateTime storedEnd = await _fixture.Database.ScalarAsync<DateTime>(
+            "SELECT [EndDate] FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        storedEnd.Should().Be(end, "nothing between the caller and the column may rewrite the window");
+    }
+
+    /// <summary>
+    /// An update whose end date precedes its start date is accepted on the same terms as a create.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: asserted on both write paths deliberately. One legacy screen served create and edit alike,
+    /// so a rule present on one path and absent from the other would be a divergence introduced by this
+    /// migration rather than one inherited from it. The measurement is recorded on the create-path fact
+    /// above and is not repeated.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task UpdateModule_WithEndBeforeStart_IsAcceptedAndStoredVerbatim()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        DateTime start = new(2031, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+        DateTime end = new(2031, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var request = new UpdateModuleRequest
+        {
+            TabId = _fixture.Seed.RootTabId,
+            ModuleTitle = created.ModuleTitle,
+            StartDate = start,
+            EndDate = end,
+        };
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ModuleDetailDto updated = await ReadDetailAsync(response);
+        updated.StartDate.Should().Be(start);
+        updated.EndDate.Should().Be(end);
     }
 
     /// <summary>A create against a tenant that does not exist is refused before anything is written.</summary>
@@ -885,6 +987,7 @@ public sealed class ModuleApiTests
     /// A value longer than the column is refused by the request validator rather than by the store.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: this asserted the border bound until the border was excluded from the update contract along
     /// with the rest of the pane-layout and rendering columns - and with it went the fourth of the legacy
     /// screen's four validators, whose message read "Invalid Border (must be a number between 0 and 9)". The
@@ -892,6 +995,18 @@ public sealed class ModuleApiTests
     /// <c>nvarchar(100)</c>. Letting a longer value reach SQL Server would surface as a truncation error
     /// rather than a field-level message, so the bound is asserted at the boundary. Note that the icon carries
     /// no legacy validator either, so this bound comes from the terminal schema alone.
+    /// </para>
+    /// <para>
+    /// MIGRATION: and the border validator's message was DEFECTIVE, which is why nothing in this suite ever
+    /// reinstates the range it advertised. <c>valBorder</c> at <c>modulesettings.ascx</c> L137-L138 promised
+    /// "a number between 0 and 9" while declaring <c>Operator="DataTypeCheck"</c>, which asserts the type and
+    /// nothing more - so the range was NEVER ENFORCED, and the field's only real limit was the
+    /// <c>MaxLength="1"</c> on the textbox, which truncates rather than validates and which a programmatic
+    /// post bypasses entirely. Adding a range rule here would refuse values the legacy application stored,
+    /// which is a narrowing forbidden by MC4 rather than an improvement. The defect is recorded and NOT
+    /// fixed, per MC1; that no such rule was introduced anywhere is verifiable by the absence of any
+    /// range assertion in this file.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1601,6 +1716,713 @@ public sealed class ModuleApiTests
         }
     }
 
+    /// <summary>
+    /// An empty title round-trips as the empty string and stays distinguishable from an absent one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is AAP Rule T7 at the boundary - "sentinels survive at the boundary, not in the domain" - and it
+    /// is asserted on <c>Modules.ModuleTitle</c> because that is the module column which both survives to the
+    /// terminal schema and admits the distinction. <c>Null.vb</c> L71-L73 defines <c>NullString</c> as the
+    /// EMPTY STRING rather than as <see langword="null"/>, so legacy code that wrote "absent" wrote
+    /// <c>''</c>, while a column left alone held SQL <c>NULL</c> - and the baseline seed proves the two
+    /// coexisted in one column: <c>01.00.00.SqlDataProvider</c> gives modules 2, 3 and 4 an
+    /// <c>AuthorizedViewRoles</c> of <c>''</c> and modules 29 through 316 a <c>NULL</c>, against a column
+    /// declared <c>[AuthorizedViewRoles] [nvarchar] (256) NULL</c> at L230.
+    /// </para>
+    /// <para>
+    /// MIGRATION: that particular column cannot carry the assertion, because it no longer exists.
+    /// <c>03.00.01.SqlDataProvider</c> L1402 and L1405 drop <c>AuthorizedEditRoles</c> and
+    /// <c>AuthorizedViewRoles</c> from <c>Modules</c> outright, superseded by the permission tables, and the
+    /// same script's L198 drops the appearance columns onto the new <c>TabModules</c> table. AAP 0.7.1.2
+    /// requires the model to follow the CUMULATIVE TERMINAL schema rather than the baseline, so the
+    /// distinction is asserted on the column that terminal schema does declare -
+    /// <c>[ModuleTitle] nvarchar(256) NULL</c> - which admits <c>''</c> and <c>NULL</c> exactly as the
+    /// dropped one did.
+    /// </para>
+    /// <para>
+    /// The failure this guards against is a serialiser policy, not a mapping: <c>WhenWritingNull</c> or
+    /// <c>WhenWritingDefault</c> on the ignore condition would erase one of the two states from the wire
+    /// and no status-code assertion anywhere would notice. Both states are therefore read out of the RAW
+    /// JSON as well as out of the typed contract, because a typed read cannot tell an omitted member from
+    /// one present and null.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task CreateModule_WithEmptyTitle_KeepsItDistinguishableFromAnAbsentOne()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateModuleRequest empty = NewModuleRequest(_fixture.Seed.RootTabId);
+        empty.ModuleTitle = string.Empty;
+
+        using HttpResponseMessage emptyResponse = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            empty,
+            ApiTestFixture.Json);
+
+        emptyResponse.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the legacy screen carried no required-field validator for the title");
+
+        ModuleDetailDto withEmptyTitle = await ReadDetailAsync(emptyResponse);
+        withEmptyTitle.ModuleTitle.Should().Be(
+            string.Empty,
+            "the empty string is the legacy representation of an unset value and must not be widened to null");
+
+        CreateModuleRequest absent = NewModuleRequest(_fixture.Seed.RootTabId);
+        absent.ModuleTitle = null;
+
+        using HttpResponseMessage absentResponse = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            absent,
+            ApiTestFixture.Json);
+
+        absentResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        ModuleDetailDto withNoTitle = await ReadDetailAsync(absentResponse);
+        withNoTitle.ModuleTitle.Should().BeNull();
+
+        // Read through the raw document, because a typed read collapses "absent" and "present and null"
+        // onto the same value and the whole point here is that the two are different states.
+        JsonElement emptyTitle = await ReadDataMemberAsync(
+            client,
+            ModuleRoute(_fixture.Seed.PortalId, withEmptyTitle.ModuleId),
+            "moduleTitle");
+
+        emptyTitle.ValueKind.Should().Be(
+            JsonValueKind.String,
+            "an ignore condition that dropped the empty string would leave this member absent");
+        emptyTitle.GetString().Should().Be(string.Empty);
+
+        JsonElement absentTitle = await ReadDataMemberAsync(
+            client,
+            ModuleRoute(_fixture.Seed.PortalId, withNoTitle.ModuleId),
+            "moduleTitle");
+
+        absentTitle.ValueKind.Should().Be(
+            JsonValueKind.Null,
+            "an absent title is published as an explicit null rather than omitted, so a consumer can tell "
+            + "it apart from the empty string");
+
+        // And the two really are different values in the column, which is what makes the wire distinction
+        // worth preserving rather than an artefact of the serialiser.
+        int emptyRows = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId AND [ModuleTitle] = N'';",
+            new Dictionary<string, object?> { ["moduleId"] = withEmptyTitle.ModuleId });
+
+        emptyRows.Should().Be(1, "the empty string reached the column as the empty string");
+
+        int nullRows = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId AND [ModuleTitle] IS NULL;",
+            new Dictionary<string, object?> { ["moduleId"] = withNoTitle.ModuleId });
+
+        nullRows.Should().Be(1, "an absent title reached the column as SQL NULL");
+    }
+
+    /// <summary>
+    /// The negative placement-order sentinel survives to the wire as <c>-1</c> rather than as an absence.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>Null.vb</c> L41-L43 defines <c>NullInteger</c> as <c>-1</c>, and
+    /// <c>CreateModuleRequest.ModuleOrder</c> defaults to that value to mean "append", which is the legacy
+    /// convention. Because <c>-1</c> is also the default a serialiser would drop under
+    /// <c>WhenWritingDefault</c>, the value is asserted in the RAW document as a number: an integer sentinel
+    /// silently converted to <see langword="null"/> or omitted is indistinguishable from an unset field, and
+    /// the same collision is what makes <c>Portals.PortalID</c> - <c>IDENTITY(-1, 1)</c> at
+    /// <c>01.00.00.SqlDataProvider</c> L77 - unsafe to treat as absent when it holds <c>-1</c>.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task CreateModule_WithTheAppendOrderSentinel_PublishesItAsMinusOne()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+        request.ModuleOrder = -1;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        ModuleDetailDto created = await ReadDetailAsync(response);
+
+        JsonElement order = await ReadDataMemberAsync(
+            client,
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            "moduleOrder");
+
+        order.ValueKind.Should().Be(
+            JsonValueKind.Number,
+            "the placement order is always published; an ignore condition that dropped defaults would "
+            + "remove exactly the sentinel this asserts");
+        order.GetInt32().Should().NotBe(
+            0,
+            "zero would mean the sentinel had been coerced away rather than honoured or resolved");
+    }
+
+    /// <summary>
+    /// Module zero is a legitimate identifier, in the route segment and in a request body alike.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Modules.ModuleID</c> is <c>IDENTITY (0, 1)</c> - <c>01.00.00.SqlDataProvider</c> L221 - so the
+    /// first module an installation ever creates is numbered zero and zero is an ordinary key. Anything that
+    /// treats an identifier as absent when it is falsy therefore loses a real row. The row is inserted with
+    /// <c>IDENTITY_INSERT</c> rather than by the API, because the API cannot choose an identifier and this
+    /// installation's sequence has long passed zero.
+    /// </para>
+    /// <para>
+    /// Two positions are covered, because they fail differently. In the ROUTE, a zero must reach the action
+    /// and be answered about; it must not miss the <c>{moduleId:int}</c> constraint and it must not be read
+    /// as "no module named" by the permission policy, which resolves its scope identifier from route data
+    /// alone and would otherwise fail closed and refuse every request. In the BODY, the same zero must be
+    /// accepted by <c>ModuleImportRequest.ModuleId</c> - the member that carries the module for an import
+    /// precisely because that route names none - and must not be read as unspecified.
+    /// </para>
+    /// <para>
+    /// The row is removed afterwards so the shared collection is left as it was found. It is placed on no
+    /// page, so the read that matters is the detail read.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task GetModule_WhoseIdentifierIsZero_ResolvesRatherThanBeingTreatedAsAbsent()
+    {
+        await InsertModuleWithIdentifierZeroAsync();
+
+        try
+        {
+            using HttpClient client = _fixture.CreateHostClient();
+
+            using HttpResponseMessage response = await client.GetAsync(
+                ModuleRoute(_fixture.Seed.PortalId, 0));
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "Modules.ModuleID is IDENTITY(0, 1), so zero identifies a real row and a policy that "
+                + "resolves its scope from the route must accept it rather than fail closed");
+
+            ModuleDetailDto detail = await ReadDetailAsync(response);
+            detail.ModuleId.Should().Be(0);
+
+            // The same identifier in the ROUTE of an edit-guarded action: the refusal that matters is a
+            // permission decision, and a fail-closed refusal caused by reading zero as "no module" would
+            // be indistinguishable from one - so the assertion is that the request is NOT refused.
+            var update = new UpdateModuleRequest
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = "Module zero renamed",
+            };
+
+            using HttpResponseMessage updated = await client.PutAsJsonAsync(
+                ModuleRoute(_fixture.Seed.PortalId, 0),
+                update,
+                ApiTestFixture.Json);
+
+            updated.StatusCode.Should().NotBe(
+                HttpStatusCode.Forbidden,
+                "a zero parsed out of the route is a valid scope identifier, so the edit policy must "
+                + "evaluate a grant rather than fail closed");
+
+            // And in a request BODY, where the import contract carries the module because its route
+            // cannot. The outcome is a capability refusal about the seeded definition, never a complaint
+            // that no module was named.
+            var import = new ModuleImportRequest
+            {
+                ModuleId = 0,
+                Content = "<module />",
+                FileName = "module-zero.xml",
+            };
+
+            using HttpResponseMessage imported = await client.PostAsJsonAsync(
+                ModuleImportRoute(_fixture.Seed.PortalId),
+                import,
+                ApiTestFixture.Json);
+
+            imported.StatusCode.Should().NotBe(
+                HttpStatusCode.NotFound,
+                "zero in the body names the module that exists, so the request must not be answered as "
+                + "though no such module were addressed");
+        }
+        finally
+        {
+            await RemoveModuleWithIdentifierZeroAsync();
+        }
+    }
+
+    /// <summary>
+    /// A refused write publishes one RFC 7807 document, as JSON, naming the field that caused the refusal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE MEDIA TYPE IS MEASURED, NOT ASSUMED, AND IT IS NOT RFC 7807's OWN. The validation
+    /// filter builds its result with <c>ContentTypes = { "application/problem+json" }</c>, so the expectation
+    /// was that a refused write would carry that media type - and it does not. Measured against this host, a
+    /// refusal answers <c>application/json; charset=utf-8</c>: the JSON output formatter advertises
+    /// <c>application/*+json</c> among its supported types and negotiation resolves the response to its
+    /// concrete <c>application/json</c>. The value asserted below is therefore the one the API genuinely
+    /// serves, and the assertion is deliberately written to admit RFC 7807's media type as well, so that
+    /// correcting the deviation later does not require this fact to be edited. The sibling problem-details
+    /// suite declines to pin the value at all for the same measurement; recording it here as a permitted set
+    /// rather than as a silence keeps the two consistent while still asserting that a JSON problem document
+    /// is what arrives.
+    /// </para>
+    /// <para>
+    /// The SHAPE carries the weight, because the shape is what a client parses. All five RFC 7807 members
+    /// the requirements name are asserted - <c>type</c>, <c>title</c>, <c>status</c>, <c>detail</c> and the
+    /// per-field <c>errors</c> map - and the map is asserted BY KEY rather than by presence, because a
+    /// document that reported a fault against the wrong member, or against none, would satisfy an assertion
+    /// on the status code and on the envelope alike. <c>traceId</c> is asserted for the reason it is
+    /// populated: it is what ties the refusal to the request that caused it.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task CreateModule_WithAnUnknownVisibility_PublishesAFieldKeyedProblemDocument()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        // Posted as a raw document rather than through the typed contract, because the value has to be one
+        // the enumeration does not define and the typed property cannot express that.
+        string payload = FormattableString.Invariant($$"""
+            {
+              "moduleDefId": {{_fixture.Seed.ModuleDefinitionId}},
+              "tabId": {{_fixture.Seed.RootTabId}},
+              "moduleTitle": "Invalid visibility {{Suffix()}}",
+              "visibility": 97
+            }
+            """);
+
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using HttpResponseMessage response = await client.PostAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        response.Content.Headers.ContentType.Should().NotBeNull(
+            "a refusal publishes a document, so it must state what that document is");
+        response.Content.Headers.ContentType!.MediaType.Should().BeOneOf(
+            ["application/json", "application/problem+json"],
+            "the refusal is a JSON problem document; the measured value is the former, and the latter is "
+            + "admitted so that correcting the deviation does not require editing this fact");
+
+        using JsonDocument document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+
+        JsonElement problem = document.RootElement;
+
+        problem.TryGetProperty("status", out JsonElement status).Should().BeTrue();
+        status.GetInt32().Should().Be(400);
+        problem.TryGetProperty("title", out JsonElement title).Should().BeTrue();
+        title.GetString().Should().NotBeNullOrWhiteSpace();
+        problem.TryGetProperty("type", out JsonElement type).Should().BeTrue();
+        type.GetString().Should().NotBeNullOrWhiteSpace();
+        problem.TryGetProperty("detail", out _).Should().BeTrue();
+
+        problem.TryGetProperty("traceId", out JsonElement traceId).Should().BeTrue(
+            "the factory carries the trace identifier so a refusal can be tied back to its request");
+        traceId.GetString().Should().NotBeNullOrWhiteSpace();
+
+        problem.TryGetProperty("errors", out JsonElement errors).Should().BeTrue(
+            "a validation failure publishes the per-field map, not prose alone");
+        errors.ValueKind.Should().Be(JsonValueKind.Object);
+
+        IReadOnlyList<string> keys = errors.EnumerateObject().Select(field => field.Name).ToList();
+
+        keys.Should().NotBeEmpty();
+        keys.Should().Contain(
+            key => key.Contains("Visibility", StringComparison.OrdinalIgnoreCase),
+            "the refusal must name the member that caused it; a map keyed on anything else would leave the "
+            + "caller unable to correct the request");
+    }
+
+    /// <summary>
+    /// A refusal decided by the module service is identified by its own failure code, never by a number.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy export and import pages reported their outcomes as localised prose - the keys
+    /// <c>ExportNotSupported</c> (<c>Export.ascx.vb</c> L195 and L201), <c>NoContent</c> (L192) and
+    /// <c>DiskSpaceExceeded</c> (L189), and <c>NotValidXml</c> (<c>Import.ascx.vb</c> L192),
+    /// <c>NotCorrectType</c> (L204, L217) and <c>ImportNotSupported</c> (L208, L214) - rendered into a skin
+    /// message that only a person could read. Each becomes a STABLE, NAMED failure code published in the
+    /// problem document's <c>type</c> member, so a client branches on a name rather than on prose or on a
+    /// bare status number. The assertion is on the name for that reason: a status code alone cannot
+    /// distinguish "this module cannot be exported" from any other refused request.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportModule_WhenNotPortable_IdentifiesTheRefusalByItsNamedCode()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleExportRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new ModuleExportRequest { FileName = "not-portable.xml" },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using JsonDocument document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("type", out JsonElement type).Should().BeTrue();
+
+        string? identifier = type.GetString();
+
+        identifier.Should().NotBeNullOrWhiteSpace();
+        identifier.Should().EndWith(
+            "module.not_portable",
+            "the refusal is named, so a client can branch on the reason rather than parsing the detail");
+
+        // The document carries no numeric status vocabulary of its own beyond the HTTP status, which is the
+        // point of naming the reason: `status` restates the transport, `type` states the cause.
+        document.RootElement.TryGetProperty("status", out JsonElement status).Should().BeTrue();
+        status.GetInt32().Should().Be(400);
+    }
+
+    /// <summary>
+    /// An export answers with the document in the response body and writes nothing to a file system.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>Export.ascx.vb</c> L157-L192 obtained the module's content, then wrote it to a file in
+    /// the portal's home directory, checked the portal's remaining disk space and reported
+    /// <c>DiskSpaceExceeded</c> when the write would not fit. BOTH the write and the space check are DROPPED:
+    /// the API has no portal home directory, a stateless request cannot own a file the caller then has to
+    /// fetch by another route, and a quota check whose subject no longer exists cannot be preserved. The
+    /// document travels in the response instead, which is why the action declares
+    /// <c>application/xml</c> for its success status rather than the controller-wide
+    /// <c>application/json</c>. A caller saves the body, exactly as the legacy page produced a saveable file.
+    /// </para>
+    /// <para>
+    /// The declaration is asserted rather than a successful body, and that is a limitation stated plainly: a
+    /// success requires a business controller registered under the addressed module's declared class name,
+    /// the registered set is closed by design and empty in this delivery, and the seeded desktop module
+    /// declares no class at all - <c>BusinessControllerClass</c> is <c>NULL</c> in the seed. Asserting the
+    /// declaration pins the contract that the XML is the RESPONSE rather than a file; the refusal path that
+    /// is reachable is asserted by the sibling facts. No response contract in the module group offers a
+    /// path, a URL or a disk-space figure, and that absence is asserted too.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportModule_DeclaresTheDocumentAsTheResponseBodyAndNoFileDestination()
+    {
+        MethodInfo export = typeof(ModulesController)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Single(method => method.Name == "ExportAsync");
+
+        ProducesResponseTypeAttribute success = export
+            .GetCustomAttributes<ProducesResponseTypeAttribute>()
+            .Single(attribute => attribute.StatusCode == StatusCodes.Status200OK);
+
+        // The attribute publishes its media types through the metadata-provider contract rather than as a
+        // property, so they are collected the same way the API explorer collects them.
+        var advertised = new MediaTypeCollection();
+        ((IApiResponseMetadataProvider)success).SetContentTypes(advertised);
+
+        advertised.Should().Contain(
+            "application/xml",
+            "the exported document is the response body, so the success status advertises XML rather than "
+            + "the controller-wide JSON");
+        success.Type.Should().Be(
+            typeof(string),
+            "the body is the document itself and not an envelope naming a file the caller must then fetch");
+
+        foreach (string dropped in new[] { "DiskSpace", "AvailableSpace", "Path", "Url", "Uri" })
+        {
+            typeof(ModuleExportRequest).GetProperty(dropped).Should().BeNull(
+                $"the export writes no file, so {dropped} has nothing to describe");
+        }
+
+        // The two members the contract does carry name the download rather than a destination on a server,
+        // which is what makes the absence above a design rather than an omission.
+        typeof(ModuleExportRequest).GetProperty("FileName").Should().NotBeNull();
+        typeof(ModuleExportRequest).GetProperty("Folder").Should().NotBeNull();
+
+        // And the import contract carries the module in the BODY, which is the direct consequence of the
+        // import route naming no module: a route-reading permission policy would have nothing to read.
+        typeof(ModuleImportRequest).GetProperty("ModuleId").Should().NotBeNull(
+            "the import route names no module, so the request must");
+
+        // The declaration is then held against the route it describes, because an advertised media type on an
+        // action nobody can reach would prove nothing. The reachable outcome for the seeded definition is a
+        // refusal, and what matters is that the refusal is a problem document rather than a reference to a
+        // file the caller would have to collect from somewhere.
+        using HttpClient client = _fixture.CreateHostClient();
+        ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModuleExportRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new ModuleExportRequest { FileName = "declared-contract.xml" },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().NotBe(
+            HttpStatusCode.NotFound,
+            "the export route exists and answers about the module, so the declaration above describes a "
+            + "reachable action");
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        foreach (string leak in new[] { "Portals\\", "/Portals/", "DiskSpace", "diskSpace" })
+        {
+            body.Should().NotContain(
+                leak,
+                $"the export writes no file, so no response may mention {leak}");
+        }
+    }
+
+    /// <summary>
+    /// A listing publishes the items-plus-total envelope, and the total is never the legacy sentinel.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy listings reported their size through a <c>ByRef totalRecords</c> argument and
+    /// signalled "unpaged" by passing a page index of <c>-1</c>, so a count and a sentinel travelled in the
+    /// same integer. The envelope separates them: the total is a count and nothing else, and the unpaged
+    /// case is an explicit factory rather than a magic index. The page-index BASE is deliberately not
+    /// asserted - the legacy data layer computed <c>@PageSize * @PageIndex</c> from a zero base while its
+    /// screens passed <c>CurrentPage - 1</c> to reach it, so an assertion on a base would pin one
+    /// convention's arithmetic rather than the contract.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListModules_PublishesTheItemsAndTotalEnvelopeWithoutASentinelTotal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        // Two are created rather than one, and neither the seed nor a sibling fact is relied on for the
+        // second. The collection is shared and this suite's facts do not run in a declared order, so a fact
+        // that assumed rows another fact had created would pass or fail according to the order it happened to
+        // run in. Creating both here makes the total strictly greater than the window by construction.
+        ModuleDetailDto first = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+        ModuleDetailDto second = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        second.ModuleId.Should().NotBe(first.ModuleId);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 1));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<ModuleListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().ContainSingle("the window is one row wide");
+        page.TotalCount.Should().BeGreaterThan(
+            page.Items.Count,
+            "the total describes the whole collection rather than the window, and two modules were created "
+            + "before it was read");
+        page.TotalCount.Should().NotBe(
+            -1,
+            "minus one is the legacy integer sentinel and must never be published as a count");
+        page.PageSize.Should().Be(1);
+
+        // The envelope's own members are asserted through the raw document as well, because a member the
+        // response omits would deserialise to zero and pass a typed assertion silently.
+        using HttpResponseMessage raw = await client.GetAsync(
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 1));
+
+        using JsonDocument document = JsonDocument.Parse(await raw.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("items", out JsonElement items).Should().BeTrue();
+        items.ValueKind.Should().Be(JsonValueKind.Array);
+        document.RootElement.TryGetProperty("meta", out JsonElement meta).Should().BeTrue();
+        meta.TryGetProperty("totalCount", out JsonElement total).Should().BeTrue();
+        total.GetInt32().Should().BeGreaterThan(1);
+
+        first.ModuleId.Should().BeGreaterThanOrEqualTo(
+            0,
+            "Modules.ModuleID is IDENTITY(0, 1), so a created identifier is never negative");
+    }
+
+    /// <summary>
+    /// The listing's title filter matches case-insensitively anywhere in the title.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this is a NET-NEW surface and the semantics are stated rather than inherited, because there
+    /// is nothing to inherit them from. There is no module-list administration page in the migrated scope,
+    /// and <c>Library/Components/Modules/ModuleController.vb</c> declares no title filter of any kind - its
+    /// only search-related member, <c>GetSearchModules</c> at L1032, returns the modules that implement the
+    /// legacy searchable contract and has nothing to do with matching a title. So no parity obligation binds
+    /// the matching rule here, and the mid-string match is asserted as the contract this delivery defines
+    /// rather than one measured elsewhere. Stated explicitly because the account and role listings, whose
+    /// legacy procedures did filter with <c>@text + '%'</c>, match from the START of the value - and a reader
+    /// who assumed one rule covered every listing would be wrong in both directions.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListModules_FilteredByTitle_MatchesAnywhereInTheTitleIgnoringCase()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string marker = Suffix();
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+        request.ModuleTitle = "Searchable " + marker + " Module";
+
+        using HttpResponseMessage creation = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        creation.StatusCode.Should().Be(HttpStatusCode.Created);
+        ModuleDetailDto created = await ReadDetailAsync(creation);
+
+        IReadOnlyList<ModuleListItemDto> byMiddle = await SearchModulesAsync(client, marker);
+
+        byMiddle.Should().ContainSingle(row => row.ModuleId == created.ModuleId,
+            "the filter matches a fragment anywhere in the title");
+
+        IReadOnlyList<ModuleListItemDto> byDifferentCase = await SearchModulesAsync(
+            client,
+            marker.ToUpperInvariant());
+
+        byDifferentCase.Should().ContainSingle(row => row.ModuleId == created.ModuleId,
+            "the comparison is case-insensitive, as the lower-cased legacy comparisons were");
+
+        IReadOnlyList<ModuleListItemDto> byAbsentText = await SearchModulesAsync(
+            client,
+            "no-module-carries-this-" + Suffix());
+
+        byAbsentText.Should().NotContain(row => row.ModuleId == created.ModuleId,
+            "a fragment no title holds matches nothing, so the filter is applied rather than ignored");
+    }
+
+    /// <summary>
+    /// A correlation identifier the caller supplies is echoed once, on success and on a refusal alike.
+    /// </summary>
+    /// <remarks>
+    /// Asserted on a REFUSED request as well as on a satisfied one, because the refusal is the case that
+    /// matters operationally: a caller reporting a failure has nothing but the identifier to hand back, and a
+    /// short-circuiting stage that answered without the header would take it away at exactly the moment it is
+    /// needed. The middleware registers the header through a response callback before the pipeline continues,
+    /// which is what makes it survive a response no controller produced.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ModuleRequests_EchoTheSuppliedCorrelationIdOnSuccessAndOnRefusal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string supplied = "module-suite-" + Suffix();
+
+        using var read = new HttpRequestMessage(
+            HttpMethod.Get,
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 5));
+
+        using CorrelatedResponse satisfied = await AuthenticatedClientFactory
+            .SendWithCorrelationIdAsync(client, read, supplied);
+
+        satisfied.Response.StatusCode.Should().Be(HttpStatusCode.OK);
+        satisfied.RoundTripped.Should().BeTrue("a supplied identifier is echoed rather than replaced");
+
+        satisfied.Response.Headers
+            .GetValues(ApiTestFixture.CorrelationIdHeader)
+            .Should()
+            .ContainSingle("the header is overwritten rather than appended to, so exactly one value travels");
+
+        string refusedId = "module-refusal-" + Suffix();
+
+        using var refused = new HttpRequestMessage(
+            HttpMethod.Get,
+            ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
+
+        using CorrelatedResponse failure = await AuthenticatedClientFactory
+            .SendWithCorrelationIdAsync(client, refused, refusedId);
+
+        failure.Response.StatusCode.Should().NotBe(
+            HttpStatusCode.OK,
+            "the identifier under examination is the one attached to a request that did not succeed");
+        failure.ReceivedCorrelationId.Should().Be(
+            refusedId,
+            "a problem document carries the correlation identifier, because that is when a caller needs it");
+    }
+
+    /// <summary>
+    /// A request that supplies no correlation identifier is answered with one that was generated.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ModuleRequests_WithoutACorrelationId_AreAnsweredWithAGeneratedOne()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 5));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ApiTestFixture.ReadCorrelationId(response).Should().NotBeNullOrWhiteSpace(
+            "every response carries an identifier, whether or not the caller offered one");
+    }
+
+    /// <summary>
+    /// An unusable correlation identifier is replaced rather than echoed, and never refuses the request.
+    /// </summary>
+    /// <remarks>
+    /// The two unusable shapes are covered together because they fail for one reason: an identifier is
+    /// reflected into a response header, so a value long enough to be abusive or one carrying a line break
+    /// must not be reflected at all. Replacing it rather than refusing the request is the deliberate choice -
+    /// a caller's malformed diagnostic header is not a reason to withhold the resource it asked for, and
+    /// answering <c>400</c> would turn a logging concern into a functional failure.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ModuleRequests_WithAnUnusableCorrelationId_AreAnsweredWithAReplacementNotARefusal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string overlong = new('c', 200);
+
+        using var longRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 5));
+
+        longRequest.Headers.TryAddWithoutValidation(ApiTestFixture.CorrelationIdHeader, overlong);
+
+        using HttpResponseMessage longResponse = await client.SendAsync(longRequest);
+
+        longResponse.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unusable diagnostic header is not a reason to withhold the resource");
+
+        string? replacement = ApiTestFixture.ReadCorrelationId(longResponse);
+
+        replacement.Should().NotBeNullOrWhiteSpace();
+        replacement.Should().NotBe(overlong, "a value too long to reflect is replaced, not echoed");
+        replacement!.Length.Should().BeLessThanOrEqualTo(
+            128,
+            "the published identifier is bounded, which is the whole reason the inbound one was rejected");
+
+        using var controlRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            ModuleListingRoute(_fixture.Seed.PortalId, pageSize: 5));
+
+        // Added without validation because the client would otherwise refuse to send it, and the value under
+        // examination is precisely one a well behaved client would never produce.
+        controlRequest.Headers.TryAddWithoutValidation(
+            ApiTestFixture.CorrelationIdHeader,
+            "injected\rSet-Cookie: forged=1");
+
+        using HttpResponseMessage controlResponse = await client.SendAsync(controlRequest);
+
+        controlResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string? sanitised = ApiTestFixture.ReadCorrelationId(controlResponse);
+
+        sanitised.Should().NotBeNullOrWhiteSpace();
+        sanitised.Should().NotContain("forged", "a control character bearing value is never reflected");
+        controlResponse.Headers.Contains("Set-Cookie").Should().BeFalse(
+            "nothing a caller puts in that header may become a header of its own");
+    }
+
     /// <summary>Creates a module through the API and returns its representation.</summary>
     /// <param name="client">A client entitled to create modules.</param>
     /// <param name="tabId">The page the module is placed on.</param>
@@ -1817,6 +2639,137 @@ public sealed class ModuleApiTests
     /// <param name="value">The identifier.</param>
     /// <returns>The invariant representation.</returns>
     private static string Route(int value) => value.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Addresses the module collection with an explicit page window.</summary>
+    /// <param name="portalId">The tenant whose collection is read.</param>
+    /// <param name="pageSize">The width of the window.</param>
+    /// <returns>The relative address.</returns>
+    /// <remarks>
+    /// The window is always stated rather than left to the contract's default, so a change to that default
+    /// cannot silently alter what a fact asserts. The page index is stated as zero because the request
+    /// contract documents a zero base; no fact asserts the base itself, for the reason recorded on the
+    /// envelope fact.
+    /// </remarks>
+    private static Uri ModuleListingRoute(int portalId, int pageSize) => new(
+        FormattableString.Invariant(
+            $"/api/v1/portals/{Route(portalId)}/modules?pageIndex=0&pageSize={Route(pageSize)}"),
+        UriKind.Relative);
+
+    /// <summary>Reads the module collection filtered by a title fragment.</summary>
+    /// <param name="client">A client entitled to read the collection.</param>
+    /// <param name="query">The fragment to match.</param>
+    /// <returns>The rows the filter admitted.</returns>
+    private async Task<IReadOnlyList<ModuleListItemDto>> SearchModulesAsync(HttpClient client, string query)
+    {
+        string portal = Route(_fixture.Seed.PortalId);
+        string escaped = Uri.EscapeDataString(query);
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            FormattableString.Invariant(
+                $"/api/v1/portals/{portal}/modules?pageIndex=0&pageSize=100&query={escaped}"),
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<ModuleListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        return page!.Items;
+    }
+
+    /// <summary>
+    /// Reads one member out of a success envelope's payload as raw JSON.
+    /// </summary>
+    /// <param name="client">A client entitled to perform the read.</param>
+    /// <param name="route">The resource to read.</param>
+    /// <param name="member">The camel-cased member name to return.</param>
+    /// <returns>The member, cloned so that it outlives the document it was parsed from.</returns>
+    /// <remarks>
+    /// Necessary because a typed read cannot distinguish a member the response OMITTED from one it published
+    /// as <see langword="null"/> - both deserialise to the same value - and that distinction is the whole
+    /// subject of the sentinel facts. The element is cloned before the document is disposed, because a
+    /// <see cref="JsonElement"/> borrowed from a disposed document throws on access.
+    /// </remarks>
+    private static async Task<JsonElement> ReadDataMemberAsync(HttpClient client, Uri route, string member)
+    {
+        using HttpResponseMessage response = await client.GetAsync(route);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        document.RootElement.TryGetProperty("data", out JsonElement data).Should().BeTrue(
+            "a successful read publishes its payload under the envelope's data member");
+        data.TryGetProperty(member, out JsonElement value).Should().BeTrue(
+            $"the payload publishes {member} rather than omitting it");
+
+        return value.Clone();
+    }
+
+    /// <summary>
+    /// Inserts a module numbered zero, which the API cannot create because it does not choose identifiers.
+    /// </summary>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// <c>Modules.ModuleID</c> is <c>IDENTITY (0, 1)</c>, so zero is the first identifier an installation
+    /// issues and an ordinary key thereafter - but this installation's sequence is long past it, so the row
+    /// is written with the identity override rather than through the API. Any existing row is removed first
+    /// so the helper is safe to call after a failed run left one behind.
+    /// <para>
+    /// The PLACEMENT is written alongside the module, and it is not optional: a module the terminal schema
+    /// holds without a <c>TabModules</c> row is an unplaced module, and a read that addresses one reports
+    /// absence - so a module numbered zero and placed nowhere would answer <c>404</c> for a reason that has
+    /// nothing to do with its identifier and would prove nothing about the sentinel. Every column
+    /// <c>TabModules</c> declares <c>NOT NULL</c> is supplied for the same reason: the row must be one the
+    /// schema would have accepted from the application.
+    /// </para>
+    /// </remarks>
+    private async Task InsertModuleWithIdentifierZeroAsync()
+    {
+        await RemoveModuleWithIdentifierZeroAsync();
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            SET IDENTITY_INSERT [dbo].[Modules] ON;
+            INSERT INTO [dbo].[Modules]
+                ([ModuleID], [ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted],
+                 [InheritViewPermissions])
+            VALUES (0, @moduleDefinitionId, @portalId, N'Module zero', 0, 0, 1);
+            SET IDENTITY_INSERT [dbo].[Modules] OFF;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = _fixture.Seed.ModuleDefinitionId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility],
+                 [DisplayTitle], [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, 0, N'ContentPane', 1, 0, 0, 1, 0, 0);
+            """,
+            new Dictionary<string, object?> { ["tabId"] = _fixture.Seed.RootTabId });
+    }
+
+    /// <summary>Removes the module numbered zero, leaving the shared collection as it was found.</summary>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// The placement is removed first even though <c>FK_TabModules_Modules</c> cascades, so the helper does
+    /// not depend on the cascade to leave the database clean.
+    /// </remarks>
+    private async Task RemoveModuleWithIdentifierZeroAsync()
+    {
+        await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[TabModules] WHERE [ModuleID] = 0;",
+            new Dictionary<string, object?>());
+
+        await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[Modules] WHERE [ModuleID] = 0;",
+            new Dictionary<string, object?>());
+    }
 
     /// <summary>Produces a short random suffix for values that must differ between tests.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>

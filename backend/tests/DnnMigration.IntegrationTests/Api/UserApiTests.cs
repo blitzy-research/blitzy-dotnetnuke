@@ -1,8 +1,12 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -51,6 +55,27 @@ public sealed class UserApiTests
 
     /// <summary>A second credential used by the change-password tests.</summary>
     private const string ReplacementPassword = "Repl4cement!Pass";
+
+    /// <summary>
+    /// The total a legacy account listing reported when it had not counted anything.
+    /// </summary>
+    /// <remarks>
+    /// <c>Library/Components/Shared/Null.vb:L41-L43</c> defines <c>NullInteger</c> as <c>-1</c>, and the
+    /// account listing initialised its <c>ByRef totalRecords</c> argument to it. The value is named rather than
+    /// written inline so that the assertions which forbid it read as the one fact they are all making.
+    /// </remarks>
+    private const int LegacySentinelTotal = -1;
+
+    /// <summary>
+    /// The shortest credential the configured policy accepts, holding no non-alphanumeric character.
+    /// </summary>
+    /// <remarks>
+    /// Exactly seven characters, matching <c>minRequiredPasswordLength="7"</c> at
+    /// <c>Website/release.config:L242</c>, and deliberately free of punctuation because
+    /// <c>minRequiredNonalphanumericCharacters="0"</c> at <c>:L243</c> required none. Both bounds are asserted
+    /// against this one value, which is why it sits at the boundary rather than comfortably inside it.
+    /// </remarks>
+    private const string PolicyFloorPassword = "Abcde12";
 
     private readonly ApiTestFixture _fixture;
 
@@ -1670,6 +1695,41 @@ public sealed class UserApiTests
         return await ReadDetailAsync(response);
     }
 
+    /// <summary>Reads one page of the seeded tenant's accounts under an explicit filter.</summary>
+    /// <param name="client">A client entitled to enumerate accounts.</param>
+    /// <param name="filter">
+    /// The filter portion of the query string, without a leading separator. Pass an empty string for the
+    /// unfiltered collection.
+    /// </param>
+    /// <returns>The page the endpoint served.</returns>
+    /// <remarks>
+    /// Every caller supplies the paging coordinates through this one helper, and it states them explicitly
+    /// rather than relying on the contract's defaults, so a change to a default cannot quietly move which page
+    /// a filter assertion is reading. The page size is a stated request value and NOT the legacy
+    /// <c>Records_PerPage</c> portal setting that <c>Website/admin/Users/Users.ascx.vb:L114</c> read, which is
+    /// why no assertion in this suite pins a page size: that setting is a presentation preference in the
+    /// membership projection, not a bound on the collection endpoint.
+    /// </remarks>
+    private async Task<PagedEnvelope<UserListItemDto>> ListAsync(HttpClient client, string filter)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(filter);
+
+        string query = filter.Length == 0 ? string.Empty : "&" + filter;
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=0&pageSize=100" + query,
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        return page!;
+    }
+
     /// <summary>Mints a client authenticated as one account, for the self-service paths.</summary>
     /// <param name="account">The account to act as.</param>
     /// <returns>A client whose subject claim names that account.</returns>
@@ -2179,5 +2239,949 @@ public sealed class UserApiTests
             ApiTestFixture.Json);
 
         signedIn.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// The electronic-mail filter narrows the collection on a PREFIX, and a fragment taken from the middle of
+    /// a held address matches nothing.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is one of the four filter shapes the legacy account listing offered, and the prefix half is the
+    /// load-bearing assertion. <c>Website/admin/Users/Users.ascx.vb:L268</c> called
+    /// <c>GetUsersByEmail(..., SearchText + "%", CurrentPage - 1, PageSize, TotalRecords)</c>: the screen
+    /// appended the wildcard itself, so the match was anchored at the start of the address and a mid-string
+    /// fragment found nothing. A filter that had drifted to a containment match would still answer
+    /// <c>200 OK</c> with a plausible-looking page, so only the negative half of this test can tell the two
+    /// apart.
+    /// </para>
+    /// <para>
+    /// The wildcard is NOT sent by the caller here. Appending it was a property of the legacy screen composing
+    /// a <c>LIKE</c> argument by hand; the target takes a plain prefix and owns the pattern behind the
+    /// repository interface, which is also what keeps a caller from injecting wildcard metacharacters into the
+    /// match.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_FilteredByEmailAddress_MatchesAPrefixAndNotAMidStringFragment()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateUserRequest request = NewUserRequest();
+        string localPart = request.Email.Split('@')[0];
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        PagedEnvelope<UserListItemDto> byPrefix = await ListAsync(
+            client,
+            $"email={Uri.EscapeDataString(localPart)}");
+
+        byPrefix.TotalCount.Should().BeGreaterThan(0);
+        byPrefix.Items.Should().OnlyContain(item => item.Email.StartsWith(
+            localPart,
+            StringComparison.OrdinalIgnoreCase));
+        byPrefix.Items.Select(item => item.Email).Should().Contain(request.Email);
+
+        // A fragment lifted from the middle of the very address that was just matched by prefix. The account
+        // demonstrably exists and demonstrably holds the fragment, so an empty page here can only be the
+        // anchoring.
+        string fragment = localPart[3..];
+        fragment.Should().NotBeNullOrEmpty("the seeded address must be long enough to yield a mid-string cut");
+
+        PagedEnvelope<UserListItemDto> byFragment = await ListAsync(
+            client,
+            $"email={Uri.EscapeDataString(fragment)}");
+
+        byFragment.Items.Should().BeEmpty("the legacy match was anchored at the start of the address");
+        byFragment.TotalCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The login-name filter narrows the collection on a PREFIX too, and rejects a mid-string fragment for the
+    /// same reason.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The legacy call site is <c>Website/admin/Users/Users.ascx.vb:L270</c>,
+    /// <c>GetUsersByUserName(..., SearchText + "%", ...)</c>. The seeded login name is used rather than a
+    /// created one because it is the value the rest of the suite already proves is listed, so a failure here
+    /// cannot be blamed on the account being absent.
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_FilteredByLoginName_MatchesAPrefixAndNotAMidStringFragment()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string held = IntegrationSeed.MemberUserName;
+        string prefix = held[..(held.Length - 4)];
+        string fragment = held[4..];
+
+        PagedEnvelope<UserListItemDto> byPrefix = await ListAsync(
+            client,
+            $"userName={Uri.EscapeDataString(prefix)}");
+
+        byPrefix.Items.Select(item => item.Username).Should().Contain(held);
+        byPrefix.Items.Should().OnlyContain(item => item.Username.StartsWith(
+            prefix,
+            StringComparison.OrdinalIgnoreCase));
+
+        PagedEnvelope<UserListItemDto> byFragment = await ListAsync(
+            client,
+            $"userName={Uri.EscapeDataString(fragment)}");
+
+        byFragment.Items.Select(item => item.Username).Should().NotContain(
+            held,
+            "the legacy match was anchored at the start of the login name");
+    }
+
+    /// <summary>
+    /// The profile-property filter is the fourth query shape, and it returns only the accounts that actually
+    /// hold the named value.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy shape is <c>GetUsersByProfileProperty(portalId, propertyName, propertyValue, ...)</c>
+    /// (<c>Library/Components/Users/UserController.vb:L864</c>), reached from
+    /// <c>Website/admin/Users/Users.ascx.vb:L273</c>. It is the only filter that reaches outside the account
+    /// row into the profile value table, so it is the one a mapping change is most likely to break, and the
+    /// negative half - an account that holds no value must not be listed - is what proves the join rather than
+    /// a coincidence.
+    /// </para>
+    /// <para>
+    /// Both accounts are created by this test rather than seeded, so the value is held by exactly one of a
+    /// known pair and the assertion does not depend on what other suites have written.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_FilteredByProfileProperty_ReturnsOnlyTheAccountsHoldingThatValue()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
+        UserDetailDto holder = await CreateUserAsync(client);
+        UserDetailDto abstainer = await CreateUserAsync(client);
+        string value = "Rotterdam" + Suffix();
+
+        using HttpResponseMessage stored = await client.PutAsJsonAsync(
+            ProfileRoute(_fixture.Seed.PortalId, holder.UserId),
+            new UserProfileDto
+            {
+                UserId = holder.UserId,
+                Properties =
+                [
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = definition.PropertyDefinitionId,
+                        PropertyValue = value,
+                        Visibility = definition.Visibility,
+                        Definition = definition,
+                    },
+                ],
+            },
+            ApiTestFixture.Json);
+
+        stored.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        PagedEnvelope<UserListItemDto> page = await ListAsync(
+            client,
+            $"profilePropertyName={Uri.EscapeDataString(definition.PropertyName)}"
+                + $"&profilePropertyValue={Uri.EscapeDataString(value)}");
+
+        page.Items.Select(item => item.UserId).Should().Contain(holder.UserId);
+        page.Items.Select(item => item.UserId).Should().NotContain(
+            abstainer.UserId,
+            "an account holding no value for the named property is not a match");
+    }
+
+    /// <summary>
+    /// No query shape ever reports the legacy sentinel total, however the collection is filtered.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>Library/Components/Users/UserController.vb</c> reported the total through a
+    /// <c>ByRef totalRecords</c> argument initialised to <c>-1</c>, and <c>FillUserCollection</c>
+    /// (<c>L215-L255</c>) ends in a <c>Catch Exc As Exception</c> at <c>L253</c> whose body logs nothing and
+    /// rethrows nothing. A failed read therefore returned an empty collection beside a total of <c>-1</c>, and
+    /// the calling screen rendered it as though it were a count. The target replaces the argument with the
+    /// paged envelope, whose total is a genuine count on every path, so <c>-1</c> is not merely unlikely here
+    /// but unrepresentable - and that is worth pinning precisely because the legacy value was produced by
+    /// swallowing the error rather than by counting.
+    /// </para>
+    /// <para>
+    /// All five shapes are swept in one test rather than as five: the guarantee is a property of the envelope
+    /// rather than of any one filter, and asserting it once per shape would multiply the host round trips
+    /// without adding a distinct failure mode. The free-text shape is included even though it has no legacy
+    /// counterpart, because it reaches the same envelope.
+    /// </para>
+    /// <para>
+    /// The profile-property shape names a definition this test creates rather than a plausible literal. A
+    /// property the tenant does not define is answered <c>404 Not Found</c> - a profile property is itself an
+    /// addressable resource, so naming an absent one is reported the way addressing it directly would be -
+    /// which would make the sweep assert the wrong thing.
+    /// </para>
+    /// <para>
+    /// The sweep deliberately mixes shapes that match records with shapes that match none: the freshly created
+    /// definition holds no values, so its page is legitimately empty. An empty page is precisely where a
+    /// sentinel total would otherwise pass unnoticed, since nothing in the records would look wrong.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_AcrossEveryQueryShape_NeverReportsTheLegacySentinelTotal()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
+        string definedProperty = Uri.EscapeDataString(definition.PropertyName);
+
+        IReadOnlyList<string> shapes =
+        [
+            string.Empty,
+            "userName=" + Uri.EscapeDataString(IntegrationSeed.MemberUserName),
+            "email=" + Uri.EscapeDataString("member@"),
+            $"profilePropertyName={definedProperty}&profilePropertyValue=Amsterdam",
+            "query=" + Uri.EscapeDataString("integration"),
+        ];
+
+        foreach (string shape in shapes)
+        {
+            PagedEnvelope<UserListItemDto> page = await ListAsync(client, shape);
+
+            page.TotalCount.Should().NotBe(
+                LegacySentinelTotal,
+                "the paged envelope reports a counted total on every path, filtered or not");
+            page.TotalCount.Should().BeGreaterThanOrEqualTo(0);
+            page.Meta.Should().NotBeNull("the paging facts travel in the metadata companion");
+            page.Items.Count.Should().BeLessThanOrEqualTo(page.TotalCount);
+        }
+    }
+
+    /// <summary>
+    /// The legacy unpaged sentinel is refused with the offending field named, rather than being obeyed or
+    /// silently reinterpreted.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <c>UserController.vb:L687</c> and <c>:L706</c> called
+    /// <c>GetUsers(portalId, ..., -1, -1, -1)</c>, and the provider turned that into "every row" at four
+    /// identical sites -
+    /// <c>Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb:L1160-L1163</c>
+    /// and the three that follow it - by testing <c>pageIndex = -1</c> and substituting
+    /// <c>pageSize = Integer.MaxValue</c>. The XML documentation on those same methods tells the caller to
+    /// "set pageSize = -1", naming the wrong parameter; the code is the contract.
+    /// </para>
+    /// <para>
+    /// The target has no unpaged mode and does not reproduce the sentinel. A page index below zero and a page
+    /// size below one are each a field-level <c>400</c>, which is the deliberate divergence: the danger in
+    /// carrying the sentinel across was that a nullable-or-zero mapping would read <c>-1</c> as page zero of
+    /// size zero and answer <c>200 OK</c> with an empty page, reporting nothing wrong to a caller that had
+    /// asked for everything. Refusing it names the parameter instead, and a caller that wants every row asks
+    /// for a page size it can state.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_WithTheLegacyUnpagedSentinel_IsRefusedAndNamesTheOffendingField()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage bothSentinels = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=-1&pageSize=-1",
+            UriKind.Relative));
+
+        bothSentinels.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await bothSentinels.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status400BadRequest);
+        problem.Errors.Should().ContainKey(
+            nameof(PagedRequest.PageIndex),
+            "the sentinel page index must be attributed to the parameter that carried it");
+        problem.Errors.Should().ContainKey(
+            nameof(PagedRequest.PageSize),
+            "the sentinel page size must be attributed to the parameter that carried it");
+
+        // Named separately as well, because the provider's real test was on the INDEX while its documentation
+        // named the SIZE. Sending only the index proves the index alone is enough to be refused, so neither
+        // parameter can pass by relying on the other to fail.
+        using HttpResponseMessage indexOnly = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/users?pageIndex=-1&pageSize=10",
+            UriKind.Relative));
+
+        indexOnly.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? indexProblem = await indexOnly.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        indexProblem.Should().NotBeNull();
+        indexProblem!.Errors.Should().ContainKey(nameof(PagedRequest.PageIndex));
+    }
+
+    /// <summary>
+    /// Neither zero nor minus one addresses an account, because the account table's identity seed makes both
+    /// unreachable.
+    /// </summary>
+    /// <param name="userId">The identifier being addressed.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the CONTRAST case of the migration's sentinel handling, and it is the one place where copying
+    /// the pattern that is correct everywhere else would be wrong.
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L98</c> declares
+    /// <c>[UserID] int IDENTITY (1, 1)</c>, so the first account is <c>1</c> and neither <c>0</c> nor
+    /// <c>-1</c> can ever name a row. The neighbouring resources are seeded differently on purpose -
+    /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c> at <c>:L77</c> and <c>Roles.RoleID</c> is
+    /// <c>IDENTITY (0, 1)</c> at <c>:L115</c> - so for those two the very values refused here are legitimate
+    /// identifiers.
+    /// </para>
+    /// <para>
+    /// The collision is what makes the assertion worth having: <c>Null.vb:L41-L43</c> defines
+    /// <c>NullInteger</c> as <c>-1</c>, which is simultaneously the legacy marker for "absent" and a real
+    /// portal identifier. An implementation that treated a non-positive route value as "absent" and short
+    /// circuited would answer identically here while being wrong for portals, so this test is paired with the
+    /// tenant fact below rather than standing alone.
+    /// </para>
+    /// <para>
+    /// A theory over two integers rather than one over a nullable: an <c>[InlineData(null)]</c> row against a
+    /// non-nullable <c>int</c> parameter is an analyser error under this solution's warnings-as-errors policy,
+    /// and there is nothing to gain by widening the parameter when both values under test are real integers.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task GetUser_AddressedByAnIdentifierTheIdentitySeedExcludes_ReturnsNotFound(int userId)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, userId));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "the account identity column starts at one, so this identifier cannot name a row");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("an absent account is reported as a problem document, not a bare status");
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// A tenant whose identifier is not positive is served normally, which is the other half of the identity
+    /// seed contrast.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so the installation's first tenant is <c>-1</c> and its second is
+    /// <c>0</c>. Both values are indistinguishable from the legacy <c>NullInteger</c> marker, and both are
+    /// legitimate. The seeded tenant demonstrates the negative case and a tenant created here demonstrates
+    /// that the route segment is not being validated as "greater than zero" anywhere along the path - which
+    /// would be the natural mistake to make after reading the account rule above.
+    /// </para>
+    /// <para>
+    /// The assertion on the seeded identifier is an inequality rather than an equality: what matters is that a
+    /// non-positive tenant identifier is exercised at all, not which particular value the seed produced.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_ForATenantWhoseIdentifierIsNotPositive_ReturnsOk()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        _fixture.Seed.PortalId.Should().BeLessThanOrEqualTo(
+            0,
+            "the tenant identity column seeds at minus one, so the first tenant is not positive");
+
+        PagedEnvelope<UserListItemDto> seededTenant = await ListAsync(client, string.Empty);
+        seededTenant.TotalCount.Should().BeGreaterThan(0);
+
+        int created = await CreateIsolatedPortalAsync(client);
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(created)}/users?pageIndex=0&pageSize=10",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.TotalCount.Should().NotBe(LegacySentinelTotal);
+    }
+
+    /// <summary>
+    /// Two accounts may hold the same electronic-mail address, and the second create is accepted rather than
+    /// refused.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy installation permitted duplicates:
+    /// <c>Website/release.config:L244</c> registers the membership provider with
+    /// <c>requiresUniqueEmail="false"</c>. Preserving that is a migration obligation rather than a preference,
+    /// because the existing data may already contain duplicates and a uniqueness rule introduced here would
+    /// reject the very accounts the installation holds. The clause is explicit that validation rules must
+    /// MATCH, and a rule the legacy system did not have is as much a divergence as a rule dropped.
+    /// </para>
+    /// <para>
+    /// This fact is the guard against that specific regression, and it is deliberately positive: it asserts
+    /// <c>201 Created</c> rather than merely "not <c>409</c>", and then proves both accounts are listed under
+    /// the shared address. The conflict this resource DOES report is on the login name, which the neighbouring
+    /// facts cover - so the pair together fix which field is unique and which is not.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_WithAnEmailAddressAnotherAccountHolds_ReturnsCreated()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateUserRequest first = NewUserRequest();
+
+        using HttpResponseMessage firstResponse = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            first,
+            ApiTestFixture.Json);
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        UserDetailDto firstAccount = await ReadDetailAsync(firstResponse);
+
+        CreateUserRequest second = NewUserRequest();
+        second.Email = first.Email;
+
+        using HttpResponseMessage secondResponse = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            second,
+            ApiTestFixture.Json);
+
+        secondResponse.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the legacy installation did not require a unique address, so neither may this one");
+
+        UserDetailDto secondAccount = await ReadDetailAsync(secondResponse);
+        secondAccount.Email.Should().Be(first.Email);
+        secondAccount.UserId.Should().NotBe(firstAccount.UserId);
+
+        PagedEnvelope<UserListItemDto> shared = await ListAsync(
+            client,
+            $"email={Uri.EscapeDataString(first.Email)}");
+
+        shared.Items.Select(item => item.UserId)
+            .Should().Contain(firstAccount.UserId)
+            .And.Contain(secondAccount.UserId);
+    }
+
+    /// <summary>
+    /// A credential sitting exactly on the configured floor is accepted, punctuation and all absent.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy policy, measured from the provider registration at
+    /// <c>Website/release.config:L242-L243</c>, is <c>minRequiredPasswordLength="7"</c> and
+    /// <c>minRequiredNonalphanumericCharacters="0"</c>, with <c>requiresQuestionAndAnswer="false"</c> at
+    /// <c>:L241</c>. A seven-character alphanumeric credential therefore satisfied it, and the account created
+    /// here proves the target still accepts one - including at sign-in, which is where a silently tightened
+    /// rule would lock an existing account out rather than merely inconvenience a new one.
+    /// </para>
+    /// <para>
+    /// Hardening the policy during a migration is the change that cannot be undone from the outside: existing
+    /// stored credentials cannot be re-derived to satisfy a new rule, so every account holding a
+    /// seven-character credential would be stranded. Any hardening is therefore a separate, deliberate
+    /// decision, and this test is what makes an accidental one fail.
+    /// </para>
+    /// <para>
+    /// No question-and-answer pair is sent, because the request contract carries none - which is the same
+    /// parity fact expressed structurally rather than by assertion.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_WithACredentialOnThePolicyFloor_ReturnsCreatedAndCanSignIn()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        PolicyFloorPassword.Length.Should().Be(7, "the legacy floor was seven characters");
+        PolicyFloorPassword.Should().MatchRegex(
+            "^[A-Za-z0-9]+$",
+            "the legacy policy required no non-alphanumeric character");
+
+        CreateUserRequest request = NewUserRequest();
+        request.Password = PolicyFloorPassword;
+        request.ConfirmPassword = PolicyFloorPassword;
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "tightening the credential policy would lock existing accounts out");
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage signedIn = await anonymous.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new { username = request.Username, password = PolicyFloorPassword },
+            ApiTestFixture.Json);
+
+        signedIn.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a credential the create path accepted must also be accepted at sign-in");
+    }
+
+    /// <summary>
+    /// A create carrying several unusable values answers a per-field validation document naming every one of
+    /// them.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The status alone is not the contract. What the legacy screens gave the operator was a list of the
+    /// individual things that were wrong, rendered by the validation summary beside the fields, and the
+    /// equivalent of that list is the <c>errors</c> object of the RFC 7807 document. A response that collapsed
+    /// three field failures into one sentence would still be a <c>400</c>, so the field names are asserted
+    /// rather than the count.
+    /// </para>
+    /// <para>
+    /// The names are read through <c>nameof</c> on the request contract, so a renamed member breaks this test
+    /// at compile time instead of at run time.
+    /// </para>
+    /// <para>
+    /// The media type is deliberately not asserted, for the reason recorded against the portal suite: the
+    /// framework serves a controller-produced problem document as <c>application/json</c> rather than as
+    /// <c>application/problem+json</c>, and pinning the value it currently emits would cement a deviation and
+    /// make correcting it later look like a regression. The envelope MEMBERS are what this asserts, because
+    /// those are what a client reads.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_WithSeveralUnusableValues_NamesEveryOffendingField()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreateUserRequest request = NewUserRequest();
+        request.Username = string.Empty;
+        request.LastName = string.Empty;
+        request.Email = "not-an-address";
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status400BadRequest);
+        problem.Title.Should().NotBeNullOrWhiteSpace();
+        problem.Type.Should().NotBeNullOrWhiteSpace(
+            "a client branches on the problem type rather than parsing prose");
+
+        problem.Errors.Should().ContainKey(nameof(CreateUserRequest.Username));
+        problem.Errors.Should().ContainKey(nameof(CreateUserRequest.LastName));
+        problem.Errors.Should().ContainKey(nameof(CreateUserRequest.Email));
+
+        problem.Errors[nameof(CreateUserRequest.Email)].Should().NotBeEmpty(
+            "a named field carries the reason it was refused, not an empty list");
+    }
+
+    /// <summary>
+    /// A new credential the policy cannot accept is refused with the field named, on the self-service change
+    /// route.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The legacy credential screen carried no declarative validator at all - <c>Website/admin/Users/</c>
+    /// <c>Password.ascx</c> declares none, and <c>User.ascx</c> only a server-side custom validator - so the
+    /// code behind was the sole authority for what a usable credential was. The target moves that authority
+    /// into a request validator, and this asserts the consequence a caller can observe: the refusal names the
+    /// member it refused, so a client can attach the message to the field the operator typed into.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy outcome channel was <c>PasswordUpdateStatus</c>
+    /// (<c>Library/Components/Users/Membership/PasswordUpdateStatus.vb</c>), whose eight members carry NO
+    /// explicit values - so <c>Success</c> is <c>0</c> there, the opposite of <c>UserCreateStatus</c>, where
+    /// <c>Success</c> is <c>13</c> and the zero member is the "nothing has happened yet" marker. Nothing in
+    /// this suite asserts either number, and that is the point of asserting outcomes as statuses and named
+    /// fields instead. Six of the eight map onto observable results here - <c>Success</c> to
+    /// <c>204 No Content</c>, <c>PasswordMissing</c> and <c>PasswordInvalid</c> to a <c>400</c> naming
+    /// <c>newPassword</c>, <c>PasswordMismatch</c> to a <c>400</c> naming <c>confirmPassword</c>,
+    /// <c>PasswordNotDifferent</c> to the refusal the neighbouring facts cover, and
+    /// <c>PasswordResetFailed</c> to the reset route's refusal. The remaining two,
+    /// <c>InvalidPasswordAnswer</c> and <c>InvalidPasswordQuestion</c>, are unreachable BY CONSTRUCTION: the
+    /// legacy provider was registered with <c>requiresQuestionAndAnswer="false"</c>
+    /// (<c>Website/release.config:L241</c>), so no question-and-answer pair was ever demanded, and the request
+    /// contract carries no member through which one could be supplied. They are recorded here rather than
+    /// asserted, because a test cannot reach a state the contract has no way to express.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_WithAnUnusableNewCredential_NamesTheOffendingField()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        UserDetailDto account = await CreateUserAsync(host);
+
+        using HttpClient client = ClientForAccount(account);
+
+        using HttpResponseMessage tooShort = await client.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, account.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = "abc12",
+                ConfirmPassword = "abc12",
+            },
+            ApiTestFixture.Json);
+
+        tooShort.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? shortProblem = await tooShort.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        shortProblem.Should().NotBeNull();
+        shortProblem!.Errors.Should().ContainKey(nameof(ChangePasswordRequest.NewPassword));
+
+        // A confirmation that does not match is a distinct refusal reason and is attributed to the
+        // confirmation field rather than to the credential itself.
+        using HttpResponseMessage mismatched = await client.PostAsJsonAsync(
+            PasswordRoute(_fixture.Seed.PortalId, account.UserId),
+            new ChangePasswordRequest
+            {
+                Operation = ChangePasswordRequest.OperationChange,
+                CurrentPassword = ApiTestFixture.KnownPassword,
+                NewPassword = ReplacementPassword,
+                ConfirmPassword = ReplacementPassword + "x",
+            },
+            ApiTestFixture.Json);
+
+        mismatched.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? mismatchProblem = await mismatched.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        mismatchProblem.Should().NotBeNull();
+        mismatchProblem!.Errors.Should().ContainKey(nameof(ChangePasswordRequest.ConfirmPassword));
+
+        // The credential is unchanged after both refusals, which is what makes them refusals rather than
+        // partial writes.
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage signedIn = await anonymous.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new { username = account.Username, password = ApiTestFixture.KnownPassword },
+            ApiTestFixture.Json);
+
+        signedIn.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// No account representation carries credential material, and no route serves one back.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: password retrieval is deliberately NOT carried forward. The legacy installation could return
+    /// a stored credential to a caller - <c>Website/release.config:L239</c> registers the provider with
+    /// <c>enablePasswordRetrieval="true"</c> over <c>passwordFormat="Encrypted"</c> at <c>:L245</c>, and the
+    /// key that reversed the encryption was committed to source control alongside it. The target stores a
+    /// one-way BCrypt hash, so retrieval is not merely unpublished but impossible, and
+    /// <c>UserController.vb:L433</c>'s <c>GetPassword</c> has no counterpart.
+    /// </para>
+    /// <para>
+    /// Two things are therefore asserted. First, that no representation leaks the material: the payloads are
+    /// scanned as RAW JSON rather than through a typed model, because a typed read can only see members the
+    /// test already knows to look for, whereas an unexpected member added later is exactly the leak worth
+    /// catching. Second, that reading the credential route is not a way to obtain it either.
+    /// </para>
+    /// <para>
+    /// The scan looks for the member NAMES rather than for the credential value, since the value would be
+    /// hashed and so would not appear literally even in a body that disclosed it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UserRepresentations_NeverCarryCredentialMaterial()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        UserDetailDto account = await CreateUserAsync(client);
+
+        IReadOnlyList<Uri> representations =
+        [
+            UsersRoute(_fixture.Seed.PortalId),
+            UserRoute(_fixture.Seed.PortalId, account.UserId),
+            ProfileRoute(_fixture.Seed.PortalId, account.UserId),
+            MembershipSettingsRoute(_fixture.Seed.PortalId),
+        ];
+
+        IReadOnlyList<string> forbidden =
+        [
+            "password",
+            "passwordhash",
+            "passwordsalt",
+            "passwordanswer",
+            "passwordquestion",
+        ];
+
+        foreach (Uri representation in representations)
+        {
+            using HttpResponseMessage response = await client.GetAsync(representation);
+
+            // The membership-settings projection answers 404 where the tenant holds no accounts module, and
+            // that is a documented outcome rather than a failure - a body it never wrote cannot leak.
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                continue;
+            }
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            string body = await response.Content.ReadAsStringAsync();
+
+            foreach (string member in forbidden)
+            {
+                body.Should().NotContainEquivalentOf(
+                    $"\"{member}\"",
+                    $"{representation.OriginalString} must not disclose credential material");
+            }
+
+            // Parsed as well as scanned, so that a body which is not JSON at all cannot pass the scan by
+            // accident.
+            using JsonDocument document = JsonDocument.Parse(body);
+            document.RootElement.ValueKind.Should().Be(JsonValueKind.Object);
+        }
+
+        // The credential route accepts a write and serves no read. A GET is either unrouted or unsupported,
+        // and either answer is acceptable - what matters is that it is not a 200 carrying a credential.
+        using HttpResponseMessage read = await client.GetAsync(
+            PasswordRoute(_fixture.Seed.PortalId, account.UserId));
+
+        read.StatusCode.Should().BeOneOf(
+            HttpStatusCode.NotFound,
+            HttpStatusCode.MethodNotAllowed);
+    }
+
+    /// <summary>
+    /// The correlation identifier survives onto a refused request's problem document, whether the caller
+    /// supplied one or not.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The failing path is the one that matters. A correlation identifier echoed only on success is of no use
+    /// to the caller who has something to report, and the header is written by a callback registered before
+    /// the pipeline continues precisely so that a response composed by the error path still carries it. This
+    /// asserts it on a <c>404</c> for an account, which is the outcome a caller is most likely to be asking
+    /// about.
+    /// </para>
+    /// <para>
+    /// A supplied value is echoed exactly once. The header is assigned rather than appended, so a caller
+    /// cannot end up with two identifiers to choose between, and an absent one is generated so that every
+    /// response carries something to quote.
+    /// </para>
+    /// <para>
+    /// An unusable value - here one far longer than the accepted bound - is REPLACED rather than echoed, and
+    /// specifically does not turn the request into a <c>400</c>. Rejecting the request would let a caller's
+    /// malformed diagnostic header break an otherwise valid operation, and echoing it would put unvalidated
+    /// caller text into a response header.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RefusedUserRequest_CarriesACorrelationIdentifierOnItsProblemDocument()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string supplied = "user-suite-" + Suffix();
+        Uri absent = UserRoute(_fixture.Seed.PortalId, UnknownUserId);
+
+        using HttpRequestMessage echoed = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, absent),
+            supplied);
+
+        using HttpResponseMessage echoedResponse = await client.SendAsync(echoed);
+
+        echoedResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        ApiTestFixture.ReadCorrelationId(echoedResponse).Should().Be(
+            supplied,
+            "a refused request is exactly when the caller needs the identifier it supplied");
+
+        echoedResponse.Headers.GetValues(ApiTestFixture.CorrelationIdHeader).Should().HaveCount(
+            1,
+            "the header is assigned rather than appended, so there is one value to quote");
+
+        ProblemDetails? problem = await echoedResponse.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("the refusal carries a problem document beside the header");
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
+
+        using HttpResponseMessage generated = await client.GetAsync(absent);
+
+        generated.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        ApiTestFixture.ReadCorrelationId(generated).Should().NotBeNullOrWhiteSpace(
+            "an identifier is generated when the caller supplies none");
+
+        using HttpRequestMessage overlong = ApiTestFixture.WithCorrelationId(
+            new HttpRequestMessage(HttpMethod.Get, absent),
+            new string('c', 400));
+
+        using HttpResponseMessage overlongResponse = await client.SendAsync(overlong);
+
+        overlongResponse.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "an unusable diagnostic header must not change the outcome of the operation");
+
+        string? replacement = ApiTestFixture.ReadCorrelationId(overlongResponse);
+        replacement.Should().NotBeNullOrWhiteSpace();
+        replacement!.Length.Should().BeLessThan(400, "an over-long value is replaced rather than echoed");
+    }
+
+    /// <summary>
+    /// The legacy account operations that were deliberately not carried forward, and the ones that belong to a
+    /// different resource, are absent from this one.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// An absence is as much a part of the published contract as a presence, and it is the half that no other
+    /// test can accidentally cover. Each address below was reachable in the legacy administration and is
+    /// intentionally unpublished here, so a later revision that reinstates one - by porting a screen
+    /// mechanically, say - fails this test rather than quietly widening the surface.
+    /// </para>
+    /// <para>
+    /// The absences fall into two kinds. Some operations are gone outright: bulk deletion, deleting every
+    /// unauthorised account at once, bulk electronic mail, and the users-online view, whose supporting
+    /// subsystem is out of scope. Others exist but belong elsewhere, and the distinction is the point.
+    /// Signing in is the authentication resource's operation, not an account sub-resource. Role ASSIGNMENT is
+    /// the role resource's operation - <c>POST portals/{portalId}/roles/{roleId}/users</c> - so posting to the
+    /// account's role collection must not be a second way to do it, even though READING that collection is
+    /// legitimately published and is asserted elsewhere. Reordering a profile property is a PROPERTY of the
+    /// definition, written through its <c>viewOrder</c> member on the update verb, and never an action address.
+    /// </para>
+    /// <para>
+    /// Both an unrouted address and a routed one that refuses the verb are accepted, because the two are
+    /// equally conclusive about the operation being unavailable and which of them a given address produces is
+    /// a routing detail rather than a contract. What is NOT accepted is a success.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task WithdrawnAndForeignAccountOperations_AreNotPublishedOnThisResource()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        UserDetailDto account = await CreateUserAsync(client);
+
+        ProfilePropertyDefinitionDto definition = await CreateProfileDefinitionAsync(client, required: false);
+
+        int portalId = _fixture.Seed.PortalId;
+        string tenant = Route(portalId);
+        string subject = Route(account.UserId);
+        string property = Route(definition.PropertyDefinitionId);
+
+        IReadOnlyList<(HttpMethod Method, string Address)> withdrawn =
+        [
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/bulk-delete"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/delete-unauthorized"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/bulk-email"),
+            (HttpMethod.Get, $"/api/v1/portals/{tenant}/users/online"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/login"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/users/{subject}/roles"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/profile-definitions/{property}/move-up"),
+            (HttpMethod.Post, $"/api/v1/portals/{tenant}/profile-definitions/{property}/move-down"),
+        ];
+
+        foreach ((HttpMethod method, string address) in withdrawn)
+        {
+            using var request = new HttpRequestMessage(method, new Uri(address, UriKind.Relative));
+            using HttpResponseMessage response = await client.SendAsync(request);
+
+            response.StatusCode.Should().BeOneOf(
+                [HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed],
+                $"{method.Method} {address} is not a published operation of the account resource");
+        }
+
+        // The reorder PROPERTY, by contrast, is honoured through the update verb - so the absence above is the
+        // action address being unavailable, not the capability being lost.
+        UpdateProfilePropertyDefinitionRequest amendment = AmendmentFrom(definition);
+        amendment.ViewOrder = definition.ViewOrder + 5;
+
+        using HttpResponseMessage reordered = await client.PutAsJsonAsync(
+            ProfileDefinitionRoute(portalId, definition.PropertyDefinitionId),
+            amendment,
+            ApiTestFixture.Json);
+
+        reordered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ProfilePropertyDefinitionDto? afterReorder = await reordered.Content
+            .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+        afterReorder.Should().NotBeNull();
+        afterReorder!.ViewOrder.Should().Be(
+            definition.ViewOrder + 5,
+            "ordering is a member of the definition rather than an action upon it");
+    }
+
+    /// <summary>
+    /// A member quota of zero means UNLIMITED, so account creation is not refused at that value.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This guards an inversion that reads as a bug in either direction. The legacy gate was
+    /// <c>PortalSettings.Users &lt; PortalSettings.UserQuota Or UserInfo.IsSuperUser Or
+    /// PortalSettings.UserQuota = 0</c> (<c>Website/admin/Users/ManageUsers.ascx.vb:L367</c>) - the third
+    /// disjunct is what makes zero mean "no limit" rather than "no accounts permitted". A port that dropped it
+    /// and compared the count against the quota alone would refuse EVERY create on a default tenant, because
+    /// the <c>UserQuota</c> column defaults to zero and no seeded tenant sets it.
+    /// </para>
+    /// <para>
+    /// The quota is read from the tenant row rather than assumed, so the test states the precondition it
+    /// depends on instead of inheriting it. Two accounts are then created in succession: one create could
+    /// succeed under a quota of one, whereas two cannot be explained by any positive bound the tenant does not
+    /// hold.
+    /// </para>
+    /// <para>
+    /// The refusal side is deliberately NOT asserted. At a quota of zero there is no bound to exceed, so no
+    /// request can reach a quota refusal, and a test that manufactured one would be asserting a rule this
+    /// tenant does not have.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateUser_UnderAZeroMemberQuota_IsNotRefused()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        int quota = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COALESCE(MAX([UserQuota]), 0) FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = _fixture.Seed.PortalId });
+
+        quota.Should().Be(0, "the tenant column defaults to zero, which the legacy rule read as no limit");
+
+        int before = (await ListAsync(client, string.Empty)).TotalCount;
+        before.Should().BeGreaterThan(0, "the tenant already holds accounts, so any positive bound is met");
+
+        UserDetailDto first = await CreateUserAsync(client);
+        UserDetailDto second = await CreateUserAsync(client);
+
+        second.UserId.Should().NotBe(first.UserId);
+
+        int after = (await ListAsync(client, string.Empty)).TotalCount;
+        after.Should().Be(before + 2, "neither create was refused, so both accounts joined the tenant");
     }
 }

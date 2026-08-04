@@ -750,11 +750,6 @@ public sealed class ModuleService : IModuleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (ValidateSchedule(request.StartDate, request.EndDate) is ResultReason invalidSchedule)
-        {
-            return Result<ModuleDetailDto>.Failure(invalidSchedule);
-        }
-
         IReadOnlyList<ModuleDefinition> definitions =
             await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -875,11 +870,6 @@ public sealed class ModuleService : IModuleService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-
-        if (ValidateSchedule(request.StartDate, request.EndDate) is ResultReason invalidSchedule)
-        {
-            return Result<ModuleDetailDto?>.Failure(invalidSchedule);
-        }
 
         Module? module = await _modules
             .GetByIdAsync(moduleId, cancellationToken)
@@ -1971,17 +1961,30 @@ public sealed class ModuleService : IModuleService
         return null;
     }
 
-    /// <summary>
-    /// Rejects a schedule whose end precedes its start.
-    /// </summary>
-    /// <param name="startDate">The submitted start of the display window.</param>
-    /// <param name="endDate">The submitted end of the display window.</param>
-    /// <returns>The reason the schedule is unusable, or <see langword="null"/> when it is usable.</returns>
-    private static ResultReason? ValidateSchedule(DateTime? startDate, DateTime? endDate)
-        => startDate is not null && endDate is not null && startDate > endDate
-            ? new ResultReason(RequestInvalidCode, "The start date must not be later than the end date.")
-            : null;
-
+    // MIGRATION: THERE IS NO ORDERING RULE ON THE DISPLAY WINDOW, AND THAT ABSENCE IS MEASURED RATHER THAN
+    //            ASSUMED. A helper here used to refuse a request whose end date preceded its start date. The
+    //            legacy screen refuses no such thing. Website/admin/Modules/modulesettings.ascx declares
+    //            EXACTLY FOUR validators - valtxtStartDate (L78-L79), valtxtEndDate (L88-L89), valBorder
+    //            (L137-L138) and valCacheTime (L172-L173) - every one of them a CompareValidator with
+    //            Operator="DataTypeCheck", which asserts only that the submitted text parses as its declared
+    //            type. There is no RangeValidator, no CompareValidator comparing one control to another, and
+    //            no RequiredFieldValidator anywhere in that file. The code-behind is the same story:
+    //            ModuleSettings.ascx.vb L367-L375 parses each field on its own - "If txtStartDate.Text <> ''
+    //            Then objModule.StartDate = Convert.ToDateTime(txtStartDate.Text) Else objModule.StartDate =
+    //            Null.NullDate", and the identical block for the end date - and never compares the two. A
+    //            window ending before it begins was therefore ACCEPTED and STORED verbatim by the legacy
+    //            application, which merely rendered the module in no period at all.
+    //
+    //            Reinstating the check would be a NARROWING: identical input that the legacy application
+    //            accepted would be refused, which the behaviour-preservation obligation (AAP Rule T5, MC3)
+    //            forbids as squarely as it forbids a widening, and MC4 requires the validation rules to match
+    //            rather than to improve on what was measured. The same reasoning already governs the two
+    //            neighbouring fields on this contract, whose legacy validators are likewise type-only: a
+    //            negative cache period and a border outside the range its own error message advertises are
+    //            both admitted, and both are pinned by tests. Nothing is silently absorbed - the storability
+    //            bound on each date remains, enforced field by field by the request validator, because
+    //            SQL Server's datetime column genuinely cannot hold a value below its calendar and that is a
+    //            property of the store rather than a rule invented here.
     /// <summary>
     /// Outcome of normalising one submitted settings store: either the reason it is unusable, or the
     /// map to write.

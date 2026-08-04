@@ -15,6 +15,20 @@
   margin-block-end: var(--space-4);
 }
 
+// The label and its help affordance share one line, so the affordance sits beside the
+// label text where the legacy control put it. A row rather than an inline run, so the
+// gap between the two is the shared spacing token and never a space character in the
+// markup - the template compiler collapses those, and they cannot be adjusted.
+//
+// Baseline alignment rather than centre, so the button's text sits on the same line as
+// the label's regardless of which of the two is taller.
+.form-field__label-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
 // MIGRATION: the legacy label rule declared bold weight on the base font stack, and
 // that weight is carried across. The colour is left to inherit, exactly as the legacy
 // rule did, so a label sits in the surrounding text colour rather than the brand
@@ -34,6 +48,66 @@
   color: var(--color-danger);
 }
 
+// The word that gives the marker glyph a meaning for a reader who cannot see it. The
+// mixin keeps it in the accessibility tree while removing it from view, so the glyph
+// and the word are one indicator expressed twice rather than two competing ones.
+.form-field__required-text {
+  @include mx.visually-hidden;
+}
+
+// MIGRATION: the legacy affordance was a raster image inside a link button, styled by
+// nothing at all. This is a real button, so its native chrome is cleared to leave the
+// glyph and its text - the only additions are the pointer, which the legacy link also
+// had, and the focus ring, which the legacy control withdrew from the tab order
+// entirely and therefore never needed.
+.form-field__help-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  flex: none;
+
+  padding: 0;
+
+  background-color: transparent;
+  border: none;
+  color: var(--color-primary);
+
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // Additive decoration only: withdrawn on a device with no fine pointer, and nothing
+  // an interaction depends on lives here. The change is instantaneous because the
+  // legacy stylesheet declares no transition, animation or transform anywhere, so
+  // there is no legacy motion to preserve and none is introduced.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// Sized from the spacing scale rather than from intrinsic dimensions, and stroked in
+// `currentColor`, so the glyph tracks the button's own colour and typography.
+.form-field__help-icon {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+// The messages of one field, grouped so that the live region and the description
+// reference are one element rather than one per message. A column with a gap, so two
+// simultaneous messages are separated by the shared token and never run together.
+.form-field__errors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
 .form-field__control {
   display: flex;
   flex-direction: column;
@@ -42,12 +116,19 @@
 
 // MIGRATION: the legacy help rule rendered its text one step smaller than body text
 // in the muted colour, and both are carried across as tokens.
+//
+// MIGRATION: an interior line break survives as a line break. The component resolves
+// the legacy break markup that the resource values carry into newline characters, and
+// `pre-line` renders those as the breaks they always were while still collapsing runs
+// of spaces - so a two-paragraph help entry reads as two paragraphs, exactly as it did
+// before, without any markup being interpreted.
 .form-field__help {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   line-height: var(--line-height-base);
   overflow-wrap: break-word;
+  white-space: pre-line;
 }
 
 // MIGRATION: the legacy validators rendered their messages in the error colour at
@@ -61,6 +142,7 @@
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);
   overflow-wrap: break-word;
+  white-space: pre-line;
 }
 
 // Above the breakpoint the label sits beside its control, which is the arrangement the
@@ -86,8 +168,10 @@
     align-items: baseline;
   }
 
-  // The label occupies the first column of the first row; the control the second.
-  .form-field__label {
+  // The label row occupies the first column of the first row; the control the second.
+  // The row rather than the label itself, because the label and its help affordance
+  // travel together and the row is what the grid places.
+  .form-field__label-row {
     grid-column: 1;
   }
 
@@ -99,7 +183,7 @@
   // they describe the control. Placing them in the first column would read as though
   // they described the label.
   .form-field__help,
-  .form-field__error {
+  .form-field__errors {
     grid-column: 2;
   }
 }

@@ -1,6 +1,11 @@
 import { Injectable, Signal, computed, signal } from '@angular/core';
 
-import { AuthSession } from '../models/auth.model';
+// Type-only, and deliberately so: the session shape is erased at compile time, so
+// this file emits no import of the model at runtime and cannot participate in a
+// cycle with it. The project compiles with isolated modules, under which the
+// distinction between a type import and a value import must be explicit rather
+// than inferred from usage.
+import type { AuthSession, CurrentUser } from '../models/auth.model';
 
 /**
  * Holds the current authentication session.
@@ -28,17 +33,62 @@ import { AuthSession } from '../models/auth.model';
  * useful. Nothing here is deferred: there is no persistent tier to add later, and
  * adding one would be a deliberate weakening that needs its own justification.
  *
- * MIGRATION: the legacy application authenticated with an ASP.NET forms
- * authentication cookie issued by the membership provider, and signed out by
- * clearing that cookie. Neither half survives. There is no cookie to clear, so
- * {@link clear} discards local state and the paired server call revokes the
- * refresh token; the access token itself cannot be recalled and remains valid
- * until it expires, which is the reason its lifetime is short.
+ * MIGRATION: the access token's sixty-minute lifetime is exact parity with legacy
+ * forms authentication rather than a fresh choice. `Website/release.config:L146`
+ * declares `<authentication mode="Forms">` and L147 stamps `timeout="60"` on the
+ * `.DOTNETNUKE` ticket. The paired seven-day refresh window has no legacy
+ * counterpart, because the legacy ticket carried no renewal credential — it was
+ * simply reissued on each request until it lapsed. Both durations belong to the
+ * server: it issues the pair and stamps the expiry it chose. This service holds
+ * what it was handed and enforces neither, which is why no lifetime constant
+ * appears below and no member compares one against a clock.
  *
- * Registered at the root so that one session is shared by the whole application.
- * The interceptors, the authentication service and the permission directive all
- * read the same instance, which is what keeps them from disagreeing about who is
- * signed in.
+ * MIGRATION: a DELIBERATE BEHAVIOURAL DIFFERENCE, and the sharpest one here. The
+ * legacy `.DOTNETNUKE` ticket was a cookie — `Website/release.config:L147` sets
+ * `cookieless="UseCookies"` — so it survived a page load, a second tab and a
+ * browser restart for its full sixty minutes. Nothing held here survives any of
+ * those. A full page reload therefore ends the session and the person signs in
+ * again. That is the intended posture, not an unfinished implementation, and it is
+ * recorded as a divergence rather than absorbed silently.
+ *
+ * MIGRATION: signing out has no stateless counterpart. The legacy sign-out cleared
+ * the authentication cookie in the response, which ended the session outright. A
+ * bearer token cannot be recalled once issued, so sign-out became two independent
+ * actions: the server revokes the refresh token, and {@link clear} discards this
+ * copy. The access token stays technically valid until its stamped expiry. That
+ * residual window is exactly why the lifetime above is short, and why extending it
+ * would be a security decision rather than a convenience.
+ *
+ * MIGRATION: the credential store being replaced was reversible, which is the
+ * habit this file is built against. The legacy membership provider was registered
+ * to encrypt rather than hash (`Website/release.config:L245`,
+ * `passwordFormat="Encrypted"`) with retrieval enabled (L239), under a symmetric
+ * key committed to the repository in plain sight (L89-L93) — and
+ * `Website/development.config:L90` commits the identical key. Every stored password
+ * was therefore recoverable by anyone who could read the repository. Two rules
+ * follow and are held to absolutely: never commit a secret, and never log a
+ * credential. No member below writes to a log or raises an error carrying a token,
+ * and there is deliberately no `toString`, no `toJSON` and no debug accessor
+ * through which one could reach either.
+ *
+ * ## Boundaries — what this service refuses to decide
+ *
+ * Registered at the root so that one session is shared by the whole application,
+ * which is what keeps its readers from disagreeing about who is signed in. Those
+ * readers own the decisions deliberately absent here:
+ *
+ * - `core/interceptors/auth.interceptor.ts` attaches the bearer token and drives
+ *   renewal on a 401. This service does not know the header's name, never builds a
+ *   header, and performs no request, no retry and no refresh orchestration.
+ * - `core/services/auth.service.ts` owns the authentication calls and is the only
+ *   caller of {@link store} on a sign-in or a successful renewal.
+ * - `shared/directives/has-permission.directive.ts` reads {@link permissions} and
+ *   decides what to render. This service never evaluates an entitlement.
+ *
+ * Nothing here decodes a token. The value is an opaque string: no base64 step, no
+ * payload parse, no claim read. Identity arrives already modelled on the sign-in
+ * response and is stored as handed over, so a malformed or hostile token cannot
+ * influence anything this service reports.
  */
 @Injectable({ providedIn: 'root' })
 export class TokenStorageService {
@@ -72,8 +122,39 @@ export class TokenStorageService {
     () => this._session()?.refreshToken ?? null,
   );
 
-  /** The signed-in identity, or null when nobody is signed in. */
-  readonly currentUser = computed(() => this._session()?.user ?? null);
+  /**
+   * When {@link accessToken} expires, exactly as the server stamped it, or null
+   * when no session is held.
+   *
+   * A raw passthrough of the single expiry representation the sign-in contract
+   * publishes: an ISO 8601 instant in Coordinated Universal Time. It is handed back
+   * unread — no parse, no clock, no arithmetic, no `Date`, and no lapsed-or-valid
+   * verdict — so a caller that only wants to display or forward the value is not
+   * made to pay for a comparison it did not ask for, and cannot be handed a verdict
+   * computed against some earlier moment.
+   *
+   * The verdict is a separate question and lives in {@link isAccessTokenExpired},
+   * which takes the instant to compare against. That separation is the point: an
+   * expiry is a fact about the session and is stable, whereas whether it has passed
+   * is only true relative to a clock read, and the two must not be conflated behind
+   * one member.
+   */
+  readonly accessTokenExpiresAt: Signal<string | null> = computed(
+    () => this._session()?.expiresAtUtc ?? null,
+  );
+
+  /**
+   * The signed-in identity, or null when nobody is signed in.
+   *
+   * A snapshot taken when the credentials were issued, not a live view: an
+   * entitlement granted afterwards appears only once the session is renewed.
+   * Because the server re-authorises every request against stored state, a stale
+   * snapshot can only make a screen offer an affordance the API then refuses — it
+   * can never widen access, which is the correct direction for it to fail.
+   */
+  readonly currentUser: Signal<CurrentUser | null> = computed(
+    () => this._session()?.user ?? null,
+  );
 
   /**
    * Whether a session is held.

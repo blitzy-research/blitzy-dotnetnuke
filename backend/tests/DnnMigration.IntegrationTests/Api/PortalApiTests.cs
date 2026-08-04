@@ -83,6 +83,29 @@ public sealed class PortalApiTests
     /// </summary>
     private const string AuthorisationProblemTypePrefix = "urn:dnnmigration:error:auth.";
 
+    /// <summary>
+    /// Problem type carried by the refusal to remove an installation's only remaining portal.
+    /// </summary>
+    /// <remarks>
+    /// Spelled out rather than composed from the API's own builder, which is internal to that assembly. That
+    /// is the right way round for an integration suite: the type is part of the PUBLISHED contract, so
+    /// writing it here proves the value a client will actually branch on, whereas asking the producer to
+    /// build it would let both sides move together and assert nothing.
+    /// </remarks>
+    private const string LastRemainingProblemType = "urn:dnnmigration:error:portal.last_remaining";
+
+    /// <summary>Problem type carried by the refusal to bind an alias a portal already holds.</summary>
+    private const string DuplicateAliasProblemType = "urn:dnnmigration:error:portal.alias_duplicate";
+
+    /// <summary>
+    /// Problem type carried when a request that can only learn its tenant from the host name is refused
+    /// because the host name identified none.
+    /// </summary>
+    private const string TenantUnresolvedProblemType = "urn:dnnmigration:error:portal.tenant_unresolved";
+
+    /// <summary>The media type an RFC 7807 payload is served as.</summary>
+    private const string ProblemMediaType = "application/problem+json";
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="PortalApiTests"/> class.</summary>
@@ -193,7 +216,8 @@ public sealed class PortalApiTests
         // The domain paging type's own members, and the values it derives, must not appear at the top level.
         foreach (string leaked in new[] { "totalCount", "pageIndex", "pageSize", "isUnpaged", "pageCount" })
         {
-            root.TryGetProperty(leaked, out _).Should().BeFalse(
+            MemberNames(root).Should().NotContain(
+                leaked,
                 "'{0}' belongs to the domain paging type and must not be serialised at the top level",
                 leaked);
         }
@@ -252,10 +276,10 @@ public sealed class PortalApiTests
         JsonElement root = body.RootElement;
 
         root.ValueKind.Should().Be(JsonValueKind.Object);
-        root.TryGetProperty("items", out JsonElement items).Should().BeTrue();
+        JsonElement items = RequireMember(root, "items");
         items.ValueKind.Should().Be(JsonValueKind.Array);
 
-        root.TryGetProperty("meta", out JsonElement meta).Should().BeTrue();
+        JsonElement meta = RequireMember(root, "meta");
         meta.ValueKind.Should().Be(JsonValueKind.Object);
         meta.GetProperty("pageIndex").GetInt32().Should().Be(0);
         meta.GetProperty("pageSize").GetInt32().Should().Be(25);
@@ -302,7 +326,6 @@ public sealed class PortalApiTests
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    [Trait("Category", "Integration")]
     public async Task ListPortals_WithASortFieldBelongingToAnotherCollection_ReturnsBadRequest()
     {
         using HttpClient client = _fixture.CreateHostClient();
@@ -676,6 +699,25 @@ public sealed class PortalApiTests
     /// tenant: the alias that reaches it, the three stock roles and an administrator that can sign in.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the STATUS is the success signal, and that replaces a legacy defect rather than merely a
+    /// legacy convention. The sign-up screen called a creation routine that returned the new identifier and
+    /// signalled failure by returning -1 from its own exception handler, then tested the outcome with
+    /// <c>If intPortalId &lt;&gt; -1</c> (<c>Website/admin/Portal/Signup.ascx.vb</c> lines 273 to 280). But -1
+    /// is a perfectly legal <c>PortalID</c> in this schema - <c>Portals.PortalID</c> is
+    /// <c>IDENTITY (-1, 1)</c>, so it is the FIRST identifier an installation issues - which means the very
+    /// first portal ever created reported itself as a failure. The outcome is carried separately from the
+    /// value here, so no identifier can be mistaken for a failure and none is reserved.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy routine wrote across the portal, alias, role, page and module tables as a
+    /// sequence of independent statements with no transaction spanning them
+    /// (<c>Library/Components/Portal/PortalController.vb</c> line 980), so a failure part way through left a
+    /// half-built tenant behind. The companion facts below assert the replacement behaviour from the other
+    /// side: a refused create publishes nothing at all.
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task CreatePortal_ReturnsCreatedWithResolvableLocation()
     {
@@ -1658,17 +1700,20 @@ public sealed class PortalApiTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is asserted against the translator rather than over HTTP because the condition cannot be staged:
-    /// refusing the delete requires the installation to be down to a single portal, and the suite shares one
-    /// database with every other fact in it. Reaching the state would mean removing tenants those facts
-    /// depend on.
+    /// This asserts the TRANSLATION and nothing else. The refusal itself is exercised over HTTP by
+    /// <see cref="DeletePortal_WhileItIsTheOnlyPortal_ReturnsConflictAndKeepsIt"/>, which stages the
+    /// condition on a fixture of its own - an earlier revision of this file argued the condition could not be
+    /// staged at all, and that argument is superseded. What remains worth pinning here is narrower and
+    /// cheaper: the mapping from the failure code to the status lives in a SHARED table rather than in a
+    /// branch inside the delete action, so this reads the table directly. The two facts fail for different
+    /// reasons - this one when the table entry is lost, the other one when the rule itself is - which is why
+    /// keeping both is not duplication.
     /// </para>
     /// <para>
-    /// What could regress here is precise and worth pinning: the endpoint no longer names the failure code at
-    /// all, so if the shared table stopped recognising it the refusal would silently become <c>400</c> -
-    /// telling a caller to correct a request that is not correctable. The general mechanism is already
-    /// exercised over HTTP by the duplicate-alias and duplicate-name conflicts above; this pins the one
-    /// entry those cannot reach.
+    /// What could regress here is precise: the endpoint no longer names the failure code at all, so if the
+    /// shared table stopped recognising it the refusal would silently become <c>400</c> - telling a caller to
+    /// correct a request that is not correctable. Reading the table costs no database and no host, so it
+    /// reports that specific regression immediately rather than only as part of a longer end-to-end fact.
     /// </para>
     /// </remarks>
     [Fact]
@@ -1680,6 +1725,15 @@ public sealed class PortalApiTests
 
     /// <summary>A delete against an unknown identifier answers <c>404 Not Found</c>.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy removal reported an unknown portal as a SUCCESS. It looked the portal up, and
+    /// when the lookup produced nothing it fell through to the end of the routine and returned the empty
+    /// string - which was its success value, the only non-empty message it ever produced being the
+    /// last-portal refusal. A caller therefore could not tell "removed" from "there was nothing to remove",
+    /// and a mistyped identifier reported a clean removal. That is corrected rather than reproduced, and it
+    /// matters more than it looks: an operator who believed a tenant had been decommissioned when it had not
+    /// is left with a live portal they think is gone.
+    /// </remarks>
     [Fact]
     public async Task DeletePortal_WhenUnknown_ReturnsNotFound()
     {
@@ -1984,6 +2038,1610 @@ public sealed class PortalApiTests
         all!.Select(item => item.HttpAlias).Should().Contain(ApiTestFixture.TestHost);
     }
 
+    /// <summary>
+    /// The two identifier values the legacy sentinel table also used for "absent" survive the wire as
+    /// ordinary identifiers: the portal is addressed by a NEGATIVE identifier and answers with it, and the
+    /// administrator role it names is identifier ZERO.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ASSERTED ON THE RAW JSON, because the whole failure mode is a member that is ABSENT or NULL rather
+    /// than one that is wrong. A typed read cannot see the difference - a missing <c>portalId</c> binds to
+    /// zero and a missing <c>administratorRoleId</c> binds to null, and both would then be compared against
+    /// an expectation that a suite could easily write to match.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is the sentinel collision the migration plan calls Rule T7, and it is a genuine
+    /// collision rather than a theoretical one. <c>Library/Components/Shared/Null.vb</c> lines 41 to 43
+    /// return -1 for an absent integer, while <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c>
+    /// line 77 declares <c>Portals.PortalID</c> as <c>IDENTITY (-1, 1)</c>, so -1 is simultaneously the
+    /// legacy "no value" marker and the first portal an installation creates. Line 115 of the same script
+    /// declares <c>Roles.RoleID</c> as <c>IDENTITY (0, 1)</c>, so zero collides in the same way. Serialising
+    /// with a condition that drops nulls or defaults would erase exactly these two facts, which is why the
+    /// shared serialiser settings pin the ignore condition to never and why this fact reads the text.
+    /// </para>
+    /// <para>
+    /// MIGRATION: a fourth meaning was loaded onto -1 by <c>PortalAliasController.vb</c> line 87, where the
+    /// unscoped alias listing passes -1 to the by-portal lookup as an ALL PORTALS wildcard. Nothing in this
+    /// suite treats -1 as absent, as a wildcard, or as a failure marker; it is an identifier.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Portal_SentinelValuedIdentifiers_SurviveTheWireAsIdentifiers()
+    {
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        _fixture.Seed.PortalId.Should().BeLessThan(1,
+            "the seeded portal takes the first value of an IDENTITY(-1, 1) column, so this suite is "
+            + "addressing a portal whose identifier the legacy sentinel table also used for 'absent'");
+
+        using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            "a negative identifier addresses a portal rather than reporting one that is missing");
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        JsonElement portal = document.RootElement.GetProperty("data");
+
+        JsonElement identifier = RequireMember(portal, "portalId");
+        identifier.ValueKind.Should().Be(
+            JsonValueKind.Number,
+            "the identifier must travel even when its value is the legacy absent-integer sentinel");
+        identifier.GetInt32().Should().Be(_fixture.Seed.PortalId);
+
+        JsonElement roleId = RequireMember(portal, "administratorRoleId");
+        roleId.ValueKind.Should().Be(
+            JsonValueKind.Number,
+            "the administrator role identifier must travel even when its value is zero");
+        roleId.GetInt32().Should().Be(_fixture.Seed.AdministratorRoleId);
+        _fixture.Seed.AdministratorRoleId.Should().Be(0,
+            "the seeded Administrators role takes the first value of an IDENTITY(0, 1) column, which is "
+            + "what makes the assertion above a sentinel test rather than an arbitrary one");
+    }
+
+    /// <summary>
+    /// A text member submitted as the EMPTY STRING comes back as the empty string. It is neither converted
+    /// to null nor dropped from the payload.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the other half of Rule T7, and the sharper half. Every other sentinel in
+    /// <c>Library/Components/Shared/Null.vb</c> is a distinguished value, but lines 71 to 73 return the
+    /// EMPTY STRING for an absent string, so the legacy contract could not tell a stored null from a stored
+    /// empty string at all - both arrived as <c>""</c>. The boundary here keeps them apart, which means the
+    /// empty string has to survive as itself. A serialiser configured to drop nulls, or to drop defaults,
+    /// would turn a caller's deliberate "clear this field" into a member that never appears, and the next
+    /// read would report the previous value as though the write had not happened.
+    /// </para>
+    /// <para>
+    /// Five members are exercised rather than one because they reach the row by different routes - three are
+    /// plain descriptive columns and two belong to the payment block - and a mapper that special-cased one
+    /// group would otherwise pass. The RAW JSON is read for the same reason as the fact above: a member that
+    /// was dropped binds to null on a typed read and null is indistinguishable from a stored null.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Portal_EmptyStringMembers_SurviveAsEmptyStringsAndAreNeverDropped()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(created);
+        request.PortalName = created.PortalName;
+        request.Description = string.Empty;
+        request.KeyWords = string.Empty;
+        request.FooterText = string.Empty;
+        request.PaymentProcessor = string.Empty;
+        request.ProcessorUserId = string.Empty;
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string[] cleared = ["description", "keyWords", "footerText", "paymentProcessor", "processorUserId"];
+
+        using JsonDocument written = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        AssertEmptyStrings(written.RootElement.GetProperty("data"), cleared);
+
+        // Read back through a second request, because a representation echoed from the request object would
+        // prove nothing about what was stored.
+        using HttpResponseMessage reread = await client.GetAsync(PortalRoute(created.PortalId));
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument persisted = JsonDocument.Parse(await reread.Content.ReadAsStringAsync());
+        AssertEmptyStrings(persisted.RootElement.GetProperty("data"), cleared);
+
+        static void AssertEmptyStrings(JsonElement portal, IReadOnlyList<string> members)
+        {
+            foreach (string member in members)
+            {
+                JsonElement value = RequireMember(portal, member);
+                value.ValueKind.Should().Be(JsonValueKind.String,
+                    "'{0}' must remain a string rather than becoming null", member);
+                value.GetString().Should().BeEmpty(
+                    "'{0}' was submitted as the empty string and must be reported as the empty string", member);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The hosting charge and the three allowances travel as JSON NUMBERS and are present even when every
+    /// one of them is nought.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the hosting charge is the most misread column in this table and the migration plan cites
+    /// its baseline declaration - <c>[HostFee] [nvarchar] (10) NULL</c> at
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> line 89, a fee stored
+    /// as free text, seeded with the empty string at line 7125. That is the BASELINE and not the schema this
+    /// application binds to. <c>03.01.01.SqlDataProvider</c> line 1118 converts the column with
+    /// <c>ALTER COLUMN [HostFee] [money] NOT NULL</c> and line 1129 adds a <c>DEFAULT (0)</c> constraint, and
+    /// the terminal procedures declare the parameter <c>money</c> (<c>04.04.00.SqlDataProvider</c> lines 97
+    /// and 319). The migration plan's own rule is that entity configurations bind to the cumulative terminal
+    /// schema and never to the baseline alone, so the value is a number here and asserting that it travelled
+    /// as the empty string would pin a contract two schema versions out of date.
+    /// </para>
+    /// <para>
+    /// MIGRATION: what does survive from that history is the reason the legacy grid rendered an empty cell.
+    /// <c>Website/admin/Portal/portals.ascx</c> line 47 binds the column with
+    /// <c>DataFormatString="{0:0.00}"</c>, a NUMERIC format applied to what was then a string value, and a
+    /// numeric format string is silently ignored for a string - so an installation still carrying the
+    /// baseline type rendered nothing rather than "0.00". Neither spelling is reproduced: the value is
+    /// published unformatted, so it is neither the preformatted text the grid asked for nor the empty cell
+    /// the grid actually produced, and a client formats it for display.
+    /// </para>
+    /// <para>
+    /// The four members are asserted TOGETHER because they share one failure mode. All four are nought on a
+    /// freshly created portal, so a serialiser that omitted defaults would drop all four at once and a
+    /// client would be unable to distinguish "no charge and no limits" from "this server did not say".
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Portal_HostingChargeAndAllowances_TravelAsNumbersEvenWhenNought()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        PortalDetailDto created = await CreatePortalAsync(host);
+
+        using HttpResponseMessage response = await host.GetAsync(PortalRoute(created.PortalId));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        using JsonDocument document = JsonDocument.Parse(body);
+        JsonElement portal = document.RootElement.GetProperty("data");
+
+        foreach (string member in new[] { "hostFee", "hostSpace", "pageQuota", "userQuota" })
+        {
+            JsonElement value = RequireMember(portal, member);
+            value.ValueKind.Should().Be(JsonValueKind.Number,
+                "'{0}' must be published as a number rather than as text or as null", member);
+            value.GetDecimal().Should().Be(0m,
+                "a freshly created portal carries no charge and no allowances");
+        }
+
+        body.Should().NotContain("\"hostFee\":\"",
+            "the charge must not be published as a string, whether raw or preformatted");
+        body.Should().NotContain("\"hostFee\":\"0.00\"",
+            "the legacy grid's numeric display format is a presentation concern and is not applied here");
+    }
+
+    /// <summary>
+    /// An identifier of ZERO is treated as an identifier. The route accepts it, the lookup runs, and the
+    /// answer is a resource outcome rather than a rejection of the value itself.
+    /// </summary>
+    /// <param name="portalId">The sentinel-valued identifier to address.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both values the legacy sentinel table overloads are driven through the ROUTE SEGMENT position here;
+    /// the fact below drives the same two values through the REQUEST BODY position, because the two are
+    /// bound by different machinery and a defect in one would not show up in the other.
+    /// </para>
+    /// <para>
+    /// The assertion is deliberately "not a rejection" rather than a fixed status. Which portals exist at
+    /// the moment this runs depends on what the rest of the collection has created and removed, so pinning
+    /// <c>200</c> or <c>404</c> would make the fact order-dependent and it would fail for a reason that has
+    /// nothing to do with sentinels. What must never happen is the failure this guards: a zero or negative
+    /// identifier being read as "no identifier supplied" and answered with a bad request, or a route
+    /// constraint refusing to bind it at all.
+    /// </para>
+    /// <para>
+    /// Declared as a theory over two values rather than as two facts because the body is identical; the
+    /// parameter is a plain <c>int</c> and both inline values are real integers, so nothing here relies on
+    /// a null literal standing in for a missing value.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public async Task GetPortal_WithASentinelValuedIdentifierInTheRoute_IsAnsweredAsALookup(int portalId)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(PortalRoute(portalId));
+
+        response.StatusCode.Should().BeOneOf(
+            [HttpStatusCode.OK, HttpStatusCode.NotFound],
+            "identifier {0} must be bound and looked up, never rejected as though no identifier had been "
+            + "supplied - it is a legal value of an IDENTITY column this schema seeds below one",
+            portalId);
+    }
+
+    /// <summary>
+    /// A sentinel-valued identifier in the REQUEST BODY is compared against the route for equality, and a
+    /// disagreement is reported against the <c>portalId</c> field.
+    /// </summary>
+    /// <param name="bodyPortalId">The identifier to submit in the body.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The point is that zero is not silently forgiven. An update is a whole-row replacement whose body
+    /// carries the identifier as a plain integer, so a body that OMITS it binds to zero - and if zero were
+    /// read as "not supplied" the reconciliation would be skipped and a caller could update one portal
+    /// through another portal's route. The companion fact below submits nothing at all and proves the same
+    /// refusal, which is what closes that hole from both directions.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public async Task UpdatePortal_WithASentinelValuedBodyIdentifier_IsRefusedAgainstAnotherPortalsRoute(
+        int bodyPortalId)
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        created.PortalId.Should().NotBe(bodyPortalId,
+            "the created portal must differ from the submitted identifier for this to be a mismatch");
+
+        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(created);
+        request.PortalName = created.PortalName;
+        request.PortalId = bodyPortalId;
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            "identifier {0} in the body names a different portal from the route and must be reported, "
+            + "not absorbed",
+            bodyPortalId);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+        errors.Keys.Should().Contain(
+            "portalId",
+            "the caller is told which field disagreed rather than only that something did");
+    }
+
+    /// <summary>
+    /// An update whose body carries NO identifier at all is refused, because the value it defaults to -
+    /// zero - is a real portal identifier in this schema rather than a marker for "not supplied".
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy save path had no equivalent hazard because the identifier never travelled in a
+    /// submitted form at all - <c>Website/admin/Portal/SiteSettings.ascx.vb</c> line 235 took it from the
+    /// request's own query string and, for a caller that was not a host account, IGNORED it and substituted
+    /// the ambient portal. A REST route cannot substitute, because the identifier is the resource, so the
+    /// two identifiers are reconciled instead and a disagreement is reported.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_WithNoBodyIdentifier_IsRefusedBecauseZeroIsARealIdentifier()
+    {
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            PortalRoute(_fixture.Seed.PortalId),
+            new { portalName = "submitted with no identifier" },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+        errors.Keys.Should().Contain("portalId");
+
+        // Nothing was applied: the refusal happens before the write, so the stored name is untouched.
+        using HttpResponseMessage reread = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalDetailDto persisted = await ReadDetailAsync(reread);
+        persisted.PortalName.Should().NotBe("submitted with no identifier");
+    }
+
+
+    /// <summary>
+    /// The total accompanying a page is never the legacy unpaged sentinel, on a page that holds rows and on
+    /// one that holds none.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the legacy listing reported its total through a <c>ByRef</c> argument -
+    /// <c>GetPortalsByName(Filter + "%", CurrentPage - 1, PageSize, TotalRecords)</c> at
+    /// <c>Website/admin/Portal/Portals.ascx.vb</c> line 142 - and the same -1 that
+    /// <c>Library/Components/Shared/Null.vb</c> lines 41 to 43 return for an absent integer was passed as an
+    /// index, a size and a total alike to mean "everything". The paging contract replaces that with a total
+    /// and an explicit unpaged factory, so -1 can no longer appear in any of the three positions. A client
+    /// that divided the total to derive a page count would produce nonsense from a negative one, which is
+    /// why this is asserted rather than assumed.
+    /// </remarks>
+    [Fact]
+    public async Task ListPortals_ReportsANonNegativeTotalOnAPopulatedAndOnAnEmptyPage()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage populated = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
+        populated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<PortalListItemDto>? page = await populated.Content
+            .ReadFromJsonAsync<PagedEnvelope<PortalListItemDto>>(ApiTestFixture.Json);
+        page.Should().NotBeNull();
+        page!.Meta.TotalCount.Should().BeGreaterThan(0);
+        page.Meta.PageSize.Should().BeGreaterThan(0,
+            "a page size of zero would hand a dividing client a zero divisor");
+        page.Meta.PageIndex.Should().BeGreaterThanOrEqualTo(0);
+
+        using HttpResponseMessage empty = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=25&name=zzz-nothing-bears-this-name", UriKind.Relative));
+        empty.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<PortalListItemDto>? emptyPage = await empty.Content
+            .ReadFromJsonAsync<PagedEnvelope<PortalListItemDto>>(ApiTestFixture.Json);
+        emptyPage.Should().NotBeNull();
+        emptyPage!.Items.Should().BeEmpty();
+        emptyPage.Meta.TotalCount.Should().Be(0,
+            "an empty result reports a total of nought and never the legacy -1");
+        emptyPage.Meta.TotalPages.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A listed row carries exactly the columns the legacy grid rendered, and nothing else.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The eight members are the eight data columns declared in <c>Website/admin/Portal/portals.ascx</c>, in
+    /// the order the grid declared them: the identifier at line 23, the site title at line 30, the alias list
+    /// at line 37, the account count at line 44, the page count at line 45, the disc-space allowance at
+    /// line 46, the hosting charge at line 47 and the expiry at line 48. The row is the LIST projection and
+    /// is deliberately narrower than the detail representation, which is what keeps a grid read cheap.
+    /// </para>
+    /// <para>
+    /// Asserted on the RAW JSON and as an exact set, because both directions of drift matter. A member that
+    /// disappeared would break a grid that renders it, and a member that appeared would quietly widen a list
+    /// projection into a detail one - and a typed read cannot see either, since it ignores what it does not
+    /// declare and defaults what is missing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListPortals_PublishesExactlyTheColumnsTheLegacyGridRendered()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=1", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        JsonElement items = document.RootElement.GetProperty("items");
+        items.GetArrayLength().Should().BeGreaterThan(0, "the seeded portal is always listed");
+
+        JsonElement row = items[0];
+        row.EnumerateObject().Select(member => member.Name).Should().BeEquivalentTo(
+            new[]
+            {
+                "portalId", "portalName", "aliases", "users", "pages", "hostSpace", "hostFee", "expiryDate",
+            },
+            "a listed row carries the legacy grid's eight columns and neither loses one nor gains one");
+
+        row.GetProperty("aliases").ValueKind.Should().Be(JsonValueKind.Array,
+            "the alias column rendered a portal's whole alias list, so it travels as a list");
+    }
+
+    /// <summary>
+    /// The name filter matches a fragment found ANYWHERE in the site title, and a caller's wildcard
+    /// characters are matched literally rather than acting as a pattern.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS IS A DELIBERATE WIDENING AND IT IS RECORDED HERE RATHER THAN ABSORBED. The legacy
+    /// filter was a PREFIX match assembled at the call site: <c>Website/admin/Portal/Portals.ascx.vb</c>
+    /// line 142 appends a single trailing wildcard - <c>GetPortalsByName(Filter + "%", ...)</c> - and the
+    /// surviving procedure applies it unchanged with <c>WHERE PortalName LIKE @NameToMatch</c>
+    /// (<c>Website/Providers/DataProviders/SqlDataProvider/04.04.00.SqlDataProvider</c> lines 245 to 269).
+    /// A mid-string fragment therefore matched nothing in the legacy grid, and it matches here. The change
+    /// is a widening rather than a loss - every title a prefix match returned is also returned by a
+    /// containment match - so no legacy result disappears, and this fact asserts the behaviour the endpoint
+    /// actually has instead of pinning one it does not.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the same change closes a real hazard in the legacy call, and that is the second half of
+    /// this fact. Because the caller's own text was concatenated into the pattern, a filter containing
+    /// <c>%</c> or <c>_</c> acted as a WILDCARD: a single per cent sign matched every portal in the
+    /// installation. The fragment is now a value rather than a pattern, so those characters match
+    /// themselves, which is asserted below by filtering on a per cent sign and expecting nothing back.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListPortals_NameFilter_MatchesAFragmentAnywhereAndTreatsWildcardsAsLiterals()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        // A fragment taken from the MIDDLE of the seeded portal's name: it is neither a prefix of the name
+        // nor a suffix of it, so only a containment match can find it.
+        const string interior = "tegration Por";
+        IntegrationSeed.PortalName.Should().Contain(interior);
+        IntegrationSeed.PortalName.Should().NotStartWith(interior);
+
+        PagedEnvelope<PortalListItemDto> matched = await FilterByNameAsync(client, interior);
+        matched.Items.Select(item => item.PortalId).Should().Contain(
+            _fixture.Seed.PortalId,
+            "an interior fragment matches, which the legacy prefix filter would not have done");
+
+        PagedEnvelope<PortalListItemDto> wildcard = await FilterByNameAsync(client, "%");
+        wildcard.Items.Should().BeEmpty(
+            "a per cent sign is data rather than a pattern, so it matches no title that does not contain one");
+        wildcard.Meta.TotalCount.Should().Be(0);
+
+        PagedEnvelope<PortalListItemDto> underscore = await FilterByNameAsync(client, "_ntegration");
+        underscore.Items.Should().BeEmpty(
+            "an underscore matches itself rather than standing in for any single character");
+    }
+
+    /// <summary>
+    /// A delete is REFUSED with <c>409 Conflict</c> while only one portal remains, and the portal it refused
+    /// to remove is still there afterwards.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// STAGED ON A HOST OF ITS OWN, and that is the whole reason this fact can exist. The condition is
+    /// "the installation is down to one portal", which cannot be reached on the shared database without
+    /// removing tenants the rest of the collection depends on. A second fixture provisions its OWN throwaway
+    /// database and seeds exactly one portal, so the condition holds there by construction and the shared
+    /// database is never touched. The refusal itself is non-destructive by definition - it is decided before
+    /// anything is removed - so the isolated portal survives it, which is asserted below.
+    /// </para>
+    /// <para>
+    /// The environment override wrapping the isolated fixture is not decoration. A fixture publishes its
+    /// database and signing key by SETTING PROCESS ENVIRONMENT VARIABLES, because the composition root reads
+    /// configuration while it is composing services and nothing contributed later would arrive in time. A
+    /// second fixture therefore overwrites the shared fixture's variables for the remainder of the run, and
+    /// any host built afterwards would compose against a database that had already been dropped. Opening a
+    /// scope over the shared configuration first, and letting it restore on the way out, is what confines the
+    /// second fixture's side effect to this method.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy removal reported outcomes by returning a MESSAGE STRING, and the only non-empty
+    /// message it ever produced was the localised "LastPortal" wording, raised when the portal count had
+    /// fallen to one or below. An empty string meant success. Two consequences are reproduced deliberately
+    /// and one is not: the refusal survives as a conflict carrying a named code, and the wording survives as
+    /// the detail; but a caller no longer has to distinguish success from failure by testing a string for
+    /// emptiness, which is what made the sibling defect below possible.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy removal also deleted the portal's home directory beneath a hard-coded
+    /// <c>"Portals\"</c> path. That work is deliberately dropped - the path separator alone cannot work on
+    /// the Linux images this solution ships - so a delete here releases database references only and this
+    /// suite asserts no file-system effect.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeletePortal_WhileItIsTheOnlyPortal_ReturnsConflictAndKeepsIt()
+    {
+        using (ApiTestFixture.OverrideEnvironment(_fixture.HostConfiguration()))
+        {
+            ApiTestFixture isolated = new();
+            IAsyncLifetime lifetime = isolated;
+
+            try
+            {
+                await lifetime.InitializeAsync();
+
+                using HttpClient client = isolated.CreateHostClient();
+
+                using HttpResponseMessage listed = await client.GetAsync(
+                    new Uri("/api/v1/portals?pageIndex=0&pageSize=25", UriKind.Relative));
+                listed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+                PagedEnvelope<PortalListItemDto>? page = await listed.Content
+                    .ReadFromJsonAsync<PagedEnvelope<PortalListItemDto>>(ApiTestFixture.Json);
+                page.Should().NotBeNull();
+                page!.Meta.TotalCount.Should().Be(1,
+                    "the isolated installation seeds exactly one portal, which is the condition under test");
+
+                using HttpResponseMessage refused = await client.DeleteAsync(
+                    new Uri(
+                        $"/api/v1/portals/{ApiTestFixture.Route(isolated.Seed.PortalId)}",
+                        UriKind.Relative));
+
+                refused.StatusCode.Should().Be(HttpStatusCode.Conflict,
+                    "an installation with no portal is unreachable, so the last one may not be removed");
+
+                ProblemDetails? problem = await refused.Content
+                    .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+                problem.Should().NotBeNull();
+                problem!.Status.Should().Be(StatusCodes.Status409Conflict);
+                problem.Type.Should().Be(
+                    LastRemainingProblemType,
+                    "a client branches on the named code rather than on the wording or the status alone");
+                problem.Detail.Should().NotBeNullOrWhiteSpace();
+
+                using HttpResponseMessage stillThere = await client.GetAsync(
+                    new Uri(
+                        $"/api/v1/portals/{ApiTestFixture.Route(isolated.Seed.PortalId)}",
+                        UriKind.Relative));
+                stillThere.StatusCode.Should().Be(HttpStatusCode.OK,
+                    "the refusal is decided before anything is removed, so nothing was removed");
+            }
+            finally
+            {
+                // The lifetime member is what releases the throwaway database; the asynchronous disposal
+                // inherited from the host factory only shuts the host down and would leak it.
+                await lifetime.DisposeAsync();
+            }
+        }
+
+        // The shared host is still serving from the shared database, which proves the isolation held.
+        using HttpClient shared = _fixture.CreateHostClient();
+        using HttpResponseMessage afterwards = await shared.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+        afterwards.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// A caller-supplied correlation identifier comes back on the response exactly once, and one is
+    /// generated when the caller supplies none.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both halves are asserted together because the failure modes are opposite and each would hide the
+    /// other. A handler that always generated would discard the caller's value while still answering with a
+    /// header, and a handler that only echoed would leave an unstamped request untraceable.
+    /// </para>
+    /// <para>
+    /// The cardinality matters as much as the value. The header is SET rather than appended, so a response
+    /// carries one identifier; two would leave a log reader unable to say which request they were holding,
+    /// and a client reading the first value would disagree with a proxy reading the last.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CorrelationId_IsEchoedWhenSuppliedAndGeneratedWhenNot()
+    {
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        string supplied = "portal-suite-" + Suffix();
+
+        using var stamped = new HttpRequestMessage(HttpMethod.Get, PortalRoute(_fixture.Seed.PortalId));
+        ApiTestFixture.WithCorrelationId(stamped, supplied);
+
+        using HttpResponseMessage echoed = await client.SendAsync(stamped);
+
+        echoed.StatusCode.Should().Be(HttpStatusCode.OK);
+        IReadOnlyList<string> answered = echoed.Headers
+            .Where(header => string.Equals(
+                header.Key,
+                ApiTestFixture.CorrelationIdHeader,
+                StringComparison.OrdinalIgnoreCase))
+            .SelectMany(header => header.Value)
+            .ToList();
+
+        answered.Should().ContainSingle(
+            "every response carries the correlation header, and it is set rather than appended")
+            .Which.Should().Be(supplied, "a caller's own identifier is honoured rather than replaced");
+
+        using HttpResponseMessage unstamped = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+
+        unstamped.StatusCode.Should().Be(HttpStatusCode.OK);
+        ApiTestFixture.ReadCorrelationId(unstamped).Should().NotBeNullOrWhiteSpace(
+            "a request that supplied no identifier is still traceable");
+    }
+
+    /// <summary>
+    /// A correlation identifier is present on a FAILED request's problem document, which is the response a
+    /// caller is most likely to be reporting.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the case the header exists for, and the one an implementation is most likely to lose: the
+    /// header is registered on the response before the pipeline continues, so a failure raised further in -
+    /// or an error payload written by a different component - still carries it. A stamping step that ran
+    /// after the endpoint would leave exactly the responses a caller quotes with nothing to quote.
+    /// </remarks>
+    [Fact]
+    public async Task CorrelationId_IsPresentOnAProblemDocument()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        string supplied = "portal-failure-" + Suffix();
+
+        using var stamped = new HttpRequestMessage(
+            HttpMethod.Get,
+            new Uri($"/api/v1/portal-aliases/{Route(UnknownPortalId)}", UriKind.Relative));
+        ApiTestFixture.WithCorrelationId(stamped, supplied);
+
+        using HttpResponseMessage response = await client.SendAsync(stamped);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        ApiTestFixture.ReadCorrelationId(response).Should().Be(
+            supplied,
+            "the response a caller reports must carry the identifier they can quote");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// An inbound correlation identifier that is oversized, blank or carries control characters is REPLACED
+    /// with a generated one, and the request itself is still served.
+    /// </summary>
+    /// <param name="hostile">The header value to send.</param>
+    /// <param name="description">What makes the value unusable, quoted in the failure message.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The specific risk is log forging. The identifier is written into structured log events, so a value
+    /// carrying a line break could inject a whole fabricated entry, and an unbounded value could bloat every
+    /// event a request produces. Both are handled by DISCARDING the value rather than by sanitising it, which
+    /// is the safer choice: there is no partially-trusted remnant left to reason about.
+    /// </para>
+    /// <para>
+    /// The status assertion is the other half and is easy to get wrong in the opposite direction. A hostile
+    /// header is not a malformed request - the caller may not even have set it - so refusing the request with
+    /// a bad request would turn a proxy's stray header into an outage. The request is served and the header
+    /// is quietly replaced.
+    /// </para>
+    /// <para>
+    /// The values are added without client-side validation, because the framework's own header validation
+    /// would otherwise refuse to send exactly the values under test and the request would never reach the
+    /// pipeline this fact is about.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("with-a-tab\tand-more", "a control character that could forge a log entry")]
+    [InlineData("   ", "whitespace, which identifies nothing")]
+    public async Task CorrelationId_ThatCannotBeTrusted_IsReplacedAndTheRequestIsStillServed(
+        string hostile,
+        string description)
+    {
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, PortalRoute(_fixture.Seed.PortalId));
+        request.Headers.TryAddWithoutValidation(ApiTestFixture.CorrelationIdHeader, hostile);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a header carrying {0} is not the caller's request being malformed",
+            description);
+
+        string? answered = ApiTestFixture.ReadCorrelationId(response);
+        answered.Should().NotBeNullOrWhiteSpace();
+        answered.Should().NotBe(hostile, "a value carrying {0} must not be echoed back", description);
+    }
+
+    /// <summary>
+    /// A correlation identifier longer than the accepted bound is replaced rather than echoed or truncated.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Separated from the theory above because the value has to be CONSTRUCTED rather than written inline: a
+    /// long literal in an attribute would be unreadable and would hide the one thing that matters about it,
+    /// which is that it exceeds the bound. Truncation is asserted against as well as echoing, because a
+    /// truncated value is still caller-controlled text and still forges just as well.
+    /// </remarks>
+    [Fact]
+    public async Task CorrelationId_LongerThanTheAcceptedBound_IsReplacedRatherThanTruncated()
+    {
+        using HttpClient client = _fixture.CreateAdministratorClient();
+
+        string oversized = new('x', 512);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, PortalRoute(_fixture.Seed.PortalId));
+        request.Headers.TryAddWithoutValidation(ApiTestFixture.CorrelationIdHeader, oversized);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        string? answered = ApiTestFixture.ReadCorrelationId(response);
+        answered.Should().NotBeNullOrWhiteSpace();
+        answered.Should().NotBe(oversized);
+        oversized.Should().NotStartWith(answered!,
+            "a truncated prefix of the caller's value is still the caller's text and must not be adopted");
+    }
+
+    /// <summary>
+    /// A refusal decided by the authorisation pipeline is served as RFC 7807 under the
+    /// <c>application/problem+json</c> media type, and names the reason as a problem type.
+    /// </summary>
+    /// <param name="authenticated">Whether the caller presents a token at all.</param>
+    /// <param name="expectedStatus">The status the caller is answered with.</param>
+    /// <param name="expectedType">The problem type the caller branches on.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE MEDIA TYPE IS ASSERTED HERE AND NOT EVERYWHERE, and the distinction is measured rather than
+    /// assumed. Refusals written by the authorisation result handler set the RFC 7807 media type explicitly,
+    /// so it is part of their contract and pinning it protects it. A problem document produced by a
+    /// controller action is negotiated as <c>application/json</c> by the framework instead; that deviation is
+    /// recorded in the migration notes rather than pinned by a test, because asserting the value the
+    /// framework currently emits would cement it and make a later correction look like a regression.
+    /// </para>
+    /// <para>
+    /// Both refusals are asserted in one theory because they are the same mechanism reached from two states,
+    /// and because the pair is what proves the vocabulary is per-reason: an implementation that answered both
+    /// with one type would leave a client unable to tell "prove who you are" from "you may not do this".
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(false, HttpStatusCode.Unauthorized, "urn:dnnmigration:error:auth.unauthenticated")]
+    [InlineData(true, HttpStatusCode.Forbidden, "urn:dnnmigration:error:auth.not_permitted")]
+    public async Task AuthorizationRefusal_IsServedAsProblemJsonNamingItsReason(
+        bool authenticated,
+        HttpStatusCode expectedStatus,
+        string expectedType)
+    {
+        using HttpClient client = authenticated
+            ? _fixture.CreateClientFor(
+                _fixture.Seed.MemberUserId,
+                IntegrationSeed.MemberUserName,
+                _fixture.Seed.PortalId)
+            : _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=1", UriKind.Relative));
+
+        response.StatusCode.Should().Be(expectedStatus);
+        response.Content.Headers.ContentType?.MediaType.Should().Be(
+            ProblemMediaType,
+            "an authorisation refusal declares itself as RFC 7807 rather than as ordinary JSON");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Be(expectedType);
+        problem.Status.Should().Be((int)expectedStatus);
+        problem.Title.Should().NotBeNullOrWhiteSpace();
+        problem.Detail.Should().NotBeNullOrWhiteSpace();
+
+        // MIGRATION: the legacy equivalent of this refusal was not a status at all. Every in-scope admin
+        // screen guarded itself with PortalSecurity.IsInRoles and, on failure, issued
+        // Response.Redirect(NavigateURL("Access Denied"), True) - a 302 to a rendered page, which an API
+        // client would follow and then parse as though it were the resource. A plain status is answered
+        // instead, so nothing here may be a redirect.
+        problem.Status.Should().NotBe(StatusCodes.Status302Found);
+        response.Headers.Location.Should().BeNull(
+            "a refusal is reported by status rather than by redirecting to a rendered page");
+    }
+
+    /// <summary>
+    /// A validation failure names the OFFENDING FIELDS in its <c>errors</c> dictionary and reproduces the
+    /// validator's own wording.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Asserting the status alone would be nearly worthless here: a bad request tells a caller that
+    /// something is wrong and an <c>errors</c> dictionary tells them WHICH field, which is what a form binds
+    /// its messages to. The keys are therefore asserted as an exact set, so that a rule which stopped
+    /// reporting - or one that reported under a renamed key - fails rather than degrading quietly.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the wording travels byte for byte from the validators, which took it from the legacy
+    /// screens' own resources, so a message a user recognised in the legacy console is the message they see
+    /// now. That is why nothing here reformats or re-cases the text - the assertion is on the exact string.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_WithAnEmptyBody_NamesEveryOffendingFieldInTheErrorsDictionary()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            PortalsRoute,
+            new { },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+
+        errors.Keys.Should().BeEquivalentTo(
+            new[]
+            {
+                "PortalAlias",
+                "TemplateFile",
+                "AdministratorFirstName",
+                "AdministratorLastName",
+                "AdministratorUsername",
+                "AdministratorPassword",
+                "AdministratorEmail",
+            },
+            "an empty create reports every field the legacy sign-up screen required, by name");
+
+        errors.Values.Should().OnlyContain(messages => messages.Length > 0,
+            "a named field without a message tells a caller nothing");
+        errors["TemplateFile"].Should().ContainSingle()
+            .Which.Should().Be("Please select a template file",
+                "the validator's wording reaches the caller unedited");
+    }
+
+    /// <summary>
+    /// A request whose host name is only a SUBSTRING of a configured alias resolves no tenant, and the
+    /// request is still served rather than being refused or rewritten.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THIS IS THE DEFECT THE EXACT-MATCH RESOLVER EXISTS TO CLOSE, and it is a behavioural
+    /// improvement recorded here rather than smuggled in. The legacy resolver matched the stored alias column
+    /// against a pattern padded on BOTH sides -
+    /// <c>where PortalAlias like '%' + @PortalAlias + '%'</c> at
+    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> line 4582 - and then
+    /// took <c>min(PortalID)</c> of whatever matched (line 4580). Because <c>Portals.PortalID</c> is
+    /// <c>IDENTITY(-1, 1)</c>, "whatever matched" was resolved in favour of the numerically lowest portal,
+    /// which is the oldest one. A host name sitting inside another portal's alias therefore resolved to the
+    /// WRONG TENANT, and the tie was broken by identifier order rather than by correctness. The product
+    /// abandoned the procedure outright - it is dropped at <c>02.02.00.SqlDataProvider</c> line 267 and no
+    /// later script recreates it.
+    /// </para>
+    /// <para>
+    /// The migration discipline is normally to annotate a discovered defect rather than fix it. This is the
+    /// documented exception: carrying a cross-tenant mis-resolution into new code would reproduce a real
+    /// security fault, not merely an oddity.
+    /// </para>
+    /// <para>
+    /// PASS-THROUGH IS THE SUBTLE HALF, and it is the assertion most easily got wrong. Failing to resolve a
+    /// tenant is not itself an error: this route names its portal in the ROUTE, so it does not need the host
+    /// name to identify one, and the tenant reconciliation still proves the caller administers the portal
+    /// named there. So the request must not be answered with a bad request, an absent resource, a conflict or
+    /// a server fault, and must not be short-circuited - it must reach the endpoint and be decided on its
+    /// merits.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetPortal_FromAHostThatIsOnlyASubstringOfAConfiguredAlias_IsStillServed()
+    {
+        // One character shorter than the configured alias, so it is a strict substring of it and nothing
+        // else - which is precisely the input the legacy containment predicate mis-resolved.
+        string substring = ApiTestFixture.TestHost[..^1];
+        substring.Should().NotBe(ApiTestFixture.TestHost);
+        ApiTestFixture.TestHost.Should().Contain(substring);
+
+        using HttpClient client = _fixture.CreateHostClient(substring);
+
+        using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the route names its own portal, so an unresolved host name is not a reason to refuse it");
+
+        PortalDetailDto detail = await ReadDetailAsync(response);
+        detail.PortalId.Should().Be(
+            _fixture.Seed.PortalId,
+            "no tenant was substituted for the one the route named");
+    }
+
+    /// <summary>
+    /// A host name differing only in CASE resolves the same tenant.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: case-insensitivity is inherited rather than invented. The legacy alias controller
+    /// lower-cased the stored host name on every write and on every read
+    /// (<c>Library/Components/Portal/PortalAliasController.vb</c> lines 31, 52, 75 to 76 and 97), so a
+    /// mixed-case request resolved perfectly well there and a case-SENSITIVE comparison here would lose
+    /// behaviour the legacy product had.
+    /// </para>
+    /// <para>
+    /// The comparison is culture-independent, and that is a correctness requirement rather than a
+    /// preference: culture-sensitive lower-casing maps the dotted capital I differently under a Turkish
+    /// locale, which would make tenant resolution depend on the server's regional settings.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetPortal_FromAMixedCaseHost_ResolvesTheSameTenant()
+    {
+        string upperCased = ApiTestFixture.TestHost.ToUpperInvariant();
+        upperCased.Should().NotBe(ApiTestFixture.TestHost, "the host name must actually differ in case");
+
+        using HttpClient client = _fixture.CreateTenantClient(
+            upperCased,
+            _fixture.Seed.PortalId,
+            _fixture.Seed.AdminUserId,
+            IntegrationSeed.AdminUserName);
+
+        using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadDetailAsync(response)).PortalId.Should().Be(_fixture.Seed.PortalId);
+    }
+
+    /// <summary>
+    /// The paths that are served WITHOUT a tenant really are: the health probe answers from a host name no
+    /// portal claims, and so does the collection route, which names no portal for a per-portal rule to read.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The health probe is the load-bearing case. The shipped composition declares the frontend container
+    /// dependent on the API reporting healthy, so a probe that required a resolved tenant would leave the
+    /// frontend unable to start on any installation whose alias table was not yet configured - which is
+    /// every installation, at the moment it is first brought up.
+    /// </para>
+    /// <para>
+    /// A route that DOES depend on the host name for its tenant is included as the negative control, because
+    /// without one this fact would pass equally well against a resolver that had been switched off
+    /// altogether. That refusal is a forbidden, not an absent resource and not a bad request: the request is
+    /// well formed and the address exists, and what is missing is an entitlement to a tenant on this host.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task PathsServedWithoutATenant_AnswerFromAnUnclaimedHostName()
+    {
+        using HttpClient client = _fixture.CreateHostClient("no-portal-claims-this-name.invalid");
+
+        using HttpResponseMessage health = await client.GetAsync(new Uri("/health", UriKind.Relative));
+        health.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the container health probe must answer before any alias is configured");
+
+        using HttpResponseMessage collection = await client.GetAsync(
+            new Uri("/api/v1/portals?pageIndex=0&pageSize=1", UriKind.Relative));
+        collection.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the collection spans every tenant, so it needs none resolved to answer");
+
+        // The negative control: a collection whose tenant can only come from the host name.
+        using HttpResponseMessage tenantBound = await client.GetAsync(
+            new Uri("/api/v1/module-definitions", UriKind.Relative));
+        tenantBound.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "a route that can only learn its tenant from the host name is refused when the host names none");
+        tenantBound.Content.Headers.ContentType?.MediaType.Should().Be(ProblemMediaType);
+
+        ProblemDetails? problem = await tenantBound.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Be(TenantUnresolvedProblemType);
+        problem.Detail.Should().NotContain(
+            "no-portal-claims-this-name",
+            "the host name is caller-supplied text and echoing it back would be a reflection vector");
+    }
+
+    /// <summary>
+    /// A created alias is located by a header carrying BOTH route values - the portal and the alias - so a
+    /// client can follow it without composing an address of its own.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The sub-resource is what makes this worth asserting separately from the portal create. A location
+    /// naming only the alias identifier would not address anything on this API, because the alias lives
+    /// beneath its portal, and the header would be a broken link that no status code reports. It is followed
+    /// rather than merely parsed, which is the only assertion that proves it addresses the created row.
+    /// </remarks>
+    [Fact]
+    public async Task AddPortalAlias_LocatesTheCreatedAliasBeneathItsPortal()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = CreatedTenantClient(created, createRequest);
+
+        string aliasCollection = $"/api/v1/portals/{Route(created.PortalId)}/aliases";
+        string httpAlias = "located-" + Suffix() + ".local";
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri(aliasCollection, UriKind.Relative),
+            new CreatePortalAliasRequest { HttpAlias = httpAlias },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        PortalAliasDto? alias = await response.Content.ReadEnvelopeAsync<PortalAliasDto>();
+        alias.Should().NotBeNull();
+        alias!.PortalId.Should().Be(created.PortalId);
+        alias.HttpAlias.Should().Be(httpAlias);
+
+        response.Headers.Location.Should().NotBeNull("a create locates what it created");
+        response.Headers.Location!.OriginalString.Should().Be(
+            $"{aliasCollection}/{Route(alias.PortalAliasId)}",
+            "the location carries the portal and the alias, because the alias is addressed beneath its portal");
+
+        using HttpResponseMessage followed = await client.GetAsync(response.Headers.Location);
+        followed.StatusCode.Should().Be(HttpStatusCode.OK, "the location must address the created alias");
+
+        PortalAliasDto? fetched = await followed.Content.ReadEnvelopeAsync<PortalAliasDto>();
+        fetched.Should().NotBeNull();
+        fetched!.PortalAliasId.Should().Be(alias.PortalAliasId);
+
+        // Binding the same host name twice is refused as a conflict rather than silently creating a second
+        // row, which would make tenant resolution ambiguous for that address.
+        using HttpResponseMessage duplicate = await client.PostAsJsonAsync(
+            new Uri(aliasCollection, UriKind.Relative),
+            new CreatePortalAliasRequest { HttpAlias = httpAlias },
+            ApiTestFixture.Json);
+
+        duplicate.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        ProblemDetails? problem = await duplicate.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Be(DuplicateAliasProblemType);
+    }
+
+    /// <summary>
+    /// Every one of the six host-only values is refused to a portal administrator, and the refusal is a
+    /// <c>403 Forbidden</c> rather than a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy settings screen compared exactly these six submitted values against the stored
+    /// portal and, when a caller who was not a super user had changed any of them, executed
+    /// <c>Throw New System.Exception</c> - a bare exception carrying NO MESSAGE
+    /// (<c>Website/admin/Portal/SiteSettings.ascx.vb</c> lines 757 to 768). Reproducing that literally would
+    /// surface as a <c>500</c>, telling a caller the server had broken when in fact the server had
+    /// deliberately refused them. The refusal survives; its expression as an unhandled fault does not. That
+    /// this answers 403 and not 500 is therefore the whole point of the fact.
+    /// </para>
+    /// <para>
+    /// All six are exercised because they are six separate comparisons in one guard and a guard that had
+    /// lost one term would still pass a single-field test. They run against ONE portal, sequentially, which
+    /// is sound precisely because each attempt is refused: nothing is written, so the stored row is identical
+    /// before and after every case and the cases cannot interfere. That is asserted at the end rather than
+    /// assumed.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the retention period is changed to -1 and the change is refused, which is worth noting
+    /// because -1 is the legacy absent-integer sentinel
+    /// (<c>Library/Components/Shared/Null.vb</c> lines 41 to 43) and the legacy screen submitted it raw as
+    /// the "keep nothing" value. It is a VALUE here, not an absence, so submitting it is a change like any
+    /// other and the guard treats it as one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_AsAdministratorAlteringAnyHostOnlyValue_IsForbiddenAndNotAServerFault()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = CreateAdministratorClientFor(createRequest, created);
+
+        (string Field, Action<UpdatePortalRequest> Alter)[] hostOnly =
+        [
+            ("hostFee", request => request.HostFee = (created.HostFee ?? 0m) + 99.99m),
+            ("hostSpace", request => request.HostSpace = (created.HostSpace ?? 0) + 4096),
+            ("pageQuota", request => request.PageQuota = (created.PageQuota ?? 0) + 250),
+            ("userQuota", request => request.UserQuota = (created.UserQuota ?? 0) + 500),
+            ("siteLogHistory", request => request.SiteLogHistory = -1),
+            ("expiryDate", request => request.ExpiryDate = new DateTime(2031, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
+        ];
+
+        foreach ((string field, Action<UpdatePortalRequest> alter) in hostOnly)
+        {
+            UpdatePortalRequest request = EchoHostOnlyFields(created);
+            request.PortalName = created.PortalName;
+            alter(request);
+
+            using HttpResponseMessage response = await client.PutAsJsonAsync(
+                PortalRoute(created.PortalId),
+                request,
+                ApiTestFixture.Json);
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.Forbidden,
+                "only a host account may change '{0}', and a deliberate refusal is not a server fault",
+                field);
+            response.StatusCode.Should().NotBe(
+                HttpStatusCode.InternalServerError,
+                "the legacy guard raised a bare exception for '{0}'; the refusal survives but the fault does not",
+                field);
+
+            ProblemDetails? problem = await response.Content
+                .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+            problem.Should().NotBeNull();
+            problem!.Status.Should().Be(StatusCodes.Status403Forbidden);
+            problem.Type.Should().NotStartWith(
+                AuthorisationProblemTypePrefix,
+                "the refusal for '{0}' comes from the field-level guard rather than from the endpoint policy",
+                field);
+            problem.Detail.Should().NotBeNullOrWhiteSpace();
+        }
+
+        using HttpResponseMessage reread = await client.GetAsync(PortalRoute(created.PortalId));
+        reread.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PortalDetailDto persisted = await ReadDetailAsync(reread);
+        persisted.HostFee.Should().Be(created.HostFee);
+        persisted.HostSpace.Should().Be(created.HostSpace);
+        persisted.PageQuota.Should().Be(created.PageQuota);
+        persisted.UserQuota.Should().Be(created.UserQuota);
+        persisted.SiteLogHistory.Should().Be(created.SiteLogHistory);
+        persisted.ExpiryDate.Should().Be(created.ExpiryDate);
+    }
+
+    /// <summary>
+    /// An allowance of NOUGHT is accepted and stored as nought, because in this schema nought means
+    /// unlimited rather than "nothing permitted".
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the meaning is measured, not inferred. The legacy account screen enforced the member
+    /// allowance only when it was greater than nought - <c>If PortalSettings.UserQuota &gt; 0 And ...</c> at
+    /// <c>Website/admin/Users/ManageUsers.ascx.vb</c> line 367 - so nought disabled the check entirely. A
+    /// boundary rule that refused nought, or a mapper that treated it as absent and substituted a default,
+    /// would silently impose a limit on every portal that had none.
+    /// </para>
+    /// <para>
+    /// Submitted by a HOST account, because the allowances are host-only and the fact above proves that
+    /// separately. What is under test here is the value, not the authority.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_WithAllowancesOfNought_IsAcceptedBecauseNoughtMeansUnlimited()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+        PortalDetailDto created = await CreatePortalAsync(client);
+
+        UpdatePortalRequest request = EchoHostOnlyFields(created);
+        request.PortalName = created.PortalName;
+        request.UserQuota = 0;
+        request.PageQuota = 0;
+        request.HostSpace = 0;
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "nought is a meaningful allowance and must not be refused as though nothing had been supplied");
+
+        PortalDetailDto updated = await ReadDetailAsync(response);
+        updated.UserQuota.Should().Be(0);
+        updated.PageQuota.Should().Be(0);
+        updated.HostSpace.Should().Be(0);
+
+        using JsonDocument document = JsonDocument.Parse(await (await client
+            .GetAsync(PortalRoute(created.PortalId))).Content.ReadAsStringAsync());
+        JsonElement portal = document.RootElement.GetProperty("data");
+
+        foreach (string member in new[] { "userQuota", "pageQuota", "hostSpace" })
+        {
+            JsonElement value = RequireMember(portal, member);
+            value.ValueKind.Should().Be(
+                JsonValueKind.Number,
+                "'{0}' must travel even when it is nought, because nought is the value that means unlimited",
+                member);
+            value.GetInt32().Should().Be(0);
+        }
+    }
+
+    /// <summary>
+    /// Removing a portal's only remaining alias is PERMITTED, and the portal survives with none.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Recorded because the opposite is the natural assumption and it is wrong: an installation may not be
+    /// left with no portal, so it would be reasonable to expect that a portal may not be left with no
+    /// address either. No such rule exists in the legacy application and none has been added -
+    /// <c>Library/Components/Portal/PortalAliasController.vb</c> removes an alias unconditionally, and adding
+    /// a rule the legacy console did not have would refuse a save an operator could previously make.
+    /// </para>
+    /// <para>
+    /// The consequence is real and is stated here rather than hidden: a portal with no alias cannot be
+    /// reached by host name, and the endpoints that repair that are deliberately reachable without a resolved
+    /// tenant so that an operator can bind a new one. The recovery path is asserted, which is what makes
+    /// permitting the removal defensible rather than merely permissive.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeletePortalAlias_OfTheOnlyRemainingAlias_IsPermittedAndTheAddressCanBeRebound()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+        (PortalDetailDto created, CreatePortalRequest createRequest) = await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = CreatedTenantClient(created, createRequest);
+
+        string aliasCollection = $"/api/v1/portals/{Route(created.PortalId)}/aliases";
+
+        using HttpResponseMessage listed = await client.GetAsync(new Uri(aliasCollection, UriKind.Relative));
+        listed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        IReadOnlyList<PortalAliasDto>? aliases = await listed.Content
+            .ReadEnvelopeAsync<IReadOnlyList<PortalAliasDto>>();
+        aliases.Should().NotBeNull();
+        PortalAliasDto only = aliases!.Should().ContainSingle(
+            "a create binds exactly one address to the new portal").Subject;
+
+        using HttpResponseMessage removed = await client.DeleteAsync(
+            new Uri($"{aliasCollection}/{Route(only.PortalAliasId)}", UriKind.Relative));
+
+        removed.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "no rule forbids removing a portal's last address, and inventing one would refuse a legacy save");
+
+        // The portal itself is untouched, and is still addressable by a route that names it.
+        using HttpResponseMessage stillThere = await host.GetAsync(PortalRoute(created.PortalId));
+        stillThere.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // And the address can be bound again, which is the recovery path that makes the removal safe.
+        using HttpResponseMessage rebound = await host.PostAsJsonAsync(
+            new Uri(aliasCollection, UriKind.Relative),
+            new CreatePortalAliasRequest { HttpAlias = "rebound-" + Suffix() + ".local" },
+            ApiTestFixture.Json);
+
+        rebound.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "an operator must be able to give an unaddressable portal an address back");
+    }
+
+    /// <summary>
+    /// An alias submitted with a scheme and in mixed case is ACCEPTED, and is stored exactly as it was
+    /// submitted rather than being folded and stripped the way the legacy screen folded and stripped it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE LEGACY INPUT NORMALISATION IS NOT REPRODUCED, and this fact exists to record that
+    /// rather than to endorse it. The sign-up screen mutated the caller's text before validating it -
+    /// <c>strPortalAlias = LCase(txtPortalAlias.Text)</c> and then
+    /// <c>strPortalAlias = Replace(strPortalAlias, "http://", "")</c>
+    /// (<c>Website/admin/Portal/Signup.ascx.vb</c> lines 182 to 184) - which is exactly why the character
+    /// whitelist it applied next contained no upper-case letters: by the time the check ran the case and the
+    /// scheme were already gone. Here the text reaches the alias table untouched, so the two halves of the
+    /// legacy behaviour have come apart: the input is still ACCEPTED, as it was there, but it is no longer
+    /// NORMALISED.
+    /// </para>
+    /// <para>
+    /// The consequence is worth stating plainly, because it is the reason this is annotated rather than left
+    /// to be discovered. Tenant resolution compares a request's host name against the stored alias, and no
+    /// host name can carry a scheme, so an alias stored in this form matches nothing and that portal cannot
+    /// be reached by address. It is a usability fault rather than a security one - the portal is not
+    /// exposed to anyone, it is merely unreachable by name - and the two mitigations that make it recoverable
+    /// are asserted below: the portal is still served on a route that NAMES it, and the alias endpoints,
+    /// which are deliberately reachable without a resolved tenant, can bind a usable address in its place.
+    /// </para>
+    /// <para>
+    /// Asserted as the behaviour the endpoint HAS rather than the behaviour the legacy screen had, because a
+    /// test that demanded folding would fail against the shipped service and would say nothing about what a
+    /// client should expect today. Correcting the service is a change to the application layer and is
+    /// recorded here as a hand-off, not reached across from a test.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_WithASchemeQualifiedMixedCaseAlias_StoresItVerbatim()
+    {
+        using HttpClient host = _fixture.CreateHostClient();
+
+        string bareAlias = "normalised-" + Suffix() + ".local";
+        string submitted = "HTTP://" + bareAlias.ToUpperInvariant();
+
+        CreatePortalRequest request = NewPortalRequest();
+        request.PortalAlias = submitted;
+
+        using HttpResponseMessage response = await host.PostAsJsonAsync(
+            PortalsRoute,
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the legacy screen accepted this input, so refusing it would lose a save an operator could make");
+
+        PortalDetailDto created = await ReadDetailAsync(response);
+        created.Aliases.Should().NotBeNull();
+        created.Aliases!.Select(alias => alias.HttpAlias).Should().Contain(
+            submitted,
+            "the submitted text reaches the alias table unaltered; the legacy screen would have folded its "
+            + "case and stripped its scheme first");
+
+        // The portal is still reachable by a route that names it, which is what keeps the fault recoverable.
+        using HttpResponseMessage byRoute = await host.GetAsync(PortalRoute(created.PortalId));
+        byRoute.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an unusable alias does not take the portal out of reach of a route that names it");
+
+        // And a usable address can be bound in its place, through an endpoint that needs no resolved tenant.
+        string usable = "rebound-" + Suffix() + ".local";
+        using HttpResponseMessage rebound = await host.PostAsJsonAsync(
+            new Uri($"/api/v1/portals/{Route(created.PortalId)}/aliases", UriKind.Relative),
+            new CreatePortalAliasRequest { HttpAlias = usable },
+            ApiTestFixture.Json);
+
+        rebound.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using HttpClient tenant = _fixture.CreateTenantClient(
+            usable,
+            created.PortalId,
+            created.AdministratorId!.Value,
+            request.AdministratorUsername!);
+
+        using HttpResponseMessage addressed = await tenant.GetAsync(PortalRoute(created.PortalId));
+        addressed.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the recovery path works, which is what makes the divergence above tolerable rather than fatal");
+    }
+
+    /// <summary>
+    /// An alias carrying spaces and punctuation is refused, with ONE message reported against the field
+    /// rather than one per offending character.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy check walked the submitted alias one character at a time and appended the same
+    /// explanation to its message every time it met a character outside the permitted set
+    /// (<c>Website/admin/Portal/Signup.ascx.vb</c> lines 186 to 217), so an alias with three bad characters
+    /// produced the identical sentence three times, separated by line breaks. That repetition is NOT
+    /// reproduced. It carried no information a caller could act on - the message never named WHICH character
+    /// offended - and a form binding one message per field would have rendered the same sentence three
+    /// times over.
+    /// </para>
+    /// <para>
+    /// The wording itself is preserved, which is the part that matters for parity: a user who recognised the
+    /// legacy sentence sees the same sentence. Only its multiplicity changed, and this fact pins the count so
+    /// that the decision is visible rather than accidental.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_WithSeveralOffendingCharactersInTheAlias_ReportsOneMessageNotOnePerCharacter()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreatePortalRequest request = NewPortalRequest();
+        request.PortalAlias = "bad alias!!" + Suffix();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            PortalsRoute,
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(response);
+
+        errors.Keys.Should().Contain("PortalAlias");
+        errors["PortalAlias"].Should().ContainSingle(
+            "the legacy check repeated its sentence once per offending character, which is deliberately not "
+            + "reproduced")
+            .Which.Should().Be("The Portal Name Must Not Contain Spaces Or Punctuation.");
+    }
+
+    /// <summary>The settings sub-resource answers <c>404 Not Found</c> for a portal that does not exist.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Asserted as a HOST account, because a portal administrator naming a portal other than its own is
+    /// refused before the lookup runs and would answer 403 - which is deliberate, and is asserted separately.
+    /// A host account is the only caller for whom the absent path is reachable at all, so it is the only
+    /// caller that can prove this.
+    /// </remarks>
+    [Fact]
+    public async Task GetPortalSettings_WhenThePortalIsUnknown_ReturnsNotFound()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{Route(UnknownPortalId)}/settings", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
+        problem.Type.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// The portal surface is CLOSED. The legacy screens this migration excludes have no endpoint, and the
+    /// collection route accepts no destructive verb.
+    /// </summary>
+    /// <param name="excluded">An address that must not be served.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Asserted because absence is a requirement here rather than an accident, and because absence is the one
+    /// property no other fact in this suite can establish - every other fact would pass equally well against
+    /// an API that had grown extra endpoints beside the ones it exercises.
+    /// </para>
+    /// <para>
+    /// MIGRATION: each address corresponds to a legacy screen or capability the migration scope excludes.
+    /// Portal templates and the multi-step site wizard were rendered by <c>template.ascx</c> and
+    /// <c>sitewizard.ascx</c>, neither of which is ported; the expired-portal listing was a filter on the
+    /// legacy grid backed by a separate retrieval routine, and no endpoint publishes it; a key-and-value
+    /// settings surface has no table behind it at all, because portal configuration lives in COLUMNS on the
+    /// portal row and the legacy per-request settings object was an ambient composite rather than a stored
+    /// aggregate; and aliases are addressed beneath their portal rather than as a child of the collection.
+    /// </para>
+    /// <para>
+    /// An absent address answering <c>404</c> is the correct outcome and not a weaker one: it is routing
+    /// truthfully reporting that nothing is published there, which is exactly what a client discovering the
+    /// API needs to be told.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("/api/v1/portals/aliases")]
+    [InlineData("/api/v1/portals/expired")]
+    [InlineData("/api/v1/portals/-1/template")]
+    [InlineData("/api/v1/portals/-1/wizard")]
+    [InlineData("/api/v1/portals/-1/settings/keys")]
+    public async Task ExcludedLegacyPortalScreens_HaveNoEndpoint(string excluded)
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(excluded, UriKind.Relative));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "'{0}' belongs to a legacy screen this migration excludes and must not be published",
+            excluded);
+    }
+
+    /// <summary>
+    /// The collection route refuses a destructive verb, so there is no way to remove portals in bulk.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A bulk removal is the one absent capability whose absence a <c>404</c> would not demonstrate, because
+    /// the address exists for reading and creating. What proves it is the METHOD being refused, and the
+    /// refusal carries the permitted verbs so a client is told what the address does support.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteOnThePortalCollection_IsNotAllowed()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        using HttpResponseMessage response = await client.DeleteAsync(PortalsRoute);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.MethodNotAllowed,
+            "portals are removed one at a time, by an address that names the one being removed");
+
+        response.Content.Headers.ContentLength.Should().Be(
+            0,
+            "a refused method reports the refusal in the response line rather than in a payload");
+    }
+
+    /// <summary>
+    /// A create whose administrator password fails the credential policy is refused, and the policy applied
+    /// is the legacy one rather than a tightened one.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the credential policy is carried forward VERBATIM from the membership provider the legacy
+    /// application registered - a minimum length of seven characters, no requirement for a non-alphanumeric
+    /// character, and no question-and-answer requirement (<c>Website/release.config</c> lines 237 to 247).
+    /// Tightening any of those during a migration would refuse credentials that existing operators already
+    /// use, so the boundary is asserted from BOTH sides here: a six-character password is refused, and a
+    /// seven-character all-letters password - which a modern default policy would reject outright - is
+    /// accepted.
+    /// </para>
+    /// <para>
+    /// The second half is the half that matters. A test that only proved a weak password was refused would
+    /// pass just as well against a policy that had been silently strengthened, which is the regression this
+    /// guards.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_AppliesTheLegacyCredentialPolicyAndNoStricterOne()
+    {
+        using HttpClient client = _fixture.CreateHostClient();
+
+        CreatePortalRequest tooShort = NewPortalRequest();
+        tooShort.AdministratorPassword = "abc123";
+        tooShort.AdministratorPassword.Should().HaveLength(6, "one character short of the legacy minimum");
+
+        using HttpResponseMessage refused = await client.PostAsJsonAsync(
+            PortalsRoute,
+            tooShort,
+            ApiTestFixture.Json);
+
+        refused.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        IReadOnlyDictionary<string, string[]> errors = await ReadValidationErrorsAsync(refused);
+        errors.Keys.Should().Contain(
+            "AdministratorPassword",
+            "the caller is told which field the credential policy refused");
+
+        CreatePortalRequest atTheBoundary = NewPortalRequest();
+        atTheBoundary.AdministratorPassword = "abcdefg";
+        atTheBoundary.AdministratorPassword.Should().HaveLength(7, "exactly the legacy minimum");
+
+        using HttpResponseMessage accepted = await client.PostAsJsonAsync(
+            PortalsRoute,
+            atTheBoundary,
+            ApiTestFixture.Json);
+
+        accepted.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the legacy policy required no non-alphanumeric character, and imposing one would lock existing "
+            + "operators out of an installation they could previously administer");
+    }
+
+    /// <summary>
+    /// No member of the portal surface reports an outcome through a by-reference parameter. Every one of them
+    /// returns its result.
+    /// </summary>
+    /// <returns>Nothing; this fact reads metadata rather than issuing a request.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the idiom the migration replaces, and it was pervasive rather than incidental. The
+    /// legacy listing returned its rows and reported the total through a <c>ByRef</c> argument
+    /// (<c>Website/admin/Portal/Portals.ascx.vb</c> line 142), the create returned an identifier and
+    /// signalled failure by returning a value that was also a legal identifier, and the update took
+    /// twenty-seven positional parameters
+    /// (<c>Website/admin/Portal/SiteSettings.ascx.vb</c> lines 772 to 780). All three are replaced by typed
+    /// contracts: a page carries its own total, an outcome carries its own failure reason, and an update takes
+    /// one request object.
+    /// </para>
+    /// <para>
+    /// Asserted against the METADATA rather than over HTTP, because a by-reference parameter is not
+    /// observable in a response - it is a shape that cannot be expressed on the wire at all, which is exactly
+    /// why it has to be excluded at the boundary rather than tested through it. Reading the signatures is
+    /// what makes the exclusion a failing test instead of a convention.
+    /// </para>
+    /// <para>
+    /// Both the controllers and the application contract they delegate to are inspected. A controller alone
+    /// would prove too little: the shape that matters is the one the service publishes, since that is what a
+    /// future controller would be written against.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void NoPortalMember_ReportsItsOutcomeThroughAByReferenceParameter()
+    {
+        Type[] surface =
+        [
+            typeof(DnnMigration.Api.Controllers.PortalsController),
+            typeof(DnnMigration.Api.Controllers.PortalAliasesController),
+            typeof(DnnMigration.Application.Abstractions.IPortalService),
+        ];
+
+        var offending = new List<string>();
+
+        foreach (Type type in surface)
+        {
+            foreach (MethodInfo method in type.GetMethods(
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            {
+                foreach (ParameterInfo parameter in method.GetParameters())
+                {
+                    if (parameter.ParameterType.IsByRef)
+                    {
+                        offending.Add($"{type.Name}.{method.Name}({parameter.Name})");
+                    }
+                }
+            }
+        }
+
+        offending.Should().BeEmpty(
+            "an outcome travels in the return value; a by-reference parameter cannot cross an HTTP boundary "
+            + "and must not appear on a contract that does");
+    }
+
     /// <summary>Creates a portal through the API and returns its representation.</summary>
     /// <param name="client">A client carrying host credentials.</param>
     /// <returns>The created portal.</returns>
@@ -2137,8 +3795,105 @@ public sealed class PortalApiTests
     /// <returns>The invariant representation.</returns>
     private static string Route(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>Produces a short random suffix for values that reach a unique constraint.</summary>
-    /// <returns>Twelve lower-case hexadecimal characters.</returns>
+    /// <summary>
+    /// Reads the per-field <c>errors</c> dictionary out of a validation failure.
+    /// </summary>
+    /// <param name="response">The refused response.</param>
+    /// <returns>The offending field names, each with the messages reported against it.</returns>
+    /// <remarks>
+    /// Read through the framework's own validation payload type rather than by walking the JSON, because the
+    /// dictionary is exactly what that type publishes and binding onto it proves the payload really is an
+    /// RFC 7807 validation document rather than an object that merely happens to carry a similar member. The
+    /// dictionary is returned as read-only so that a caller asserts against it instead of editing it.
+    /// </remarks>
+    private static async Task<IReadOnlyDictionary<string, string[]>> ReadValidationErrorsAsync(
+        HttpResponseMessage response)
+    {
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull("a refused request must publish a validation problem document");
+        problem!.Status.Should().Be(
+            StatusCodes.Status400BadRequest,
+            "the envelope carries the status, not only the response line");
+        problem.Title.Should().NotBeNullOrWhiteSpace();
+        problem.Detail.Should().NotBeNullOrWhiteSpace();
+        problem.Type.Should().NotBeNullOrWhiteSpace(
+            "a client branches on the problem type rather than parsing prose");
+
+        // Wrapped rather than cast. The published member is a mutable dictionary, and handing that straight
+        // back would let an assertion site edit the evidence it is asserting against; the wrapper is a view
+        // over the same entries and preserves the comparer the payload was built with.
+        return problem.Errors.AsReadOnly();
+    }
+
+    /// <summary>
+    /// Asserts that a JSON object carries a member and hands the member back.
+    /// </summary>
+    /// <param name="owner">The object to read.</param>
+    /// <param name="member">The member that must be present.</param>
+    /// <returns>The member's value.</returns>
+    /// <remarks>
+    /// <para>
+    /// Presence is asserted through the member NAMES rather than through the framework's try-pattern, which
+    /// keeps every by-reference argument out of this suite: an outcome that a caller has to receive through a
+    /// parameter is precisely the idiom this migration replaces, and a suite that used it to make its own
+    /// assertions would be a poor advertisement for the contract it is asserting.
+    /// </para>
+    /// <para>
+    /// Presence has to be asserted at all - rather than simply reading the member - because the failure this
+    /// suite guards against is a member that is ABSENT. Reading a missing member throws, and an exception
+    /// names the reader instead of naming the contract, so the assertion comes first and reports which member
+    /// was missing.
+    /// </para>
+    /// </remarks>
+    private static JsonElement RequireMember(JsonElement owner, string member)
+    {
+        MemberNames(owner).Should().Contain(member, "'{0}' is part of the published payload", member);
+
+        return owner.GetProperty(member);
+    }
+
+    /// <summary>Lists the member names a JSON object carries, in the order it carries them.</summary>
+    /// <param name="owner">The object to read.</param>
+    /// <returns>The member names.</returns>
+    /// <remarks>
+    /// The one way to prove a member is ABSENT. A typed read cannot: a deserialiser ignores what it does not
+    /// recognise and defaults what it does not find, so a dropped member and a member holding its type's
+    /// default are indistinguishable to it.
+    /// </remarks>
+    private static IReadOnlyList<string> MemberNames(JsonElement owner) => owner
+        .EnumerateObject()
+        .Select(member => member.Name)
+        .ToList();
+
+    /// <summary>Reads the portal collection filtered by a name fragment.</summary>
+    /// <param name="client">The caller, which must hold host authority.</param>
+    /// <param name="fragment">The fragment to filter on, sent as data rather than as a pattern.</param>
+    /// <returns>The page the server answered with.</returns>
+    /// <remarks>
+    /// The fragment is escaped, which is the point of routing every filtered read through here: the values
+    /// this suite filters on deliberately include the characters a naive query string would either lose or
+    /// let act as a wildcard, and escaping them at one site is what makes those assertions about the SERVER
+    /// rather than about the client's own address building.
+    /// </remarks>
+    private static async Task<PagedEnvelope<PortalListItemDto>> FilterByNameAsync(
+        HttpClient client,
+        string fragment)
+    {
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            "/api/v1/portals?pageIndex=0&pageSize=50&name=" + Uri.EscapeDataString(fragment),
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, "a filtered read is a read");
+
+        PagedEnvelope<PortalListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<PortalListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        return page!;
+    }
+
     /// <summary>
     /// The enumerations that have no legacy spelling travel as the integer discriminators their
     /// columns store, which is the form the Angular models consume.
@@ -2159,13 +3914,11 @@ public sealed class PortalApiTests
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    [Trait("Category", "Integration")]
     public async Task NumericEnumerations_TravelAsTheirStoredIntegers()
     {
         using HttpClient client = _fixture.CreateHostClient();
 
-        HttpResponseMessage response = await client.GetAsync(
-            FormattableString.Invariant($"/api/v1/portals/{_fixture.Seed.PortalId}"));
+        using HttpResponseMessage response = await client.GetAsync(PortalRoute(_fixture.Seed.PortalId));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         string body = await response.Content.ReadAsStringAsync();
@@ -2182,5 +3935,7 @@ public sealed class PortalApiTests
             .And.NotContain("VerifiedRegistration");
     }
 
+    /// <summary>Produces a short random suffix for values that reach a unique constraint.</summary>
+    /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
 }
