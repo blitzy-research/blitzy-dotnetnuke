@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using DnnMigration.Api.Middleware;
 using Microsoft.AspNetCore.Builder;
@@ -147,6 +148,32 @@ public static class ApplicationBuilderExtensions
     /// </para>
     /// </remarks>
     public const string HttpsRedirectionSectionName = "Https:RedirectEnabled";
+
+    /// <summary>
+    /// Name this service reports in its health document.
+    /// </summary>
+    /// <remarks>
+    /// Read from the assembly rather than written as a literal, and that is the point: the
+    /// same name is the file the container image starts, so deriving it here means the
+    /// document cannot claim to be a service the image does not run. It resolves to
+    /// <c>DnnMigration.Api</c>.
+    /// </remarks>
+    private static readonly string ServiceName =
+        typeof(ApplicationBuilderExtensions).Assembly.GetName().Name ?? "DnnMigration.Api";
+
+    /// <summary>
+    /// Version this service reports in its health document.
+    /// </summary>
+    /// <remarks>
+    /// The project sets no explicit version, so this is the SDK's default of
+    /// <c>1.0.0.0</c> - which is exactly what the published operator documentation
+    /// records. Resolved once, because the probe runs on a schedule for the lifetime of
+    /// the process and reflection per probe would buy nothing. Nothing more detailed is
+    /// exposed: an informational version would carry the commit, and this endpoint is
+    /// anonymous.
+    /// </remarks>
+    private static readonly string ServiceVersion =
+        typeof(ApplicationBuilderExtensions).Assembly.GetName().Version?.ToString() ?? "1.0.0.0";
 
     /// <summary>
     /// Composes every stage of the request pipeline, in order, and maps the
@@ -415,7 +442,21 @@ public static class ApplicationBuilderExtensions
         await using (Utf8JsonWriter writer = new(buffer, new JsonWriterOptions { Indented = false }))
         {
             writer.WriteStartObject();
+
+            // The first four members are the published contract - docs/project-guide.md
+            // records this endpoint answering with status, timestamp, version and
+            // serviceName - so they are written first and none of them may be dropped.
+            // An operator or monitor that reads only those four is served identically by
+            // this writer and by the documentation.
             writer.WriteString("status", report.Status.ToString());
+            writer.WriteString("timestamp", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            writer.WriteString("version", ServiceVersion);
+            writer.WriteString("serviceName", ServiceName);
+
+            // Everything below is additional diagnostic detail, and it is additive by
+            // design: naming the probe that failed is the whole value of this endpoint
+            // over a bare status word, and adding it takes nothing away from a consumer
+            // that reads only the four members above.
             writer.WriteNumber("totalDurationMs", report.TotalDuration.TotalMilliseconds);
             writer.WriteStartArray("checks");
 
