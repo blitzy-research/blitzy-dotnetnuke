@@ -925,6 +925,1082 @@ public sealed class RoleRepositoryTests
         }
     }
 
+    /// <summary>
+    /// Every paid-membership term is amended through the update member and read back from the store.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The terms are asserted together rather than one per test because they are one commercial
+    /// statement: a fee without its period and frequency does not describe a subscription, and a mapping
+    /// that carried the fee but dropped the period would leave a role priced but never billed. The group
+    /// is reassigned in the same amendment, so the update path is proven to move a role between groups
+    /// and not merely to rewrite its own columns.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE LEGACY UPDATE TOOK THIRTEEN POSITIONAL ARGUMENTS AND DISAGREED WITH ITS OWN STORE.
+    /// Membership <c>DataProvider.vb</c> declared
+    /// <c>UpdateRole(RoleId, RoleGroupId, Description, ServiceFee As Single, BillingPeriod As String,
+    /// BillingFrequency As String, TrialFee As Single, TrialPeriod As Integer, TrialFrequency As String,
+    /// IsPublic, AutoAssignment, RSVPCode, IconFile)</c> - a floating-point fee and a STRING billing
+    /// period - while <c>RoleInfo.vb</c> exposed <c>BillingPeriod</c> as an <c>Integer</c> and the
+    /// terminal schema declares it <c>int NULL</c>. Under Rule T4 the store settles the disagreement, so
+    /// the amendment below works in <c>decimal?</c> fees and <c>int?</c> periods and never in a
+    /// <c>Single</c> or a numeric string. The positional list itself is gone: the entity carries the
+    /// terms and one member stages it.
+    /// </para>
+    /// <para>
+    /// The fee is deliberately 999.99, the largest value a <c>decimal(5, 2)</c> column could hold. It is
+    /// asserted here because that narrower type is what an early reading of the baseline DDL suggests -
+    /// <c>01.00.00.SqlDataProvider</c> declares <c>[ServiceFee] [decimal](5, 2) NULL</c> - whereas the
+    /// TERMINAL schema this suite runs against declares <c>money</c>, which the sibling assertion on a
+    /// five-figure fee proves. Both facts matter: the ceiling value must round-trip exactly, and no
+    /// assertion here may claim a ceiling the running store does not in fact impose.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateAsync_AmendsEveryPaidMembershipTerm()
+    {
+        const decimal serviceFee = 999.99m;
+        const decimal trialFee = 4.95m;
+        const int billingPeriod = 3;
+        const int trialPeriod = 14;
+        const string rsvpCode = "JOIN-2030";
+        const string iconFile = "subscription.gif";
+        const string amendedDescription = "Amended by the persistence role suite.";
+
+        int portalId = await CreatePortalAsync();
+        int roleGroupId = await CreateGroupAsync(portalId, FormattableString.Invariant($"Paid {Suffix()}"));
+        int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Subscription {Suffix()}"));
+
+        try
+        {
+            using (IServiceScope amending = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = amending.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = amending.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role? role = await roles.GetByIdAsync(roleId, portalId);
+                role.Should().NotBeNull();
+                role!.RoleGroupId.Should().BeNull("the role was created outside any group");
+
+                role.Description = amendedDescription;
+                role.RoleGroupId = roleGroupId;
+                role.ServiceFee = serviceFee;
+                role.BillingPeriod = billingPeriod;
+                role.BillingFrequency = BillingFrequency.Month;
+                role.TrialFee = trialFee;
+                role.TrialPeriod = trialPeriod;
+                role.TrialFrequency = BillingFrequency.Day;
+                role.IsPublic = true;
+                role.AutoAssignment = true;
+                role.RsvpCode = rsvpCode;
+                role.IconFile = iconFile;
+
+                // Staged through the contract rather than left to change tracking, so the call behaves
+                // the same way for a detached role rebuilt from a request as for this tracked one.
+                await roles.UpdateAsync(role);
+
+                int affected = await unitOfWork.SaveChangesAsync();
+                affected.Should().BePositive("the unit of work reports the rows the amendment reached");
+            }
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? amended = await reader.GetByIdAsync(roleId, portalId);
+
+            amended.Should().NotBeNull();
+            amended!.Description.Should().Be(amendedDescription);
+            amended.ServiceFee.Should().Be(serviceFee, "the ceiling of a two-decimal-place column round-trips exactly");
+            amended.TrialFee.Should().Be(trialFee);
+            amended.BillingPeriod.Should().Be(billingPeriod);
+            amended.TrialPeriod.Should().Be(trialPeriod);
+            amended.BillingFrequency.Should().Be(BillingFrequency.Month);
+            amended.TrialFrequency.Should().Be(BillingFrequency.Day);
+            amended.IsPublic.Should().BeTrue();
+            amended.AutoAssignment.Should().BeTrue();
+            amended.RsvpCode.Should().Be(rsvpCode);
+            amended.IconFile.Should().Be(iconFile);
+
+            // The reassignment is visible from both ends: the role carries the key and the group's own
+            // listing now admits it.
+            amended.RoleGroupId.Should().Be(roleGroupId);
+            amended.RoleGroup.Should().NotBeNull("the read includes the group the role belongs to");
+            amended.RoleGroup!.RoleGroupId.Should().Be(roleGroupId);
+
+            (await reader.GetRolesByGroupAsync(roleGroupId, portalId))
+                .Select(role => role.RoleId)
+                .Should().Equal(roleId);
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemoveGroupAsync(roleGroupId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// Amending a priced role back to unpriced clears the optional terms rather than leaving the previous
+    /// figures behind.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the half of the update path that a round-trip test alone never reaches. Writing a value and
+    /// reading it back proves the column is bound; writing an absence over a value proves the binding
+    /// carries absence too, which is what a role reverting from paid to free requires. Every term
+    /// involved is optional in the terminal schema - <c>BillingPeriod</c> and <c>TrialPeriod</c> are
+    /// <c>int NULL</c>, the two frequencies are <c>char(1) NULL</c>, and <c>RSVPCode</c> and
+    /// <c>IconFile</c> are nullable text - so the entity models each of them as a nullable CLR type and
+    /// nothing here has to recognise a sentinel to express "no value" (Rule T7).
+    /// </para>
+    /// <para>
+    /// The group membership is cleared in the same amendment. MIGRATION: the legacy row expressed "in no
+    /// group" as the <c>Null.NullInteger</c> marker -1 rather than as SQL <c>NULL</c>, and -1 is
+    /// simultaneously a legitimate <c>Portals.PortalID</c>, so the marker was never safe to read as
+    /// absence. The target models the relationship as <c>int?</c> and the absence is a genuine null.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateAsync_ClearsTheOptionalTermsBackToAbsent()
+    {
+        int portalId = await CreatePortalAsync();
+        int roleGroupId = await CreateGroupAsync(portalId, FormattableString.Invariant($"Clearing {Suffix()}"));
+        int roleId = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"Reverting {Suffix()}"),
+            roleGroupId: roleGroupId);
+
+        try
+        {
+            using (IServiceScope pricing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = pricing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = pricing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role? role = await roles.GetByIdAsync(roleId, portalId);
+                role.Should().NotBeNull();
+
+                // Priced first, so the clearing that follows genuinely has something to overwrite and a
+                // null cannot be mistaken for a column that was never written.
+                role!.ServiceFee = 19.99m;
+                role.BillingPeriod = 1;
+                role.BillingFrequency = BillingFrequency.Year;
+                role.TrialFee = 1.5m;
+                role.TrialPeriod = 7;
+                role.TrialFrequency = BillingFrequency.Week;
+                role.RsvpCode = "TEMPORARY";
+                role.IconFile = "temporary.gif";
+
+                await roles.UpdateAsync(role);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            using (IServiceScope clearing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = clearing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = clearing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role? role = await roles.GetByIdAsync(roleId, portalId);
+                role.Should().NotBeNull();
+                role!.BillingFrequency.Should().Be(BillingFrequency.Year, "the priced state is in place");
+
+                role.RoleGroupId = null;
+                role.BillingPeriod = null;
+                role.BillingFrequency = null;
+                role.TrialFee = null;
+                role.TrialPeriod = null;
+                role.TrialFrequency = null;
+                role.RsvpCode = null;
+                role.IconFile = null;
+
+                await roles.UpdateAsync(role);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? cleared = await reader.GetByIdAsync(roleId, portalId);
+
+            cleared.Should().NotBeNull();
+            cleared!.RoleGroupId.Should().BeNull();
+            cleared.RoleGroup.Should().BeNull("no group is loaded for a role that belongs to none");
+            cleared.BillingPeriod.Should().BeNull("BillingPeriod is int? - the schema settled the type");
+            cleared.BillingFrequency.Should().BeNull("an absent code is not the member whose code is 'N'");
+            cleared.TrialFee.Should().BeNull();
+            cleared.TrialPeriod.Should().BeNull();
+            cleared.TrialFrequency.Should().BeNull();
+            cleared.RsvpCode.Should().BeNull();
+            cleared.IconFile.Should().BeNull();
+
+            // Read straight out of the store as well, because a null property could otherwise be a
+            // converter answering null for a column that still holds its old character.
+            (await CountClearedTermsAsync(roleId)).Should().Be(
+                1,
+                "the columns themselves are null rather than carrying the figures they held before");
+
+            // The group survives the role leaving it, and no longer lists the role.
+            (await reader.GetRoleGroupAsync(portalId, roleGroupId)).Should().NotBeNull();
+            (await reader.GetRolesByGroupAsync(roleGroupId, portalId)).Should().BeEmpty();
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemoveGroupAsync(roleGroupId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>A role group is renamed and redescribed through its own update member.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The group members are read back afterwards to prove the amendment did not disturb them. The legacy
+    /// <c>UpdateRoleGroup(RoleGroupId, GroupName, Description)</c> carried exactly these two mutable
+    /// values and nothing else, so a target that also touched the group's roles would be doing more than
+    /// the member it stands in for.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRoleGroupAsync_RenamesTheGroupWithoutDisturbingItsRoles()
+    {
+        int portalId = await CreatePortalAsync();
+        string marker = Suffix();
+        int roleGroupId = await CreateGroupAsync(portalId, FormattableString.Invariant($"Original {marker}"));
+        int roleId = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"Grouped {marker}"),
+            roleGroupId: roleGroupId);
+        string renamed = FormattableString.Invariant($"Renamed {marker}");
+
+        try
+        {
+            using (IServiceScope amending = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = amending.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = amending.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                RoleGroup? group = await roles.GetRoleGroupAsync(portalId, roleGroupId);
+                group.Should().NotBeNull();
+
+                group!.RoleGroupName = renamed;
+                group.Description = "Amended by the persistence role suite.";
+
+                await roles.UpdateRoleGroupAsync(group);
+
+                int affected = await unitOfWork.SaveChangesAsync();
+                affected.Should().BePositive();
+            }
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            RoleGroup? amended = await reader.GetRoleGroupAsync(portalId, roleGroupId);
+
+            amended.Should().NotBeNull();
+            amended!.RoleGroupName.Should().Be(renamed);
+            amended.Description.Should().Be("Amended by the persistence role suite.");
+            amended.PortalId.Should().Be(portalId);
+
+            (await reader.GetRoleGroupsAsync(portalId))
+                .Select(group => group.RoleGroupName)
+                .Should().Equal(renamed);
+
+            // The membership is untouched by the rename, from both directions.
+            (await reader.GetRolesByGroupAsync(roleGroupId, portalId))
+                .Select(role => role.RoleId)
+                .Should().Equal(roleId);
+
+            Role? grouped = await reader.GetByIdAsync(roleId, portalId);
+            grouped.Should().NotBeNull();
+            grouped!.RoleGroup.Should().NotBeNull();
+            grouped.RoleGroup!.RoleGroupName.Should().Be(renamed);
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemoveGroupAsync(roleGroupId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// Each of the six legacy billing codes survives a write and a read through the repository, and reaches
+    /// the column as the single character the legacy engine branched on.
+    /// </summary>
+    /// <param name="frequency">The member under test.</param>
+    /// <param name="storedCode">The character the column must hold for that member.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: ALL SIX CODES ARE LOAD-BEARING, NOT FOUR. The legacy
+    /// <c>Library/Components/Security/Roles/RoleController.vb</c> branches on the literal characters
+    /// <c>N</c>, <c>O</c>, <c>D</c>, <c>W</c>, <c>M</c> and <c>Y</c> in one <c>Select Case</c>, and the two
+    /// non-interval codes carry as much meaning as the four intervals: <c>N</c> assigned the legacy
+    /// absent-date marker, meaning the membership never lapses, and <c>O</c> assigned the literal
+    /// <c>New System.DateTime(9999, 12, 31)</c>, meaning a single fee buys perpetual access. A migration
+    /// that carried only the four interval codes would silently reprice every free and every one-off role
+    /// in an existing installation.
+    /// </para>
+    /// <para>
+    /// The stored character is asserted directly rather than inferred from the round-trip, because a
+    /// conversion that persisted the enumeration's ORDINAL would round-trip perfectly through this same
+    /// code path while writing bytes no existing DotNetNuke database contains and no legacy procedure can
+    /// read. The character is the contract; the member is an alias for it. That is also why the members
+    /// carry the code points as their values, which the <c>ushort</c> base of the enumeration permits.
+    /// </para>
+    /// <para>
+    /// Both frequency columns are exercised with the same code in one row, because they are two
+    /// independent columns sharing one conversion and a mapping that bound only the billing column would
+    /// otherwise pass.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData(BillingFrequency.None, "N")]
+    [InlineData(BillingFrequency.OneTime, "O")]
+    [InlineData(BillingFrequency.Day, "D")]
+    [InlineData(BillingFrequency.Week, "W")]
+    [InlineData(BillingFrequency.Month, "M")]
+    [InlineData(BillingFrequency.Year, "Y")]
+    public async Task BillingCodes_EachOfTheSixRoundTripsAsItsLegacyCharacter(
+        BillingFrequency frequency,
+        string storedCode)
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId;
+
+        using (IServiceScope writing = _fixture.Services.CreateScope())
+        {
+            IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+            IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            Role role = new()
+            {
+                PortalId = portalId,
+                RoleName = FormattableString.Invariant($"Coded {storedCode} {Suffix()}"),
+                Description = "Created by the persistence role suite.",
+                ServiceFee = 9.99m,
+                BillingPeriod = 1,
+                BillingFrequency = frequency,
+                TrialFee = 0m,
+                TrialPeriod = 1,
+                TrialFrequency = frequency,
+            };
+
+            await roles.AddAsync(role);
+            await unitOfWork.SaveChangesAsync();
+
+            roleId = role.RoleId;
+        }
+
+        try
+        {
+            (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(storedCode);
+            (await ReadStoredTrialFrequencyAsync(roleId)).Should().Be(storedCode);
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? stored = await reader.GetByIdAsync(roleId, portalId);
+
+            stored.Should().NotBeNull();
+            stored!.BillingFrequency.Should().Be(frequency);
+            stored.TrialFrequency.Should().Be(frequency);
+
+            // The code point of the member IS the stored character, which is what keeps the two
+            // representations from drifting apart if a member is ever reordered.
+            ((char)frequency).ToString().Should().Be(storedCode);
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A stored billing code outside the documented set is read without throwing, which is what keeps the
+    /// roles every DotNetNuke installation ships with readable.
+    /// </summary>
+    /// <param name="storedCode">A single character an existing installation is known to hold.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE MOST CONSEQUENTIAL ASSERTION IN THIS FILE, and the reason is in the shipped data rather
+    /// than in the code. <c>Roles.BillingFrequency</c> is <c>char(1) NULL</c>, which accepts any single
+    /// character, and the installation seed in <c>01.00.00.SqlDataProvider</c> takes that literally: the
+    /// Administrators role is inserted with <c>BillingFrequency = '4'</c> and the Registered Users role
+    /// with <c>'0'</c>. Neither is in <c>{N, O, D, W, M, Y}</c>. A strict <c>Enum.Parse</c>, or a
+    /// conversion that raised on an unrecognised code, would therefore be unable to read the two roles
+    /// present in every single installation - including the Administrators role, whose key is the target
+    /// of <c>Portals.AdministratorRoleId</c> and whose membership the tenant-administration policy grants
+    /// on. Role administration would fail at the read, before any business rule ran.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE LEGACY SWITCH HAD NO <c>Case Else</c>, AND THE TARGET REPRODUCES ITS TOLERANCE
+    /// WITHOUT REPRODUCING ITS SILENCE. An unrecognised code fell through every arm of the legacy
+    /// <c>Select Case</c> and left the expiry date exactly as it was - it did not raise, did not clear the
+    /// value and did not substitute a default. The target conversion is tolerant in the same direction and
+    /// resolves an unrecognised code to the member whose meaning is "not billed", which is the safe
+    /// reading: a role whose frequency cannot be understood is treated as one that generates no billing
+    /// event rather than one that generates an unpredictable charge. That resolution is asserted below
+    /// rather than assumed, because it is the conversion's decision and this test exists to pin it.
+    /// </para>
+    /// <para>
+    /// Both codes are read through the ordinary repository members, single and listing, so the tolerance is
+    /// proven on the paths the application actually uses rather than on a bespoke query. The unrecognised
+    /// character is placed in the column by an <c>UPDATE</c> because no code path in the target can write
+    /// one - which is the point: the target never produces such a row, and must still read one.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("4")]
+    [InlineData("0")]
+    public async Task UnrecognisedStoredBillingCode_IsReadWithoutThrowing(string storedCode)
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"Legacy Coded {Suffix()}"));
+
+        try
+        {
+            await OverwriteStoredFrequenciesAsync(roleId, storedCode);
+
+            (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
+                storedCode,
+                "the row now holds exactly what a shipped installation holds");
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Func<Task> readingTheRole = async () =>
+            {
+                _ = await reader.GetByIdAsync(roleId, portalId);
+                _ = await reader.GetByPortalIdAsync(portalId);
+                _ = await reader.GetAllAsync();
+            };
+
+            await readingTheRole.Should().NotThrowAsync(
+                "a role carrying an undocumented frequency code must remain readable");
+
+            Role? single = await reader.GetByIdAsync(roleId, portalId);
+            single.Should().NotBeNull();
+            single!.BillingFrequency.Should().Be(
+                BillingFrequency.None,
+                "an unrecognised code resolves to the member that generates no billing event");
+            single.TrialFrequency.Should().Be(BillingFrequency.None);
+
+            // The listing path materialises the same row through the same conversion, so it must agree.
+            (await reader.GetByPortalIdAsync(portalId))
+                .Where(role => role.RoleId == roleId)
+                .Select(role => role.BillingFrequency)
+                .Should().Equal(BillingFrequency.None);
+
+            // MIGRATION: the resolution is deliberately NOT null. A null frequency means "this role
+            // carries no frequency at all", which is what an untouched legacy column means; the seeded
+            // rows do carry a character, and flattening the two cases together would lose the fact that
+            // something unreadable was stored. The distinction is asserted here so that a later change to
+            // the conversion cannot quietly merge them.
+            (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
+                storedCode,
+                "reading the row does not rewrite it");
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A staged role is invisible until the unit of work commits, and its generated key is only meaningful
+    /// afterwards.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: EVERY LEGACY INSERT RETURNED THE GENERATED KEY; NONE OF THESE DOES. Each legacy
+    /// procedure ended in <c>SCOPE_IDENTITY()</c> and its provider member was declared
+    /// <c>As Integer</c> - <c>AddRole</c>, <c>AddRoleGroup</c> and <c>AddUserRole</c> alike - so the
+    /// caller received the key at the moment of the call and the call therefore had to be its own
+    /// transaction. The target inverts that: <c>AddAsync</c> returns a bare <c>Task</c>, stages an
+    /// intention, and the key appears on the entity only once <c>IUnitOfWork.SaveChangesAsync</c> has run.
+    /// That is what allows one commit to span the several tables a tenant creation writes, and it is why
+    /// no member of this contract can return an <c>int</c>. The absence of a return value is proven at
+    /// compile time by the staging calls in this file being statements rather than assignments.
+    /// </para>
+    /// <para>
+    /// The proof of "not yet persisted" is the SEPARATE-SCOPE READ, not the numeric value of the key.
+    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so zero is a legitimate role identifier and an
+    /// unwritten entity is indistinguishable from the first role of an installation by inspecting the
+    /// property alone. The uncommitted value is asserted as well, but only as the CLR default it is, with
+    /// the visibility check carrying the actual claim.
+    /// </para>
+    /// <para>
+    /// <c>Entity{TId}.IdentityIsPersisted</c> is deliberately NOT asserted to become true after the
+    /// commit. Nothing in this solution declares it automatically - there is no interceptor and no
+    /// post-save hook calling <c>MarkIdentityPersisted</c> - so it remains false on an entity the store
+    /// has just written, and a test asserting otherwise would be asserting a mechanism that does not
+    /// exist.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AddAsync_StagesTheRoleAndTheKeyArrivesOnlyWithTheCommit()
+    {
+        int portalId = await CreatePortalAsync();
+        string roleName = FormattableString.Invariant($"Staged {Suffix()}");
+        int roleId = -1;
+
+        try
+        {
+            using (IServiceScope staging = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = staging.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = staging.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role role = new()
+                {
+                    PortalId = portalId,
+                    RoleName = roleName,
+                    Description = "Created by the persistence role suite.",
+                };
+
+                role.IdentityIsPersisted.Should().BeFalse("a freshly constructed entity declares nothing");
+
+                await roles.AddAsync(role);
+
+                role.RoleId.Should().Be(
+                    default,
+                    "the property still holds its CLR default, which is not evidence of absence here");
+                role.IdentityIsPersisted.Should().BeFalse("staging is not persisting");
+
+                // The claim that nothing is persisted yet, made where it can actually be observed: a
+                // second scope has its own change tracker and can only see committed rows.
+                using (IServiceScope beforeCommit = _fixture.Services.CreateScope())
+                {
+                    IRoleRepository other = beforeCommit.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                    (await other.GetByNameAsync(portalId, roleName)).Should().BeNull(
+                        "a staged role is not in the store until the unit of work commits");
+                }
+
+                int affected = await unitOfWork.SaveChangesAsync();
+                affected.Should().Be(1, "one row was staged, so one row was written");
+
+                roleId = role.RoleId;
+            }
+
+            using IServiceScope afterCommit = _fixture.Services.CreateScope();
+            IRoleRepository reader = afterCommit.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? committed = await reader.GetByIdAsync(roleId, portalId);
+
+            committed.Should().NotBeNull("the key read off the entity after the commit addresses the row");
+            committed!.RoleName.Should().Be(roleName);
+
+            (await reader.GetByNameAsync(portalId, roleName)).Should().NotBeNull();
+        }
+        finally
+        {
+            if (roleId >= 0)
+            {
+                await RemoveRoleAsync(roleId);
+            }
+
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A group, a role inside it and that role's first member are written by one call to the unit of work.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the commit boundary the whole staging arrangement exists for, exercised across all three
+    /// tables this contract owns. The legacy engine could not express it: each of
+    /// <c>AddRoleGroup</c>, <c>AddRole</c> and <c>AddUserRole</c> was a separate procedure returning its
+    /// own <c>SCOPE_IDENTITY()</c>, so the caller had to commit the group before it could name it in the
+    /// role, and commit the role before it could name it in the assignment. A failure between two of
+    /// those calls left the tenant holding a group with no roles, or a role with no members, with no
+    /// mechanism to undo it.
+    /// </para>
+    /// <para>
+    /// The two dependent rows refer to their parents through NAVIGATIONS rather than through keys, which
+    /// is the only formulation that works before the keys exist. It is also the formulation that survives
+    /// the identity seeds of this schema unharmed: the group's key may legitimately be zero and so may
+    /// the role's, so any code that waited for a non-zero key before wiring up a child would wait for
+    /// ever on the first group and the first role of an installation.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task OneSaveChanges_CommitsAGroupARoleAndItsFirstMemberTogether()
+    {
+        int portalId = await CreatePortalAsync();
+        string marker = Suffix();
+        string groupName = FormattableString.Invariant($"Atomic Group {marker}");
+        string roleName = FormattableString.Invariant($"Atomic Role {marker}");
+        int roleGroupId = -1;
+        int roleId = -1;
+
+        try
+        {
+            using (IServiceScope staging = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = staging.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = staging.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                RoleGroup group = new()
+                {
+                    PortalId = portalId,
+                    RoleGroupName = groupName,
+                    Description = "Created by the persistence role suite.",
+                };
+
+                Role role = new()
+                {
+                    PortalId = portalId,
+                    RoleName = roleName,
+                    Description = "Created by the persistence role suite.",
+                    AutoAssignment = true,
+                    RoleGroup = group,
+                };
+
+                UserRole firstMember = new()
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    Role = role,
+                    IsTrialUsed = false,
+                };
+
+                await roles.AddRoleGroupAsync(group);
+                await roles.AddAsync(role);
+                await roles.AddUserRoleAsync(firstMember);
+
+                using (IServiceScope beforeCommit = _fixture.Services.CreateScope())
+                {
+                    IRoleRepository other = beforeCommit.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                    (await other.GetRoleGroupsAsync(portalId)).Should().BeEmpty();
+                    (await other.GetByNameAsync(portalId, roleName)).Should().BeNull();
+                }
+
+                int affected = await unitOfWork.SaveChangesAsync();
+                affected.Should().Be(3, "the group, the role and the assignment are one unit of work");
+
+                roleGroupId = group.RoleGroupId;
+                roleId = role.RoleId;
+            }
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            (await reader.GetRoleGroupAsync(portalId, roleGroupId)).Should().NotBeNull();
+
+            Role? committed = await reader.GetByIdAsync(roleId, portalId);
+            committed.Should().NotBeNull();
+            committed!.RoleGroupId.Should().Be(
+                roleGroupId,
+                "the store resolved the group key from the navigation");
+
+            (await reader.GetRolesByGroupAsync(roleGroupId, portalId))
+                .Select(role => role.RoleId)
+                .Should().Equal(roleId);
+
+            UserRole? assignment = await reader.GetUserRoleAsync(
+                portalId,
+                _fixture.Seed.MemberUserId,
+                roleId);
+
+            assignment.Should().NotBeNull();
+            assignment!.RoleId.Should().Be(roleId, "and the role key from the other navigation");
+        }
+        finally
+        {
+            if (roleId >= 0)
+            {
+                await RemoveAssignmentsAsync(roleId);
+                await RemoveRoleAsync(roleId);
+            }
+
+            if (roleGroupId >= 0)
+            {
+                await RemoveGroupAsync(roleGroupId);
+            }
+
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A membership classifies itself identically before and after the store has held it, at every one of
+    /// the three outcomes.
+    /// </summary>
+    /// <param name="effectiveOffsetDays">
+    /// Days from the classification instant to the effective bound, or <see langword="null"/> for no bound.
+    /// </param>
+    /// <param name="expiryOffsetDays">
+    /// Days from the classification instant to the expiry bound, or <see langword="null"/> for no bound.
+    /// </param>
+    /// <param name="expected">The classification both the staged and the stored membership must report.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The classification itself is a pure Domain method taking the instant as a parameter, so it needs no
+    /// database to exercise. What needs one is the claim that the classification is STABLE ACROSS
+    /// PERSISTENCE: the two bounds are SQL Server <c>datetime</c> columns, whose resolution is coarser
+    /// than a CLR <c>DateTime</c>, and a membership that reported one status in memory and another after a
+    /// round-trip would be an authorisation answer that changed when nothing about the grant did. Both
+    /// bounds are therefore whole days, which <c>datetime</c> represents exactly, and both readings are
+    /// asserted against the same fixed instant.
+    /// </para>
+    /// <para>
+    /// The instant is far in the future so that the write-path normalisation does not consume the cases.
+    /// An effective bound already in the past is deliberately cleared to null on the way to the store -
+    /// the legacy <c>If EffectiveDate &lt; Now Then EffectiveDate = Null.NullDate</c> - so a case built
+    /// around a past start would arrive as an unbounded one and would prove the wrong thing.
+    /// </para>
+    /// <para>
+    /// MIGRATION: BOTH BOUNDS ARE INCLUSIVE, AND EXPIRY OUTRANKS A START THAT HAS NOT ARRIVED. The
+    /// inclusive reading is the measured behaviour of the terminal <c>GetRolesByUser</c> predicate, which
+    /// admits a membership sitting exactly on either bound, so the zero-offset case below is in force
+    /// rather than lapsed. The precedence matters because the two bounds really can contradict each other:
+    /// the cancellation path back-dates the expiry by a day and never touches the effective date, so a
+    /// cancelled future membership exists in ordinary data. Reporting it as pending would tell an
+    /// administrator it was about to begin.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData(5, 400, RoleStatus.Pending)]
+    [InlineData(null, -30, RoleStatus.Expired)]
+    [InlineData(5, -30, RoleStatus.Expired)]
+    [InlineData(null, null, RoleStatus.Active)]
+    [InlineData(-10, 10, RoleStatus.Active)]
+    [InlineData(0, 0, RoleStatus.Active)]
+    public async Task GetStatus_ClassifiesTheSameWayBeforeAndAfterPersistence(
+        int? effectiveOffsetDays,
+        int? expiryOffsetDays,
+        RoleStatus expected)
+    {
+        // A whole-day instant in the future: exactly representable in a datetime column, and late enough
+        // that no case below is reinterpreted by the write path's past-effective-date normalisation.
+        DateTime asOf = new(2030, 6, 15, 0, 0, 0, DateTimeKind.Utc);
+        DateTime? effectiveDate = effectiveOffsetDays is int effectiveOffset
+            ? asOf.AddDays(effectiveOffset)
+            : null;
+        DateTime? expiryDate = expiryOffsetDays is int expiryOffset
+            ? asOf.AddDays(expiryOffset)
+            : null;
+
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Windowed {Suffix()}"));
+
+        try
+        {
+            using (IServiceScope staging = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = staging.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = staging.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                UserRole assignment = new()
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    RoleId = roleId,
+                    EffectiveDate = effectiveDate,
+                    ExpiryDate = expiryDate,
+                    IsTrialUsed = false,
+                };
+
+                await roles.AddUserRoleAsync(assignment);
+
+                // Classified before the store has seen it. The method reads no clock of its own, so the
+                // same instant must produce the same answer here as it does after the round-trip.
+                assignment.GetStatus(asOf).Should().Be(expected);
+
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            UserRole? stored = await reader.GetUserRoleAsync(portalId, _fixture.Seed.MemberUserId, roleId);
+
+            stored.Should().NotBeNull();
+            stored!.EffectiveDate.Should().Be(effectiveDate);
+            stored.ExpiryDate.Should().Be(expiryDate);
+            stored.GetStatus(asOf).Should().Be(expected, "the classification survives the round-trip");
+
+            // Determinism: the same instant twice gives the same answer, and the method leaves no trace on
+            // the entity that a second call could observe.
+            stored.GetStatus(asOf).Should().Be(stored.GetStatus(asOf));
+
+            // The set of in-force memberships is what the tenant-administration policy grants on, so the
+            // Domain's own membership test must agree with the classification for this very assignment.
+            UserRole.AnyActiveInRole([stored], roleId, asOf)
+                .Should().Be(expected == RoleStatus.Active);
+        }
+        finally
+        {
+            await RemoveAssignmentsAsync(roleId);
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// The two identity seeds this contract spans disagree, and the disagreement is load-bearing in
+    /// opposite directions.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> and <c>UserRoles.UserRoleID</c> is
+    /// <c>IDENTITY(1, 1)</c>, so within this one contract zero is a legitimate role key and is not a
+    /// legitimate assignment key. Neither fact is safe to generalise from the other, and code that
+    /// standardised on either reading would be wrong half the time here: rejecting zero as invalid makes
+    /// the Administrators role of every installation unaddressable, while accepting it as an assignment
+    /// key admits a value the store never issues.
+    /// </para>
+    /// <para>
+    /// The seeds are read from the catalogue as well as observed through the repository, because a suite
+    /// running against a database whose seeds had been normalised would otherwise pass while proving
+    /// nothing about the schema the application must actually work with.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task IdentitySeeds_MakeZeroARoleKeyButNeverAnAssignmentKey()
+    {
+        (await ReadIdentitySeedAsync("dbo.Roles")).Should().Be(0);
+        (await ReadIdentitySeedAsync("dbo.RoleGroups")).Should().Be(0);
+        (await ReadIdentitySeedAsync("dbo.UserRoles")).Should().Be(1);
+
+        // Observed rather than merely declared: the first role of this database really does hold zero, and
+        // it is reachable through the ordinary single-role read.
+        _fixture.Seed.AdministratorRoleId.Should().Be(0);
+
+        using IServiceScope scope = _fixture.Services.CreateScope();
+        IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+        (await roles.GetByIdAsync(0, _fixture.Seed.PortalId)).Should().NotBeNull(
+            "zero addresses the Administrators role rather than meaning 'no role'");
+
+        // And zero is load-bearing across a relationship, not just as a key: the tenant's administrator
+        // role column points at it.
+        (await ReadAdministratorRoleIdAsync(_fixture.Seed.PortalId)).Should().Be(0);
+
+        (await CountAssignmentsWithZeroKeyAsync()).Should().Be(
+            0,
+            "no assignment can hold zero, because that column's identity starts at one");
+
+        IReadOnlyList<UserRole> assignments = await roles.GetUserRolesAsync(
+            _fixture.Seed.PortalId,
+            _fixture.Seed.MemberUserId);
+
+        assignments.Should().NotBeEmpty("the seeded member belongs to the registered-users role");
+        assignments.Should().AllSatisfy(assignment => assignment.UserRoleId.Should().BePositive());
+    }
+
+    /// <summary>
+    /// An empty string stays an empty string and a false flag stays a stored false, neither collapsing into
+    /// SQL <c>NULL</c>.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THE LEGACY WRITE PATH TURNED BOTH OF THESE INTO <c>NULL</c>, AND THE TARGET DOES NOT.
+    /// <c>Null.vb</c> defines <c>NullString</c> as the EMPTY STRING and <c>NullBoolean</c> as
+    /// <see langword="false"/>, and <c>Null.GetNull</c> substituted <c>DBNull</c> for any value equal to
+    /// the marker for its type. An empty description and a false flag were therefore both persisted as
+    /// <c>NULL</c> by the legacy layer, which made "the administrator cleared this field" and "this field
+    /// was never set" the same stored row, and made a false flag indistinguishable from an unknown one.
+    /// </para>
+    /// <para>
+    /// The target writes what it is given. That is a deliberate divergence in the stored bytes rather than
+    /// an oversight, and it is the right way round: the two boolean columns are <c>NOT NULL</c> in the
+    /// terminal schema, so <c>false</c> has a home in them and nothing is lost, while
+    /// <c>UserRoles.IsTrialUsed</c> is genuinely nullable and is modelled <c>bool?</c> precisely so that a
+    /// legacy <c>NULL</c> remains representable and is not silently read as "no trial used". Both halves
+    /// are asserted, because the divergence is only safe if the nullable column really does keep its null.
+    /// </para>
+    /// <para>
+    /// Evidence that the legacy store is full of such empty strings rather than nulls, so that reading one
+    /// back as a null would be a live behavioural change: the seeded tenant row holds <c>HostFee</c> as
+    /// an empty string, and the seeded module rows hold their authorised-role lists the same way.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task EmptyStringsAndFalseFlagsAreStoredRatherThanCollapsedToNull()
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId;
+
+        using (IServiceScope writing = _fixture.Services.CreateScope())
+        {
+            IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+            IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            Role role = new()
+            {
+                PortalId = portalId,
+                RoleName = FormattableString.Invariant($"Emptied {Suffix()}"),
+                Description = string.Empty,
+                RsvpCode = string.Empty,
+                IconFile = string.Empty,
+                IsPublic = false,
+                AutoAssignment = false,
+            };
+
+            await roles.AddAsync(role);
+            await unitOfWork.SaveChangesAsync();
+
+            roleId = role.RoleId;
+        }
+
+        try
+        {
+            (await CountEmptyTextAsync(roleId)).Should().Be(
+                1,
+                "the three text columns hold empty strings rather than nulls");
+            (await CountStoredFalseFlagsAsync(roleId)).Should().Be(
+                1,
+                "and the two flag columns hold a stored false rather than a null");
+
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                Role? stored = await reader.GetByIdAsync(roleId, portalId);
+
+                stored.Should().NotBeNull();
+                stored!.Description.Should().BeEmpty("and comes back as an empty string, not as absence");
+                stored.RsvpCode.Should().BeEmpty();
+                stored.IconFile.Should().BeEmpty();
+                stored.IsPublic.Should().BeFalse();
+                stored.AutoAssignment.Should().BeFalse();
+            }
+
+            // The nullable flag on the assignment keeps its null, which is the other half of the trade:
+            // the divergence above is only acceptable because absence remains expressible where the
+            // schema genuinely permits it.
+            using (IServiceScope assigning = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = assigning.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = assigning.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await roles.AddUserRoleAsync(new UserRole
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    RoleId = roleId,
+                    IsTrialUsed = null,
+                });
+
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await CountNullTrialFlagsAsync(roleId)).Should().Be(1, "an unknown trial flag stays unknown");
+
+            using IServiceScope confirming = _fixture.Services.CreateScope();
+            IRoleRepository reader2 = confirming.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            UserRole? assignment = await reader2.GetUserRoleAsync(
+                portalId,
+                _fixture.Seed.MemberUserId,
+                roleId);
+
+            assignment.Should().NotBeNull();
+            assignment!.IsTrialUsed.Should().BeNull("bool? keeps the distinction the legacy layer lost");
+        }
+        finally
+        {
+            await RemoveAssignmentsAsync(roleId);
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A role belonging to no tenant is offered to every tenant's listing, and is still not addressable
+    /// through a tenant-scoped read.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>Roles.PortalID</c> is <c>int NULL</c> - alone among the identifying columns of this contract -
+    /// and the terminal listing procedure admits a role whose tenant is null into every tenant's list.
+    /// The entity therefore models the column as <c>int?</c> and the listing member reproduces that
+    /// inclusion. It is asserted here because it is invisible in ordinary data: every role a tenant
+    /// creates carries a tenant, so a mapping that dropped the inclusion would pass every other
+    /// assertion in this file.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE LISTING AND THE SINGLE READ DISAGREE ABOUT SUCH A ROLE, AND THAT DISAGREEMENT IS
+    /// PRESERVED RATHER THAN REPAIRED. The tenant-scoped single read requires the tenant keys to be equal,
+    /// which a null never is, so a role visible in a tenant's list cannot be fetched by that tenant's own
+    /// single read. The same asymmetry exists in the legacy pair - the listing procedure's <c>OR
+    /// PortalID IS NULL</c> against the single-role procedure's equality test - so it is recorded here as
+    /// the measured behaviour of both, not smoothed over. Repairing it would be an opportunistic change to
+    /// a rule the Minimal Change Clause protects; it is documented instead.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetByPortalIdAsync_AdmitsARoleThatBelongsToNoTenant()
+    {
+        int portalId = await CreatePortalAsync();
+        string roleName = FormattableString.Invariant($"Installation Wide {Suffix()}");
+        int roleId;
+
+        using (IServiceScope writing = _fixture.Services.CreateScope())
+        {
+            IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+            IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            Role role = new()
+            {
+                PortalId = null,
+                RoleName = roleName,
+                Description = "Created by the persistence role suite.",
+            };
+
+            await roles.AddAsync(role);
+            await unitOfWork.SaveChangesAsync();
+
+            roleId = role.RoleId;
+        }
+
+        try
+        {
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IRoleRepository reader = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            (await reader.GetByPortalIdAsync(portalId))
+                .Select(role => role.RoleId)
+                .Should().Contain(roleId, "a role with no tenant is offered to the tenant just created");
+
+            (await reader.GetByPortalIdAsync(_fixture.Seed.PortalId))
+                .Select(role => role.RoleId)
+                .Should().Contain(roleId, "and to every other tenant as well");
+
+            (await reader.GetAllAsync())
+                .Select(role => role.RoleId)
+                .Should().Contain(roleId, "the unfiltered read carries it too");
+
+            // The asymmetry, asserted rather than corrected.
+            (await reader.GetByIdAsync(roleId, portalId)).Should().BeNull(
+                "a tenant-scoped single read compares the tenant keys, and a null is equal to nothing");
+            (await reader.GetByNameAsync(portalId, roleName)).Should().BeNull();
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
     /// <summary>Creates a bare tenant through the repository.</summary>
     /// <returns>The identifier the store assigned.</returns>
     private async Task<int> CreatePortalAsync()
@@ -1109,6 +2185,144 @@ public sealed class RoleRepositoryTests
         return _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [RoleID] = @roleId",
             new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Reads the billing frequency character a role row holds.</summary>
+    /// <param name="roleId">The role to read.</param>
+    /// <returns>The stored character.</returns>
+    /// <remarks>
+    /// Deliberately a separate member from its trial counterpart rather than one taking a column name, so
+    /// that no column identifier is ever composed into a statement.
+    /// </remarks>
+    private Task<string> ReadStoredBillingFrequencyAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<string>(
+            "SELECT [BillingFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Reads the trial frequency character a role row holds.</summary>
+    /// <param name="roleId">The role to read.</param>
+    /// <returns>The stored character.</returns>
+    private Task<string> ReadStoredTrialFrequencyAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<string>(
+            "SELECT [TrialFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>
+    /// Places a raw character in both frequency columns of a role, bypassing the entity conversion.
+    /// </summary>
+    /// <param name="roleId">The role to amend.</param>
+    /// <param name="storedCode">The single character to store.</param>
+    /// <returns>A task that completes once the row is amended.</returns>
+    /// <remarks>
+    /// No code path in the target can write a character outside the documented set, which is exactly why a
+    /// statement is used here: the shipped installation data contains such rows, so the read path has to
+    /// cope with one even though the write path will never produce one. This amends a data row of a role
+    /// this test created and owns; it alters no schema.
+    /// </remarks>
+    private async Task OverwriteStoredFrequenciesAsync(int roleId, string storedCode)
+    {
+        int affected = await _fixture.Database.ExecuteAsync(
+            "UPDATE [dbo].[Roles] SET [BillingFrequency] = @storedCode, [TrialFrequency] = @storedCode "
+            + "WHERE [RoleID] = @roleId",
+            new Dictionary<string, object?> { ["storedCode"] = storedCode, ["roleId"] = roleId });
+
+        affected.Should().Be(1, "the role this test created is the only row addressed");
+    }
+
+    /// <summary>
+    /// Counts the role rows whose optional subscription terms are all null.
+    /// </summary>
+    /// <param name="roleId">The role to examine.</param>
+    /// <returns>One when every optional term of that role is null, otherwise zero.</returns>
+    private Task<int> CountClearedTermsAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleID] = @roleId "
+            + "AND [RoleGroupID] IS NULL AND [BillingPeriod] IS NULL AND [BillingFrequency] IS NULL "
+            + "AND [TrialFee] IS NULL AND [TrialPeriod] IS NULL AND [TrialFrequency] IS NULL "
+            + "AND [RSVPCode] IS NULL AND [IconFile] IS NULL",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>
+    /// Counts the role rows whose three optional text columns hold empty strings rather than nulls.
+    /// </summary>
+    /// <param name="roleId">The role to examine.</param>
+    /// <returns>One when all three columns are present and empty, otherwise zero.</returns>
+    /// <remarks>
+    /// The emptiness test is <c>LEN</c> against zero with an explicit not-null test alongside it, because
+    /// <c>= ''</c> alone would also be satisfied by a column holding only padding, and a null column would
+    /// make the comparison unknown rather than false.
+    /// </remarks>
+    private Task<int> CountEmptyTextAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleID] = @roleId "
+            + "AND [Description] IS NOT NULL AND LEN([Description]) = 0 "
+            + "AND [RSVPCode] IS NOT NULL AND LEN([RSVPCode]) = 0 "
+            + "AND [IconFile] IS NOT NULL AND LEN([IconFile]) = 0",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>
+    /// Counts the role rows whose two flag columns hold a stored false rather than a null.
+    /// </summary>
+    /// <param name="roleId">The role to examine.</param>
+    /// <returns>One when both flags are present and false, otherwise zero.</returns>
+    private Task<int> CountStoredFalseFlagsAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Roles] WHERE [RoleID] = @roleId "
+            + "AND [IsPublic] IS NOT NULL AND [IsPublic] = 0 "
+            + "AND [AutoAssignment] IS NOT NULL AND [AutoAssignment] = 0",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Counts the membership rows of a role whose trial flag is null.</summary>
+    /// <param name="roleId">The role to examine.</param>
+    /// <returns>The number of rows whose trial flag is unknown.</returns>
+    private Task<int> CountNullTrialFlagsAsync(int roleId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[UserRoles] "
+            + "WHERE [RoleID] = @roleId AND [IsTrialUsed] IS NULL",
+            new Dictionary<string, object?> { ["roleId"] = roleId });
+    }
+
+    /// <summary>Counts the membership rows bearing the key an identity seeded at one can never issue.</summary>
+    /// <returns>The number of such rows, which must be none.</returns>
+    private Task<int> CountAssignmentsWithZeroKeyAsync()
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [UserRoleID] = 0");
+    }
+
+    /// <summary>Reads the identity seed a table's identity column was declared with.</summary>
+    /// <param name="qualifiedTableName">The schema-qualified table name.</param>
+    /// <returns>The declared seed.</returns>
+    /// <remarks>
+    /// Cast in the statement because the catalogue function answers a numeric type that does not convert
+    /// directly, and read as a bound parameter so the table name is never composed into the text.
+    /// </remarks>
+    private Task<int> ReadIdentitySeedAsync(string qualifiedTableName)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT CAST(IDENT_SEED(@qualifiedTableName) AS int)",
+            new Dictionary<string, object?> { ["qualifiedTableName"] = qualifiedTableName });
+    }
+
+    /// <summary>Reads the administrator role key a tenant row points at.</summary>
+    /// <param name="portalId">The tenant to read.</param>
+    /// <returns>The administrator role key.</returns>
+    private Task<int> ReadAdministratorRoleIdAsync(int portalId)
+    {
+        return _fixture.Database.ScalarAsync<int>(
+            "SELECT [AdministratorRoleId] FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
+            new Dictionary<string, object?> { ["portalId"] = portalId });
     }
 
     /// <summary>
