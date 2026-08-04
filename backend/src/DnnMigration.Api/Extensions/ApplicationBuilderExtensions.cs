@@ -24,12 +24,80 @@ namespace DnnMigration.Api.Extensions;
 /// except the stage in front of it.
 /// </para>
 /// <para>
-/// The relative order of the exception handler, the correlation stage, request
-/// logging, routing, cross-origin policy, authentication, authorisation, tenant
-/// resolution, the controllers and the health endpoint is fixed by the migration
-/// plan and is not open to local variation. The stages this file adds around them -
-/// forwarded headers, transport security, the rate limiter and the documentation
-/// console - are placed so that they do not disturb that relative order.
+/// <b>The fixed order.</b> These ten stages, in this sequence, are fixed by the
+/// migration plan and are not open to local variation. The additional stages this
+/// file adds around them - transport security, the tenant path base, the rate limiter
+/// and the documentation console - are placed so that they do not disturb the
+/// relative order of the ten:
+/// </para>
+/// <list type="number">
+/// <item><description><c>UseExceptionHandler()</c>, parameterless.</description></item>
+/// <item><description><c>UseMiddleware&lt;CorrelationIdMiddleware&gt;()</c>.</description></item>
+/// <item><description><c>UseMiddleware&lt;RequestLoggingMiddleware&gt;()</c>.</description></item>
+/// <item><description><c>UseRouting()</c>.</description></item>
+/// <item><description><c>UseCors(CorsExtensions.PolicyName)</c>, the named policy.</description></item>
+/// <item><description><c>UseAuthentication()</c>.</description></item>
+/// <item><description><c>UseAuthorization()</c>.</description></item>
+/// <item><description><c>UseMiddleware&lt;PortalAliasResolutionMiddleware&gt;()</c>.</description></item>
+/// <item><description><c>MapControllers()</c>.</description></item>
+/// <item><description><c>MapHealthChecks("/health")</c>, anonymous.</description></item>
+/// </list>
+/// <para>
+/// <b>Why each join is where it is.</b> A stage moved one position is silently wrong,
+/// so the reason for every adjacency is recorded rather than left to be re-derived:
+/// </para>
+/// <list type="bullet">
+/// <item><description>
+/// <b>The exception handler is first</b> so that it wraps everything downstream,
+/// including the correlation stage. An error stage placed second catches everything
+/// except the stage in front of it, and a failure there would escape the problem
+/// details contract entirely.
+/// </description></item>
+/// <item><description>
+/// <b>Correlation precedes request logging</b> because the correlation identifier has
+/// to exist before the entry that carries it is written. Reversed, every log entry
+/// loses its correlation and the loop with the client's own correlation interceptor
+/// is broken.
+/// </description></item>
+/// <item><description>
+/// <b>Cross-origin policy follows routing</b> because it is endpoint-aware: the policy
+/// is read from the endpoint that routing selected, and placed earlier it would
+/// silently fall back to global behaviour.
+/// </description></item>
+/// <item><description>
+/// <b>Cross-origin policy precedes authorisation</b> because a pre-flight request
+/// carries no credentials. Authorisation first would answer every <c>OPTIONS</c> with
+/// 401 before the cross-origin headers were attached, and the browser would report
+/// that as an opaque cross-origin failure rather than as the refusal it is.
+/// </description></item>
+/// <item><description>
+/// <b>Authentication precedes authorisation</b> because authentication establishes the
+/// principal that authorisation evaluates.
+/// </description></item>
+/// <item><description>
+/// <b>Tenant resolution follows authentication</b> because it consults the caller's
+/// claims; it cannot run before the claims exist.
+/// </description></item>
+/// <item><description>
+/// <b>The endpoints are last</b> because executing one terminates the pipeline.
+/// </description></item>
+/// </list>
+/// <para>
+/// <b>Transport security is guarded, deliberately.</b> Redirection to HTTPS is off
+/// unless a deployment switches it on, and that is a correctness requirement rather
+/// than a preference: in the shipped topology TLS is terminated by the reverse proxy
+/// in front of this application, the container listens on plain HTTP, and the image's
+/// own health probe reaches this process over plain HTTP on that port. An
+/// unconditional redirect would answer the probe with a redirect instead of a
+/// response, the container would never report healthy, and the front end that waits on
+/// it would never start. See <see cref="UseApiPipeline(WebApplication)"/> for the
+/// mechanism and the citation.
+/// </para>
+/// <para>
+/// <b>The health endpoint is anonymous and unthrottled.</b> Both properties are
+/// load-bearing rather than incidental: the compose topology holds the front-end
+/// container back until this endpoint reports healthy, so anything that authenticates,
+/// throttles or redirects it stops the whole deployment from starting.
 /// </para>
 /// </remarks>
 public static class ApplicationBuilderExtensions
@@ -57,8 +125,26 @@ public static class ApplicationBuilderExtensions
     /// <c>Https:RedirectEnabled</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Off by default, and the reason is concrete rather than cautious - see
     /// <see cref="UseApiPipeline(WebApplication)"/>.
+    /// </para>
+    /// <para>
+    /// The key is deliberately published as a constant rather than spelled inline. It is
+    /// read in exactly one place, but it is depended upon from outside this file: a
+    /// deployment sets it to switch redirection on, and the integration host sets it to
+    /// keep redirection off so that no request is answered with a redirect to an
+    /// authority the test server does not listen on. A key that is renamed without both
+    /// of those following becomes inert rather than failing, and an inert flag is
+    /// indistinguishable from a flag that was set - which is precisely the failure this
+    /// constant exists to make impossible.
+    /// </para>
+    /// <para>
+    /// It is intentionally not backed by an options class. The four bound options types
+    /// are a closed set, and a single boolean that is read once while the pipeline is
+    /// being composed - before any request exists, and therefore before any options
+    /// snapshot would be resolved - gains nothing from being one.
+    /// </para>
     /// </remarks>
     public const string HttpsRedirectionSectionName = "Https:RedirectEnabled";
 
@@ -98,30 +184,96 @@ public static class ApplicationBuilderExtensions
     /// handler cannot do - guaranteeing that an endpoint reached without any
     /// authorisation requirement still cannot execute against an unresolved tenant.
     /// </para>
+    /// <para>
+    /// <b>On the exception handler's overload.</b> The parameterless overload is the
+    /// only correct one here. It dispatches to the registered
+    /// <see cref="Microsoft.AspNetCore.Diagnostics.IExceptionHandler"/> implementation
+    /// and, when that implementation declines an exception by returning
+    /// <see langword="false"/>, falls through to the framework's own problem-details
+    /// response. Passing an inline handler or an error-path string instead would bypass
+    /// the registered handler altogether and destroy that fall-through, and no compiler
+    /// diagnostic reports the mistake.
+    /// </para>
+    /// <para>
+    /// <b>On the cross-origin policy's name.</b> The named policy is applied explicitly.
+    /// The parameterless form would require a default policy, which is deliberately not
+    /// registered, and an inline policy built here would bypass the origin-restricted
+    /// policy that is registered - unauditably, because the allowed origins would then
+    /// be decided in two places.
+    /// </para>
+    /// <para>
+    /// <b>On the rate limiter and the health endpoint.</b> The limiter is placed after
+    /// routing because its classifier reads endpoint metadata, which does not exist
+    /// before routing has selected an endpoint; placed earlier it would silently lose
+    /// that test and fall back to inspecting the method and path alone. The health
+    /// endpoint is nonetheless outside every partition the limiter applies: each
+    /// partition resolves to the shared no-limit partition unless the request is
+    /// credential-bearing, and a request is credential-bearing only when it carries the
+    /// credential-endpoint metadata or uses one of the mutating methods against a
+    /// credential path. The probe carries neither - it is a read - so it is never
+    /// counted, and it therefore cannot be refused for exceeding a budget it never
+    /// consumes.
+    /// </para>
     /// </remarks>
     public static WebApplication UseApiPipeline(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
 
-        // First, unconditionally. Every later stage that reads the caller's address or
-        // the request's scheme - the rate limiter's partition, transport security,
-        // request logging - must read the values as corrected here, not the proxy's.
-        // Which hops are trusted to supply them is decided at registration; by default
-        // nothing beyond loopback is, so on an untrusted hop these headers are ignored
-        // rather than believed.
-        app.UseForwardedHeaders();
+        // MIGRATION: this method replaces the legacy request pipeline wholesale rather
+        // than porting it. Website/release.config declared eight managed modules at
+        // L67-L74 (ScriptModule, Compression, RequestFilter, UrlRewrite, Exception,
+        // UsersOnline, DNNMembership, Personalization) and seven handlers at L77-L83
+        // (ScriptResource.axd, *_AppService.axd, *.asmx, Logoff.aspx, RSS.aspx,
+        // LinkClick.aspx, *.captcha.aspx), and Website/Default.aspx.vb ran a 700-line
+        // Web Forms page lifecycle on top of them. None of that is translated: the
+        // module chain becomes the explicit stages below, and the page lifecycle has no
+        // counterpart at all because the browser is served by a single-page application
+        // instead. Two of its members are named here so their absence is not mistaken
+        // for an omission - LoadSkin at Website/Default.aspx.vb:L217 and
+        // ManageStyleSheets at :L355 - because skinning is out of scope and the
+        // application shell replaces both.
 
-        // Second, so that every stage after it is inside its scope. An exception
-        // handler covers what follows it and nothing that precedes it; only the
-        // forwarded-header stage above is left outside, and it does not throw on
-        // malformed input - it ignores it.
+        // MIGRATION: forwarded-header processing is deliberately absent. nginx does
+        // forward X-Real-IP, X-Forwarded-For and X-Forwarded-Proto, so without this
+        // stage the address every later stage observes is the proxy's rather than the
+        // caller's, and the credential limiter's per-address partition therefore
+        // collapses into one shared budget for all callers behind the proxy. That is
+        // recorded rather than fixed because the degradation is strictly more
+        // restrictive: callers share a smaller allowance than they otherwise would,
+        // which can refuse a legitimate request but can never admit one the per-address
+        // partition would have refused. A deployment that needs true per-caller
+        // partitioning terminates that decision at the proxy.
+
+        // First, and unconditionally. An exception handler covers what follows it and
+        // nothing that precedes it, so this is the one stage whose position admits no
+        // argument: every stage below is inside its scope.
         app.UseExceptionHandler();
 
+        // Applied outside development, and it needs no switch of its own because it
+        // cannot reach the health probe. This stage only sets a response header - it
+        // never redirects and never changes a status code - and it sets it only on a
+        // request that arrived over HTTPS to a host that is not excluded. The
+        // container's probe is plain HTTP to a loopback address, so it satisfies
+        // neither condition and the header is never even emitted.
         if (!app.Environment.IsDevelopment())
         {
             app.UseHsts();
         }
 
+        // MIGRATION: redirection to HTTPS is enforced only when a deployment asks for
+        // it, and the default is off. docs/project-guide.md:L282 (task H3, SSL/TLS
+        // Certificate Setup) assigns "Configure HTTPS redirection" and "Update nginx
+        // for HTTPS" to deferred production work performed AT THE PROXY, and
+        // docker/api.Dockerfile:L69 sets ASPNETCORE_URLS=http://+:8080 so this process
+        // speaks plain HTTP on the internal network by design. Redirecting
+        // unconditionally would answer docker/api.Dockerfile:L76-L77's
+        // "wget --spider http://127.0.0.1:8080/health" with a redirect rather than a
+        // response; the probe would never report healthy; docker-compose.yml's
+        // "condition: service_healthy" would never be satisfied; the front-end
+        // container would never start; and the end-to-end gate would fail. No
+        // compiler, analyser or unit test catches that, which is exactly why the guard
+        // is here and why it is documented at this length. A host that terminates TLS
+        // in this process rather than in front of it switches the flag on.
         if (app.Configuration.GetValue<bool>(HttpsRedirectionSectionName))
         {
             app.UseHttpsRedirection();
@@ -147,6 +299,15 @@ public static class ApplicationBuilderExtensions
         // below - fixed after authorisation by the mandated order - cannot do this.
         // Nothing named in that order moves: this is an additional, un-named stage.
         app.UseMiddleware<TenantPathBaseMiddleware>();
+
+        // MIGRATION: no static-file stage, and none is missing. The legacy application
+        // served its own markup, stylesheets and skins from this process; this one
+        // returns JSON and nothing else. docker/nginx.conf:L91 serves the single-page
+        // application with "try_files $uri $uri/ /index.html" and proxies only /api/
+        // and /health through to this process (L61 and L74), so a static-file stage here
+        // would have no content to serve and would add a filesystem probe to every
+        // request that misses a route. Server-side rendering is out of scope: there is
+        // no Razor, no view engine and no skinning in this application.
 
         // Routing must precede the four stages below. Cross-origin policy, the rate
         // limiter and authorisation each read metadata from the endpoint that routing
@@ -189,6 +350,20 @@ public static class ApplicationBuilderExtensions
         // this endpoint must answer a container probe that runs before any credential
         // exists in the system at all. Without this call the probe receives 401, is
         // never healthy, and nothing that waits on it ever starts.
+        //
+        // It is also unthrottled, and that is a property of the limiter's classifier
+        // rather than of anything declared here: every partition resolves to the shared
+        // no-limit partition unless a request is credential-bearing, and this endpoint
+        // is neither annotated as credential-bearing nor reached by a mutating method.
+        // It therefore consumes no budget and cannot be refused for exceeding one.
+        // Both properties are depended upon from outside this codebase -
+        // docker/api.Dockerfile probes it and docker-compose.yml holds the front-end
+        // container back until it answers - so neither may be narrowed here.
+        //
+        // Response headers for the browser-facing origin are the proxy's concern, not
+        // this pipeline's: docs/project-guide.md:L295 (task M5) assigns the content
+        // security policy, frame options and strict transport security to deferred work
+        // configured at nginx, so no header stage is registered here.
         //
         // The report is written as JSON rather than left to the framework's default
         // writer. The default emits the status word alone, which tells an operator that
