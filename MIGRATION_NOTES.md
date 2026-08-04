@@ -2759,6 +2759,119 @@ whoever validates this file next: a naive `grep '//'` will match `"http://localh
 `Cors` section, so the presence of comments must be judged with a parser rather than a substring
 search.
 
+### The development overlay carries three log levels and nothing else, and the legacy development file's committed validation key is not among them
+
+**Legacy behaviour.** `Website/release.config` and `Website/development.config` are the same
+444-line and 442-line file differing in only six places, and exactly two of those six carry
+meaning. `Website/development.config:L89` hard-codes
+`validationKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902"` where the release file at `:L90` sets
+`validationKey="AutoGenerate,IsolateApps"`; both then share
+`decryptionKey="F9D1A2D3E1D3E2F7B3D9F90FF3965ABDAC304902F8D923AC"` with `decryption="3DES"`
+(`development.config:L90-L91`), which combined with `passwordFormat="Encrypted"` and
+`enablePasswordRetrieval="true"` (`release.config:L239-L245`) decrypts every stored password. The
+development file is therefore the *more* exposed of the two: it commits the signing key as well as
+the decryption key. The other four differences are `objectQualifier="dnn_"` against `""`
+(`development.config:L352` against `release.config:L354`), `<trust level="Medium" originUrl=".*" />`
+active at `development.config:L121` but commented out at `release.config:L122`,
+`<compilation debug="true" strict="false">` against `debug="false" strict="false"`
+(`development.config:L123`, `release.config:L125`), and two whitespace-only hunks.
+
+**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.Development.json` is eleven lines
+and declares one section:
+
+```json
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Debug",
+      "Override": {
+        "Microsoft.AspNetCore": "Information",
+        "Microsoft.EntityFrameworkCore.Database.Command": "Warning"
+      }
+    }
+  }
+}
+```
+
+No signing key, no connection string, no `Jwt` section of any kind. `ConnectionStrings__Default`
+and `Jwt__Secret` arrive from the environment in development exactly as they do in production, and
+both are startup-validated, so a developer who supplies neither is told which key is missing rather
+than being handed a working default that hides the requirement. The section that is declared exists
+in the base file, which keeps the overlay to genuine deltas: everything else - the two empty
+secrets, the password policy, the single permitted cross-origin caller, the credential rate limit,
+the console sink and its compact-JSON formatter - is inherited unchanged.
+
+**Why each of the six legacy differences produces no key here.** The committed keys are the whole
+point of not carrying them forward, and "it is only development" is precisely the reasoning that put
+a 3DES key into source control in the first place. `objectQualifier` is answered by Fluent mapping
+rather than configuration, for the reasons set out two sections above. `<trust level="Medium">` has
+no counterpart at all: code access security was removed from .NET with the move off the .NET
+Framework, partial trust is not a concept the modern runtime implements, and a `Trust` or
+`TrustLevel` key would describe a sandbox that cannot exist - isolation is now the container
+boundary and the unprivileged user the API image runs as. The `strict="false"` half of the
+compilation element is not a setting to port but a warning about the *source* it governed: the
+thirty-nine admin code-behinds compiled with Option Strict off while
+`Library/DotNetNuke.Library.vbproj:L23-L24` compiled the class library with `OptionExplicit` and
+`OptionStrict` on, so those code-behinds may legally contain late binding and implicit narrowing
+that C# rejects outright, and every such conversion had to be made explicit during translation. The
+`debug="true"` half maps to the build configuration and to the developer exception page the
+framework installs from the environment name alone; it is deliberately **not** expressed as a
+`DetailedErrors` key, because `GlobalExceptionHandler` takes `IProblemDetailsService` and
+`ProblemDetailsFactory` and no environment abstraction, so the RFC 7807 response shape is identical
+in every environment by construction, and a key nothing reads is worse than no key.
+
+**Why the SQL-command channel stays closed even in development.** At `Information` the
+`Microsoft.EntityFrameworkCore.Database.Command` category writes the command text together with its
+parameter list, and on the authentication and user-management paths that list is where credentials
+and tokens would be. `Warning` is therefore restated in the overlay rather than merely inherited,
+so that the level appears in the same block that relaxes the two levels around it - the place a
+reviewer looks to check it was not relaxed as well. The consequence is accepted deliberately:
+generated SQL does not appear in a development log, and a developer who needs it enables
+sensitive-data logging locally rather than lowering a level in a tracked file. Verified by running
+the host in development against a live SQL Server: with the shipped value the login path produced
+twenty `Database.Connection`, twelve `Query` and one `ChangeTracking` event at `Debug` and **zero**
+`Database.Command` events, and with the level lowered to `Information` the same request produced
+four `Executed DbCommand` entries carrying `Parameters=[...]` and the full statement. The two
+levels that *are* relaxed are bounded: `Default` at `Debug` buys the value-free Entity Framework
+Core diagnostics that make a mapping against the legacy schema inspectable, and the
+`Microsoft.AspNetCore` override at `Information` restores the framework's per-request entry while
+simultaneously holding the whole ASP.NET Core namespace above `Debug`, since a Serilog override
+applies to the longest matching prefix. Neither appears in the production overlay, and neither may
+be copied into it.
+
+### `TrustServerCertificate=True` belongs to a development connection string only
+
+**Legacy behaviour.** Transport security did not arise. `Website/release.config:L25` and `:L36`
+both point at `Data Source=.\SQLExpress;Integrated Security=True;User Instance=True;`
+`AttachDBFilename=|DataDirectory|Database.mdf;` - a local file-attached SQL Server Express 2005
+instance - and the commented alternative at `:L30` is `Server=(local);Database=DotNetNuke;uid=;pwd=;`.
+The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
+no setting existed to relax.
+
+**Target behaviour.** `Microsoft.Data.SqlClient` 5.2.3, which `DnnMigration.Infrastructure` pins,
+defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
+A developer running SQL Server locally with a self-signed certificate may add
+`TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
+only place it is acceptable. It must never appear in a production connection string, where it
+silently disables the validation that makes encryption worth having, and it appears in no tracked
+file in this repository: `appsettings.json` declares the connection string as an empty value,
+`appsettings.Development.json` declares no connection string at all, and
+`appsettings.Production.json` declares none either. Neither `User Instance` nor `AttachDBFilename`
+is carried forward in any form; both are SQL Server Express 2005 features with no counterpart in a
+containerised deployment.
+
+**Why the development overlay ships no connection string, credential-free or otherwise.** A sample
+value in a tracked file is how a real one eventually arrives there, which is the reasoning already
+recorded for the base file. A credential-free
+`Server=localhost;Database=DotNetNuke;Trusted_Connection=True` template was considered and rejected
+for a second, concrete reason: integrated authentication is not how this project's own development
+database is reached - that is a SQL Server container addressed over TCP with a password supplied
+from an untracked file - so the template would fail on the very machine it was meant to help, and
+the only edit that would make it work is the one edit that must never be made. Leaving the key out
+means the startup guard in `AddInfrastructure` names both `ConnectionStrings:Default` and
+`ConnectionStrings__Default` and stops, which is a better first experience than a driver-level login
+failure.
+
 ## Request validation, credentials and wire contracts
 
 ### Password recovery by security question is not carried forward, and neither is a server-generated password

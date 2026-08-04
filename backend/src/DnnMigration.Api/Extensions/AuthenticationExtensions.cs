@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text;
 using DnnMigration.Api.Authorization;
 using DnnMigration.Api.ErrorHandling;
@@ -25,6 +26,26 @@ namespace DnnMigration.Api.Extensions;
 /// inside each page. The ticket becomes a signed bearer token, the provider model
 /// becomes an authentication handler, and the imperative page checks become the
 /// declarative policies declared below.
+/// </para>
+/// <para>
+/// MIGRATION: the credential store this scheme sits on top of changed shape, and the
+/// change is deliberate rather than incidental. The legacy membership provider was
+/// registered with <c>passwordFormat="Encrypted"</c> and
+/// <c>enablePasswordRetrieval="true"</c> - <c>Website/release.config</c> L236-L246 -
+/// so stored credentials were REVERSIBLE and could be read back in cleartext by
+/// anything holding the machine key, which the repository itself committed. Credentials
+/// are now one-way hashed, by the hasher the infrastructure layer owns, and password
+/// RETRIEVAL is deliberately not carried forward at all: no endpoint, screen or
+/// service in the target can return an existing credential, only replace one. The
+/// legacy password POLICY is preserved verbatim, because tightening it during a
+/// migration would lock out existing accounts.
+/// </para>
+/// <para>
+/// Nothing in this file hashes, verifies or mints anything. It configures the scheme
+/// that validates what the token service issued, and declares the policies the
+/// authorisation handlers decide. The signing key is the one secret it touches, and it
+/// only ever reads it - never logs it, never echoes it into a message, and never
+/// supplies a default for it.
 /// </para>
 /// <para>
 /// <b>This file is the startup guard for the signing configuration.</b> That
@@ -149,20 +170,46 @@ public static class AuthenticationExtensions
     /// close. The prohibition is restated on the policy name itself.
     /// </para>
     /// <para>
+    /// MIGRATION: the legacy check really was by name -
+    /// <c>Library/Components/Security/PortalSecurity.vb</c> L519,
+    /// <c>IsInRole(PortalSettings.AdministratorRoleName.ToString)</c> - but it was safe
+    /// there only because the name it compared came from the ambient per-request portal
+    /// settings, so "the administrators of THIS portal" was implicit in the ambient
+    /// state. That ambient state is gone by design, and a name lifted out of it is no
+    /// longer a tenant-scoped question. The names collide in practice rather than in
+    /// theory: every portal creates its own administrator role, all of them called the
+    /// same thing - <c>Library/Components/Portal/PortalController.vb</c> L1390,
+    /// <c>CreateRole(PortalId, "Administrators", "Portal Administrators", …)</c>. The
+    /// requirement restores the scoping the ambient state used to provide, by resolving
+    /// the tenant from the route and asking whether this caller administers THAT tenant.
+    /// No configured or defaulted role-name string appears anywhere in this file, and
+    /// none should be reintroduced.
+    /// </para>
+    /// <para>
     /// The tenant-scoped handler is registered <b>scoped</b>, not singleton. It
     /// depends on the per-request tenant holder and on a repository bound to the
     /// per-request database context; a singleton handler would capture the first
     /// request's tenant and answer every later request against it.
     /// </para>
     /// <para>
-    /// <b>The four permission policies are declared, and they deny every request.</b>
-    /// Each is built from the permission requirement its documentation names, and
-    /// this solution contains no handler for that requirement, so no request can
-    /// satisfy one. That is deliberate and it is the safe direction: an unsatisfiable
-    /// policy produces a 403, whereas a policy that is merely absent produces an
-    /// exception the moment an action referencing it is invoked. Declaring them keeps
-    /// the catalogue honest - the names exist, they are wired to the right
-    /// requirement, and the only thing missing is the decision.
+    /// <b>Every requirement any policy below declares has a handler registered here,
+    /// and that is an invariant rather than an observation.</b> A requirement with no
+    /// registered handler never succeeds, and the framework reports the outcome as a
+    /// failed policy rather than as a misconfiguration - so the symptom of forgetting
+    /// one is a 403 returned to a caller who genuinely holds the permission, with
+    /// nothing in the response to say why. Four requirement types are declared below;
+    /// four handlers are registered above. Adding a policy without its handler, or
+    /// removing a handler whose requirement is still declared, breaks the invariant
+    /// silently in that direction.
+    /// </para>
+    /// <para>
+    /// <b>The permission policies split on the key they claim, and only the edit half
+    /// demands an authenticated caller.</b> The reasoning is measured against the
+    /// migrated data and is set out on <see cref="AddPermissionPolicy"/>; the short
+    /// version is that grants to the "All Users" and "Unauthenticated Users"
+    /// pseudo-roles are real rows that an anonymous caller must still be allowed to
+    /// satisfy, and conjoining an authentication requirement would delete them without
+    /// deleting the rows.
     /// </para>
     /// <para>
     /// A fallback policy requires an authenticated caller for every endpoint that
@@ -172,6 +219,26 @@ public static class AuthenticationExtensions
     /// somebody else. The endpoints that must stay anonymous - the health endpoint
     /// above all, because a container orchestrator probes it before any credential
     /// exists - say so explicitly where they are mapped.
+    /// </para>
+    /// <para>
+    /// <b>That last sentence is load-bearing, so it is worth being precise about why the
+    /// fallback cannot reach the health endpoint.</b> A fallback policy applies only
+    /// where an endpoint carries no authorisation metadata at all; the health endpoint is
+    /// mapped with an explicit anonymous marker, which is metadata, and an anonymous
+    /// marker short-circuits authorisation regardless. Both halves have to hold, because
+    /// an authenticated health endpoint does not fail visibly - the container's own probe
+    /// never reports healthy, the front-end service waits on that condition forever, and
+    /// the end-to-end check that curls the health address fails with both images built
+    /// correctly. The integration suite asserts the anonymous reading directly rather
+    /// than trusting this paragraph. <b>Neither the anonymous marker at the mapping site
+    /// nor this fallback may be changed without re-checking the other.</b>
+    /// </para>
+    /// <para>
+    /// <b>No default policy is set.</b> The framework's own default already requires an
+    /// authenticated caller, every protected action names one of the policies below
+    /// explicitly, and overriding the default would change the meaning of a bare
+    /// authorisation attribute everywhere at once - including on endpoints nobody
+    /// revisited.
     /// </para>
     /// </remarks>
     public static IServiceCollection AddAuthorizationPolicies(this IServiceCollection services)
@@ -192,13 +259,27 @@ public static class AuthenticationExtensions
         // Registering any of them twice would run its handler twice per request for no additional decision.
         services.AddScoped<IAuthorizationHandler, PortalAdministratorAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, HostAdministratorAuthorizationHandler>();
+
+        // The account family stays on AccountOwnerRequirement, and the reason is a security property rather
+        // than a preference. Two account policies are declared below and they differ in exactly one bit:
+        // AccountOwner admits the account holder AND NOBODY ELSE, because a credential change proves
+        // entitlement by presenting the current credential, while AccountOwnerOrPortalAdministrator also
+        // admits an administrator of the addressed tenant. AccountOwnerRequirement supplies precisely those
+        // two flavours. A single-flavour "owner or tenant administrator" requirement cannot express the
+        // first one, so substituting it would admit administrators to the credential change - collapsing the
+        // change and the administrative reset back into one operation whose effect depended on which fields
+        // were populated, which is the shape that previously allowed a credential to be overwritten with no
+        // proof of entitlement. Consolidating the account requirements is therefore only safe for whoever
+        // also splits the replacement in two; it is not a rename.
         services.AddScoped<IAuthorizationHandler, AccountOwnerAuthorizationHandler>();
 
-        // Both handlers are required, not alternatives. Every requirement a policy declares must have a
-        // handler registered for it, and a requirement with no handler never succeeds - the framework
-        // reports the policy as failed rather than as misconfigured, so the symptom is a 403 from an
-        // endpoint whose caller genuinely holds the permission. The four permission policies below declare
-        // PermissionRequirement, so the handler for it is registered here alongside the tenant one.
+        // The fourth handler, and it is required alongside the three above rather than an alternative to
+        // them. Every requirement a policy declares must have a handler registered for it, and a
+        // requirement with no handler never succeeds - the framework reports the policy as failed rather
+        // than as misconfigured, so the symptom is a 403 from an endpoint whose caller genuinely holds the
+        // permission. The four permission policies below declare PermissionRequirement, which is a fourth
+        // requirement type none of the membership handlers answers, so it gets its own handler here. Four
+        // requirement types declared, four handlers registered: that count is the invariant to preserve.
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
         // Gives the middleware's own refusals the RFC 7807 body they otherwise omit. Registered here
@@ -277,27 +358,6 @@ public static class AuthenticationExtensions
 
         return services;
     }
-
-    /// <summary>
-    /// The claim carrying the installation-wide super-user flag, as the token service mints it.
-    /// </summary>
-    /// <remarks>
-    /// Taken from the shared claim vocabulary declared beside <c>ITokenService</c> rather than spelled as a
-    /// literal, so that a rename cannot leave this registration matching a claim nothing writes - which
-    /// would present as every host account being denied rather than as a build failure.
-    /// </remarks>
-    private const string SuperUserClaimType = DnnClaimTypes.SuperUser;
-
-    /// <summary>
-    /// The claim values this registration accepts as an affirmative super-user flag.
-    /// </summary>
-    /// <remarks>
-    /// The token service writes the lower-case spelling. The capitalised spelling is accepted as well
-    /// because a boolean claim carried by a token minted elsewhere may be serialised either way, and
-    /// refusing one of them would deny a legitimate host account for a reason no message would explain.
-    /// Nothing else is accepted: an absent, blank or otherwise-spelled value denies.
-    /// </remarks>
-    private static readonly string[] TrueClaimValues = ["true", "True"];
 
     /// <summary>
     /// Declares one permission policy.
@@ -388,6 +448,14 @@ public static class AuthenticationExtensions
     /// fallback is exactly why switching the mapping off is safe.
     /// </para>
     /// <para>
+    /// Because that mapping is off, the name and role claim types are named here
+    /// explicitly and are pinned to the claims the issuing service writes rather than
+    /// to the framework's defaults. This is a two-sided contract with no compile-time
+    /// enforcement: a mismatch does not throw, it silently answers every role question
+    /// in the negative. See the comments on those two members for which claim each side
+    /// uses and why the default is wrong for one of them.
+    /// </para>
+    /// <para>
     /// Error details are withheld from the challenge header. The front end triggers a
     /// token refresh on any unauthorised response and therefore needs no reason for
     /// it, while the reason itself is recorded by the framework's own authentication
@@ -408,6 +476,15 @@ public static class AuthenticationExtensions
         bearer.IncludeErrorDetails = false;
         bearer.SaveToken = false;
 
+        // Stated explicitly even though nothing consults it under this configuration, because the setting
+        // that is never written is the setting a library upgrade is free to redefine. It gates retrieval of
+        // discovery metadata over plain HTTP, and metadata is only ever fetched when an authority address is
+        // configured - which it deliberately is not, the signing key being symmetric and local. It is
+        // therefore set to the safe value unconditionally rather than relaxed for development: there is no
+        // metadata request for a development relaxation to enable, so an environment switch here would buy
+        // nothing and would leave a weaker value in the file for somebody to promote by accident.
+        bearer.RequireHttpsMetadata = true;
+
         bearer.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -422,9 +499,38 @@ public static class AuthenticationExtensions
             RequireSignedTokens = true,
             ValidAlgorithms = PermittedSignatureAlgorithms,
 
+            // MIGRATION: the access-token lifetime is exact parity, not an estimate. The legacy
+            // application expired its authentication ticket after sixty minutes -
+            // Website/release.config:L147, '<forms name=".DOTNETNUKE" protection="All" timeout="60"
+            // cookieless="UseCookies"/>' - and JwtOptions.ExpirationMinutes carries the same sixty, with
+            // JwtOptions.MaximumExpirationMinutes refusing to let a deployment lengthen it. The lifetime is
+            // stamped on the token by the issuing service; what this file contributes is the guarantee that
+            // it is actually enforced on the way back in.
+            //
+            // MIGRATION: and it is the ONLY thing standing between a leaked access token and its holder.
+            // The legacy sign-out cleared the ticket cookie server-side -
+            // Library/Components/Security/PortalSecurity.vb:L79,
+            // 'System.Web.Security.FormsAuthentication.SignOut()' - which a stateless bearer token has no
+            // counterpart for: an issued token stays valid until it expires. Sign-out therefore revokes the
+            // REFRESH token, in the application service that owns the refresh family, and discards the
+            // access token on the client. That is why the lifetime above is short and why the skew below is
+            // measured in seconds rather than left at the library's five minutes.
             ValidateLifetime = true,
             RequireExpirationTime = true,
             ClockSkew = PermittedClockSkew,
+
+            // The claim names are pinned to the ones the issuing service actually writes, because inbound
+            // claim mapping is switched off above and so nothing rewrites them on arrival. Roles are minted
+            // under the framework's own role claim, which is what makes a role requirement or IsInRole
+            // resolve. The caller's display name arrives as the registered unique-name claim, NOT under the
+            // framework's name claim - leaving this at its default would therefore leave the identity's Name
+            // permanently null, which is invisible in every test that only inspects claims directly.
+            //
+            // Neither value may be changed without changing the issuer to match. A disagreement here is not
+            // a compile error and not an exception; it silently turns every role test negative, which
+            // presents as a caller who plainly holds a role being refused.
+            NameClaimType = DnnClaimTypes.UniqueName,
+            RoleClaimType = ClaimTypes.Role,
         };
     }
 

@@ -1,3 +1,5 @@
+using DnnMigration.Domain.Enums;
+
 // MIGRATION: every name published below is the VERBATIM member name of the legacy
 // DotNetNuke.Services.Log.EventLog.EventLogController.EventLogType enumeration, measured at
 // Library/Components/Providers/Logging/Event Logging/EventLogController.vb:L38-L77. The names are
@@ -135,4 +137,45 @@ public static class AuditEventNames
     /// password, not the old hash, not the new one.
     /// </remarks>
     public const string PasswordRehashFailure = "PASSWORD_REHASH_FAILURE";
+
+
+    /// <summary>
+    /// Returns the stable audit event name for a sign-in outcome.
+    /// </summary>
+    /// <param name="loginStatus">The outcome the sign-in gates produced.</param>
+    /// <returns>The legacy event-type spelling for that outcome.</returns>
+    /// <remarks>
+    /// <para>
+    /// M-07: the legacy sign-in audit did not name its event separately - it assigned
+    /// <c>objEventLogInfo.LogTypeKey = loginStatus.ToString</c> (<c>UserController.vb:L80</c>), so the
+    /// event name WAS the outcome enumeration's own member name. Those names are declared at
+    /// <c>Library/Components/Users/Membership/UserLoginStatus.vb:L23-L30</c> and again as event types at
+    /// <c>EventLogController.vb:L41-L45</c>. The target enumeration is idiomatic C# and therefore spells
+    /// its members differently, so this mapping restores the legacy spelling on the wire: an operator's
+    /// existing queries for <c>LOGIN_FAILURE</c> or <c>LOGIN_USERLOCKEDOUT</c> keep matching.
+    /// </para>
+    /// <para>
+    /// Every member is mapped rather than only the two the legacy emitted, because the caller decides
+    /// WHICH outcomes to record and this function decides only what each is CALLED. The two weak-credential
+    /// outcomes have legacy event-type names too, even though the legacy sign-in path never logged them.
+    /// </para>
+    /// </remarks>
+    public static string ForLoginStatus(UserLoginStatus loginStatus) => loginStatus switch
+    {
+        UserLoginStatus.Failure => "LOGIN_FAILURE",
+        UserLoginStatus.Success => "LOGIN_SUCCESS",
+        UserLoginStatus.SuperUser => "LOGIN_SUPERUSER",
+        UserLoginStatus.UserLockedOut => "LOGIN_USERLOCKEDOUT",
+        UserLoginStatus.UserNotApproved => "LOGIN_USERNOTAPPROVED",
+        UserLoginStatus.InsecureAdminPassword => "LOGIN_INSECUREADMINPASSWORD",
+        UserLoginStatus.InsecureHostPassword => "LOGIN_INSECUREHOSTPASSWORD",
+
+        // Unreachable for any declared member. An outcome outside the enumeration is a programming error
+        // rather than a runtime condition, and naming it explicitly is better than recording an event under
+        // a name no query will ever match.
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(loginStatus),
+            loginStatus,
+            "The sign-in outcome has no audit event name."),
+    };
 }

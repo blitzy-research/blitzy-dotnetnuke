@@ -664,6 +664,14 @@ public class JwtTokenServiceTests
                     // provide. The same audit reached the role update, the role assignment and the page
                     // update, each of which is already named above.
                     typeof(ModuleSettingsDto),
+
+                    // The two shapes below are each bound by BOTH write verbs of their resource, so one
+                    // validator governs create and update alike and the shape appears once. RoleGroupDto is
+                    // bound by the role-group routes and ProfilePropertyDefinitionDto by the
+                    // profile-definition routes; both are reached through the same assembly scan, which is
+                    // why neither needed a registration edit to appear here.
+                    typeof(RoleGroupDto),
+                    typeof(ProfilePropertyDefinitionDto),
                 },
                 "every request an endpoint binds has a registered validator");
     }

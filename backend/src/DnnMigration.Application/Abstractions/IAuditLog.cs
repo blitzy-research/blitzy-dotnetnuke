@@ -1,3 +1,5 @@
+using DnnMigration.Domain.Enums;
+
 namespace DnnMigration.Application.Abstractions;
 
 /// <summary>

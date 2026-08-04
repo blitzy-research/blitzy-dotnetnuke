@@ -62,7 +62,6 @@ internal sealed class DnnDbContext : DbContext
         : base(options)
     {
     }
-
     /// <summary>Gets the tenant containers.</summary>
     public DbSet<Portal> Portals => Set<Portal>();
 

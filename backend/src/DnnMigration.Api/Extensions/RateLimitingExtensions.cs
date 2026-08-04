@@ -24,6 +24,24 @@ namespace DnnMigration.Api.Extensions;
 /// challenge now name this file.
 /// </para>
 /// <para>
+/// The removed guard is measured, not recalled. At
+/// <c>Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L162</c> the sign-in
+/// handler opened with <c>If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)
+/// Then</c>, so no credential was checked until the challenge reported itself satisfied, and
+/// the credential check itself followed on the next executable line, <c>:L164</c>. Its
+/// registration is still visible in the legacy configuration, which binds a handler for
+/// <c>*.captcha.aspx</c> twice - once per hosting mode. Nothing in the target stack answers
+/// that address.
+/// </para>
+/// <para>
+/// That same line is also why the window is keyed by caller address rather than by account.
+/// The legacy call passed the caller's address as an argument on every attempt, alongside the
+/// status it reported back, so bounding attempts per address preserves the identifier the
+/// legacy system already tracked per attempt instead of inventing a new one. Keying by
+/// submitted account name was rejected for a second reason: the caller chooses that value, so
+/// it would let one caller mint a fresh budget per guess.
+/// </para>
+/// <para>
 /// <b>Two limiters, because the problem has two halves.</b> A window limiter bounds
 /// how many credential requests one caller may make in a period, which is what makes
 /// guessing slow. A concurrency limiter bounds how many are being processed at any
@@ -65,6 +83,18 @@ namespace DnnMigration.Api.Extensions;
 /// from an untrusted hop lets the caller choose its own partition and step around
 /// the window entirely. The concurrency limiter is unaffected by any of this,
 /// because it is a single bound on the whole process.
+/// </para>
+/// <para>
+/// MIGRATION: state the residual limitation plainly rather than implying a per-client
+/// budget that the shipped topology does not yet deliver. The proxy does forward the
+/// originating address, and the pipeline does process forwarded headers - but a forwarded
+/// address is only believed when the immediate hop is a declared trusted proxy, and the
+/// shipped configuration trusts nothing beyond loopback. Until a deployment names its
+/// proxies, every containerised request therefore partitions to the proxy's own address and
+/// the window degrades from per-caller to one deployment-wide authentication throttle. That
+/// degradation is strictly more restrictive, never less, so it cannot open a gap; it only
+/// spends one shared budget where separate budgets were intended, which is why the permit
+/// count is sized for the shared case.
 /// </para>
 /// <para>
 /// <b>A refusal discloses nothing.</b> The response is a fixed problem-details
@@ -481,7 +511,7 @@ public static class RateLimitingExtensions
             return true;
         }
 
-        if (!CredentialMethods.Contains(context.Request.Method, StringComparer.OrdinalIgnoreCase))
+        if (!IsCredentialMethod(context.Request.Method))
         {
             return false;
         }
@@ -493,16 +523,30 @@ public static class RateLimitingExtensions
             return false;
         }
 
-        foreach (Range segment in SplitIntoSegments(path))
-        {
-            ReadOnlySpan<char> candidate = path.AsSpan()[segment];
+        return ContainsCredentialSegment(path);
+    }
 
-            foreach (string credentialSegment in CredentialPathSegments)
+    /// <summary>
+    /// Reports whether a request method can carry a credential.
+    /// </summary>
+    /// <param name="method">The request method.</param>
+    /// <returns>
+    /// <see langword="true"/> when the method appears in <see cref="CredentialMethods"/>, compared
+    /// case-insensitively.
+    /// </returns>
+    /// <remarks>
+    /// The declared list is walked directly rather than through a sequence operator taking a comparer.
+    /// That operator reaches the array through its interface, which materialises an enumerator on the
+    /// heap, and this test runs on every request that reaches the application - so the convenient spelling
+    /// bought one allocation per request to compare against three constants.
+    /// </remarks>
+    private static bool IsCredentialMethod(string method)
+    {
+        foreach (string credentialMethod in CredentialMethods)
+        {
+            if (string.Equals(method, credentialMethod, StringComparison.OrdinalIgnoreCase))
             {
-                if (candidate.Equals(credentialSegment, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
@@ -510,38 +554,71 @@ public static class RateLimitingExtensions
     }
 
     /// <summary>
-    /// Splits a request path into its non-empty segments.
+    /// Reports whether any whole segment of a request path names a credential concern.
     /// </summary>
-    /// <param name="path">The request path.</param>
-    /// <returns>The bounds of each non-empty segment, in order.</returns>
+    /// <param name="path">The request path, known to be non-empty.</param>
+    /// <returns>
+    /// <see langword="true"/> when some segment equals an entry of
+    /// <see cref="CredentialPathSegments"/>, compared case-insensitively.
+    /// </returns>
     /// <remarks>
-    /// Ranges rather than substrings, so classifying a request allocates nothing. This
-    /// runs on every request that reaches the application, including the ones the
-    /// limiter will not bound, so its cost is paid by all traffic.
+    /// <para>
+    /// The path is walked as spans over the original string and nothing is materialised: no segment
+    /// list, no substring per segment, and no enumerator. That matters because this runs on every
+    /// body-carrying request the application receives, including all the ones the limiter will not
+    /// bound, so its cost is paid by traffic that derives no benefit from it.
+    /// </para>
+    /// <para>
+    /// Segments are the maximal runs between separators and empty runs are skipped, so a leading,
+    /// trailing or doubled separator contributes no segment and cannot be mistaken for one. Comparison
+    /// is whole-segment, which is what keeps the word list from over-reaching onto a resource whose name
+    /// merely begins with one of these words.
+    /// </para>
     /// </remarks>
-    private static List<Range> SplitIntoSegments(string path)
+    private static bool ContainsCredentialSegment(string path)
     {
-        List<Range> segments = [];
-        int start = 0;
+        ReadOnlySpan<char> remaining = path.AsSpan();
 
-        for (int index = 0; index <= path.Length; index++)
+        while (!remaining.IsEmpty)
         {
-            bool atBoundary = index == path.Length || path[index] == '/';
+            int boundary = remaining.IndexOf('/');
+            ReadOnlySpan<char> candidate = boundary < 0 ? remaining : remaining[..boundary];
 
-            if (!atBoundary)
+            if (!candidate.IsEmpty && NamesCredentialConcern(candidate))
             {
-                continue;
+                return true;
             }
 
-            if (index > start)
+            if (boundary < 0)
             {
-                segments.Add(new Range(start, index));
+                break;
             }
 
-            start = index + 1;
+            remaining = remaining[(boundary + 1)..];
         }
 
-        return segments;
+        return false;
+    }
+
+    /// <summary>
+    /// Reports whether one path segment names a credential concern.
+    /// </summary>
+    /// <param name="candidate">The segment, without separators.</param>
+    /// <returns>
+    /// <see langword="true"/> when the segment equals an entry of
+    /// <see cref="CredentialPathSegments"/>, compared case-insensitively.
+    /// </returns>
+    private static bool NamesCredentialConcern(ReadOnlySpan<char> candidate)
+    {
+        foreach (string credentialSegment in CredentialPathSegments)
+        {
+            if (candidate.Equals(credentialSegment, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

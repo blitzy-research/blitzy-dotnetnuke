@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using DnnMigration.Api.Authorization;
@@ -10,11 +11,18 @@ using DnnMigration.Application.Options;
 using DnnMigration.Application.Serialization;
 using DnnMigration.Application.Validation;
 using Microsoft.AspNetCore.HttpOverrides;
-using JsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
+
+// Two different types are called JsonOptions on this framework - the controller
+// formatters' and the minimal-API writer's - and both are configured in this file,
+// against two serialisation surfaces that must agree. Microsoft.AspNetCore.Mvc is
+// imported above, so the unqualified name would bind to the MVC one; the alias names
+// the OTHER one explicitly so neither call site can be read as the wrong surface.
+// Declared last because a using alias follows every regular directive.
+using JsonOptions = Microsoft.AspNetCore.Http.Json.JsonOptions;
 
 namespace DnnMigration.Api.Extensions;
 
@@ -43,6 +51,35 @@ namespace DnnMigration.Api.Extensions;
 /// policy declared on a settings type in the Application layer, and nothing outside
 /// this file has any reason to name one. Nesting them beside the binding they guard
 /// also means a new setting cannot be bound here without its bounds being in view.
+/// </para>
+/// <para>
+/// <b>Every section is bound through the settings type's own section-name constant,
+/// never a literal.</b> A mistyped literal binds nothing, and binding nothing does not
+/// fail: the type's defaults quietly stand in for the deployment's configuration, with
+/// no exception and no warning to say so. Naming the constant makes that class of defect
+/// a compile error instead. Each bound key is also overridable per environment through
+/// the double-underscore form the configuration providers understand -
+/// <c>Caching__PerformanceMultiplier</c> for <c>Caching:PerformanceMultiplier</c>, and
+/// so on - so no additional environment-variable provider is registered here.
+/// </para>
+/// <para>
+/// <b>Two registrations here carry a lifetime that is part of their correctness.</b> The
+/// claims projection behind <see cref="ICurrentUser"/> is SCOPED, because it describes
+/// one request; a singleton would capture the first caller's identity and then answer for
+/// every later caller, which is a privilege-escalation defect rather than a style choice.
+/// This application's problem-details factory is a SINGLETON registered against the
+/// framework's factory abstraction, which is what puts every automatic validation failure
+/// through this application's error shape instead of the framework's.
+/// </para>
+/// <para>
+/// <b>What this file deliberately does NOT register.</b> Persistence, the security
+/// primitives and the health check belong to the infrastructure registration; the
+/// application services and their request validators belong to the application
+/// registration; and authentication, the authorisation policies, cross-origin access, the
+/// credential rate limiter and the OpenAPI document each belong to the sibling extension
+/// beside this one. None of them is restated here. Duplicating a registration would not
+/// fail to compile - the container would simply keep the last one - so the boundary is
+/// maintained by intent, and the composition root shows all of the parts in one place.
 /// </para>
 /// </remarks>
 public static class ServiceCollectionExtensions
@@ -137,6 +174,17 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static void AddValidatedOptions(IServiceCollection services, IConfiguration configuration)
     {
+        // MIGRATION: these bindings are the whole of what replaced the legacy provider model.
+        // Website/release.config declared fourteen `defaultProvider` attributes, each naming a
+        // swappable implementation that was then resolved by reflection at run time. Provider
+        // indirection is REMOVED here rather than reproduced: a settings type per concern, bound
+        // once from configuration and validated before the host accepts a request. The two legacy
+        // readers those settings stand in for - DotNetNuke.Common.Globals (measured at
+        // Library/Components/Shared/Globals.vb, NOT the Common path some notes give) and
+        // DotNetNuke.Entities.Host - are excluded wholesale, and only the handful of their members
+        // that in-scope code actually reached is reimplemented. Nothing here reads any of the
+        // legacy provider-selection or schema-qualification attributes; the table and column names
+        // those qualified are pinned by the persistence layer's entity configurations instead.
         services
             .AddOptions<PasswordPolicyOptions>()
             .Bind(configuration.GetSection(PasswordPolicyOptions.SectionName))
@@ -255,6 +303,15 @@ public static class ServiceCollectionExtensions
         services.Configure<JsonOptions>(options =>
         {
             DnnJsonConverters.AddTo(options.SerializerOptions);
+
+            // Stated rather than inherited, and for the same reason on both surfaces. Each of
+            // these already holds the value being assigned, so neither assignment changes
+            // behaviour today - which is precisely why they are worth writing down: the
+            // controller surface names the identical pair, and two halves of one contract that
+            // agree only by way of a shared framework default can be separated by a change to
+            // that default, silently, with nothing in either file to show what happened.
+            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+            options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
         });
 
         services.AddExceptionHandler<GlobalExceptionHandler>();
@@ -315,13 +372,49 @@ public static class ServiceCollectionExtensions
                 // enumeration's wire form a decision taken here rather than one inherited by
                 // default.
 
-                // Null members are omitted. Absence in this API is carried by a member being
-                // absent, never by a sentinel value, so writing nulls adds bytes without adding
-                // information. MIGRATION: this is also what keeps the legacy sentinels out of the
-                // wire contract - the mapping layer converts -1 and the empty string to absence,
-                // and absence is then simply not written.
-                options.JsonSerializerOptions.DefaultIgnoreCondition =
-                    JsonIgnoreCondition.WhenWritingNull;
+                // EVERY DECLARED MEMBER IS WRITTEN, INCLUDING ONE HOLDING NULL. Absence is
+                // expressed by the member's VALUE being null, never by the member going missing,
+                // and the two narrower policies the framework offers are both wrong here.
+                //
+                // A policy that omitted every default-valued member would drop 0, "" and false
+                // as well, and in THIS schema that discards real data rather than noise.
+                // MIGRATION: Library/Components/Shared/Null.vb encoded absence as -1 for an
+                // integer (NullInteger, L41-L45) and - the trap - as the EMPTY STRING for text
+                // (NullString, L71-L75), while the identity seeds make those very values
+                // legitimate keys: dbo.Portals.PortalID is IDENTITY(-1, 1) and dbo.Roles.RoleID,
+                // dbo.Tabs.TabID and dbo.Modules.ModuleID are all IDENTITY(0, 1)
+                // (01.00.00.SqlDataProvider L77, L115, L140, L221). Globals.vb:L95 then spends
+                // -1 a third time as the "All Users" pseudo-role. A portal whose identifier is 0
+                // and a role whose identifier is 0 are ordinary rows, so omitting 0 omits them.
+                //
+                // A policy that omitted only nulls sounds harmless and is not, because the
+                // client's declared contract is "present and nullable", not "optional". Every
+                // nullable member of every response model is declared REQUIRED there -
+                // frontend/src/app/core/models/portal.model.ts declares
+                // `readonly portalName: string | null`, not `portalName?` - so dropping the
+                // member yields `undefined` at runtime where the compiled type promises `null`.
+                // The difference is not academic: a consumer testing `value === null` takes the
+                // wrong branch for `undefined`, and module-settings.component.ts does exactly
+                // that when narrowing a schedule date for a date input. Drop the member and it
+                // reaches `.slice()` on `undefined` and throws - for any module whose schedule
+                // columns are null, which is the ordinary case for a nullable column.
+                //
+                // The problem-details contract is deliberately NOT affected by this and must not
+                // be "aligned" with it. ProblemDetails annotates each of its own optional members
+                // with a per-member null-omission condition, and a per-member condition overrides
+                // the collection-wide one set here, so an absent `detail` or `instance` stays
+                // absent exactly as RFC 7807 describes and as problem-details.model.ts declares
+                // it - those members, and only those, are the ones optional on the client.
+                options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+
+                // Member names are camel-cased, and this is stated rather than inherited for the
+                // same reason the condition above is. It happens to be the web defaults' value,
+                // so the assignment changes nothing today; what it buys is that the single most
+                // load-bearing property of the whole wire contract is written down. Every member
+                // of every model under frontend/src/app/core/models is spelled in camel case, so
+                // a change to this policy would not break one endpoint - it would rename every
+                // member of every response at once, and no compiler on either side would notice.
+                options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
             });
 
         // The framework maps sixteen status codes to a problem-type link and a title, and 429 is

@@ -285,6 +285,20 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
         RuleFor(request => request.EndDate)
             .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
 
+        // MIGRATION: the two date members carry a REPRESENTABILITY bound and nothing else. The CLR date
+        // type begins in the year one while the stored column begins in 1753, so a value the type accepts
+        // can still be unstorable; unbounded, such a value passed every rule here and was refused by the
+        // provider instead, which surfaces as a server fault naming no field rather than a field-level
+        // answer. The bound states only what the column can hold. The two are still NOT compared to one
+        // another - see the annotation on that omission - and the upper bound is stated at the last
+        // representable instant of 9999-12-31 rather than at that day's midnight, so a preserved
+        // perpetual value is admitted by the rule rather than refused by it.
+        RuleFor(request => request.StartDate)
+            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
+
+        RuleFor(request => request.EndDate)
+            .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
+
         // Deliberately unvalidated, each for a measured reason, so that a later reader does not mistake
         // an absence for an omission:
         //   CacheTime                   - the legacy validator checked INTEGRALITY AND NOTHING ELSE
