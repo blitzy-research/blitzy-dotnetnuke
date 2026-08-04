@@ -1925,10 +1925,14 @@ public sealed class RoleApiTests
     /// while the wire contract was wrong.
     /// </para>
     /// <para>
-    /// An absent date is OMITTED from the payload rather than written as an explicit null, because this API
-    /// serialises with <c>JsonIgnoreCondition.WhenWritingNull</c> throughout. For a nullable date the two
-    /// forms are equivalent - both read back as absent, and neither can be mistaken for a real date - so the
-    /// assertion is made on the deserialised value rather than on the presence of the member. Contrast the
+    /// An absent date is written as an explicit null rather than omitted, because this API serialises with
+    /// <c>JsonIgnoreCondition.Never</c> throughout - measured on a live response, which returns
+    /// <c>"effectiveDate":null,"expiryDate":null</c> for an open-ended membership. For a nullable date the
+    /// written null and a missing member would read back the same way, and neither can be mistaken for a
+    /// real date, so the assertion is deliberately made on the deserialised value rather than on the
+    /// presence of the member: that keeps this test pinning the property that matters - no sentinel reaches
+    /// the caller - and leaves it insensitive to which of the two absence forms the host is configured for.
+    /// Contrast the
     /// module definition's cache period, which is a non-nullable integer whose -1 IS meaningful and which is
     /// therefore asserted to be present in its own suite.
     /// </para>

@@ -40,13 +40,15 @@ namespace DnnMigration.Application.Dtos.User;
 /// the legacy observable value is preserved, and an absent timestamp surfaces as
 /// <see langword="null"/> so no client is handed <c>0001-01-01</c> as though it were a real
 /// instant. The host serialises with
-/// <see cref="System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull"/>
-/// (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a property only when its value
-/// is <see langword="null"/>; default values are still written, so an empty string and a
-/// legitimate <see langword="false"/> on any of the four flags always reach the wire. The
-/// consequence for the nullable members is that absence is signalled by the property being
-/// absent from the JSON object rather than by a <c>null</c> literal, and a consumer must read a
-/// missing property as the absent state.
+/// <see cref="System.Text.Json.Serialization.JsonIgnoreCondition.Never"/>
+/// (<c>ServiceCollectionExtensions.cs</c>, stated on both the minimal-API and controller
+/// surfaces), which omits nothing at all: every member is written, so an empty string, a
+/// legitimate <see langword="false"/> on any of the four flags, and a nullable timestamp that has
+/// no value all reach the wire - the last as a written <c>null</c>. The consequence for the
+/// nullable members is that absence is signalled by the property's VALUE being <c>null</c>, not by
+/// the property being missing, and a consumer reads null as the absent state. Nothing weaker would
+/// do: the sentinels above are in-band values, so a policy that dropped nulls or defaults could
+/// not be trusted to leave a legitimate <c>0</c>, <c>false</c> or empty string alone.
 /// </para>
 /// <para>
 /// SECURITY: no credential material of any kind appears here - no stored credential, digest,
@@ -175,9 +177,9 @@ public sealed class UserListItemDto
     /// exist but compose to nothing, which is the legacy behaviour
     /// (<c>Users.ascx.vb:L353</c> seeded its local with the empty-string sentinel and returned it
     /// when composition yielded nothing). Under the configured
-    /// <c>WhenWritingNull</c> policy the two absences remain distinguishable on the wire, but by
-    /// property presence rather than by value: the property is omitted entirely for the first
-    /// state and emitted as <c>""</c> for the second. The
+    /// <c>Never</c> ignore policy the two absences remain distinguishable on the wire by VALUE,
+    /// which is the simpler contract: the property is always present, written as <c>null</c> for
+    /// the first state and as <c>""</c> for the second. The
     /// legacy grid composed it from six separate profile properties
     /// (<c>Users.ascx.vb:L352</c>); composing it in an accessor here is forbidden, because this
     /// type does no work.
@@ -190,8 +192,8 @@ public sealed class UserListItemDto
     /// <remarks>
     /// As with <see cref="Address"/>, <see langword="null"/> means the profile carries no
     /// telephone property for this user and an empty string means the property exists and is
-    /// blank; both states stay distinct on the wire, the first as an omitted property and the
-    /// second as <c>""</c>, under the host's <c>WhenWritingNull</c> policy.
+    /// blank; both states stay distinct on the wire, the first as a written <c>null</c> and the
+    /// second as <c>""</c>, under the host's <c>Never</c> ignore policy.
     /// </remarks>
     public string? Telephone { get; set; }
 

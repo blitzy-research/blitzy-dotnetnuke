@@ -99,7 +99,7 @@ namespace DnnMigration.Application.Dtos.User;
 /// as "not supplied", which is what reproduces legacy behaviour. And deserialisation
 /// must not collapse the distinction: never normalise a <c>null</c> to <c>""</c> or a
 /// <c>""</c> to <c>null</c> on the way in, and never give a member an initialiser. The
-/// application-wide <c>WhenWritingNull</c> ignore condition does not touch any of this,
+/// application-wide <c>Never</c> ignore condition does not touch any of this,
 /// because it governs WRITING only and no instance of this type is ever written to a
 /// response - which is also why it must stay that way: this type is inbound-only, and
 /// echoing one back would publish credential material.

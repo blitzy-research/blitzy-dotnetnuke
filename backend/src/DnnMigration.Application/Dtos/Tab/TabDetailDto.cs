@@ -186,11 +186,12 @@ public sealed class TabDetailDto
     // super-page test returned `(PortalID = Null.NullInteger)`, and the controller branched
     // on `If Not Null.IsNull(objTab.PortalID) Then ... Else ' host tab`. The target models
     // this as a nullable integer whose null means "host-level page". The API serialises with
-    // JsonIgnoreCondition.WhenWritingNull (ServiceCollectionExtensions.cs:L323-L324), so a host
-    // page OMITS portalId from the body entirely and emits it as neither -1 nor null. Absence is
-    // read from the property being missing. The sentinel must not survive into the wire contract
-    // either way, because -1 is simultaneously a legitimate Portals.PortalID value under
-    // IDENTITY(-1, 1).
+    // JsonIgnoreCondition.Never (ServiceCollectionExtensions.cs, stated on both the minimal-API
+    // and controller surfaces), so a host page emits `"portalId": null` — a written null, never
+    // -1, and never an omitted member. Absence is read from the VALUE being null. The sentinel
+    // must not survive into the wire contract, because -1 is simultaneously a legitimate
+    // Portals.PortalID value under IDENTITY(-1, 1); and the same policy is what guarantees the
+    // first real portal's id of 0 is not dropped from a response as though it were a default.
     /// <summary>
     /// Gets or sets the identifier of the portal that owns this page, or
     /// <see langword="null"/> when the page is a host-level page rather than a portal page.
@@ -200,10 +201,10 @@ public sealed class TabDetailDto
     /// <para>
     /// The legacy type was a non-nullable integer using <c>-1</c> to mean "host page". The
     /// target representation is a nullable integer in which <see langword="null"/> carries
-    /// that same meaning. Under the configured <c>WhenWritingNull</c> policy the property is
-    /// omitted from the JSON body for a host-level page rather than emitted as <c>null</c>, and
-    /// it is never emitted as <c>-1</c>. Test for a host-level page with
-    /// <c>PortalId is null</c> in C#, and with the property's absence on the wire.
+    /// that same meaning. Under the configured <c>Never</c> ignore policy the property is always
+    /// written, so a host-level page is published as <c>"portalId": null</c> - never as <c>-1</c>
+    /// and never omitted. Test for a host-level page with <c>PortalId is null</c> in C#, and with
+    /// the property's null VALUE on the wire.
     /// </para>
     /// <para>
     /// The collision that forces this change: <c>-1</c> is also a perfectly valid portal
@@ -261,9 +262,10 @@ public sealed class TabDetailDto
     // MIGRATION: the legacy page entity declared ParentId as a non-nullable VB Integer whose
     // "no parent" value was the in-band sentinel -1, even though the underlying column is
     // `ParentId int NULL`. The target models it as a nullable integer with null meaning
-    // "root-level page", so a root page OMITS parentId from the body under the configured
-    // WhenWritingNull policy and emits it as neither -1 nor null. That is a deliberate,
-    // documented change of external representation rather than an accident of serialisation. Absence must be tested with `is null`, never with `== -1` or `<= 0`,
+    // "root-level page", so a root page publishes `"parentId": null` under the configured
+    // Never ignore policy - a written null, never -1 and never an omitted member. That is a
+    // deliberate, documented change of external representation rather than an accident of
+    // serialisation. Absence must be tested with `is null`, never with `== -1` or `<= 0`,
     // because -1 and 0 are both legitimate identifiers elsewhere in this schema.
     /// <summary>
     /// Gets or sets the identifier of this page's parent page, or <see langword="null"/> when
@@ -276,9 +278,9 @@ public sealed class TabDetailDto
     /// The legacy type was a non-nullable integer that used <c>-1</c> to mean "no parent",
     /// and the legacy parent picker's "Root" option carried the literal value <c>-1</c>. The
     /// target representation is a nullable integer in which <see langword="null"/> means
-    /// "root-level page". Under the configured when-writing-null policy a root-level page omits
-    /// this property from the response body rather than emitting a <c>null</c> literal, and it is
-    /// never emitted as <c>-1</c>.
+    /// "root-level page". Under the configured <c>Never</c> ignore policy a root-level page emits
+    /// this property as an explicit <c>null</c> rather than omitting it, and it is never emitted as
+    /// <c>-1</c>.
     /// </para>
     /// <para>
     /// Test for a root-level page with <c>ParentId is null</c>. Never write
@@ -591,8 +593,8 @@ public sealed class TabDetailDto
     // constructor sentinel-initialised to DateTime.MinValue, and the legacy editor wrote that
     // sentinel back whenever the start-date box was left empty, even though the column is
     // `StartDate datetime NULL`. The target models it as a nullable date-time, so an unset
-    // start date is omitted from the body under the configured WhenWritingNull policy and is
-    // never emitted as 0001-01-01. Do not treat
+    // start date is published as `"startDate": null` under the configured Never ignore policy
+    // and is never emitted as 0001-01-01. Do not treat
     // DateTime.MinValue, or default(DateTime), as meaning "unset" on this contract.
     /// <summary>
     /// Gets or sets the date from which this page becomes available, or
@@ -606,9 +608,9 @@ public sealed class TabDetailDto
     /// the Calendar to pick a date." The legacy representation of "no start date" was
     /// <c>DateTime.MinValue</c> — the legacy null-date sentinel — which the editor assigned
     /// explicitly whenever the input was blank. The target representation is
-    /// <see langword="null"/>, so an unset start date is omitted from the response body under the
-    /// configured when-writing-null policy and is never emitted as <c>0001-01-01</c>. Test with
-    /// <c>StartDate is null</c>.
+    /// <see langword="null"/>, so an unset start date is written as an explicit <c>null</c> under
+    /// the configured <c>Never</c> ignore policy and is never emitted as <c>0001-01-01</c>. Test
+    /// with <c>StartDate is null</c>.
     /// </para>
     /// <para>
     /// No relationship between the two dates is validated, and none should be documented as
@@ -624,8 +626,8 @@ public sealed class TabDetailDto
     // constructor sentinel-initialised to DateTime.MinValue, and the legacy editor wrote that
     // sentinel back whenever the end-date box was left empty, even though the column is
     // `EndDate datetime NULL`. The target models it as a nullable date-time, so an unset end
-    // date is omitted from the body under the configured WhenWritingNull policy and is never
-    // emitted as 0001-01-01. As with the start date, no
+    // date is published as `"endDate": null` under the configured Never ignore policy and is
+    // never emitted as 0001-01-01. As with the start date, no
     // cross-field ordering rule existed in the legacy application and none is introduced here.
     /// <summary>
     /// Gets or sets the date after which this page ceases to be available, or
@@ -639,8 +641,8 @@ public sealed class TabDetailDto
     /// the Calendar to pick a date." The legacy representation of "no end date" was
     /// <c>DateTime.MinValue</c> — the legacy null-date sentinel — which the editor assigned
     /// explicitly whenever the input was blank. The target representation is
-    /// <see langword="null"/>, so an unset end date is omitted from the response body under the
-    /// configured when-writing-null policy and is never emitted as <c>0001-01-01</c>. Test with
+    /// <see langword="null"/>, so an unset end date is written as an explicit <c>null</c> under the
+    /// configured <c>Never</c> ignore policy and is never emitted as <c>0001-01-01</c>. Test with
     /// <c>EndDate is null</c>.
     /// </para>
     /// <para>
@@ -657,8 +659,8 @@ public sealed class TabDetailDto
     // `RefreshInterval int NULL`. The legacy editor assigned a value only when its input was
     // both non-empty and numeric, leaving the -1 in place otherwise, so -1 genuinely reached
     // storage as "no automatic refresh". The target models it as a nullable integer, so the
-    // absence of a refresh is omitted from the body under the configured WhenWritingNull policy
-    // and is never emitted as -1. The legacy field carried no
+    // absence of a refresh is published as `"refreshInterval": null` under the configured Never
+    // ignore policy and is never emitted as -1. The legacy field carried no
     // validator of any kind; none is invented here.
     /// <summary>
     /// Gets or sets the automatic page refresh interval <b>in seconds</b>, or
@@ -676,8 +678,8 @@ public sealed class TabDetailDto
     /// The legacy representation of "no automatic refresh" was <c>-1</c>, the legacy
     /// null-integer sentinel, which survived into storage because the editor only overwrote it
     /// when the supplied text was non-empty and numeric. The target representation is
-    /// <see langword="null"/>, so no automatic refresh means the property is omitted from the
-    /// response body under the configured when-writing-null policy, and it is never emitted as
+    /// <see langword="null"/>, so no automatic refresh means the property is written as an explicit
+    /// <c>null</c> under the configured <c>Never</c> ignore policy, and it is never emitted as
     /// <c>-1</c>. Test with <c>RefreshInterval is null</c>.
     /// </para>
     /// <para>

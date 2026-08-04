@@ -42,14 +42,15 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// </para>
 /// <para>
 /// Serialisation, as actually configured, cannot weaken this contract. The host
-/// sets a "when writing null" ignore condition
-/// (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a property only
-/// when its value is <see langword="null"/>. No member declared here is nullable,
-/// so nothing on this type is ever omitted: a legitimate
+/// sets the <see cref="System.Text.Json.Serialization.JsonIgnoreCondition.Never"/>
+/// ignore condition (<c>ServiceCollectionExtensions.cs</c>, stated on both the
+/// minimal-API and controller surfaces), which omits nothing at all - so a legitimate
 /// <see langword="false"/>, a legitimate empty string and an empty collection all
-/// reach the wire. A "when writing default" condition, by contrast, WOULD erase
-/// exactly those three and must never be configured, because it would turn a real
-/// value into an absent field and silently change the contract clients bind to.
+/// reach the wire, and so would a null if any member here were nullable. A
+/// "when writing null" or "when writing default" condition would weaken it: the
+/// latter erases exactly those three, and both must stay unconfigured, because either
+/// turns a real value into an absent field and silently changes the contract clients
+/// bind to.
 /// </para>
 /// </remarks>
 public sealed class CurrentUserDto

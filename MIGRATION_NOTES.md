@@ -5165,6 +5165,87 @@ refusal from the endpoints that depend on it, and still not a total outage.
 
 ## Request pipeline
 
+### The eight managed modules and seven handlers become ten explicit pipeline stages
+
+**Legacy behaviour.** `Website/release.config` declared eight managed modules at L67-L74 —
+`ScriptModule`, `Compression`, `RequestFilter`, `UrlRewrite`, `Exception`, `UsersOnline`,
+`DNNMembership` and `Personalization` — and seven handlers at L77-L83, for `ScriptResource.axd`,
+`*_AppService.axd`, `*.asmx`, `Logoff.aspx`, `RSS.aspx`, `LinkClick.aspx` and `*.captcha.aspx`. All of
+them were located by assembly probing, `privatePath="bin;bin\HttpModules;bin\Providers;bin\Modules;bin\Support;"`,
+and `Website/Default.aspx.vb` then ran a 700-line Web Forms page lifecycle on top of them.
+
+**Target behaviour.** One explicit pipeline, composed in
+`backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs` and mapped as stages 1-10 in
+`backend/src/DnnMigration.Api/Program.cs`: exception handler, correlation id, request logging, routing,
+CORS, authentication, authorization, portal-alias resolution, controllers, health checks. Five further
+stages are interleaved without displacing any of the ten — HSTS and HTTPS redirection under guards, a
+tenant path-base stage before routing, the credential rate limiter after CORS, and the documentation
+console between authentication and authorisation. There is no assembly probing, because .NET 8 has no
+equivalent and needs none.
+
+**Why the difference is deliberate.** Only three of the fifteen legacy entries describe a responsibility
+this API still has, and each is met natively rather than ported: exception handling by
+`IExceptionHandler` with problem details, membership by bearer authentication, and compression by the
+reverse proxy. The rest belong to subsystems this migration excludes — users-online tracking,
+personalisation, URL rewriting, the AJAX script handlers, RSS syndication, file-server link clicks and
+the CAPTCHA handler. A configured module chain resolved by reflection also defeats every compile-time
+check: an entry naming a type that no longer exists fails at first request rather than at build, which
+is the specific property that made the legacy pipeline expensive to reason about.
+
+### Affiliate tracking and site logging are not ported
+
+**Legacy behaviour.** `Website/Default.aspx.vb:L304` ran both on every request.
+`ManageRequest` read an `AffiliateId` query parameter, called
+`AffiliateController.UpdateAffiliateStats(AffiliateId, 1, 0)` and, when no such cookie existed yet,
+wrote an `AffiliateId` cookie that persisted for one year (L306-L322). It then wrote a visit record
+through `SiteLogController.AddSiteLog` whenever `PortalSettings.SiteLogHistory` was non-zero, carrying
+the referrer, URL, user agent, host address, host name, active tab and affiliate id, buffered by
+`HostSettings("SiteLogBuffer")` and stored according to `HostSettings("SiteLogStorage")`, which
+defaulted to `"D"` (L324-L351).
+
+**Target behaviour.** Neither exists. No affiliate parameter is read, no affiliate cookie is written, no
+visit record is stored, and no `SiteLog` table is mapped.
+
+**Why the difference is deliberate.** Both belong to excluded subsystems — affiliate statistics to the
+vendors and affiliates administration, site logging to the log provider model — and both were
+per-request writes performed by the page lifecycle, which this migration replaces rather than reproduces.
+Reproducing either would mean mapping a table and re-creating an administration surface that is out of
+scope, and doing so on the request path of an API whose clients are a single-page application rather
+than crawled pages. Request-level observability is met instead by structured logging with a correlation
+identifier, which is retained.
+
+### The health document publishes four fixed members and then per-probe detail
+
+**Legacy behaviour.** `Website/KeepAlive.aspx` was the nearest analogue: a page that returned
+successfully if the application could serve a request. It ran no dependency check and reported nothing
+about the database.
+
+**Target behaviour.** `GET /health` is anonymous, uncached, and answers a JSON document whose first four
+members are the published contract — `status`, `timestamp`, `version`, `serviceName` — followed by
+`totalDurationMs` and a `checks` array naming each registered probe with its own status and duration, and
+its description where the probe supplies one. `serviceName` and `version` are read from the running
+assembly rather than written as literals, so they cannot drift from the assembly the container image
+starts. Measured:
+
+```json
+{"status":"Healthy","timestamp":"2026-08-04T12:34:44.08+00:00","version":"1.0.0.0",
+ "serviceName":"DnnMigration.Api","totalDurationMs":1.38,
+ "checks":[{"name":"database","status":"Healthy","durationMs":0.09,
+            "description":"Database connectivity is available."},
+           {"name":"sqlserver","status":"Healthy","durationMs":1.25}]}
+```
+
+**Why the difference is deliberate.** The four fixed members are what `docs/project-guide.md` publishes
+to operators, so an operator or monitor that reads only those is served identically by the document and
+by the documentation. The per-probe array is additive and exists because two probes run against the same
+database: a bare status word reports that something is wrong without saying which probe said so, and
+that distinction is the whole diagnostic value of the endpoint. What is deliberately **absent** matters
+as much: no exception, no probe data dictionary and no connection string, because this endpoint is
+anonymous and a failed database probe's exception message routinely carries the server, the database and
+sometimes the login. The endpoint must also stay anonymous and unthrottled — the image's `HEALTHCHECK`
+probes it with `wget --spider` before any credential exists, and the front-end service is held back by
+`condition: service_healthy` until it answers.
+
 ### HTTPS redirection is deliberately not enabled
 
 **Legacy behaviour.** Transport security was configured at the web server.
@@ -9378,19 +9459,41 @@ pinned by its own test rather than by the general schema rule.
 **Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/ProfileDefinitionsController.cs`,
 `backend/src/DnnMigration.Application/Services/UserService.cs`.
 
-### An absent assignment date is omitted from the object, not sent as null
+### An absent assignment date is sent as a written null, not omitted from the object
 
-**The defect.** The role-membership listing documented that a null effective or expiry date is *emitted*
-as a null member. Serialisation is configured with `DefaultIgnoreCondition = WhenWritingNull`, so a null
-member is **dropped from the object entirely**. Measured: a membership row with neither date returns
-exactly `userId`, `username`, `displayName`, `roleId`, `roleName` and `userRoleId`.
+**Correction, measured.** An earlier revision of this entry stated the opposite — that serialisation is
+configured with `DefaultIgnoreCondition = WhenWritingNull` and that a null date is dropped from the
+object — and it was wrong on both counts. The configuration is
+`DefaultIgnoreCondition = JsonIgnoreCondition.Never`, stated explicitly on both the minimal-API and the
+controller serialiser surfaces in `backend/src/DnnMigration.Api/Extensions/ServiceCollectionExtensions.cs`.
+Measured against a live response from the delivered build, an open-ended membership returns:
 
-**What it does now.** Only the documentation changed. Both members are already `DateTime?`, and the
-published schema already marks them `nullable` and lists no `required` array, so a generated client
-already treats them as optionally absent — the description was the only thing out of step. The
-serialisation setting is deliberately **not** overridden for these two members: forcing explicit nulls
-here would make this one object disagree with every other response in the API about how absence is
-expressed, and absence is exactly what the legacy open-ended assignment means.
+```json
+{"userRoleId":1,"userId":1,"username":"admin","displayName":"Baseline Administrator",
+ "roleId":0,"roleName":"Administrators","effectiveDate":null,"expiryDate":null}
+```
+
+**What it does now.** Both members are `DateTime?`, both are always written, and a null value means the
+membership has no bound — effective immediately, or never expiring. The published schema marks them
+`nullable` with no `required` entry, which agrees with that behaviour. A client reads the member's
+**value** for null; it must not test whether the key is present, because the key is always present.
+
+**Why the setting is `Never` rather than `WhenWritingNull`.** It is a whole-API decision, not a
+preference expressed at this endpoint. The legacy null contract is a sentinel table rather than SQL
+`NULL` — `Null.vb:L36-L85` encodes an absent integer as `-1`, an absent boolean as `False` and absent
+text as the empty string — while this schema seeds `Portals.PortalID` at `IDENTITY(-1,1)` and
+`Roles.RoleID`, `Tabs.TabID` and `Modules.ModuleID` at `IDENTITY(0,1)`, and `Globals.vb:L95-L98`
+reserves `"-1"` through `"-4"` as role identifiers. Every one of `-1`, `0`, `""` and `false` is therefore
+a legitimate value that must reach the wire. An ignore condition that dropped defaults would erase three
+identity seeds and the empty-string contract outright; one that dropped only nulls would leave the API
+expressing absence two different ways depending on whether a member happens to be nullable. Writing
+every member costs a few bytes and removes both hazards.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/RolesController.cs`,
+`backend/src/DnnMigration.Application/Dtos/Role/RoleMembershipDto.cs`,
+`backend/src/DnnMigration.Application/Dtos/User/UserListItemDto.cs`,
+`backend/src/DnnMigration.Application/Dtos/Tab/TabDetailDto.cs`,
+`backend/src/DnnMigration.Api/Program.cs`.
 
 **Annotated in code at.** `backend/src/DnnMigration.Api/Controllers/RolesController.cs`,
 `backend/src/DnnMigration.Application/Dtos/Role/RoleMembershipDto.cs`.

@@ -172,9 +172,9 @@ public sealed class TabListItemDto
     // MIGRATION: the legacy TabInfo.ParentId was a non-nullable VB Integer whose "no
     // parent" value was the in-band sentinel -1 (the legacy null-integer sentinel), even
     // though the underlying column is `ParentId int NULL`. The target models it as int?
-    // with null meaning "root-level page", so a root-level page OMITS parentId from the body
-    // under the configured when-writing-null policy and emits it as neither -1 nor null. That
-    // is a deliberate, documented change of external
+    // with null meaning "root-level page", so a root-level page emits `"parentId": null` under
+    // the configured Never ignore policy - a written null, never -1 and never a missing member.
+    // That is a deliberate, documented change of external
     // representation rather than an accident of serialisation. Absence must be tested with
     // `is null`, never with `== -1` or `<= 0`, because -1 and 0 are both legitimate
     // identifiers elsewhere in this schema.
@@ -188,11 +188,10 @@ public sealed class TabListItemDto
     /// <para>
     /// The legacy type was a non-nullable integer that used <c>-1</c> to mean "no parent".
     /// The target representation is a nullable integer in which <see langword="null"/>
-    /// means "root-level page". Serialisation is configured once for the whole application with a
-    /// when-writing-null ignore condition
-    /// (<c>ServiceCollectionExtensions.cs:L323-L324</c>), so a root-level page OMITS this property
-    /// from the response body rather than emitting a <c>null</c> literal, and it is never emitted
-    /// as <c>-1</c>.
+    /// means "root-level page". Serialisation is configured once for the whole application with the
+    /// <c>Never</c> ignore condition (<c>ServiceCollectionExtensions.cs</c>, stated on both the
+    /// minimal-API and controller surfaces), so a root-level page emits this property as an explicit
+    /// <c>"parentId": null</c> rather than omitting it, and it is never emitted as <c>-1</c>.
     /// </para>
     /// <para>
     /// Test for a root-level page with <c>ParentId is null</c>. Never write

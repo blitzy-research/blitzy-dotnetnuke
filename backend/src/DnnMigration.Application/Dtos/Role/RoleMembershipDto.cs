@@ -129,14 +129,17 @@ public sealed class RoleMembershipDto
     /// on the type for why the legacy <c>Date.MinValue</c> marker does not travel.
     /// </para>
     /// <para>
-    /// MIGRATION: absence is expressed by the MEMBER BEING OMITTED from the serialised object, not by a
-    /// written <c>null</c>. Serialisation is configured once with
-    /// <c>JsonIgnoreCondition.WhenWritingNull</c>, so a membership with no start bound is published
-    /// WITHOUT an <c>effectiveDate</c> key at all - measured against a live response, which returns
-    /// <c>userId</c>, <c>username</c>, <c>displayName</c>, <c>roleId</c>, <c>roleName</c> and
-    /// <c>userRoleId</c> and nothing else for an open-ended membership. The member stays nullable so the
-    /// published schema marks it optional and agrees with that behaviour, and a client must test for the
-    /// key's PRESENCE rather than for a null value.
+    /// MIGRATION: absence is expressed by a WRITTEN <c>null</c>, not by omitting the member. Serialisation
+    /// is configured once with <c>JsonIgnoreCondition.Never</c>, so a membership with no start bound is
+    /// published as <c>"effectiveDate": null</c> - measured against a live response, which returns
+    /// <c>userRoleId</c>, <c>userId</c>, <c>username</c>, <c>displayName</c>, <c>roleId</c>,
+    /// <c>roleName</c>, <c>effectiveDate</c> and <c>expiryDate</c> for an open-ended membership, the last
+    /// two null. The member stays nullable so the published schema marks it optional and agrees with that
+    /// behaviour, and a client tests the member's VALUE for null rather than testing whether the key is
+    /// there. Writing every member is what the legacy null encoding requires of this API generally: the
+    /// sentinels are in-band values, so a policy that dropped nulls or defaults would also have to be
+    /// trusted never to drop a legitimate <c>0</c>, <c>false</c> or empty string, and none of those can be
+    /// dropped safely in this schema.
     /// </para>
     /// </remarks>
     public DateTime? EffectiveDate { get; set; }

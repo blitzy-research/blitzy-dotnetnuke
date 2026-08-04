@@ -86,11 +86,12 @@ namespace DnnMigration.Api.Controllers;
 /// MIGRATION: no sentinel is manufactured or erased on this boundary. The transfer objects carry the
 /// stored values through unchanged, so a legacy consumer still sees the retention period as -1 and an
 /// unset expiry as the minimum date. That survives the serialiser because a preserved sentinel is a
-/// VALUE, not a null: serialisation is configured once for the whole application with a
-/// when-writing-null ignore condition (<c>ServiceCollectionExtensions.cs:L323-L324</c>), which omits a
-/// property only when its value is null, and -1 and the minimum date are neither. What that policy
-/// does affect is the members deliberately modelled as nullable, which are omitted from the body when
-/// absent rather than emitted as a null literal. The individual sentinel decisions belong to the
+/// VALUE, not a null: serialisation is configured once for the whole application with the
+/// <c>Never</c> ignore condition (<c>ServiceCollectionExtensions.cs</c>, stated on both the
+/// minimal-API and controller surfaces), which omits nothing whatsoever - so a preserved -1, a
+/// minimum date, a legitimate 0, a false and an empty string all reach the wire unchanged, and a
+/// member deliberately modelled as nullable is written as an explicit <c>null</c> when it is absent
+/// rather than dropped from the object. The individual sentinel decisions belong to the
 /// transfer objects that declare the properties; this file adds none and removes none, which is the
 /// only way the two can stay consistent.
 /// </para>

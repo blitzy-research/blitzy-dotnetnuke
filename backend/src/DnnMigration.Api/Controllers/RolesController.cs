@@ -115,12 +115,12 @@ namespace DnnMigration.Api.Controllers;
 /// (<c>RoleController.vb:L25</c>) that supplied <c>DateAdd</c>, belong to the service.
 /// </para>
 /// <para>
-/// MIGRATION: no sentinel is manufactured or erased on this boundary, but absence is expressed by an
-/// ABSENT MEMBER rather than by a JSON null. Serialisation is configured once for the whole application
-/// with a when-writing-null ignore condition, so a null-valued property is omitted from the response
-/// body; an absent date therefore does not appear at all, while a perpetual expiry arrives as
-/// <c>9999-12-31</c> rather than being rounded away. A client reads a missing member as "no value" and
-/// never as <c>DateTime.MinValue</c>, 0 or -1. That matters because the legacy read path funnelled every value through
+/// MIGRATION: no sentinel is manufactured or erased on this boundary, and absence is expressed by an
+/// EXPLICIT JSON null rather than by a missing member. Serialisation is configured once for the whole
+/// application with the <c>Never</c> ignore condition, so every property is written; an absent date
+/// therefore arrives as <c>null</c>, while a perpetual expiry arrives as <c>9999-12-31</c> rather than
+/// being rounded away. A client reads a null member as "no value" and never as
+/// <c>DateTime.MinValue</c>, 0 or -1. That matters because the legacy read path funnelled every value through
 /// <c>Null.SetNull</c>, whose date sentinel is <c>DateTime.MinValue</c> and whose string sentinel is the
 /// empty string rather than <c>null</c> (<c>Null.vb:L66-L75</c>), so a database <c>NULL</c> and an empty
 /// value were indistinguishable once loaded. Which of the two now stands for absence is settled once, in
@@ -977,16 +977,20 @@ public sealed class RolesController : ControllerBase
     /// arithmetic is performed in this file.
     /// </para>
     /// <para>
-    /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT - this paragraph used to say the opposite,
-    /// so the correction is stated plainly. Serialisation is configured once with
-    /// <c>JsonIgnoreCondition.WhenWritingNull</c>, so a <c>null</c> date is NOT written as
-    /// <c>"effectiveDate": null</c>; the MEMBER IS OMITTED FROM THE OBJECT ENTIRELY. That is the intended
-    /// contract - absence is expressed by absence, never by a sentinel, and writing nulls would add bytes
-    /// without adding information - but a client must read it as "member missing means no date", not as
-    /// "member present with a null value". A client that indexes the property blindly will find it
-    /// undefined rather than null, which is the practical difference the withdrawn sentence got wrong.
-    /// The members remain nullable on the response contract, so the published schema marks them optional
-    /// and agrees with what the serialiser does.
+    /// MIGRATION: HOW AN ABSENT DATE LEAVES ON THE WAY BACK OUT - stated from a measured response,
+    /// because an earlier revision of this paragraph asserted the opposite and was wrong. Serialisation is
+    /// configured once with <c>JsonIgnoreCondition.Never</c>
+    /// (<c>ServiceCollectionExtensions.cs</c>, both the minimal-API and controller surfaces), so a
+    /// <c>null</c> date IS written, as <c>"effectiveDate": null</c>, and the member is never omitted.
+    /// Measured against a live response: an open-ended membership returns
+    /// <c>{"userRoleId":1,"userId":1,"username":"admin","displayName":"Baseline Administrator",</c>
+    /// <c>"roleId":0,"roleName":"Administrators","effectiveDate":null,"expiryDate":null}</c>. A client
+    /// therefore reads absence as a present member holding <c>null</c>, not as a missing key. That is the
+    /// intended contract and it is required rather than incidental: the same setting is what keeps a
+    /// legitimate <c>0</c>, <c>false</c> or empty string on the wire in this schema, where
+    /// <c>Roles.RoleID</c> is <c>IDENTITY(0,1)</c> and the legacy null encoding is a sentinel table rather
+    /// than SQL <c>NULL</c>. The members remain nullable on the response contract, so the published schema
+    /// marks them optional and agrees with what the serialiser does.
     /// </para>
     /// <para>
     /// MIGRATION: the notification flag survives on the contract because it was a genuine caller choice

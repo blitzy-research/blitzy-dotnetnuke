@@ -89,15 +89,15 @@ namespace DnnMigration.Api.Controllers;
 /// </para>
 /// <para>
 /// MIGRATION: no sentinel is manufactured or erased on this boundary, and the wire form of an absent
-/// value is an ABSENT MEMBER rather than a JSON null. Serialisation is configured once for the whole
-/// application with a when-writing-null ignore condition, so a null-valued property is omitted from the
-/// response body altogether; the transfer object carries stored values through unchanged either way.
+/// value is an EXPLICIT JSON null rather than a missing member. Serialisation is configured once for the
+/// whole application with the <c>Never</c> ignore condition, so every property is written including a
+/// null one; the transfer object carries stored values through unchanged either way.
 /// That matters for the description in particular: the legacy read path funnelled every string through
 /// <c>Null.SetNull</c>, whose string sentinel is the empty string rather than null
 /// (<c>Null.vb:L71-L75</c>), so a database NULL and an empty description were indistinguishable once
 /// loaded. Which of the two now stands for an absent description is settled once, in the mapper that
 /// translates between the contract and the persisted model, and this file neither adds a sentinel nor
-/// removes one - the only way the two can stay consistent. A client must therefore read a missing
+/// removes one - the only way the two can stay consistent. A client must therefore read a null
 /// member as "no value", and must never read it as -1, 0 or the empty string.
 /// </para>
 /// <para>
