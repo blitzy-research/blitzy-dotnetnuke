@@ -59,8 +59,8 @@ namespace DnnMigration.Api.Middleware;
 /// </para>
 /// <para>
 /// A BLANKET REFUSAL IS STILL WRONG, so the refusal is scoped by how the endpoint names its tenant. A route
-/// carrying a <c>portalId</c> segment names it in the route and is served: refusing those would lock a host
-/// account out of administering any portal from a management host name that is deliberately not an alias, and
+/// carrying a <c>portalId</c> segment names it in the route and is served: refusing those would prevent a host
+/// account from administering any portal via a management host name that is deliberately not an alias, and
 /// would add nothing, because the route portal is proved against authoritative administrator membership rather
 /// than against the host name. An endpoint marked <see cref="TenantOptionalAttribute"/> is served for the
 /// reason its mark states - installation-wide reference data, a tenant named by the caller's token or its own
@@ -94,8 +94,17 @@ namespace DnnMigration.Api.Middleware;
 /// identical outcome rather than resolving again.
 /// </para>
 /// </remarks>
-internal sealed class PortalAliasResolutionMiddleware
+public sealed class PortalAliasResolutionMiddleware
 {
+    // MIGRATION: the legacy per-request composite is gone. Tenant facts used to live on a mutable object
+    // parked in the ambient request-item bag - written by the page pipeline and read anywhere via
+    // PortalController.vb:1210 and Default.aspx.vb:99 - whose tab property carried a public setter
+    // (portal-settings source line 398, its setter at 402) and whose constructor performed the tenant read
+    // while constructing (line 548). Any code could therefore replace the tenant mid-request. What replaces
+    // it is an immutable, request-scoped snapshot reached only through a domain abstraction: 1397 lines and 49
+    // properties reduce to the 8 facts the interface exposes, and the tab identity is no longer tenant state
+    // at all - it arrives as a route parameter on the endpoints that need it.
+
     /// <summary>
     /// Path prefixes that are served without a resolved tenant. See the type remarks for why each is here;
     /// nothing that reads tenant data may be added.
@@ -114,10 +123,19 @@ internal sealed class PortalAliasResolutionMiddleware
     private const string PortalRouteValueKey = "portalId";
 
     /// <summary>
-    /// Failure code carried as the problem type. Shared verbatim with the module-definitions endpoint, which
-    /// refuses the same condition, so the two are one behaviour rather than two spellings of it.
+    /// Failure code carried as the problem type when a request that can only learn its tenant from the host
+    /// name is refused because the host name identified none.
     /// </summary>
-    private const string TenantUnresolvedCode = "portal.tenant_unresolved";
+    /// <remarks>
+    /// PUBLIC BECAUSE IT IS THE CANONICAL SPELLING, not because anything outside this type needs to construct
+    /// one. Four controllers refuse the identical condition from inside an action, when the endpoint was
+    /// reached with a tenant-naming route but the named portal still could not be resolved, and each currently
+    /// repeats this literal privately. A client is entitled to see one failure code for one condition, so the
+    /// declaration that the middleware answers with is the one they should all read. Exposing it here is the
+    /// half of that consolidation this file owns; retargeting those four declarations belongs to their own
+    /// files and is recorded as a hand-off rather than reached across a boundary from here.
+    /// </remarks>
+    public const string TenantUnresolvedCode = "portal.tenant_unresolved";
 
     /// <summary>Wording reported to the caller. Names no host and no resolution failure.</summary>
     private const string TenantUnresolvedDetail =
@@ -165,8 +183,7 @@ internal sealed class PortalAliasResolutionMiddleware
     /// than a second spelling declared here.
     /// </param>
     /// <returns>A task that completes when the request has been handled.</returns>
-    public async Task InvokeAsync(
-        HttpContext context,
+    public async Task InvokeAsync(HttpContext context,
         IPortalContextHolder portalContext,
         ProblemDetailsFactory problemDetailsFactory)
     {
@@ -185,8 +202,64 @@ internal sealed class PortalAliasResolutionMiddleware
         // on a request the path-base stage has already resolved this call observes that outcome rather than
         // reading the store again - and because both stages ask through the same helper, neither can be
         // handed an address the other would not have produced.
+        //
+        // MIGRATION: the host is taken from the request's own host value, ports included, and never from a
+        // forwarded-host header. The proxy in the shipped topology is configured to forward only the client
+        // address and the scheme, so a forwarded host would be unvalidated caller input; the aliases this
+        // installation is configured with carry ports, which is why the port is part of the key rather than
+        // trimmed off it.
         string address = TenantAddress.Of(context);
 
+        // MIGRATION: one exact lookup replaces a wildcard containment predicate. The legacy procedure matched
+        // the stored alias column against a pattern padded on both sides and then took the lowest-numbered
+        // portal of whatever matched (01.00.00.SqlDataProvider:4582) - so an alias that merely sat inside
+        // another portal's alias resolved to the WRONG tenant, and ties were broken by identifier order rather
+        // than by correctness. The product abandoned the procedure entirely: it was dropped at
+        // 02.02.00.SqlDataProvider:267 and no later script in the 88-script chain recreates it. This asks
+        // instead for equality against a bounded, most-specific-first candidate chain in a single round trip,
+        // and treats two rows claiming the SAME address as an ambiguity to refuse rather than a tie to break.
+        //
+        // MIGRATION: matching stays case-insensitive by design, not by accident. Stored aliases were
+        // lower-cased on every write and on every read (PortalAliasController.vb:31, :52, :76 and :97), so a
+        // case-sensitive comparison would fail to match a mixed-case host that the legacy product resolved.
+        // The comparison is therefore culture-independent; no culture-sensitive lower-casing is performed
+        // anywhere on this path, because the mapping of dotted-capital I differs by culture and would make
+        // tenant resolution depend on the server's locale.
+        //
+        // MIGRATION: the three fuzzy fallback stages are deliberately not reproduced. After its exact attempt
+        // the legacy resolver retried with and without a "www." label (portal-settings source 1089-1098), then
+        // stripped the leading label and retried against a wildcard-domain entry, the bare domain and a
+        // "www."-prefixed domain (lines 1109-1118); a second resolver additionally accepted any stored alias of
+        // which the requested one was a leading prefix (lines 1171 and 1184, explained at 1165 as a workaround
+        // for child portals reached through the parent's domain). Each of those widens one address into
+        // several tenants. Child portals are served here by resolving the path segment that identifies them,
+        // which is the accurate mechanism the prefix match was approximating.
+        //
+        // MIGRATION: resolution never writes. On a fresh installation the legacy resolver detected an
+        // unconfigured alias table and repaired it in place during a read (lines 1126-1135), then evicted its
+        // cache and retried. That made a plain retrieval mutate the database. The schema is immutable to this
+        // application and the installer lies outside this scope, so an unconfigured alias is reported and
+        // refused, and an operator repairs it through the alias endpoints, kept reachable for that purpose.
+        //
+        // MIGRATION: nothing is silently substituted. When the legacy procedure could not confirm that the
+        // requested tab belonged to the resolved portal it quietly swapped in that portal's lowest-numbered
+        // tab (01.00.00.SqlDataProvider:4603), so a request for another tenant's page was answered with a
+        // page the caller never asked for. There is no substitution here and no default tenant: an address
+        // that resolves to nothing yields no tenant, and the endpoints that depend on one are refused.
+        //
+        // MIGRATION: the alias-collection cache is intentionally omitted rather than ported. The legacy
+        // lookup table was held for the process lifetime with an absolute expiry set to the largest
+        // representable instant and a priority that forbade eviction (portal-settings source 1232), so an alias
+        // corrected in the database stayed wrong in memory until the application restarted. No measured
+        // lifetime exists to replace it with, and inventing one would be a guess, so resolution is memoised
+        // for the duration of a single request only - which removes the repeated round trip within a request
+        // without letting a stale tenant outlive it.
+        //
+        // MIGRATION: no table-name-prefix setting is introduced. The legacy provider templated a prefix into
+        // object and constraint names and the two shipped configurations disagreed about it - empty in
+        // release.config:354, non-empty in development.config:352. Table and column binding here is declared
+        // in the persistence layer's entity configurations instead, so this component names no database
+        // object; adding a configuration key that nothing consumed would be worse than having none.
         Result outcome = await portalContext
             .EnsureResolvedAsync(address, context.RequestAborted)
             .ConfigureAwait(false);

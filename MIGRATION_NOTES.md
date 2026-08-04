@@ -2839,6 +2839,127 @@ simultaneously holding the whole ASP.NET Core namespace above `Debug`, since a S
 applies to the longest matching prefix. Neither appears in the production overlay, and neither may
 be copied into it.
 
+### The production overlay re-asserts two hardened values and declares nothing else, and its global level stays at `Information` so the audit trail survives
+
+**Legacy behaviour.** `Website/release.config` is the release half of the twin-file pair, and it is
+the half that shipped. It committed the 3DES key that decrypted every stored password - the
+`machineKey` element at `:L89-L93`, whose `decryptionKey` is quoted in full in the section above
+and is not repeated here - together with a `SiteSqlServer` connection string naming a data source
+and an attachable database file (`:L24-L26`), `enablePasswordRetrieval="true"` alongside
+`passwordFormat="Encrypted"` (`:L236-L246`), fourteen `defaultProvider` declarations, and
+`objectQualifier=""` with `databaseOwner="dbo"` (`:L345-L355`). Nothing in it was
+environment-supplied: the release configuration *was* the secret store.
+
+**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.Production.json` is fourteen lines
+and declares two sections:
+
+```json
+{
+  "Https": {
+    "RedirectEnabled": false
+  },
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft.AspNetCore": "Warning",
+        "Microsoft.EntityFrameworkCore.Database.Command": "Warning"
+      }
+    }
+  }
+}
+```
+
+Both sections exist in the base file with these same values, and that is the point rather than an
+oversight: this overlay changes nothing, it *pins* the two settings whose accidental relaxation is
+most costly, and it is layered after the base so a value left behind in the base cannot follow the
+build into production. `docker/docker-compose.yml:L26` and `docker/api.Dockerfile:L70` both set
+`ASPNETCORE_ENVIRONMENT=Production`, so this file is live in every containerised deployment.
+
+**No secret appears, and neither secret key appears at all.** There is no `ConnectionStrings`
+section and no `Jwt` section - not empty, not a placeholder, not a comment. The base declares both
+as `""` and both are startup-validated, so the only supply route is the environment:
+`docker-compose.yml:L28` sets `ConnectionStrings__Default` from `${DB_CONNECTION_STRING}` and
+`:L29` sets `Jwt__Secret` from `${JWT_SECRET}`, both templated in `docker/.env.example` and read
+from the git-ignored `docker/.env`. Verified in both directions against the published Release
+build: with the two variables supplied the host reported `Hosting environment: Production` and
+answered `/health` with `200 Healthy`, and with `ConnectionStrings__Default` removed it aborted
+before binding a port, raising `InvalidOperationException` from
+`DnnMigration.Infrastructure.DependencyInjection.ReadConnectionString` and naming both spellings
+of the key. `TrustServerCertificate=True` is absent for the reason set out in the next section.
+
+**Why the global level is `Information` and not `Warning`.** A production overlay that quietens the
+host is the obvious instinct, and here it would destroy the audit trail. Serilog's
+`MinimumLevel:Default` is a global floor, no `MinimumLevel:Override` exists for the
+`DnnMigration` namespaces, and the migrated audit records are written at `Information`:
+`Infrastructure/Services/AuditLog.cs:L73` calls `LogInformation` under event id 1000, and
+`Infrastructure/Services/LoggingAuditSink.cs:L99-L103` selects `LogLevel.Information` for a
+succeeded outcome and returns early when `IsEnabled` is false for it. `Default: "Warning"` would
+therefore have dropped every succeeded audit record - the whole of the nineteen legacy `AddLog(`
+call sites the trail replaces - while leaving failures visible, which is the worst of the three
+possible outcomes because the gap is invisible. Verified by running the published build under
+`ASPNETCORE_ENVIRONMENT=Production` and signing in: the request emitted
+`[Information] LoggingAuditSink … AuditEvent=LOGIN_SUCCESS` and the correlated
+`[Information] RequestLoggingMiddleware` entry, and neither would have been recorded at `Warning`.
+Log volume was the lesser concern and was given up.
+
+**Why the two overrides are restated rather than inherited.** Both are the settings the development
+overlay deliberately relaxes - `Microsoft.AspNetCore` to `Information` and the global default to
+`Debug` - so they are the two most likely to be copied into the base by someone reproducing a
+development convenience. `Microsoft.EntityFrameworkCore.Database.Command` at `Information` writes
+the command text with its parameter list, which on the authentication and user-management paths is
+where credentials and tokens would be; restating `Warning` here puts it in the same block a
+reviewer reads to confirm production was not relaxed alongside development. Confirmed in the
+running container: four `Information`-level lifetime events were recorded, zero
+`Information`-level `Microsoft.AspNetCore` events, zero request-pipeline entries and zero
+`Database.Command` events, and no connection string, database password or signing key appeared
+anywhere in the log.
+
+**Why `Https:RedirectEnabled` is restated even though the base already sets it false.** This is the
+one key in the file whose accidental change is an outage rather than a disclosure.
+`Extensions/ApplicationBuilderExtensions.cs:L125` installs HTTPS redirection when it is true, and
+both health probes reach this process over plain HTTP - `docker-compose.yml:L40` uses
+`wget --spider http://127.0.0.1:8080/health` and `docker/nginx.conf:L74` proxies `/health` to
+`http://api:8080/health`. A redirect answers the probe with a 307 to a port nothing is listening
+on, the API never reports healthy, and because the frontend service declares
+`depends_on: condition: service_healthy` (`:L57-L59`) it never starts at all. Verified end to end:
+`docker compose up -d` reported the API `Healthy`, the frontend started, and both
+`curl -f http://localhost:8080/health` and `curl -f http://localhost:4200` returned 200. Strict
+transport security is unaffected and needs no key, since that stage ignores requests that did not
+arrive over HTTPS and ignores loopback hosts.
+
+**Four sections are deliberately absent, on one standard.** A key nothing reads is worse than no
+key, and it is applied here without exception. There is no `Logging` section, for the reason given
+two sections above - `Program.cs:L32-L35` installs Serilog through `UseSerilog` and reads levels
+from the `Serilog` section, so a `Logging:LogLevel` block would appear to hold the
+`Database.Command` channel closed while holding nothing, which is worse than omitting it precisely
+because it reads as a control. There is no `DetailedErrors` key: `GlobalExceptionHandler` produces
+the same RFC 7807 shape in every environment and the developer exception page is installed from
+the environment name alone, so the key has no observable effect outside development - the same
+judgement the development overlay records. There is no `Swagger` section: the base already
+disables the console and the reader falls back to false when the key is missing, so restating it
+bought nothing that `Https:RedirectEnabled` does not already demonstrate the value of, and the
+production overlay is not the place to accumulate inert re-assertions. There is no `Proxy`
+section: `Extensions/ServiceCollectionExtensions.cs:L490-L540` trusts nothing a deployment has not
+named, and the address of a reverse proxy inside a container network is not knowable when this file
+is written - declaring a wider trust than a deployment operates would let a caller choose its own
+rate-limit partition. No `Kestrel`, `Urls` or port key appears either: the image fixes
+`ASPNETCORE_URLS=http://+:8080` and runs as the unprivileged `appuser`, which cannot bind a port
+below 1024, and request limits are set in code rather than configuration.
+
+**And nothing here can touch the schema.** No `EnsureCreated`, `AutoMigrate`,
+`RunMigrationsOnStartup` or migration key of any kind is present, and no code path exists that one
+could reach: the only occurrences of those names in `backend/src` are the comments in
+`Infrastructure/DependencyInjection.cs:L184` and `Persistence/DnnDbContext.cs:L28` forbidding
+them. No JSON-serialisation key is present either - no `DefaultIgnoreCondition`,
+`WhenWritingNull` or `WhenWritingDefault` - because the legacy sentinels are observable at the API
+boundary: `Library/Components/Shared/Null.vb:L36-L85` defines `NullString` as the empty string and
+`NullInteger` as `-1`, and `-1` is simultaneously that sentinel, the `IDENTITY(-1,1)` seed of
+`Portals.PortalID` (`01.00.00.SqlDataProvider:L77`) and the `glbRoleAllUsers` pseudo-role
+(`Globals.vb:L95`), so `""` must never serialise as `null` and `-1` must never serialise as
+absent. Serialisation policy is stated deliberately in code, at
+`Extensions/ServiceCollectionExtensions.cs:L303`, and not left to a configuration key.
+
 ### `TrustServerCertificate=True` belongs to a development connection string only
 
 **Legacy behaviour.** Transport security did not arise. `Website/release.config:L25` and `:L36`
