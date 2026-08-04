@@ -24,12 +24,17 @@ namespace DnnMigration.Api.Authorization;
 /// how the caller reached the API. Authorisation has to follow the resource.
 /// </para>
 /// <para>
-/// THE RULE IS THE SAME ONE THE PERMISSION HANDLER ALREADY APPLIED, and that is deliberate rather than
-/// coincidental. <see cref="PermissionAuthorizationHandler"/> resolves its tenant as "the route value if
-/// the route names one, otherwise the token's" and documents the reason at length: a tenant-scoped route
-/// states which tenant the request is about, and a caller whose token names a different one must be denied
-/// on that tenant's grants rather than admitted on their own. Two authorisation components disagreeing
-/// about which portal a request is about is exactly the class of defect this consolidation removes.
+/// TENANT RESOLUTION IS OWNED HERE, and the division of labour with the permission handler is deliberate
+/// rather than coincidental. This evaluator answers tenant-wide administration questions, so it has to
+/// establish which tenant a request is about, and it reads that from the route segment: a tenant-scoped
+/// route states which tenant the request concerns, and a caller whose token names a different one must be
+/// judged on that tenant's grants rather than admitted on their own.
+/// <see cref="PermissionAuthorizationHandler"/> answers a different question - whether a caller holds a
+/// named permission on one module or one page - so it identifies the item from that item's own route
+/// segment, and it prefers this same portal segment when naming the tenant before falling back to the
+/// caller's affiliation and then to the requested host. Neither component decides the other's question,
+/// which is what keeps two authorisation components from disagreeing about a request; that class of
+/// defect is exactly what this consolidation removes.
 /// </para>
 /// <para>
 /// A HOST ACCOUNT IS ANSWERED YES, AND THE EVIDENCE FOR THAT IS THE REST OF THIS SOLUTION RATHER THAN A
@@ -67,11 +72,13 @@ internal sealed class PortalAdministrationEvaluator
 {
     /// <summary>The route value naming the portal a tenant-scoped request acts on.</summary>
     /// <remarks>
-    /// Spelled identically to <see cref="PermissionAuthorizationHandler.PortalRouteKey"/> and taken from it,
-    /// so the two cannot drift; a route template that renamed the segment would break both together rather
-    /// than silently changing one decision.
+    /// Taken from <see cref="AuthorizationClaims.PortalRouteKey"/> rather than re-spelled, so the two cannot
+    /// drift; a route template that renamed the segment would break every reader together rather than
+    /// silently changing one decision. The shared constant is the right home for it because the segment name
+    /// is a property of the route templates, not of any one component that reads them - an evaluator
+    /// borrowing the name from an authorisation handler had the dependency the wrong way round.
     /// </remarks>
-    internal const string PortalRouteKey = PermissionAuthorizationHandler.PortalRouteKey;
+    internal const string PortalRouteKey = AuthorizationClaims.PortalRouteKey;
 
     /// <summary>The route value naming the account an account-scoped request acts on.</summary>
     internal const string UserRouteKey = "userId";

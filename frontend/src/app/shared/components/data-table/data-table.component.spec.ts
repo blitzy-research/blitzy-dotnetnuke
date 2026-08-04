@@ -1,13 +1,58 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, TemplateRef, ViewChild } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
+// The two shared contracts this spec asserts against. `SortDirection` is the wire sort
+// vocabulary the component reports; `ProfilePropertyDefinition` is a REAL transfer contract
+// used as a row shape, so that a mistyped column `field` is a compile error rather than a
+// blank column found in a browser. Both live in the same contract directory.
+import { SortDirection } from '../../../core/models/paged-result.model';
+import { ProfilePropertyDefinition } from '../../../core/models/profile.model';
 import {
   DataTableCellContext,
   DataTableColumn,
   DataTableComponent,
   DataTableSortChange,
 } from './data-table.component';
+
+/**
+ * Narrows a `querySelector` result to a present element, throwing when it is absent.
+ *
+ * The point is that a MISSING element must fail the test rather than silently satisfy it.
+ * Optional chaining on a query - `root.querySelector('button')?.click()` - is the classic
+ * false green in a spec of this kind: when the selector stops matching, the call becomes a
+ * no-op, the expectation that follows sees the unchanged state it was already going to see,
+ * and the suite stays green while the assertion has quietly stopped testing anything. A
+ * non-null assertion would be worse still, being forbidden outright here.
+ *
+ * @param root The element to search within.
+ * @param selector The CSS selector to find.
+ * @returns The matched element, guaranteed present.
+ * @throws Error when the selector matches nothing, naming the selector that failed.
+ */
+function requireElement(root: Element, selector: string): Element {
+  const found = root.querySelector(selector);
+  if (found === null) {
+    throw new Error(`Expected to find "${selector}" in the rendered template.`);
+  }
+  return found;
+}
+
+/**
+ * The direction spellings this spec asserts against, taken from the WIRE CONTRACT rather
+ * than restated as literals.
+ *
+ * Declared as typed constants so that a casing drift in the shared contract - `asc` for
+ * `Ascending`, say - becomes a compile error here instead of a run-time `400` discovered in
+ * a browser. The server's binder rejects an abbreviated spelling outright, so the casing is
+ * load-bearing data and not a style choice.
+ */
+const ASCENDING: SortDirection = 'Ascending';
+
+/** The descending member of the wire sort vocabulary. @see ASCENDING */
+const DESCENDING: SortDirection = 'Descending';
 
 /**
  * A row shape carrying one of each value kind the text conversion covers, plus an
@@ -54,9 +99,34 @@ describe('DataTableComponent', () => {
   let fixture: ComponentFixture<DataTableComponent<Row>>;
   let sorts: DataTableSortChange[];
   let selected: Row[];
+  let httpMock: HttpTestingController;
 
   beforeEach(async () => {
-    await TestBed.configureTestingModule({ imports: [DataTableComponent] }).compileComponents();
+    await TestBed.configureTestingModule({
+      // Standalone component, so it is IMPORTED. No declaration list and no module appear
+      // anywhere in this workspace.
+      imports: [DataTableComponent],
+
+      // ORDER IS LOAD-BEARING: the real client is provided FIRST and the testing backend
+      // second, so the testing backend overrides the live one. Reversed, the real
+      // `HttpBackend` survives and a spec that made a request would attempt a live call.
+      //
+      // These two are NOT boilerplate here. This component injects nothing and reaches no
+      // data source, and the pair exists so that the zero-request expectation below, backed
+      // by the mandatory `verify()` in `afterEach`, is a real assertion rather than an
+      // article of faith. Were this component or either of its two real children to issue a
+      // request, it would be captured here and would fail the suite.
+      //
+      // NO ROUTER PROVIDER IS REGISTERED, DELIBERATELY. The component renders no link, no
+      // outlet and no directive that injects `Router` or `ActivatedRoute`, and it never
+      // navigates - row activation is reported through `rowSelect` and routing is the
+      // consuming feature's business. Registering `provideRouter([])` would add a
+      // dependency the component does not have and would weaken this spec's claim that its
+      // surface is closed. The legacy router testing module is forbidden outright.
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
 
     fixture = TestBed.createComponent<DataTableComponent<Row>>(DataTableComponent);
     sorts = [];
@@ -67,6 +137,16 @@ describe('DataTableComponent', () => {
     fixture.componentRef.setInput('columns', baseColumns());
     fixture.componentRef.setInput('rows', ROWS);
     fixture.detectChanges();
+  });
+
+  // MANDATORY, and it applies to EVERY test in this describe rather than to the HTTP test
+  // alone. `verify()` fails the spec when any request was issued and left unanswered, so it
+  // turns "this component performs no I/O" into a claim checked after every single
+  // interaction below - every sort activation, every selection, every keyboard press - not
+  // just in the one test that names it. A spec that registers the testing backend and never
+  // calls `verify()` is the commonest false green in a suite of this kind.
+  afterEach(() => {
+    httpMock.verify();
   });
 
   function set(name: string, value: unknown): void {
@@ -94,6 +174,104 @@ describe('DataTableComponent', () => {
     return Array.from(bodyRows()[rowIndex].querySelectorAll('td')).map((cell) => textOf(cell));
   }
 
+  /** The component's rendered root, as an element the query helpers can search. */
+  function host(): Element {
+    return fixture.nativeElement as Element;
+  }
+
+  describe('the component takes no data dependency of any kind', () => {
+    it('performs no HTTP requests while rendering, sorting or selecting', () => {
+      // Exercise every interactive path the component has, so the claim covers the whole
+      // surface rather than the initial render alone.
+      const sortControl = requireElement(headers()[0], 'button');
+      (sortControl as HTMLButtonElement).click();
+      bodyRows()[0].click();
+      bodyRows()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      set('loading', true);
+      set('loading', false);
+      fixture.detectChanges();
+
+      // `expectNone` names the assertion explicitly; the `verify()` in `afterEach` is the
+      // belt-and-braces half and would fail this test independently.
+      httpMock.expectNone(() => true);
+    });
+
+    it('injects no service, so it can be created with no provider but the HTTP pair', () => {
+      // The component was constructed in `beforeEach` from a testing module registering
+      // nothing except the HTTP backend - no store, no service, no router. Reaching a
+      // rendered table at all is therefore the proof: an unmet dependency would have thrown
+      // during `createComponent`.
+      expect(fixture.debugElement.query(By.css('table.data-table'))).not.toBeNull();
+    });
+  });
+
+  describe('the surface is closed: no paging, no dialogue, no foot row', () => {
+    // PROVENANCE. The pager was always a SIBLING of the legacy grid, never a row inside it:
+    // `Website/admin/Portal/portals.ascx` closes its grid at L56, emits `<br><br>` at L57 and
+    // only THEN declares `<dnn:pagingcontrol>` at L58, and `Website/admin/Users/users.ascx`
+    // does the identical thing at L81-L83. Only two of the eight legacy grids were paged at
+    // all, so paging is emphatically not a property of the grid itself.
+    //
+    // These assertions cannot fail loudly on their own: a component that grew an internal
+    // pager or a confirmation dialogue would still render, still pass every other test here,
+    // and would simply have taken over a responsibility that belongs to the feature - which
+    // is exactly how a "shared" component acquires a second source of truth for the page
+    // index.
+
+    it('renders no pagination component, because the pager is a sibling of the table', () => {
+      expect(host().querySelector('app-pagination')).toBeNull();
+    });
+
+    it('renders no pagination in any state, including waiting and empty', () => {
+      set('loading', true);
+      expect(host().querySelector('app-pagination')).toBeNull();
+
+      set('loading', false);
+      set('rows', []);
+      expect(host().querySelector('app-pagination')).toBeNull();
+    });
+
+    it('emits no foot row at all, so no pager can hide in one', () => {
+      // The stronger of the two available forms: rather than proving a `tfoot` is free of a
+      // pager, prove no `tfoot` is emitted in the first place.
+      expect(host().querySelector('tfoot')).toBeNull();
+
+      set('loading', true);
+      expect(host().querySelector('tfoot')).toBeNull();
+
+      set('loading', false);
+      set('rows', []);
+      expect(host().querySelector('tfoot')).toBeNull();
+    });
+
+    it('renders no confirmation dialogue, because the feature owns the delete flow', () => {
+      // The component exposes no row-command output, so it cannot know that a command was
+      // destructive; the confirmation therefore belongs to the feature that projected the
+      // command. A dialogue rendered here would confirm an action this component never sees.
+      expect(host().querySelector('app-confirm-dialog')).toBeNull();
+    });
+
+    it('borrows no legacy grid class name, so the token vocabulary is the only source', () => {
+      // Asserting ABSENCE is the useful direction here. The legacy vocabulary
+      // - `.DataGrid_Header`, `.DataGrid_Item`, `.DataGrid_AlternatingItem`,
+      // `.DataGrid_SelectedItem`, `.DataGrid_Footer`, `.DataGrid_Container` - is deliberately
+      // not carried across; row state is published through announced attributes and the
+      // component's own block-scoped classes instead.
+      const legacy = [
+        '.DataGrid_Header',
+        '.DataGrid_Item',
+        '.DataGrid_AlternatingItem',
+        '.DataGrid_SelectedItem',
+        '.DataGrid_Footer',
+        '.DataGrid_Container',
+      ];
+
+      for (const selector of legacy) {
+        expect(host().querySelector(selector)).toBeNull();
+      }
+    });
+  });
+
   describe('structure', () => {
     it('renders a real table, so row and column relationships survive', () => {
       expect(fixture.debugElement.query(By.css('table'))).not.toBeNull();
@@ -115,17 +293,35 @@ describe('DataTableComponent', () => {
     });
 
     it('keeps the fallback name out of the painted output but in the accessibility tree', () => {
-      // The fallback must not become visible text. It inherits the same clipping hook the
-      // projected caption uses, so a table that falls back looks identical and is merely
-      // named; neither `display` nor `visibility` may be used, because either would take
-      // the caption out of the accessibility tree along with the page and defeat the whole
-      // point of naming it.
+      // The fallback must not become visible text, yet must still NAME the table. The
+      // component discharges that by declaring the shared stylesheet's documented clipping
+      // hook and by declaring nothing that would remove the element from the accessibility
+      // tree - which is precisely where its responsibility ends.
+      //
+      // ASSERTED AT THE MARKUP LEVEL, DELIBERATELY, AND NOT THROUGH COMPUTED STYLE. Two
+      // reasons, and the second is the stronger. First, the resolved values of the clipping
+      // technique belong to the shared stylesheet, which is a different contract owned
+      // elsewhere; a spec for THIS component asserting them would fail whenever that
+      // stylesheet legitimately changed technique, and would be asserting appearance rather
+      // than behaviour. Second, the hiding mechanisms that would actually break the
+      // accessible name - the `hidden` attribute, `aria-hidden`, or an inline `display: none`
+      // or `visibility: hidden` - are all things this component would have to WRITE INTO ITS
+      // OWN MARKUP to introduce. Proving they are absent from the markup therefore closes the
+      // real regression path directly, without reading a single resolved value.
       const caption = fixture.debugElement.query(By.css('table > caption'))
         .nativeElement as HTMLElement;
 
+      // The documented hook is present, so the caption is clipped rather than removed.
       expect(caption.hasAttribute('data-visually-hidden')).toBeTrue();
-      expect(getComputedStyle(caption).display).not.toBe('none');
-      expect(getComputedStyle(caption).visibility).not.toBe('hidden');
+
+      // And it still carries the accessible name, which is the point of keeping it at all.
+      expect((caption.textContent ?? '').trim()).toBe('Data table');
+
+      // None of the mechanisms that would strip it from the accessibility tree is declared.
+      expect(caption.hasAttribute('hidden')).toBeFalse();
+      expect(caption.getAttribute('aria-hidden')).toBeNull();
+      expect(caption.style.display).toBe('');
+      expect(caption.style.visibility).toBe('');
     });
 
     it('marks every column heading with a column scope', () => {
@@ -377,7 +573,7 @@ describe('DataTableComponent', () => {
     // that corpus into a grid and script-bearing text is ordinary input, not an attack.
     //
     // Interpolation escapes, so these are REGRESSION GUARDS rather than assertions
-    // about a defect: they fail the moment any of these three values stops being
+    // about a defect: they fail as soon as any of these three values stops being
     // interpolated - the changes that would do it being a raw-HTML property binding, a
     // sanitiser bypass, a trusted-HTML wrapper or markup smuggled through an attribute
     // binding. Column headings are covered as well as cell values, because a heading is
@@ -390,6 +586,17 @@ describe('DataTableComponent', () => {
     const SCRIPT_PAYLOAD = '<script>window.__dataTableXss = true;</script>';
     const IMAGE_PAYLOAD = '<img src="x" onerror="window.__dataTableXss = true">';
 
+    /**
+     * Benign-looking markup, and the most instructive of the three payloads.
+     *
+     * A bold tag carries no attack at all, which is exactly why it is here: it is what a
+     * resx value realistically contains, and a reader glancing at the rendered grid cannot
+     * tell escaped-and-shown from parsed-and-applied without looking for the element. The
+     * assertions below therefore check the ELEMENT's absence inside the specific cell, not
+     * merely that the document gained no script.
+     */
+    const MARKUP_PAYLOAD = '<b>x</b>';
+
     function scriptCount(): number {
       return (fixture.nativeElement as HTMLElement).querySelectorAll('script').length;
     }
@@ -397,6 +604,27 @@ describe('DataTableComponent', () => {
     function imageCount(): number {
       return (fixture.nativeElement as HTMLElement).querySelectorAll('img').length;
     }
+
+    it('renders a markup-bearing cell value verbatim and creates no element in that cell', () => {
+      set('columns', [{ key: 'name', label: 'Name', field: 'name' }]);
+      set('rows', [{ ...ROWS[0], name: MARKUP_PAYLOAD }]);
+
+      // Scoped to the CELL rather than to the document, which is the stricter claim: a
+      // document-wide query would also pass if the element had been created somewhere else.
+      const cell = requireElement(bodyRows()[0], 'td');
+
+      expect((cell.textContent ?? '').trim()).toBe(MARKUP_PAYLOAD);
+      expect(cell.querySelector('b')).toBeNull();
+    });
+
+    it('renders a markup-bearing column heading verbatim and creates no element in it', () => {
+      // A heading is rendered by a DIFFERENT template branch from a cell and is just as
+      // caller-supplied, so escaping has to be proved on both paths independently.
+      set('columns', [{ key: 'name', label: MARKUP_PAYLOAD, field: 'name' }]);
+
+      expect(textOf(headers()[0])).toBe(MARKUP_PAYLOAD);
+      expect(headers()[0].querySelector('b')).toBeNull();
+    });
 
     it('renders a script-bearing cell value as text', () => {
       set('columns', [{ key: 'name', label: 'Name', field: 'name' }]);
@@ -542,6 +770,148 @@ describe('DataTableComponent', () => {
       expect(sorts).toEqual([]);
     });
 
+    describe('keyboard operability of the sort control', () => {
+      // WHY THIS IS ASSERTED SEPARATELY FROM THE CLICK TESTS ABOVE. Those prove the sort
+      // CONTRACT - which key, which direction, which column. This block proves the control is
+      // reachable and operable WITHOUT A POINTER AT ALL, which is a different claim and the
+      // one the legacy grids could not make: measured across the legacy stylesheets, ':focus'
+      // appears in zero files, 'outline' in zero files and 'aria-' in zero files, so the
+      // legacy heading was a plain image-free label with no focus behaviour whatsoever.
+      //
+      // The activation is delivered by a REAL `<button>` rather than by a heading carrying a
+      // click handler, and that choice is what supplies keyboard operability from the
+      // platform instead of from hand-written key handling. The assertions below verify each
+      // link in that chain rather than assuming it.
+
+      /** The sortable heading control for a column index. */
+      function sortControl(columnIndex: number): HTMLButtonElement {
+        const element = requireElement(headers()[columnIndex], 'button');
+
+        if (element instanceof HTMLButtonElement === false) {
+          throw new Error('The sortable heading control is not a button element.');
+        }
+
+        return element;
+      }
+
+      /**
+       * Activates a native button the way a keyboard user does.
+       *
+       * A synthetic `KeyboardEvent` dispatched from script is untrusted, so the user agent
+       * performs NO default action for it - the Enter-to-click translation a real key press
+       * gets is simply not applied. This helper therefore does exactly what the platform
+       * does, in the platform's order, and nothing more: it focuses the control, dispatches
+       * the real key event, and performs the activation ONLY IF the element did not cancel
+       * the key. That conditional is the load-bearing part - a component that called
+       * `preventDefault()` on the key would suppress a real browser's activation too, and
+       * this helper would then correctly emit nothing.
+       *
+       * @param button The control to activate.
+       * @param key The activation key to press.
+       * @returns Whether the key event survived uncancelled and the activation was performed.
+       */
+      function pressKey(button: HTMLButtonElement, key: string): boolean {
+        button.focus();
+
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        const survived = button.dispatchEvent(event);
+
+        if (survived) {
+          button.click();
+        }
+
+        fixture.detectChanges();
+
+        return survived;
+      }
+
+      it('exposes the sort affordance as a real button, which the platform makes operable', () => {
+        const control = sortControl(0);
+
+        // A native button is focusable and answers both Enter and Space with no key handler
+        // written anywhere. An activatable `th` would need a tab index AND a hand-rolled key
+        // handler to reach the same place, and would still not be announced as a control.
+        expect(control.tagName).toBe('BUTTON');
+        expect(control.type).toBe('button');
+      });
+
+      it('places the sort control in the tab order without an author-supplied tab index', () => {
+        const control = sortControl(0);
+
+        // The absence of the attribute is the point: focusability is inherited from the
+        // element, so it cannot be lost by someone tidying up an attribute they thought was
+        // redundant.
+        expect(control.hasAttribute('tabindex')).toBeFalse();
+
+        control.focus();
+        expect(document.activeElement).toBe(control);
+      });
+
+      it('emits the ascending order from an Enter press on the focused heading', () => {
+        const survived = pressKey(sortControl(0), 'Enter');
+
+        expect(survived).toBeTrue();
+        expect(sorts).toEqual([{ key: 'name', direction: ASCENDING }]);
+      });
+
+      it('emits the ascending order from a Space press on the focused heading', () => {
+        const survived = pressKey(sortControl(0), ' ');
+
+        expect(survived).toBeTrue();
+        expect(sorts).toEqual([{ key: 'name', direction: ASCENDING }]);
+      });
+
+      it('flips the active column to descending from the keyboard', () => {
+        set('sortBy', 'name');
+        set('sortDir', ASCENDING);
+
+        pressKey(sortControl(0), 'Enter');
+
+        expect(sorts).toEqual([{ key: 'name', direction: DESCENDING }]);
+      });
+
+      it('never mutates the rows it was given when sorted from the keyboard', () => {
+        // Captured BEFORE activation: the array identity, and a copy of its element order.
+        // Sorting is EMITTED, never performed, so all three must be unchanged afterwards.
+        const boundRows = fixture.componentInstance.rows;
+        const orderBefore = [...boundRows];
+
+        pressKey(sortControl(0), 'Enter');
+
+        expect(fixture.componentInstance.rows).toBe(boundRows);
+        expect([...fixture.componentInstance.rows]).toEqual(orderBefore);
+        expect(ROWS[0].id).toBe(0);
+        expect(ROWS[1].id).toBe(-1);
+      });
+
+      it('does not update aria-sort optimistically after a keyboard activation', () => {
+        // The two sort inputs are the SOLE source of truth for the announcement. With them
+        // unchanged, the heading must still announce what it was told, not what was asked
+        // for - otherwise a heading would announce an order whose request had failed.
+        set('sortBy', 'name');
+        set('sortDir', ASCENDING);
+
+        pressKey(sortControl(0), 'Enter');
+
+        expect(sorts).toEqual([{ key: 'name', direction: DESCENDING }]);
+        expect(headers()[0].getAttribute('aria-sort')).toBe('ascending');
+      });
+
+      it('refuses keyboard activation while a request is in flight', () => {
+        set('loading', true);
+
+        // A disabled button does not dispatch a click from a key press in a real browser
+        // either, so the guard is asserted through the emission rather than through the flag
+        // alone.
+        const control = sortControl(0);
+        expect(control.disabled).toBeTrue();
+
+        pressKey(control, 'Enter');
+
+        expect(sorts).toEqual([]);
+      });
+    });
+
     it('declares an explicit control type so it cannot submit a surrounding form', () => {
       expect(headers()[0].querySelector('button')?.getAttribute('type')).toBe('button');
     });
@@ -567,6 +937,54 @@ describe('DataTableComponent', () => {
       set('rows', []);
 
       expect(fixture.debugElement.query(By.css('app-empty-state'))).not.toBeNull();
+    });
+
+    // THE ASSERTIONS BELOW PROVE THE CHILDREN ARE THE REAL SHARED COMPONENTS, not merely that
+    // an element with the right tag name is in the DOM. That distinction is worth asserting:
+    // a fake declared in a spec, or an unrecognised element admitted by a permissive schema,
+    // satisfies a tag-name query perfectly while rendering nothing at all. Neither is used
+    // here - this suite declares no stub and relaxes no schema - and each real component is
+    // rendered with NO BINDINGS by the table, so its OWN defaults are what appear. Reading
+    // those defaults back is therefore end-to-end evidence that the genuine component ran.
+
+    it('renders the REAL shared indicator, with its own default wording and status role', () => {
+      set('loading', true);
+
+      const spinner = requireElement(host(), 'app-loading-spinner');
+
+      // `role="status"` is the real component's own implicit polite live region, and the
+      // default label is its own text. A stub would carry neither.
+      expect(spinner.getAttribute('role')).toBe('status');
+      expect(spinner.textContent ?? '').toContain('Loading');
+    });
+
+    it('renders the REAL shared empty state, with its own default message', () => {
+      set('rows', []);
+
+      const empty = requireElement(host(), 'app-empty-state');
+
+      // The real component's documented fallback wording, which it supplies itself because
+      // the table binds no message - its input surface is closed at five.
+      expect(empty.textContent ?? '').toContain('No records found.');
+    });
+
+    it('places the empty state in a body row spanning every column, never in a foot row', () => {
+      set('columns', baseColumns());
+      set('rows', []);
+
+      const empty = requireElement(host(), 'app-empty-state');
+      const cell = empty.closest('td');
+      const section = empty.closest('tbody');
+
+      if (cell === null || section === null) {
+        throw new Error('The empty state is not inside a body cell.');
+      }
+
+      // Spans all four columns, so no real empty cells are left beside the message for a
+      // screen reader to announce as blanks.
+      expect(cell.getAttribute('colspan')).toBe('4');
+      expect(section.tagName).toBe('TBODY');
+      expect(empty.closest('tfoot')).toBeNull();
     });
 
     it('prefers waiting over empty, so an empty page is not claimed prematurely', () => {
@@ -805,6 +1223,60 @@ describe('DataTableComponent', () => {
       ]);
     });
 
+    it('sorts each duplicated label by its OWN key, not by the label they share', () => {
+      // THE DEFECT THIS CATCHES, restated because it is the whole reason the descriptor
+      // separates key from label: `Website/admin/Security/roles.ascx` carries HeaderText
+      // "Every" at BOTH L45 (over BillingPeriod) and L58 (over TrialPeriod), and HeaderText
+      // "Period" at BOTH L50 (over BillingFrequency) and L63 (over TrialFrequency) - four
+      // columns, two labels, inside ONE grid. A label-keyed model, or a heading loop tracked
+      // by label, would collapse each pair to a single column and drop the other WITH NO
+      // ERROR ANYWHERE. Rendering four headings proves they survive; emitting four DISTINCT
+      // keys proves they are addressable independently, which is what actually makes the
+      // fourth column usable.
+      set('columns', [
+        { key: 'billingPeriod', label: 'Every', field: 'count', sortable: true },
+        { key: 'billingFrequency', label: 'Period', field: 'name', sortable: true },
+        { key: 'trialPeriod', label: 'Every', field: 'count', sortable: true },
+        { key: 'trialFrequency', label: 'Period', field: 'name', sortable: true },
+      ]);
+
+      expect(headers().length).toBe(4);
+
+      for (const header of headers()) {
+        (requireElement(header, 'button') as HTMLButtonElement).click();
+      }
+
+      fixture.detectChanges();
+
+      expect(sorts).toEqual([
+        { key: 'billingPeriod', direction: ASCENDING },
+        { key: 'billingFrequency', direction: ASCENDING },
+        { key: 'trialPeriod', direction: ASCENDING },
+        { key: 'trialFrequency', direction: ASCENDING },
+      ]);
+
+      // Four activations, four DISTINCT keys. A label-keyed implementation would repeat a
+      // key here even if it somehow rendered four headings.
+      expect(new Set(sorts.map((change) => change.key)).size).toBe(4);
+    });
+
+    it('announces the active sort on only one of two columns sharing a label', () => {
+      // With the label ambiguous, `sortBy` can only be resolved through the key. If the
+      // active-sort test consulted the label, BOTH "Every" columns would announce themselves
+      // as sorted and a screen reader would be told the table is ordered two ways at once.
+      set('columns', [
+        { key: 'billingPeriod', label: 'Every', field: 'count', sortable: true },
+        { key: 'trialPeriod', label: 'Every', field: 'count', sortable: true },
+      ]);
+      set('sortBy', 'trialPeriod');
+      set('sortDir', DESCENDING);
+
+      expect(headers().map((header) => header.getAttribute('aria-sort'))).toEqual([
+        'none',
+        'descending',
+      ]);
+    });
+
     it('keeps a hidden label in the accessibility tree while removing it from view', () => {
       set('columns', [
         { key: 'commands', label: 'Commands', kind: 'actions', headerHidden: true },
@@ -826,13 +1298,181 @@ describe('DataTableComponent', () => {
   });
 });
 
+describe('DataTableComponent with a real wire contract as its row', () => {
+  // WHY A REAL MODEL AND NOT THE LOCAL FIXTURE SHAPE. `ProfilePropertyDefinition` is the
+  // actual transfer contract this application receives, and it is the row of the grid that
+  // `Website/admin/Users/ProfileDefinitions.ascx` renders - the same screen whose four
+  // command columns at L17-L20 (Edit, Delete, MoveDown, MoveUp, all keyed
+  // `PropertyDefinitionID`) set the upper bound on projected row actions. Typing the columns
+  // against it is what makes a mistyped `field` a COMPILE error rather than a blank column
+  // discovered in a browser, which is the entire reason the component is generic.
+  //
+  // The identifiers below are the sentinel cases taken from the shipped schema, not invented:
+  // `Portals.PortalID` is `IDENTITY(-1, 1)`
+  // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77) while
+  // `Roles.RoleID` L115, `Tabs.TabID` L140 and `Modules.ModuleID` L221 are each
+  // `IDENTITY(0, 1)`. So minus one and zero are both legitimate live identifiers, and minus
+  // one is SIMULTANEOUSLY the integer null sentinel `Library/Components/Shared/Null.vb`
+  // defines as -1.
+
+  /** A definition seeded at the zero identity, as the role, page and module tables are. */
+  const ZERO_SEEDED: ProfilePropertyDefinition = {
+    propertyDefinitionId: 0,
+    portalId: -1,
+    moduleDefId: null,
+    dataType: 349,
+    defaultValue: null,
+    propertyCategory: 'Name',
+    propertyName: 'Prefix',
+    length: 0,
+    required: false,
+    validationExpression: null,
+    viewOrder: 0,
+    visible: true,
+    visibility: 2,
+  };
+
+  /** A definition carrying the sentinel value as a real identifier. */
+  const SENTINEL_SEEDED: ProfilePropertyDefinition = {
+    propertyDefinitionId: -1,
+    portalId: -1,
+    moduleDefId: null,
+    dataType: 349,
+    defaultValue: '',
+    propertyCategory: 'Contact',
+    propertyName: 'Telephone',
+    length: 0,
+    required: true,
+    validationExpression: '',
+    viewOrder: 1,
+    visible: false,
+    visibility: 0,
+  };
+
+  const DEFINITIONS: readonly ProfilePropertyDefinition[] = [ZERO_SEEDED, SENTINEL_SEEDED];
+
+  let fixture: ComponentFixture<DataTableComponent<ProfilePropertyDefinition>>;
+  let httpMock: HttpTestingController;
+  let chosen: ProfilePropertyDefinition[];
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [DataTableComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent<DataTableComponent<ProfilePropertyDefinition>>(
+      DataTableComponent,
+    );
+    chosen = [];
+    fixture.componentInstance.rowSelect.subscribe((row) => chosen.push(row));
+
+    // Every `field` below is checked against the real contract, so a typo such as
+    // `propertyNam` would fail to compile rather than render an empty column.
+    const columns: readonly DataTableColumn<ProfilePropertyDefinition>[] = [
+      { key: 'PropertyName', label: 'Property Name', field: 'propertyName', sortable: true },
+      { key: 'PropertyCategory', label: 'Category', field: 'propertyCategory' },
+      { key: 'ViewOrder', label: 'Order', field: 'viewOrder', bodyAlign: 'end' },
+
+      // A boolean has no single correct text form, so it states a formatter - exactly as the
+      // legacy boolean columns were template columns rather than bound columns.
+      { key: 'Required', label: 'Required', value: (row) => (row.required ? 'Yes' : 'No') },
+    ];
+
+    fixture.componentRef.setInput('columns', columns);
+    fixture.componentRef.setInput('rows', DEFINITIONS);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  /** The rendered body rows. */
+  function rows(): readonly HTMLTableRowElement[] {
+    return fixture.debugElement
+      .queryAll(By.css('tbody tr'))
+      .map((node) => node.nativeElement as HTMLTableRowElement);
+  }
+
+  it('renders a row seeded at zero and a row carrying the sentinel identifier', () => {
+    expect(rows().length).toBe(2);
+
+    const firstCell = requireElement(rows()[0], 'td');
+    const secondCell = requireElement(rows()[1], 'td');
+
+    expect((firstCell.textContent ?? '').trim()).toBe('Prefix');
+    expect((secondCell.textContent ?? '').trim()).toBe('Telephone');
+  });
+
+  it('selects the zero-seeded row without treating its identifier as absent', () => {
+    rows()[0].click();
+    fixture.detectChanges();
+
+    // Identity is the object reference, so the row arrives whole and its zero identifier is
+    // simply carried along. A `track` or comparison written as `if (id)` would have mis-keyed
+    // this row against the sentinel row and selected the wrong one, with no error anywhere.
+    expect(chosen).toEqual([ZERO_SEEDED]);
+    expect(chosen[0].propertyDefinitionId).toBe(0);
+  });
+
+  it('selects the sentinel-identified row as a real row rather than discarding it', () => {
+    rows()[1].click();
+    fixture.detectChanges();
+
+    expect(chosen).toEqual([SENTINEL_SEEDED]);
+    expect(chosen[0].propertyDefinitionId).toBe(-1);
+  });
+
+  it('renders the zero view order as a zero rather than as an empty cell', () => {
+    // Zero is a value, not an absence. A truthiness test in the text conversion would blank
+    // this cell and the grid would appear to be missing data.
+    const orderCells = Array.from(rows()[0].querySelectorAll('td'));
+
+    expect((orderCells[2].textContent ?? '').trim()).toBe('0');
+  });
+
+  it('renders the legacy empty-string null as an empty cell, matching the sentinel', () => {
+    // `Null.vb` defines its null string as the EMPTY STRING rather than as a null reference,
+    // so an absent string and a blank one were already indistinguishable upstream. Both must
+    // therefore render as an empty cell, and neither may render the word null.
+    const columns: readonly DataTableColumn<ProfilePropertyDefinition>[] = [
+      { key: 'DefaultValue', label: 'Default', field: 'defaultValue' },
+    ];
+    fixture.componentRef.setInput('columns', columns);
+    fixture.detectChanges();
+
+    const nullDefault = requireElement(rows()[0], 'td');
+    const blankDefault = requireElement(rows()[1], 'td');
+
+    expect((nullDefault.textContent ?? '').trim()).toBe('');
+    expect((blankDefault.textContent ?? '').trim()).toBe('');
+  });
+
+  it('renders a boolean through its formatter rather than as a stringified value', () => {
+    const firstRowCells = Array.from(rows()[0].querySelectorAll('td'));
+    const secondRowCells = Array.from(rows()[1].querySelectorAll('td'));
+
+    expect((firstRowCells[3].textContent ?? '').trim()).toBe('No');
+    expect((secondRowCells[3].textContent ?? '').trim()).toBe('Yes');
+  });
+});
+
 /** Host exercising the projection surfaces, which need a real template context. */
 @Component({
   standalone: true,
   imports: [DataTableComponent],
   template: `
     <app-data-table [columns]="columns" [rows]="rows" (rowSelect)="selectedRows.push($event)">
-      <span dataTableCaption>Portals</span>
+      <!--
+        INTERPOLATED rather than written as a literal, because caption wording is
+        resx-sourced in this migration and must therefore be treated as untrusted text like
+        any other. Interpolation is what escapes it; a literal would prove nothing about a
+        value that arrives from a resource file at run time.
+      -->
+      <span dataTableCaption>{{ captionText }}</span>
 
       <ng-template #commands let-row>
         <button type="button" class="edit" (click)="edited.push(row)">Edit</button>
@@ -880,6 +1520,14 @@ class HostComponent {
 
   public columns: readonly DataTableColumn<Row>[] = [];
 
+  /**
+   * The projected caption wording.
+   *
+   * Defaults to a realistic screen name so the caption tests read naturally, and is
+   * reassignable so the escaping test can hand it a markup-bearing value.
+   */
+  public captionText = 'Portals';
+
   public readonly selectedRows: Row[] = [];
 
   public readonly edited: Row[] = [];
@@ -887,12 +1535,29 @@ class HostComponent {
 
 describe('DataTableComponent projection', () => {
   let fixture: ComponentFixture<HostComponent>;
+  let httpMock: HttpTestingController;
 
   beforeEach(async () => {
-    await TestBed.configureTestingModule({ imports: [HostComponent] }).compileComponents();
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+
+      // Real client FIRST, testing backend second - see the note on the main suite. The pair
+      // is registered here too so that the projection surface, which is where a feature's own
+      // templates and controls enter the component, is held to the same zero-request standard.
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    httpMock = TestBed.inject(HttpTestingController);
 
     fixture = TestBed.createComponent(HostComponent);
     fixture.detectChanges();
+  });
+
+  // MANDATORY here as well: projected content is the one place a caller could smuggle in a
+  // dependency, so every projection test below is also an assertion that nothing was
+  // requested.
+  afterEach(() => {
+    httpMock.verify();
   });
 
   /**
@@ -923,6 +1588,70 @@ describe('DataTableComponent projection', () => {
       .nativeElement as HTMLElement;
 
     expect((caption.textContent ?? '').trim()).toBe('Portals');
+  });
+
+  describe('markup in the projected caption is rendered as text, never as markup', () => {
+    // WHY THE CAPTION NEEDS THIS AS MUCH AS A CELL DOES. Caption wording arrives from the
+    // legacy resource files in this migration, and that corpus is not clean text: across the
+    // in-scope resx files 76 data values carry an HTML tag, and
+    // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` holds, under
+    // `Advertising.Text`, a LIVE third-party advertising script with a remote source. A
+    // literal search for an opening script tag does not find it, because the resx stores the
+    // tags HTML-escaped - which is precisely how such a value passes review unnoticed and
+    // then arrives at a template looking like ordinary wording.
+    //
+    // So this is parity, not paranoia: the legacy application escaped too, wrapping an
+    // externally supplied message in an HTML encoder before display.
+
+    const SCRIPT_PAYLOAD = '<script>window.__dataTableCaptionXss = true;</script>';
+    const MARKUP_PAYLOAD = '<b>x</b>';
+    const IMAGE_PAYLOAD = '<img src="x" onerror="window.__dataTableCaptionXss = true">';
+
+    /** The rendered caption element. */
+    function caption(): Element {
+      return requireElement(fixture.nativeElement as Element, 'table > caption');
+    }
+
+    /** Projects a caption value and renders it. */
+    function projectCaption(value: string): void {
+      fixture.componentInstance.captionText = value;
+      fixture.detectChanges();
+    }
+
+    it('renders a markup-bearing caption verbatim and creates no element from it', () => {
+      projectCaption(MARKUP_PAYLOAD);
+
+      expect((caption().textContent ?? '').trim()).toBe(MARKUP_PAYLOAD);
+      expect(caption().querySelector('b')).toBeNull();
+    });
+
+    it('renders a script-bearing caption as text and creates no script element', () => {
+      projectCaption(SCRIPT_PAYLOAD);
+
+      expect((caption().textContent ?? '').trim()).toBe(SCRIPT_PAYLOAD);
+      expect(caption().querySelector('script')).toBeNull();
+      expect((fixture.nativeElement as Element).querySelectorAll('script').length).toBe(0);
+    });
+
+    it('creates no element from an event-handler payload in the caption either', () => {
+      // A script element inserted after load does not execute in every browser, so an
+      // assertion resting on scripts alone could pass for the wrong reason. An image with an
+      // error handler executes immediately and unconditionally once the element exists, so
+      // proving the element was never created is the stronger claim.
+      projectCaption(IMAGE_PAYLOAD);
+
+      expect((caption().textContent ?? '').trim()).toBe(IMAGE_PAYLOAD);
+      expect(caption().querySelector('img')).toBeNull();
+    });
+
+    it('leaves no trace of any caption payload having executed', () => {
+      // The escaping tests above prove no element was created. This proves the consequence
+      // that actually matters, and it is asserted through a widened view of the global rather
+      // than through a cast to a permissive type.
+      const globals: Record<string, unknown> = window as unknown as Record<string, unknown>;
+
+      expect(globals['__dataTableCaptionXss']).toBeUndefined();
+    });
   });
 
   it('lets a projected caption replace the generic fallback entirely', () => {

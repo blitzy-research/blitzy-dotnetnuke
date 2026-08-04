@@ -35,6 +35,70 @@
 // subsystem, which is why the notify flags on the request contracts are accepted and unused. The
 // deletion audit entry UserController.vb:L240 wrote survives as the API layer's structured request
 // log rather than as a row in the excluded event-log store.
+//
+// MIGRATION: the ambient caller accessor is gone. GetCurrentUserInfo at UserController.vb:L381 read the
+// acting account out of per-request state - HttpContext.Current.Items("UserInfo"), falling back to
+// Thread.CurrentPrincipal.Identity when there was no request at all - and, on every miss, returned a
+// NEWLY CONSTRUCTED empty account rather than nothing. That never-null contract is deliberately not
+// carried forward: it made "nobody is signed in" indistinguishable from "an account with no identifier",
+// so a caller that forgot to test the identifier silently operated as an anonymous ghost. The acting
+// caller arrives here through the injected ICurrentUser abstraction, which reports absence as absence,
+// and every member takes the identifiers it acts on as explicit arguments.
+//
+// MIGRATION: the ambient TENANT accessor is gone with it, and no PortalSettings type appears anywhere on
+// this service. The legacy delete reached PortalController.GetCurrentPortalSettings at
+// UserController.vb:L237 purely to label its audit entry, and that accessor read
+// HttpContext.Current.Items("PortalSettings") - a mutable per-request composite whose ActiveTab callers
+// could reassign mid-request. Every member here takes portalId as its first argument, so the tenant a
+// write lands in is fixed by the call rather than by whatever the request pipeline last stored. No type
+// from the presentation stack is reachable from this project at all: the layer graph gives Application a
+// reference to Domain only, so the ambient accessor could not be restated here even by accident.
+//
+// MIGRATION: nine further legacy members are deliberately absent, and the omissions are recorded here
+// rather than left to be discovered by their absence:
+// MIGRATION:  - DeleteUsers L273 and DeleteUnauthorizedUsers L293, the bulk sweeps. A reachable
+// MIGRATION:    "remove every account in this tenant" operation is a defect rather than a feature, and
+// MIGRATION:    neither has an endpoint in the target API. Deletion is one account per call.
+// MIGRATION:  - SetAuthCookie L919, whose body is EMPTY in this checkout. It wrote a forms-authentication
+// MIGRATION:    cookie, which has no counterpart under bearer authentication; sign-in and token issue
+// MIGRATION:    belong to the authentication and token contracts.
+// MIGRATION:  - GeneratePassword L314 and L330. A generated credential has to be transmitted to be
+// MIGRATION:    useful, which reintroduces exactly the disclosure that dropping retrieval removed.
+// MIGRATION:  - GetUserCreateStatus L598, the status-to-message map. Its wording came from the excluded
+// MIGRATION:    localisation mechanism; the status becomes a stable failure code on the result and the
+// MIGRATION:    wording is authored in the client.
+// MIGRATION:  - GetUserMembership L638. It was a Sub that mutated the account it was handed, so it
+// MIGRATION:    reported nothing at all; the membership facts it fetched are materialised on the account
+// MIGRATION:    by the repository read path instead.
+// MIGRATION:  - GetOnlineUsers L415, excluded with the users-online subsystem and its purge job, and
+// MIGRATION:    GetSuperUsers L1331, excluded with host-level administration.
+// MIGRATION:  - UpdateDisplayNames L1259, a bulk maintenance sweep with no endpoint.
+// MIGRATION:  - GetUserCountByPortal L582, omitted as redundant rather than excluded: the paged envelope
+// MIGRATION:    the listing member returns already carries the tenant-wide total, so a second member
+// MIGRATION:    answering the same question from a different query would be a second source of truth for
+// MIGRATION:    one number.
+// MIGRATION: The hydration and provider-synchronisation switches go with them - isHydrated, hydrateRoles,
+// MIGRATION: ProgressiveHydration, SynchronizeUsers and AddToMembershipProvider - because the shape of a
+// MIGRATION: response is settled by its data transfer object here, never by a caller-supplied switch.
+//
+// MIGRATION: the caching MEMBERS are dropped while the caching itself is not. GetCachedUser L350,
+// SettingsKey L924, GetCacheKey L1310 and CacheKey L1315 have no counterpart, because a cache key is an
+// implementation detail rather than part of an account service's surface. The 15 measured caching call
+// sites are served by the domain-owned caching abstraction, invoked inside the members below, and the two
+// stateful controller properties that configured the legacy type before a call - DisplayFormat L1210 and
+// PortalId L1219 - are gone with them. This service holds no mutable state of any kind.
+//
+// MIGRATION: THE OPTION STRICT ASYMMETRY IS RESOLVED TOWARDS THE STRICTER SIDE. The class library was
+// compiled with Option Strict ON (Library/DotNetNuke.Library.vbproj:L24 - note that L23 is OptionExplicit,
+// so a citation of L23 for Option Strict is off by one), but the admin code-behinds this service absorbs
+// its rules from were compiled with strict="false" (Website/release.config:L125) and could therefore rely
+// on late binding and implicit narrowing that C# rejects outright. Every such conversion is made explicit
+// here: text arriving from a stored setting is parsed with an invariant culture and an explicit fallback
+// rather than coerced, so a value the legacy screen would have silently collapsed to 0 or "" is either
+// parsed or refused. The read helpers at the foot of this file are where that happens, and the coercions
+// whose result could differ from the legacy one are itemised in MIGRATION_NOTES.md. This is also why the
+// nine code-behinds are treated as reference inputs for endpoint and screen semantics rather than as
+// candidates for line-by-line translation.
 using System.Globalization;
 using System.Text.RegularExpressions;
 using DnnMigration.Application.Abstractions;
@@ -386,7 +450,7 @@ public sealed class UserService : IUserService
     private readonly IUserRepository _users;
     private readonly IUserProfileRepository _profiles;
     private readonly IRoleRepository _roles;
-    private readonly IPermissionRepository _permissions;
+    private readonly IPermissionService _permissions;
     private readonly IPortalRepository _portals;
     private readonly IModuleRepository _modules;
     private readonly IModuleDefinitionRepository _definitions;
@@ -407,7 +471,12 @@ public sealed class UserService : IUserService
     /// <param name="users">Account, membership and credential persistence.</param>
     /// <param name="profiles">Profile property definitions and the values held against them.</param>
     /// <param name="roles">Role lookups, used for automatic enrolment and for role projection.</param>
-    /// <param name="permissions">Permission grant cleanup on deletion.</param>
+    /// <param name="permissions">
+    /// Permission grant cleanup on deletion, reached through the application contract that owns it rather
+    /// than through the grant repository directly. The rule that only grants made DIRECTLY to the account
+    /// are removed - grants reaching it through a role belong to the role and would strip every other
+    /// holder - lives on that contract, and this service does not restate it.
+    /// </param>
     /// <param name="portals">Tenant existence, the designated administrator and the account count.</param>
     /// <param name="modules">Module settings persistence, where membership settings are stored.</param>
     /// <param name="definitions">Definition lookups, used to locate the settings source module.</param>
@@ -436,7 +505,7 @@ public sealed class UserService : IUserService
         IUserRepository users,
         IUserProfileRepository profiles,
         IRoleRepository roles,
-        IPermissionRepository permissions,
+        IPermissionService permissions,
         IPortalRepository portals,
         IModuleRepository modules,
         IModuleDefinitionRepository definitions,
@@ -1045,18 +1114,36 @@ public sealed class UserService : IUserService
         }
 
         // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
-        // through two separate provider members - DeleteModulePermissionsByUserID at core
-        // DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305 - and each terminal procedure
-        // joins its own grant table to its own owning table so the delete is bounded to this portal.
-        // Both are issued here for the same reason the legacy code issued both: a grant left behind on
-        // either table would outlive the account that held it. Only grants naming the account itself
-        // go; grants it received through a role belong to the role and are removed below by
-        // withdrawing the assignments instead.
-        await _permissions.DeleteModulePermissionsByUserIdAsync(portalId, userId, cancellationToken)
+        // through two separate provider members - DeleteModulePermissionsByUserID, reached from
+        // ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
+        // TabPermissionController.vb:L209 - and each terminal procedure joins its own grant table to its
+        // own owning table so the delete is bounded to this portal. Both are still issued, and for the
+        // same reason the legacy code issued both: a grant left behind on either table would outlive the
+        // account that held it and a later account reusing the identifier would inherit it.
+        //
+        // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT REPOSITORY.
+        // The two tables are one concern and the rule bounding the removal to DIRECT grants - grants
+        // reaching the account through a role belong to the role, so removing them would strip every
+        // other holder of that role - is permission knowledge rather than account knowledge. Consolidating
+        // it behind the one member that owns it keeps a single definition of "this account's own grants";
+        // issuing the two table deletes from here would put a second copy of that rule in a service whose
+        // subject is accounts, free to drift from the first. The account identifier crosses the boundary
+        // as an int: the legacy members took the account OBJECT and read the portal off it, which is
+        // precisely why a caller could widen the removal to every portal the account belonged to.
+        //
+        // The removal is staged rather than committed, so it joins the single commit below and an account
+        // whose deletion is abandoned further down keeps its grants.
+        Result cascade = await _permissions
+            .DeleteUserPermissionsAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
-        await _permissions.DeleteTabPermissionsByUserIdAsync(portalId, userId, cancellationToken)
-            .ConfigureAwait(false);
+        // A refusal is propagated rather than discarded. Nothing has been committed at this point, so
+        // reporting the reason leaves the account whole; swallowing it would commit an account removal
+        // whose grants were still in place, which is the one outcome the cascade exists to prevent.
+        if (cascade.IsFailure)
+        {
+            return cascade;
+        }
 
         IReadOnlyList<UserRole> assignments = await _roles
             .GetUserRolesAsync(portalId, userId, cancellationToken)
@@ -1871,10 +1958,25 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// The sequence is ordered by the display-order column so no client has to sort it, and it is
     /// deliberately unpaged because the legacy screen listed every definition on one page with no pager
     /// and a tenant declares definitions in the tens. The read goes through the cache under the legacy key
     /// so the eviction member the cache abstraction already declares for it stays meaningful.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE PROFILE-DEFINITION SURFACE IS FULL DEFINITION MANAGEMENT, NOT A READ-ONLY LOOKUP, and
+    /// the reading is stated here because the plan describes it both ways - AAP 0.5.1.4 calls the API
+    /// surface a "Lookup surface" while AAP 0.5.1.8 calls the client feature "Definition management". The
+    /// contract settles it: <see cref="IUserService"/> declares a create, an update and a delete for
+    /// definitions alongside the two reads, so read-only is not an available interpretation of it. The
+    /// legacy source agrees - <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> is a management grid
+    /// with add, edit, reorder and delete commands, and <c>EditProfileDefinition.ascx.vb</c> is its editor -
+    /// so a read-only surface would have LOST a workflow the legacy application offered, which UI
+    /// functional parity forbids. The narrower phrase is best read as describing how the definitions are
+    /// consumed by the profile screens, which do only read them. The reconciliation is recorded in
+    /// MIGRATION_NOTES.md so the two descriptions are not re-litigated downstream.
+    /// </para>
     /// </remarks>
     public async Task<Result<IReadOnlyList<ProfilePropertyDefinitionDto>>> ListProfilePropertyDefinitionsAsync(
         int portalId,
@@ -2448,13 +2550,52 @@ public sealed class UserService : IUserService
     }
 
     /// <summary>
-    /// Tests a submitted credential against the configured policy.
+    /// Applies the bound credential policy to a submitted credential, returning the reason it was refused
+    /// or <see langword="null"/> when it satisfies the policy.
     /// </summary>
-    /// <param name="credential">The submitted credential.</param>
-    /// <param name="code">The reason code to report a violation under.</param>
-    /// <returns>The reason the credential is unusable, or <see langword="null"/> when it is usable.</returns>
+    /// <param name="credential">The submitted credential. Never logged, echoed or recorded.</param>
+    /// <param name="code">The failure code to report the refusal under, so the caller's context is kept.</param>
+    /// <returns>The refusal reason, or <see langword="null"/> when the credential is acceptable.</returns>
     /// <remarks>
+    /// <para>
     /// No message produced here contains any part of the credential.
+    /// </para>
+    /// <para>
+    /// PRIVATE, AND NOT A SECOND POLICY. The legacy predicate this derives from, <c>ValidatePassword</c> at
+    /// <c>UserController.vb</c>:L1067, was public and therefore a policy in its own right, free to diverge
+    /// from the one the screens declared. This one is unreachable from outside the service and reads the
+    /// SAME bound <see cref="PasswordPolicyOptions"/> instance that the request validators in
+    /// <c>Validation/</c> read, so there is one policy with one source. It neither duplicates nor tightens
+    /// the declarative rules: it hardcodes no threshold, adds no rule the options do not declare, and skips
+    /// the non-alphanumeric and strength rules entirely unless the configuration asks for them. Its purpose
+    /// is that a credential write is never performed on the strength of a validator having been wired up at
+    /// the boundary - the service is reachable from a test, a seeder or a future host that has no such
+    /// pipeline.
+    /// </para>
+    /// <para>
+    /// The legacy policy is preserved verbatim rather than hardened: minimum length seven, zero required
+    /// non-alphanumeric characters and no question-and-answer requirement, read from
+    /// <c>Website/release.config</c>:L242-L245. Tightening a policy during a migration locks out existing
+    /// account holders, so any hardening is a separate and explicit decision.
+    /// </para>
+    /// <para>
+    /// MIGRATION: DEFECT 1 IS ANNOTATED HERE AND DELIBERATELY NOT FIXED IN THE LEGACY SOURCE. The legacy
+    /// predicate evaluated three rules but its third rule ASSIGNED its verdict rather than accumulating
+    /// it, so a credential that failed the length rule and then matched the strength expression was
+    /// reported VALID - the earlier failure was overwritten. The defect is DORMANT in this installation
+    /// because no strength expression is configured, so the third rule never runs and the legacy and
+    /// target verdicts agree on every input this configuration can produce. The rules are evaluated in
+    /// order here and the first refusal returns immediately, which is the behaviour the legacy code was
+    /// evidently reaching for. Per AAP 0.9.1 a discovered defect is annotated in place and not fixed, so
+    /// nothing in <c>Library/</c> is touched; were a strength expression ever configured, this service
+    /// would refuse a short credential that the legacy predicate accepted, and that difference is recorded
+    /// in MIGRATION_NOTES.md rather than left to be found in production.
+    /// </para>
+    /// <para>
+    /// A malformed or pathological strength expression is reported as a refusal rather than thrown: the
+    /// match is bounded by a timeout, and both the malformed-pattern and timeout cases answer that the rule
+    /// could not be applied. A configuration error must not present as a valid credential.
+    /// </para>
     /// </remarks>
     private ResultReason? ValidateCredential(string credential, string code)
     {
@@ -2620,6 +2761,31 @@ public sealed class UserService : IUserService
         int portalId,
         CancellationToken cancellationToken)
     {
+        // MIGRATION: THE LEGACY READ WAS CACHED AND THIS ONE IS NOT, WHICH IS A DELIBERATE OMISSION RATHER
+        // than an oversight. GetUserSettings at UserController.vb:L656-L670 kept its answer under the key
+        // SettingsKey(portalId) - "UserSettings|" + portalId, composed at L924 - and the measured expiry is
+        // the reason this note exists: it is TimeSpan.FromMinutes(Globals.PerformanceSetting), so the
+        // performance setting is THE WHOLE TIMEOUT here, not a multiplier over a 20-minute base as it is at
+        // every other caching site in the legacy tree (compare the profile-definition read above, which is
+        // 20 * the multiplier). The legacy default for that setting is 3 - Globals.vb resolves an absent
+        // host setting to 3 - so the real legacy lifetime of this entry was THREE MINUTES against the
+        // sixty this convention would otherwise imply. That inconsistency is recorded rather than
+        // normalised: anyone reintroducing this cache must reproduce three minutes and not "correct" it to
+        // 20 * multiplier, because that would multiply the staleness window twentyfold.
+        //
+        // It is not reintroduced now for a correctness reason, not a performance one. The caching
+        // abstraction classifies a key by declared prefix family in order to scope its invalidation, and
+        // "UserSettings|" is not a declared family, so InvalidatePortal could not sweep this entry. The
+        // rows behind it are ORDINARY MODULE SETTINGS on the account module instance, reachable and
+        // writable through the module service as well as through the write member beside this one, so an
+        // entry this service alone knew how to evict would go stale on a write this service never saw. The
+        // sibling module service records the same decision for the same reason, for the analogous
+        // "GetModuleSettings<id>" key. What is cached instead is the profile-definition catalogue, which is
+        // installation-time reference data with a declared family and a declared eviction member.
+        //
+        // A second difference follows from the legacy code and is preserved: the legacy cached only inside
+        // its not-nothing guard, so a tenant with no account module re-probed on every call and never
+        // cached the absence. Nothing here caches an absence either.
         Module? source = await FindMembershipSettingsSourceAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (source is null)
         {

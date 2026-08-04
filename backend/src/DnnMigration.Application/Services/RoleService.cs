@@ -2,7 +2,6 @@ using System.Globalization;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Role;
-using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Mapping;
 using DnnMigration.Application.Validation;
 using DnnMigration.Domain.Abstractions.Repositories;
@@ -47,6 +46,57 @@ namespace DnnMigration.Application.Services;
 /// allowed to imply a notification was sent - so the operation reports only what it actually did, and
 /// success is never evidence of a notification. Keeping the member also makes supplying a notifier
 /// later a purely additive change instead of a breaking one.
+/// </para>
+/// <para>
+/// MIGRATION: the legacy file closes with a region of members retained only for binary compatibility,
+/// and not one of them is ported. The count is stated as measured rather than as cited: the region
+/// spans <c>RoleController.vb:L846-L888</c> and carries <strong>EIGHT</strong>
+/// <c>&lt;Obsolete&gt;</c> wrappers, at L848, L853, L858, L863, L868, L873, L878 and L883 - the plan's
+/// prose says nine while its own table lists eight, so the measurement is reported here and the plan is
+/// left as it stands. Every one of the eight is a one-line delegation to a member that IS ported, so
+/// nothing is lost by omitting them: the standing rule is that no obsolete member appears in the
+/// target. Two of them additionally carried latent faults, which is a further reason not to carry them:
+/// the role-creation wrapper at L849 has no <c>Return</c> statement at all, so it discarded the
+/// identifier it delegated for and always answered 0, and the paid-services wrapper at L864 passed the
+/// literal -1 described below.
+/// </para>
+/// <para>
+/// MIGRATION: three legacy switches disappear with that region, because the region was their only
+/// carrier. <c>SynchronizationMode</c> (L849) and <c>SynchronizeRoles</c> (L854) toggled the legacy
+/// membership-and-role provider synchronisation model, which this migration replaces outright rather
+/// than reproduces, so neither has anything left to switch; both wrappers ignored the flag entirely and
+/// delegated to the single-argument member regardless. <c>includePrivate</c> (L408) was a real
+/// parameter of the assignment listing, but its every non-obsolete caller passed <see langword="true"/>
+/// (L393) while only the obsolete paid-services wrappers passed <see langword="false"/> (L865, L870),
+/// so the migrated listing reproduces the surviving behaviour and offers no switch.
+/// </para>
+/// <para>
+/// MIGRATION: the -1 all-users sentinel is gone from every surface. <c>GetServices(PortalId)</c> at
+/// L864 reached the assignment listing as <c>GetUserRoles(PortalId, -1, False)</c>, borrowing the
+/// absence marker as an account identifier to mean "every account in the portal", and L376-L377 did the
+/// same for its own single-argument overload. That overloading is unsafe here as well as ugly: -1 is
+/// <c>Null.NullInteger</c>, and this migration must keep absence and identity distinguishable
+/// (Rule T7). The two answers are therefore separate members that name what they return - one account's
+/// roles through <see cref="ListUserRolesAsync"/>, one role's members through
+/// <see cref="ListRoleUsersAsync"/> - and no magic number reaches a parameter. Neither member accepts
+/// a negative identifier as a wildcard, and an identifier that names nothing is reported as not found.
+/// </para>
+/// <para>
+/// MIGRATION: no read on this service caches, and the omission is measured rather than convenient.
+/// <c>RoleController.vb</c> contains ZERO cache sites of its own - the role reads went to the provider
+/// on every call - so reproducing the legacy behaviour means not adding a cache, and adding one would be
+/// the divergence. The cache abstraction is injected for the reverse duty: a role write invalidates the
+/// portal entries and a membership write invalidates the account entry, so no OTHER subsystem's cached
+/// projection outlives a role change. One legacy eviction has no counterpart, and it is bounded:
+/// <c>PortalController.vb:L1131</c> called <c>DataCache.RemoveCache("GetRoles")</c> after inserting a new
+/// portal's stock roles, evicting an entry keyed by that bare literal, while
+/// this layer holds no such key - <c>ICacheService</c> publishes twelve members and not one of them
+/// evicts roles, and the key itself is composed inside the infrastructure layer, so passing the legacy
+/// spelling from here would be a guess that fails silently if the two ever diverged. Nothing in the
+/// target writes that entry either, so there is no stale role list for the missing eviction to leave
+/// behind. Recorded in <c>MIGRATION_NOTES.md</c> rather than papered over, and the multiplier that
+/// would scale a cache lifetime is consequently not read here: a service that stores nothing has no
+/// lifetime to scale.
 /// </para>
 /// </remarks>
 public sealed class RoleService : IRoleService
@@ -810,7 +860,11 @@ public sealed class RoleService : IRoleService
         var rows = new List<RoleListItemDto>(assignments.Count);
         foreach (UserRole assignment in assignments)
         {
-            if (rolesById.TryGetValue(assignment.RoleId, out Role? held))
+            // One indexed lookup per assignment, and an assignment naming a role the portal does not
+            // own is skipped rather than projected: the tenant scope is the answer's boundary, and a
+            // dangling reference is not something a caller can act on.
+            Role? held = rolesById.GetValueOrDefault(assignment.RoleId);
+            if (held is not null)
             {
                 rows.Add(RoleMappings.ToListItem(held));
             }
@@ -857,6 +911,15 @@ public sealed class RoleService : IRoleService
             request.ExpiryDate,
             existing?.IsTrialUsed ?? false);
 
+        // MIGRATION: the legacy assignment member took the portal identifier as its first argument
+        // (RoleController.vb:L295) and the repository member this one calls does NOT, because
+        // dbo.UserRoles has no PortalID column at all - the assignment row is scoped only through the
+        // role it names, whose own PortalID carries the tenancy. The legacy argument was therefore never
+        // stored; it existed to reach the ambient per-request composite and to look the account up. Both
+        // the tenant and the account are consequently proved HERE, above the repository: the portal, the
+        // role's ownership of it and the account's membership of it are all resolved before anything is
+        // staged, so tenant scope is enforced by this service rather than by the row. The same holds on
+        // the removal path, whose repository member is likewise portal-free.
         if (existing is null)
         {
             await _roles.AddUserRoleAsync(
@@ -961,6 +1024,19 @@ public sealed class RoleService : IRoleService
 
         if (expireInsteadOfDelete)
         {
+            // MIGRATION: replaces `DateAdd(DateInterval.Day, -1, Date.Today())` (RoleController.vb:L496)
+            // exactly - a date-only value, one day behind, with no time component. Two substitutions are
+            // made and both are recorded rather than absorbed. First, the Visual Basic runtime's date
+            // intrinsic becomes the framework's own day offset, which is the only reason the L25
+            // `Imports Microsoft.VisualBasic` could be removed at all. Second, `Date.Today()` was
+            // server-LOCAL whereas the injected clock is UTC-ONLY, so `UtcNow.Date` can name a DIFFERENT
+            // CALENDAR DAY from the one the legacy code would have produced for the same real instant:
+            // west of Greenwich the back-dated expiry can land a day earlier, east of it a day later.
+            // That is accepted deliberately - a local-zone stamp is not comparable between hosts and
+            // cannot be read without knowing the machine that wrote it - and the injected clock is also
+            // what makes this whole engine testable. The `.Date` truncation is preserved because the
+            // legacy value carried no time either, and because the row must read as already expired for
+            // the whole of the current day rather than only after the current hour.
             assignment.ExpiryDate = _clock.UtcNow.Date.AddDays(-1);
         }
         else
@@ -1189,14 +1265,52 @@ public sealed class RoleService : IRoleService
         DateTime? requestedExpiryDate,
         bool trialUsed)
     {
+        // MIGRATION: this single read replaces the FOUR ambient `Now` readings the legacy engine took -
+        // the expiry seed at RoleController.vb:L505, the effective-date comparison at L530, and the
+        // expiry comparison and assignment at L533-L534. Reading once rather than four times is not a
+        // liberty: four separate readings of a moving clock can disagree with one another, so a request
+        // that crossed a tick between L530 and L533 could clear an effective date against one instant
+        // and seed an expiry from another. One reading makes the whole derivation internally consistent
+        // and gives every branch below the same reference point.
+        //
+        // MIGRATION: `Now` was server-LOCAL; the injected clock is UTC-ONLY. Every comparison and every
+        // offset below therefore runs against a UTC instant, so a derived expiry can fall on a DIFFERENT
+        // CALENDAR DAY from the one a legacy installation would have computed for the same real instant -
+        // by up to the host's offset from Greenwich. Accepted for the reasons recorded on the removal
+        // path above, and pinned by the unit suite precisely because it is a clock and not a constant. A
+        // caller needing a calendar date rather than an instant asks the clock for one, as the removal
+        // path does; no line in this file reads the ambient system clock directly.
         DateTime now = _clock.UtcNow;
 
         bool trialGoverns = !trialUsed
             && role.TrialFrequency is BillingFrequency trialFrequency
             && trialFrequency != BillingFrequency.None;
 
+        // MIGRATION: both period properties are `int?`, resolving a three-way disagreement in favour of
+        // the schema as Rule T4 requires. The legacy membership provider typed the billing period as a
+        // String, `RoleInfo.vb:L218` typed it as a non-nullable Integer, and the terminal column is
+        // `[BillingPeriod] [int] NULL` (`01.00.08.SqlDataProvider:L6829`), with `[TrialPeriod] [int] NULL`
+        // alongside it (`01.00.00.SqlDataProvider:L121`). The store wins, so absence is a null int and
+        // never a small number - which is what lets the guard below test for absence honestly.
         int? period = trialGoverns ? role.TrialPeriod : role.BillingPeriod;
         BillingFrequency? frequency = trialGoverns ? role.TrialFrequency : role.BillingFrequency;
+
+        // MIGRATION: MEASURED LATENT LEGACY DEFECT, ANNOTATED AND DELIBERATELY NOT FIXED.
+        // `Dim Period As Integer` at RoleController.vb:L508 carries NO initialiser, so the legacy runtime
+        // seeded it with 0 rather than with the absence sentinel -1. Consequently, whenever the role
+        // lookup at L518 came back Nothing, the sentinel guard at L537 (`If Period = Null.NullInteger`)
+        // could not fire, the frequency stayed the empty string the L509 declaration gave it, the L540
+        // selection matched none of its six cases, and the assignment was written with the expiry L534
+        // had just set to `Now` - an assignment that expired the instant it was created, where the
+        // evident intent was no expiry at all. AAP 0.9.1 requires such a fault to be annotated in place
+        // and not corrected, so it is recorded here rather than repaired.
+        // It is also UNREACHABLE in the migrated shape, and that is a structural consequence rather than
+        // a silent fix: `AssignUserToRoleAsync` resolves the role first and answers `role.not_found`
+        // before this method is entered, so `role` is non-null on every path that reaches this line and
+        // the defect's own precondition cannot arise. Nothing here depends on that, and nothing here
+        // re-creates the zero: an absent period is `null` and is tested as `null` below, never against -1
+        // and never against 0 - a role that legitimately declares a period of zero is refused by the
+        // shape check rather than mistaken for one that declares none.
 
         // MIGRATION: a submitted bound carrying the legacy absent-date marker means "no bound", and is
         // read as one HERE, where the request enters the layer that interprets it. The marker is
@@ -1214,6 +1328,22 @@ public sealed class RoleService : IRoleService
         requestedEffectiveDate = NormalizeLegacyDateMarker(requestedEffectiveDate);
         requestedExpiryDate = NormalizeLegacyDateMarker(requestedExpiryDate);
 
+        // MIGRATION: the two bounds are primed from the REQUEST, where the legacy billing member primed
+        // them from the row it had just read (RoleController.vb:L513-L514 assigning
+        // `userRole.EffectiveDate` and `userRole.ExpiryDate`). The consequence is confined to one case and
+        // is stated rather than hidden: renewing an assignment whose stored expiry is still in the FUTURE
+        // while submitting no expiry of one's own now offsets from the present instant rather than from
+        // that stored expiry, so the unexpired remainder of the term is not carried forward. A caller
+        // that wants the legacy behaviour submits the stored expiry, which is exactly what the screen this
+        // member serves did - `SecurityRoles.ascx.vb:L273-L303` read the existing assignment solely to
+        // pre-fill the two inputs it then posted back.
+        // The divergence is a consequence of the consolidation, not a choice made against the legacy: two
+        // legacy members are collapsed into this one, and they disagreed with each other. L295 stored the
+        // caller's two dates VERBATIM and ran no derivation at all, while L489 ran the derivation and
+        // ignored the caller entirely, having no date parameters to ignore. One member cannot reproduce
+        // both, so the derivation is kept - it is the behaviour that carries the paid-membership rules the
+        // migration must preserve - and the caller's dates are honoured as its input. The trial-used fact
+        // is still primed from the stored row, as L515 did, because nothing a caller submits may reset it.
         DateTime? effectiveDate = requestedEffectiveDate;
         if (effectiveDate is DateTime submittedEffective && submittedEffective < now)
         {

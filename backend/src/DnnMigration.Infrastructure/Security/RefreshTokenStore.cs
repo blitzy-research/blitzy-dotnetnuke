@@ -318,6 +318,49 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     private const int MaximumLifetimeDays = 365;
 
     /// <summary>
+    /// Largest number of SPENT generations retained per family for replay detection. Older spent
+    /// generations are forgotten as rotation moves past them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This bound exists because <see cref="MaximumStoredEntries"/> alone did not hold, and the
+    /// arithmetic that shows why is worth recording rather than restating the intention. Rotation
+    /// retains the entry it consumed and adds a replacement beside it, so a family grows by one entry
+    /// per exchange, and it never refuses on capacity - deliberately, because refusing to rotate
+    /// destroys a live session. Under the shipped configuration a client rotates when its
+    /// sixty-minute access token lapses and a family's ceiling is thirty days, so one continuously
+    /// rotating session accumulates about <b>720</b> entries. A hundred thousand entries divided by
+    /// 720 is about <b>139</b>: fewer than a hundred and forty long-lived sessions were enough to
+    /// fill the store, after which <see cref="Issue"/> refuses EVERY new sign-in in the installation.
+    /// A single authenticated account rotating in a loop reached the same state far faster. The
+    /// earlier reasoning that a hundred thousand entries is "far beyond what any single process
+    /// serves within one absolute ceiling" was therefore quantitatively wrong for the configuration
+    /// this solution ships.
+    /// </para>
+    /// <para>
+    /// <b>Why bound the family rather than refuse the rotation.</b> Refusing a rotation on capacity
+    /// would convert a memory bound into a denial of the very sessions the bound exists to protect,
+    /// and that judgement was correct and is kept. Bounding retention instead makes a family cost at
+    /// most this many entries plus its one live generation, whatever its cadence and however long it
+    /// lives, so rotation can no longer grow the store without limit and the cap becomes reachable
+    /// only by a genuinely large number of distinct sign-ins - which are themselves rate limited at
+    /// the API edge.
+    /// </para>
+    /// <para>
+    /// <b>The cost, stated plainly.</b> Forgetting a spent generation means a replay of that
+    /// particular value classifies as <see cref="RefreshTokenOutcome.Unknown"/> rather than
+    /// <see cref="RefreshTokenOutcome.AlreadyUsed"/>, so it is still REFUSED but no longer escalates
+    /// to family-wide revocation. That escalation is a leak signal rather than a gate: the replayed
+    /// value is spent and unusable either way. The value chosen keeps the signal for the case that
+    /// matters - a copied token is replayed while it is still recent - because sixty-four generations
+    /// is more than two and a half days of history at the shipped hourly cadence, and proportionally
+    /// longer for any client that rotates less eagerly. Trimming takes the OLDEST spent generations
+    /// first for exactly this reason.
+    /// </para>
+    /// </remarks>
+    private const int MaximumRetainedSpentGenerationsPerFamily = 64;
+
+    /// <summary>
     /// The single gate guarding every piece of mutable state on this type:
     /// <see cref="_recordsByDigest"/>, <see cref="_digestsByFamily"/>,
     /// <see cref="_familiesByUser"/>, <see cref="_familiesInCreationOrder"/> and
@@ -836,6 +879,12 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
                 familyExpiresAtUtc,
                 subject);
 
+            // Applied AFTER the replacement is stored, so the live generation is present in the
+            // family while the trim runs and can never be the entry chosen for removal. Doing it
+            // before would leave the trim looking at a family whose only unspent generation had not
+            // been created yet.
+            TrimSpentGenerations(stored.FamilyId);
+
             // The replacement's entry is already in place by this point, so the token is never
             // returned to a caller before it can be redeemed.
             return RefreshTokenRotationResult.Succeeded(replacement, expiresAtUtc, subject);
@@ -1326,6 +1375,89 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         familyDigests.Add(digest);
 
         return rawToken;
+    }
+
+    /// <summary>
+    /// Forgets a family's oldest spent generations once more than
+    /// <see cref="MaximumRetainedSpentGenerationsPerFamily"/> of them are being retained.
+    /// </summary>
+    /// <param name="familyId">The family whose retained history is to be bounded.</param>
+    /// <remarks>
+    /// <para>
+    /// This is the bound that stops rotation growing the store without limit; the reasoning, the
+    /// arithmetic and the security cost are all recorded on
+    /// <see cref="MaximumRetainedSpentGenerationsPerFamily"/> and are not repeated here.
+    /// </para>
+    /// <para>
+    /// <b>Only spent generations are candidates.</b> An entry that is neither consumed nor revoked is
+    /// redeemable, and removing one would silently destroy a live session - so the test is on the
+    /// entry's own flags rather than on its position in the family. Nothing here relies on the live
+    /// generation being last: a family under revocation has every generation flagged, and a family
+    /// mid-rotation has exactly one that is not.
+    /// </para>
+    /// <para>
+    /// <b>Oldest first.</b> The family's digest list is append-ordered, so walking it from the front
+    /// is walking the family in generation order, and the generations forgotten are always the ones
+    /// whose replay is least likely to still be in flight.
+    /// </para>
+    /// <para>
+    /// <b>Both indexes stay consistent.</b> A digest removed from the record dictionary is removed
+    /// from the family list in the same pass, so no family list can come to name a digest the store no
+    /// longer holds. The family itself is never emptied: the live generation is not a candidate, and
+    /// the retained remainder is left in place, so pruning can still recover the family's ceiling from
+    /// a surviving generation. The per-user family index is untouched, because trimming removes
+    /// generations and never a family.
+    /// </para>
+    /// <para>
+    /// Must be called while holding <see cref="_gate"/>: it mutates both dictionaries.
+    /// </para>
+    /// </remarks>
+    private void TrimSpentGenerations(long familyId)
+    {
+        var familyDigests = _digestsByFamily.GetValueOrDefault(familyId);
+        if (familyDigests is null)
+        {
+            return;
+        }
+
+        var spentCount = 0;
+        foreach (var familyDigest in familyDigests)
+        {
+            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
+            if (member is not null && (member.IsConsumed || member.IsRevoked))
+            {
+                spentCount++;
+            }
+        }
+
+        var surplus = spentCount - MaximumRetainedSpentGenerationsPerFamily;
+        if (surplus <= 0)
+        {
+            return;
+        }
+
+        // A single pass from the front, removing exactly the surplus. RemoveAll is not used because
+        // the predicate would have to carry a mutable counter, and a counting predicate inside a
+        // removal is precisely the kind of construct whose behaviour depends on an enumeration order
+        // the method does not promise.
+        var index = 0;
+        while (index < familyDigests.Count && surplus > 0)
+        {
+            var familyDigest = familyDigests[index];
+            var member = _recordsByDigest.GetValueOrDefault(familyDigest);
+
+            if (member is null || member.IsConsumed || member.IsRevoked)
+            {
+                _recordsByDigest.Remove(familyDigest);
+                familyDigests.RemoveAt(index);
+                surplus--;
+
+                // The list has shifted down onto this index, so it is not advanced.
+                continue;
+            }
+
+            index++;
+        }
     }
 
     /// <summary>

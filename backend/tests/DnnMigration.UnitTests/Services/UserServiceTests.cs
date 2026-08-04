@@ -247,7 +247,7 @@ public class UserServiceTests
         var users = new Mock<IUserRepository>().Object;
         var profiles = new Mock<IUserProfileRepository>().Object;
         var roles = new Mock<IRoleRepository>().Object;
-        var permissions = new Mock<IPermissionRepository>().Object;
+        var permissions = new Mock<IPermissionService>().Object;
         var portals = new Mock<IPortalRepository>().Object;
         var modules = new Mock<IModuleRepository>().Object;
         var definitions = new Mock<IModuleDefinitionRepository>().Object;
@@ -1588,8 +1588,7 @@ public class UserServiceTests
         Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        harness.DeletedModulePermissions.Should().Equal(new[] { (PortalId, UserId) });
-        harness.DeletedTabPermissions.Should().Equal(new[] { (PortalId, UserId) });
+        harness.CascadedUserPermissions.Should().Equal(new[] { (PortalId, UserId) });
         harness.RemovedAssignments.Should().HaveCount(2);
         harness.RemovedMemberships.Should().ContainSingle();
         harness.DeletedCredentialUserIds.Should().Equal(new[] { UserId });
@@ -2603,13 +2602,55 @@ public class UserServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(SessionRevocationFailedCode);
-        harness.DeletedModulePermissions.Should().BeEmpty();
-        harness.DeletedTabPermissions.Should().BeEmpty();
+        harness.CascadedUserPermissions.Should().BeEmpty();
         harness.RemovedAssignments.Should().BeEmpty();
         harness.RemovedMemberships.Should().BeEmpty();
         harness.DeletedCredentialUserIds.Should().BeEmpty();
         harness.RemovedUsers.Should().BeEmpty();
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// A deletion whose permission cascade refuses removes nothing at all, and reports the cascade's own
+    /// reason rather than a reason of its own.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The cascade stages its removals into the same unit of work as everything below it, and the commit is
+    /// still ahead when it answers, so abandoning here leaves the account whole. Swallowing the refusal
+    /// would be the one genuinely bad outcome available: the account row would be committed as deleted
+    /// while its grants stayed in place, and a later account reusing the identifier would inherit them.
+    /// The reason is propagated unchanged because the cascade knows why it refused and this service does
+    /// not - restating it as a generic account failure would discard the only useful diagnostic.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenThePermissionCascadeRefuses_RemovesNothingAndPropagatesTheReason()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.UserAssignments.Add(new UserRole { UserRoleId = 7, UserId = UserId, RoleId = 5 });
+        harness.CascadeResult = Result.Failure("permission.portal_not_found", "Portal does not exist.");
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("permission.portal_not_found");
+
+        // The cascade was asked, and asked for exactly this account, before it refused.
+        harness.CascadedUserPermissions.Should().Equal(new[] { (PortalId, UserId) });
+
+        // Nothing after the cascade ran, and nothing was committed.
+        harness.RemovedAssignments.Should().BeEmpty();
+        harness.RemovedMemberships.Should().BeEmpty();
+        harness.DeletedCredentialUserIds.Should().BeEmpty();
+        harness.RemovedUsers.Should().BeEmpty();
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+
+        // No cache entry was evicted and no audit record was written for a deletion that did not happen.
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+        harness.InvalidatedUsers.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>
@@ -4249,8 +4290,7 @@ public class UserServiceTests
             RevokedSessionUserIds = [];
             SetPasswordHashes = [];
             ApprovalWrites = [];
-            DeletedModulePermissions = [];
-            DeletedTabPermissions = [];
+            CascadedUserPermissions = [];
             InvalidatedPortalIds = [];
             InvalidatedUsers = [];
             InvalidatedProfileDefinitionsPortalIds = [];
@@ -4258,7 +4298,7 @@ public class UserServiceTests
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Profiles = new Mock<IUserProfileRepository>(MockBehavior.Loose);
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
-            Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             ModuleDefinitions = new Mock<IModuleDefinitionRepository>(MockBehavior.Loose);
@@ -4303,7 +4343,7 @@ public class UserServiceTests
 
         public Mock<IRoleRepository> Roles { get; }
 
-        public Mock<IPermissionRepository> Permissions { get; }
+        public Mock<IPermissionService> Permissions { get; }
 
         public Mock<IPortalRepository> Portals { get; }
 
@@ -4453,9 +4493,17 @@ public class UserServiceTests
 
         public List<(int UserId, bool IsApproved)> ApprovalWrites { get; }
 
-        public List<(int PortalId, int UserId)> DeletedModulePermissions { get; }
+        /// <summary>
+        /// Every permission cascade the service asked for, in order, as the tenant-and-account pair it
+        /// passed. One entry means the cascade was requested exactly once for exactly that account.
+        /// </summary>
+        public List<(int PortalId, int UserId)> CascadedUserPermissions { get; }
 
-        public List<(int PortalId, int UserId)> DeletedTabPermissions { get; }
+        /// <summary>
+        /// The answer the permission cascade gives. Settable so a test can make the cascade refuse and
+        /// assert that the deletion is abandoned with the account intact.
+        /// </summary>
+        public Result CascadeResult { get; set; } = Result.Success();
 
         public List<int> InvalidatedPortalIds { get; }
 
@@ -4849,30 +4897,26 @@ public class UserServiceTests
                 .Returns(Task.CompletedTask);
 
             // MIGRATION: the account's direct grants live in two tables and the legacy provider declared
-            //            two members to clear them - DeleteModulePermissionsByUserID at core
-            //            DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305. Both are stubbed
-            //            and both record, so a cascade that cleaned only one table would fail the
-            //            assertion rather than pass it quietly.
+            //            two members to clear them - DeleteModulePermissionsByUserID, reached from
+            //            ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
+            //            TabPermissionController.vb:L209. The service under test no longer issues those two
+            //            table deletes itself: it asks the permission contract that owns both tables to
+            //            release the account, so what is stubbed and recorded here is that single request.
+            //            That both tables are in fact cleared, and that grants held THROUGH A ROLE are left
+            //            alone, is that contract's guarantee and is asserted against its own implementation
+            //            rather than restated against a mock here - a mock cannot verify a promise it makes
+            //            up. What these tests own is that the account service asks exactly once, for
+            //            exactly the tenant and account being deleted, and abandons the deletion when the
+            //            answer is a refusal.
             harness.Permissions
-                .Setup(p => p.DeleteModulePermissionsByUserIdAsync(
+                .Setup(p => p.DeleteUserPermissionsAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .Returns((int portalId, int userId, CancellationToken _) =>
+                .ReturnsAsync((int portalId, int userId, CancellationToken _) =>
                 {
-                    harness.DeletedModulePermissions.Add((portalId, userId));
-                    return Task.CompletedTask;
-                });
-
-            harness.Permissions
-                .Setup(p => p.DeleteTabPermissionsByUserIdAsync(
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns((int portalId, int userId, CancellationToken _) =>
-                {
-                    harness.DeletedTabPermissions.Add((portalId, userId));
-                    return Task.CompletedTask;
+                    harness.CascadedUserPermissions.Add((portalId, userId));
+                    return harness.CascadeResult;
                 });
 
             harness.ModuleDefinitions

@@ -2261,6 +2261,280 @@ public class PermissionEvaluatorTests
     }
 
     /// <summary>
+    /// The removal lands as one unit of work rather than as two independently durable statements.
+    /// </summary>
+    [Fact]
+    public async Task RemoveGrants_CommitsBothTablesInOneTransaction()
+    {
+        Harness harness = Harness.Ready();
+
+        Result result = await harness.Service.DeleteUserPermissionsAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+
+        // MIGRATION: the legacy pair was unprotected. The provider declared transaction members at
+        //            Library/Components/Providers/Data/DataProvider.vb:L70-L74 and neither cleanup -
+        //            ModulePermissionController.vb:L218 nor TabPermissionController.vb:L209 - invoked
+        //            them, so each statement committed alone and a failure between them left the
+        //            account's module grants gone and its page grants intact. Both repository members
+        //            issue a set-based delete that reaches the store when called rather than when
+        //            changes are flushed, so an enclosing transaction is the only thing that makes the
+        //            pair atomic.
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                TransactionIsolation.Default,
+                It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.Transaction.Verify(
+            transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
+
+        // Disposal is what rolls an uncommitted transaction back, so it has to happen on every path.
+        harness.Transaction.Verify(transaction => transaction.DisposeAsync(), Times.Once());
+    }
+
+    /// <summary>
+    /// The removal evicts both grant families afterwards, the module family page by page.
+    /// </summary>
+    [Fact]
+    public async Task RemoveGrants_EvictsBothGrantFamilies()
+    {
+        Harness harness = Harness.Ready();
+        harness.PortalTabs =
+        [
+            new Tab { TabId = TabId, PortalId = PortalId, TabName = "First" },
+            new Tab { TabId = TabId + 1, PortalId = PortalId, TabName = "Second" },
+        ];
+
+        Result result = await harness.Service.DeleteUserPermissionsAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+
+        // MIGRATION: the legacy cleanups both evicted immediately after these same two deletes -
+        //            ModulePermissionController.vb:L220 cleared the module-permission entries of every
+        //            tab in the portal and TabPermissionController.vb:L211 cleared the portal's
+        //            page-permission entry. An earlier revision dropped both, which left a deleted
+        //            account's grants being served from a warm entry: stale authorisation rather than a
+        //            stale listing.
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(PortalId), Times.Once());
+
+        // MIGRATION: the page family is portal-keyed and the module family is TAB-keyed, so the
+        //            portal-wide clear is expressed by naming each page in turn. That is the breadth
+        //            ICacheService documents its narrow members as replacing, and it is what the legacy
+        //            private ClearPermissionCache(moduleId) did internally at
+        //            ModulePermissionController.vb:L62-L66 - resolve the module, then clear by its
+        //            owning TabID. No new cache member is invented for it.
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId), Times.Once());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(TabId + 1), Times.Once());
+    }
+
+    /// <summary>
+    /// A removal refused before it starts neither opens a transaction nor evicts anything.
+    /// </summary>
+    [Fact]
+    public async Task RemoveGrants_TouchesNothingWhenThePortalIsUnknown()
+    {
+        Harness harness = Harness.Ready();
+        harness.Portals
+            .Setup(portals => portals.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        Result result = await harness.Service.DeleteUserPermissionsAsync(
+            PortalId,
+            UserId,
+            CancellationToken.None);
+
+        result.IsFailure.Should().BeTrue();
+        result.Reason!.Code.Should().Be(PortalNotFoundCode);
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.BeginTransactionAsync(
+                It.IsAny<TransactionIsolation>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateTabPermissions(It.IsAny<int>()), Times.Never());
+        harness.Cache.Verify(cache => cache.InvalidateModulePermissions(It.IsAny<int>()), Times.Never());
+    }
+
+    /// <summary>
+    /// Two contradictory forms of addressing a placement are refused for EVERY key, not only for view.
+    /// </summary>
+    [Fact]
+    public async Task ContradictoryPlacementAddresses_AreRefusedForANonViewKey()
+    {
+        // THE REGRESSION THIS PINS. The agreement rule used to be enforced only inside the
+        // inherited-view branch, so a contradictory pair asking about any other key never reached it and
+        // was answered from the module's own grants as though no placement had been named at all. The
+        // contract states the rule without qualification, and refusing is what the request meant:
+        // choosing either address would be choosing whichever granted more.
+        const int placementTabModuleId = 900;
+        const int otherTabId = TabId + 5;
+
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = false;
+        harness.StoredPlacements =
+        [
+            new TabModule { TabModuleId = placementTabModuleId, TabId = TabId, ModuleId = ModuleId },
+        ];
+        harness.Evaluator
+            .Setup(evaluator => evaluator.HasModulePermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(true));
+
+        Result<bool> agreeing = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            TabId,
+            placementTabModuleId,
+            CancellationToken.None);
+
+        Result<bool> contradicting = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.EDIT,
+            otherTabId,
+            placementTabModuleId,
+            CancellationToken.None);
+
+        agreeing.IsSuccess.Should().BeTrue(agreeing.Reason?.ToString());
+        agreeing.Value.Should().BeTrue("the two addresses agree, so the module's own grant decides");
+
+        contradicting.IsSuccess.Should().BeTrue(
+            "a refusal is a denial - the contract publishes no failure code for a contradiction");
+        contradicting.Value.Should().BeFalse(
+            "the named placement does not sit on the named page, so the request contradicts itself");
+    }
+
+    /// <summary>
+    /// The same contradiction is still refused on the inherited-view path it was originally enforced on.
+    /// </summary>
+    [Fact]
+    public async Task ContradictoryPlacementAddresses_AreStillRefusedForInheritedView()
+    {
+        const int placementTabModuleId = 901;
+        const int otherTabId = TabId + 6;
+
+        Harness harness = Harness.Ready();
+        harness.Module.InheritViewPermissions = true;
+        harness.StoredPlacements =
+        [
+            new TabModule { TabModuleId = placementTabModuleId, TabId = TabId, ModuleId = ModuleId },
+        ];
+        harness.Evaluator
+            .Setup(evaluator => evaluator.HasTabPermissionAsync(
+                It.IsAny<int>(),
+                It.IsAny<PermissionKey>(),
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(true));
+
+        Result<bool> contradicting = await harness.Service.HasModulePermissionAsync(
+            PortalId,
+            UserId,
+            ModuleId,
+            PermissionKey.VIEW,
+            otherTabId,
+            placementTabModuleId,
+            CancellationToken.None);
+
+        contradicting.IsSuccess.Should().BeTrue(contradicting.Reason?.ToString());
+        contradicting.Value.Should().BeFalse("hoisting the check must not weaken the path it came from");
+    }
+
+    /// <summary>
+    /// A cached catalogue read asks for the legacy lifetime: twenty minutes times the multiplier.
+    /// </summary>
+    [Fact]
+    public async Task CatalogueRead_RequestsTheLegacyLifetime()
+    {
+        Harness harness = Harness.Ready();
+        harness.CachingOptions.PerformanceMultiplier = 3;
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            cancellationToken: CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+
+        // MIGRATION: both legacy permission timeouts were 20 and each was multiplied by the
+        //            installation-wide performance setting at its point of use
+        //            (ModulePermissionController.vb:L177 and L315, TabPermissionController.vb:L285).
+        //            The shipped multiplier is 3, so the lifetime is an hour.
+        harness.CacheLifetimesRequested.Should().ContainSingle()
+            .Which.Should().Be(TimeSpan.FromMinutes(60));
+
+        // The catalogue gets its own key family; reusing a legacy grant key would collide with the grant
+        // eviction that ICacheService targets at that exact name.
+        harness.CacheKeysRequested.Should().ContainSingle()
+            .Which.Should().StartWith("PermissionCatalogueKeys|");
+    }
+
+    /// <summary>
+    /// A multiplier of zero bypasses the cache rather than writing an entry that expires at once.
+    /// </summary>
+    [Fact]
+    public async Task CatalogueRead_BypassesTheCacheWhenCachingIsDisabled()
+    {
+        Harness harness = Harness.Ready();
+        harness.CachingOptions.PerformanceMultiplier = 0;
+
+        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+            cancellationToken: CancellationToken.None);
+
+        // MIGRATION: the legacy writes were conditioned on the product being positive
+        //            (ModulePermissionController.vb:L183, TabPermissionController.vb:L290), so a zero
+        //            multiplier meant "do not cache". The store is still reached - only the cache is
+        //            skipped - because an entry with a zero lifetime is a write, an eviction and a miss
+        //            where the configuration asked for none of them.
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        harness.CacheKeysRequested.Should().BeEmpty();
+        harness.Cache.Verify(
+            cache => cache.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<CancellationToken, Task<IReadOnlyList<string>>>>(),
+                It.IsAny<TimeSpan>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// The two definition reads are cached under their own key families, keyed by their own subject.
+    /// </summary>
+    [Fact]
+    public async Task DefinitionReads_AreCachedUnderTheirOwnKeyFamilies()
+    {
+        Harness harness = Harness.Ready();
+
+        _ = await harness.Service.GetModulePermissionDefinitionsAsync(ModuleId, CancellationToken.None);
+        _ = await harness.Service.GetTabPermissionDefinitionsAsync(TabId, CancellationToken.None);
+
+        harness.CacheKeysRequested.Should().HaveCount(2);
+        harness.CacheKeysRequested[0].Should().Be(
+            FormattableString.Invariant($"PermissionDefinitionsByModule|{ModuleId}"));
+
+        // The page identifier is part of the key even though the read behind it ignores the argument,
+        // so a later product revision that makes the page distinction real cannot serve one page's
+        // answer for another.
+        harness.CacheKeysRequested[1].Should().Be(
+            FormattableString.Invariant($"PermissionDefinitionsByTab|{TabId}"));
+    }
+
+    /// <summary>
     /// A host account is resolvable outside the tenant, and an ordinary account is not.
     /// </summary>
     [Fact]
@@ -2344,55 +2618,81 @@ public class PermissionEvaluatorTests
         Mock<IModuleRepository> modules = new();
         Mock<ITabRepository> tabs = new();
         Mock<IUserRepository> users = new();
+        Mock<IUnitOfWork> unitOfWork = new();
+        Mock<ICacheService> cache = new();
         Mock<IClock> clock = new();
         PortalOptions options = new();
+        CachingOptions caching = new();
 
+        // One case per constructor parameter, each passing null in exactly one position. Written out rather
+        // than driven from a loop because the compiler then checks the arity of every case: adding a
+        // collaborator without adding its case leaves this test failing to compile rather than silently
+        // covering one parameter less than the constructor declares.
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                null!, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object, clock.Object, options);
+                null!, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, null!, portals.Object, modules.Object, tabs.Object, users.Object, clock.Object, options);
+                permissions.Object, null!, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, evaluator.Object, null!, modules.Object, tabs.Object, users.Object, clock.Object, options);
+                permissions.Object, evaluator.Object, null!, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, evaluator.Object, portals.Object, null!, tabs.Object, users.Object, clock.Object, options);
+                permissions.Object, evaluator.Object, portals.Object, null!, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, evaluator.Object, portals.Object, modules.Object, null!, users.Object, clock.Object, options);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, null!, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, null!, clock.Object, options);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, null!,
+                unitOfWork.Object, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object, null!, options);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                null!, cache.Object, clock.Object, options, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
-                permissions.Object,
-                evaluator.Object,
-                portals.Object,
-                modules.Object,
-                tabs.Object,
-                users.Object,
-                clock.Object,
-                null!);
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, null!, clock.Object, options, caching);
+        });
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = new PermissionService(
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, null!, options, caching);
+        });
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = new PermissionService(
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, null!, caching);
+        });
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            _ = new PermissionService(
+                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
+                unitOfWork.Object, cache.Object, clock.Object, options, null!);
         });
     }
 
@@ -4610,6 +4910,9 @@ public class PermissionEvaluatorTests
             StoredPlacements = [];
             PageViewGrants = [];
             CapturedRoleNames = [];
+            PortalTabs = [Tab];
+            CacheKeysRequested = [];
+            CacheLifetimesRequested = [];
             PortalOptions = new PortalOptions();
 
             Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
@@ -4618,7 +4921,24 @@ public class PermissionEvaluatorTests
             Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
             Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
+            UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
+            Cache = new Mock<ICacheService>(MockBehavior.Loose);
             Clock = new Mock<IClock>(MockBehavior.Loose);
+            Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
+
+            // The transaction scope is handed back by the unit of work so that the cleanup member under test
+            // can open, commit and dispose one. Loose behaviour would return null for the scope and the
+            // await-using would then dereference it, so this stub is required rather than decorative.
+            UnitOfWork
+                .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Transaction.Object);
+
+            // A multiplier of zero would take every read down the caching-disabled branch, which is a real
+            // configuration but not the default one. The suite's baseline is the shipped default, so the
+            // cached path is what the read tests exercise unless a test says otherwise.
+            CachingOptions = new CachingOptions();
 
             Service = new PermissionService(
                 Permissions.Object,
@@ -4627,8 +4947,11 @@ public class PermissionEvaluatorTests
                 Modules.Object,
                 Tabs.Object,
                 Users.Object,
+                UnitOfWork.Object,
+                Cache.Object,
                 Clock.Object,
-                PortalOptions);
+                PortalOptions,
+                CachingOptions);
         }
 
         public User Account { get; }
@@ -4671,7 +4994,24 @@ public class PermissionEvaluatorTests
 
         public Mock<IUserRepository> Users { get; }
 
+        public Mock<IUnitOfWork> UnitOfWork { get; }
+
+        public Mock<ICacheService> Cache { get; }
+
+        public Mock<ITransactionScope> Transaction { get; }
+
         public Mock<IClock> Clock { get; }
+
+        public CachingOptions CachingOptions { get; }
+
+        /// <summary>The pages the portal holds, which the account cleanup enumerates to evict by page.</summary>
+        public IReadOnlyList<Tab> PortalTabs { get; set; }
+
+        /// <summary>Every cache key the service asked for, in the order it asked.</summary>
+        public IList<string> CacheKeysRequested { get; }
+
+        /// <summary>Every cache lifetime the service computed, in the order it computed them.</summary>
+        public IList<TimeSpan> CacheLifetimesRequested { get; }
 
         public PermissionService Service { get; }
 
@@ -4719,6 +5059,54 @@ public class PermissionEvaluatorTests
             harness.Tabs
                 .Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Tab);
+
+            // The pages of the portal, which the account cleanup enumerates in order to evict the
+            // module-permission entry of each one. Stubbed to the harness's own page rather than to an empty
+            // sequence, so a test asserting the eviction has something to observe it against.
+            harness.Tabs
+                .Setup(tabs => tabs.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.PortalTabs);
+
+            // A PASS-THROUGH CACHE, not a stub that answers from nothing. The read-through helper hands the
+            // cache a factory and expects the value back; a loose mock would return null without ever
+            // invoking the factory, which would make every cached read look like an empty answer and would
+            // test the mock rather than the service. Invoking the factory is what the real service does on a
+            // miss, so this models a cold cache - the state every one of these tests is written against.
+            // One setup per closed generic the service instantiates, because a generic method cannot be
+            // stubbed open.
+            harness.Cache
+                .Setup(cache => cache.GetOrCreateAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<CancellationToken, Task<IReadOnlyList<string>>>>(),
+                    It.IsAny<TimeSpan>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((
+                    string key,
+                    Func<CancellationToken, Task<IReadOnlyList<string>>> factory,
+                    TimeSpan expiration,
+                    CancellationToken token) =>
+                {
+                    harness.CacheKeysRequested.Add(key);
+                    harness.CacheLifetimesRequested.Add(expiration);
+                    return factory(token);
+                });
+
+            harness.Cache
+                .Setup(cache => cache.GetOrCreateAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<Func<CancellationToken, Task<IReadOnlyList<PermissionDto>>>>(),
+                    It.IsAny<TimeSpan>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((
+                    string key,
+                    Func<CancellationToken, Task<IReadOnlyList<PermissionDto>>> factory,
+                    TimeSpan expiration,
+                    CancellationToken token) =>
+                {
+                    harness.CacheKeysRequested.Add(key);
+                    harness.CacheLifetimesRequested.Add(expiration);
+                    return factory(token);
+                });
 
             // MIGRATION: the catalogue is no longer one wildcard-tolerant read. The repository
             //            contract mirrors the legacy provider, which offered a definition-scoped read

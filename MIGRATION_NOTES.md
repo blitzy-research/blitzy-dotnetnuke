@@ -1885,10 +1885,10 @@ attempting authentication so that any path which neglects to assign a result fai
 `default(UserLoginStatus)` is a refusal too. Reordering so a successful outcome took zero would
 make an unassigned value mean "authenticated".
 
-### Consequence of the rename: audit log type keys change
+### Consequence of the rename: the audit log type keys are deliberately NOT changed
 
-This is the one observable behavioural difference the rename produces, and it is recorded here
-in full.
+The rename reaches further than a rename normally would, and the mitigation is recorded here in
+full because the failure mode it avoids is silent.
 
 `Library/Components/Users/UserController.vb:80` assigns the status's `ToString()` directly to
 the audit log type key:
@@ -1897,12 +1897,32 @@ the audit log type key:
 objEventLogInfo.LogTypeKey = loginStatus.ToString
 ```
 
-The member *name*, not only its value, therefore reaches the audit trail. The legacy
-application writes keys such as `LOGIN_FAILURE` and `LOGIN_USERLOCKEDOUT`; the renamed members
-produce `Failure` and `UserLockedOut`. The legacy audit sites are re-expressed as structured log
-events in the target, and mapping these outcomes onto stable log event names — so that audit
-intent survives the change of mechanism — is owned by the application layer, not by this
-enumeration. Consumers of the legacy audit trail should expect the new key strings.
+The member *name*, not only its value, therefore reaches the audit trail. The legacy application
+writes keys such as `LOGIN_FAILURE` and `LOGIN_USERLOCKEDOUT`, so a trail accumulated before this
+migration holds those strings and every query, alert and report written against it matches on
+them. Letting the audit key follow the members into PascalCase would have emitted `Failure` and
+`UserLockedOut` instead and orphaned all of them — without any error, since nothing fails when a
+query simply stops matching.
+
+**The two concerns are therefore kept apart.** The enumeration members are renamed for the target
+language, and the audit names are pinned to the legacy strings in
+`Application/Abstractions/AuditEventNames.cs` — `LOGIN_FAILURE`, `LOGIN_SUCCESS`,
+`LOGIN_SUPERUSER`, `LOGIN_USERLOCKEDOUT` and `LOGIN_USERNOTAPPROVED` — with
+`AuthService.AuditEventNameFor` mapping each outcome onto one. Existing consumers of the legacy
+audit trail need no change, which is what "audit intent survives the change of mechanism" is
+required to mean. The mapping is owned by the application layer rather than by the enumeration,
+and it is held in place by
+`UnitTests/Application/AuthServiceTests.AuditEventNames_PreserveTheLegacyLogTypeKeyStrings`.
+
+**The two promoted outcomes are recorded under the outcome each was promoted from** —
+`InsecureAdminPassword` as `LOGIN_SUCCESS` and `InsecureHostPassword` as `LOGIN_SUPERUSER` — with
+the advisory carried on the record's `Advisory` property rather than in its name. The legacy left
+no name to inherit here: it audited only two of its seven members, the failure and locked-out
+members grouped at `UserController.vb:1138`, and that test ran *before* the promotion at `:1144`,
+so no promoted status ever reached a legacy trail. Naming them for the sign-in that actually
+occurred keeps an administrator sign-in visible as one and keeps every emitted name a string the
+legacy could have written. Recording them as the failure event would have been worse than
+imprecise: it would describe a caller who *was* admitted as one who was refused.
 
 ### Behavioural notes carried forward unchanged
 
@@ -4334,6 +4354,7 @@ style budget. Each was additionally compiled directly against the workspace's ow
 implementation to prove the claim positively: all six compile clean, every partial reference
 resolves, and the largest emits a little over three kilobytes - comfortably inside the budget that
 would apply once a component adopts it.
+
 ## Infrastructure layer
 
 ### `backend/src/DnnMigration.Infrastructure/Security/BcryptPasswordHasher.cs` — the ceiling is an addition to the policy, not a change to it
@@ -8223,6 +8244,10 @@ refused for space it was about to release, and a refusal leaves the presented to
 family untouched - a retryable condition rather than a lost session. With the window in force rotation
 reaches a steady state in which it adds nothing at all, so the cap can effectively only be met through
 genuine exhaustion by new families, which issuing already governs.
+**What it does now.** A family retains at most sixty-four spent generations. Older spent generations
+are forgotten as rotation moves past them, oldest first, so a family costs at most sixty-five entries
+whatever its cadence and however long it lives. Rotation still never refuses, and the live generation
+is never a candidate for removal - the test is the entry's own spent flag, not its position.
 
 **The cost, stated plainly.** A replay of a forgotten generation classifies as unrecognised rather
 than as already-used, so it is still refused but no longer escalates to revoking the account's
@@ -8844,3 +8869,484 @@ tenant the caller may not read.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
 `backend/src/DnnMigration.Application/Abstractions/IUserService.cs`.
+
+## The permission handler delegates, and three legacy encodings stop at its boundary
+
+**Artefact:** `backend/src/DnnMigration.Api/Authorization/PermissionAuthorizationHandler.cs`
+
+The thirty-nine imperative permission checks scattered through the administration pages become one
+declarative policy answered in one place. The sections above already record why the two view policies
+stop demanding an authenticated caller and why the tenant falls back to the requested host. Three
+further legacy behaviours end at this boundary, and one latent contradiction is settled rather than
+reproduced.
+
+**The legacy evaluation path ignored the grant-or-deny flag; the legacy string builders did not.** This
+is a contradiction inside the legacy source, not a difference introduced by the migration.
+`TabPermissionController.HasTabPermission` tests only the permission key before consulting the role
+predicate (`TabPermissionController.vb:L41`), and `ModulePermissionController.HasModulePermission` does
+the same (`ModulePermissionController.vb:L36`) — so the legacy *evaluation* returned true on the first
+row whose key matched, **even when that row's `AllowAccess` column was `False`**. Yet the
+permission-*string* builders in the very same two classes filter on exactly that column:
+`GetTabPermissions` at `TabPermissionController.vb:L218` and `GetModulePermissions` at
+`ModulePermissionController.vb:L243` both require `AllowAccess = True`. A deny row was therefore
+honoured when a permission string was built and silently disregarded when a permission was evaluated.
+The target resolves the contradiction in favour of the builders: a denial wins over an allowance for
+the same principal, applied beneath this handler in the single evaluator, so a deny row means the same
+thing on every path. The handler does not re-implement, second-guess or post-filter that answer, and it
+carries no notion of the flag at all. The defect is annotated in place rather than repaired in the
+legacy tree, which stays byte-identical.
+
+**A per-user grant is no longer smuggled through the role channel as bracketed text.** The legacy code
+had no way to ask about an account directly, so it manufactured a role name from the account key —
+`GetTabPermissions` appended `"[" + UserID.ToString + "];"` (`TabPermissionController.vb:L222`),
+`GetModulePermissions` did the same (`ModulePermissionController.vb:L247`), and the evaluation path
+probed a per-account grant by passing `"[" & UserID.ToString & "]"` into the role predicate
+(`TabPermissionController.vb:L47`). The delimited string it produced looked like `;Administrators;[42];`.
+None of that survives: the application service takes a first-class nullable account key, so the
+caller's key is handed over unchanged. No bracketed identifier is constructed, no delimited role or
+permission string appears on any migrated contract, and nothing is split on a delimiter. The absence of
+that key is now load-bearing in its own right — it is what reports that the caller holds no account, and
+it is why the value is never coalesced to a stand-in. Substituting `0` or `-1` for a missing account
+key would silently convert an anonymous caller into a real one and destroy the "Unauthenticated Users"
+distinction; `0` is also a legitimate key for a role, a page and a module in this schema, and `-1` is
+simultaneously the legacy integer sentinel, the seed of the portal key and the "All Users" role
+identifier.
+
+**A refusal is an HTTP status, not a page.** The legacy screens denied access by sending the browser to
+a rendered access-denied page — `Response.Redirect(NavigateURL("Access Denied"), True)` at
+`Website/admin/Security/SecurityRoles.ascx.vb:L323`, with `Website/admin/Security/AccessDenied.ascx.vb`
+rendering the message. The handler produces no response of any kind. It declines simply by not granting
+the requirement, and the framework turns an unmet requirement into a challenge when the caller was
+never identified and a refusal once it was; the problem-details body is written by the dedicated
+authorisation result handler. The handler never writes to the reply, sets a status code, adds a header,
+or throws to signal a denial.
+
+**It also never vetoes, and it never short-circuits on the super-user flag.** Declining to grant is the
+correct denial. The framework's hard veto cannot be overridden by any other handler, so using it would
+permanently foreclose composing this requirement with an alternative — a "may edit this module, or else
+administers the portal" policy could never be expressed afterwards. The super-user flag is deliberately
+neither read nor forwarded here: the legacy predicate short-circuited on it, but that test sat *inside*
+the row loop (`PortalSecurity.vb:L123`), so a super user matched an assignment row that already existed
+and conjured none where the loop never ran. Granting on the flag at this layer would admit a super user
+to an item carrying no matching assignment at all, which is a privilege escalation relative to the
+behaviour being preserved as well as a duplicate of a decision that belongs one layer down.
+
+**Every ambiguity is a refusal.** Five conditions leave the requirement ungranted: the authorisation
+resource is not the current request; no tenant can be named; the scope is not a declared member; the
+route does not name the addressed item, or names it unparseably; or the service reports an unsuccessful
+outcome. None of them throws, and none is resolved by inventing an identifier — an endpoint carrying an
+item-scoped policy but exposing no item key is a registration mistake, and refusing is the safe reading
+of it. A parsed key is passed through exactly as it parsed, including zero and negative values, because
+this schema makes both legitimate.
+
+**One shared constant replaced a backwards dependency.** `PortalAdministrationEvaluator` previously took
+its portal route-segment name from a public constant on this handler, which pointed an evaluator at a
+handler for a value that belongs to neither. Both now read `AuthorizationClaims.PortalRouteKey`, which
+already held the identical value, so the segment name has one home and the handler's own route-key
+constants are private. The route segment names are accepted exactly as the controllers declare them —
+`moduleId` and `tabId` — with no generic single-segment fallback, because on a nested route such a
+fallback could hand the handler some other entity's key and decide a module question from a page's or an
+account's identifier.
+
+**Annotated in code at.** `backend/src/DnnMigration.Api/Authorization/PermissionAuthorizationHandler.cs`,
+`backend/src/DnnMigration.Api/Authorization/PortalAdministrationEvaluator.cs`.
+
+## Role orchestration: eight obsolete wrappers, three switches, one sentinel and one uninitialised variable
+
+These six differences all belong to `RoleController.vb` and are recorded together because they were
+measured together, in one reading of that file. Each is annotated in place in
+`backend/src/DnnMigration.Application/Services/RoleService.cs`.
+
+### The obsoleted region carries eight wrappers, not nine, and none is ported
+
+**Legacy behaviour.** The file closes with `#Region "Obsoleted Methods, retained for Binary
+Compatability"`, spanning `RoleController.vb:L846-L888`. It carries **eight** `<Obsolete>` wrappers, at
+L848, L853, L858, L863, L868, L873, L878 and L883 — the count is stated as measured because the planning
+prose says nine while its own table lists eight. Every one of the eight is a single line of delegation to
+a member that IS ported: role creation, the portal role listing, the account's role names, the two
+paid-services listings, the role's members, and the two paid-services updates.
+
+**Target behaviour.** None is carried across; the standing rule is that no obsolete member appears in the
+target, and delegating wrappers lose nothing when the members they delegate to survive. Two of the eight
+additionally carried faults of their own, which is a second reason not to reproduce them. The role-creation
+wrapper at L849 is declared `As Integer` and has **no `Return` statement at all**, so it discarded the
+identifier it had just delegated for and answered `0` on every call — and `0` is a legitimate role
+identifier, because `dbo.Roles.RoleID` is `IDENTITY (0, 1)`, so a caller could not even recognise the
+answer as wrong. The paid-services wrapper at L864 passed the literal `-1` described below.
+
+### Three legacy switches disappear with that region, because it was their only carrier
+
+**Legacy behaviour.** `SynchronizationMode` (L849) and `SynchronizeRoles` (L854) toggled the legacy
+membership-and-role provider synchronisation model. Both wrappers **ignored the argument entirely** and
+delegated to the single-argument member regardless, so neither flag had any effect even before it was
+obsolete. `includePrivate` (L408) was a real parameter of the assignment listing, and its bands were
+measured: every non-obsolete caller passed `True` (L393), while `False` was passed only by the two
+obsolete paid-services wrappers (L865, L870).
+
+**Target behaviour.** All three are dropped. The provider synchronisation model is replaced wholesale
+rather than reproduced, so the first two have nothing left to switch. The third reproduces the surviving
+behaviour — the `True` band — and offers no switch, because retaining a parameter whose only remaining
+caller would be a member this migration does not have is how a dead argument survives a rewrite.
+
+### The `-1` all-users sentinel becomes two members that name what they return
+
+**Legacy behaviour.** `GetServices(PortalId)` at L864 reached the assignment listing as
+`GetUserRoles(PortalId, -1, False)`, and the single-argument listing at L376-L377 did the same as
+`GetUserRoles(PortalId, -1)`. The `-1` was in the account-identifier position and meant "every account in
+the portal". It is also `Null.NullInteger`, the absence marker.
+
+**Target behaviour.** No magic number reaches a parameter. The two answers are separate members that name
+what they return — one account's roles, and one role's members — and neither treats a negative identifier
+as a wildcard. An identifier that names nothing is reported as not found. Keeping absence and identity
+distinguishable is a migration-wide requirement, and an identifier position that also encodes "all" is
+precisely where the two collapse into each other.
+
+### Assignment rows are portal-scoped by the service, because the table has no portal column
+
+**Legacy behaviour.** The assignment members took the portal identifier as their first argument
+(`RoleController.vb:L277`, L295, L330), and so did the removals.
+
+**Target behaviour.** The repository members take none — `AddUserRoleAsync(UserRole)` and
+`DeleteUserRoleAsync(userId, roleId)` — because `dbo.UserRoles` has **no `PortalID` column**: an
+assignment is scoped only through the role it names, whose own `PortalID` carries the tenancy. The legacy
+argument was therefore never stored; it existed to reach the ambient per-request composite and to look the
+account up. Tenant scope is consequently proved in the service, above the repository: the portal, the
+role's ownership of that portal and the account's membership of it are all resolved before anything is
+staged, and a cross-tenant identifier reads as not found.
+
+### No role read is cached, and the one missing eviction is bounded
+
+**Legacy behaviour.** `RoleController.vb` contains **zero** cache sites of its own; every role read went
+to the provider on each call. Separately, `PortalController.vb:L1131` evicted an entry keyed by the bare
+literal `GetRoles` after creating a portal's stock roles.
+
+**Target behaviour.** Nothing this service reads is cached, and that is the faithful outcome rather than
+an omission — adding a cache where the legacy had none would be the divergence. The cache abstraction is
+injected for the opposite duty: a role write invalidates the portal entries and a membership write
+invalidates the account entry, so no other subsystem's cached projection outlives a role change. The
+`GetRoles` eviction has no counterpart, for the reasons already recorded under *`RemoveCache("GetRoles")`
+has no counterpart*, and the window it guarded is empty here too: nothing in the target ever **writes**
+that entry, so there is no stale role list for the missing eviction to leave behind. The performance
+multiplier that would scale a cache lifetime is consequently not read by this service, because a service
+that stores nothing has no lifetime to scale.
+
+### A latent legacy defect in the billing engine, annotated and NOT fixed
+
+**Legacy behaviour.** `Dim Period As Integer` at `RoleController.vb:L508` carries **no initialiser**, so
+the runtime seeded it with `0` rather than with the absence sentinel `-1`. Whenever the role lookup at
+L518 came back `Nothing`, the sentinel guard at L537 — `If Period = Null.NullInteger` — could not fire,
+the frequency stayed the empty string its L509 declaration gave it, the six-case selection at L540 matched
+nothing, and the assignment was written with the expiry L534 had just set to `Now`. The result was an
+assignment that expired the instant it was created, where the evident intent was no expiry at all.
+
+**Target behaviour.** Annotated in place and **not corrected**, as the Minimal Change Clause requires of a
+defect discovered during a migration. It is also unreachable in the migrated shape, and that is a
+structural consequence rather than a quiet fix: the assignment operation resolves the role first and
+answers `role.not_found` before the derivation is entered, so the role is never absent on any path that
+reaches the guard. Nothing depends on that, and nothing re-creates the zero — an absent period is `null`
+and is tested as `null`, never against `-1` and never against `0`, so a role that legitimately declares a
+period of zero is refused by the shape check rather than mistaken for one that declares none.
+
+### The renewal bounds are primed from the request, where one of the two legacy members primed them from the row
+
+**Legacy behaviour.** Two members wrote an assignment and they disagreed with each other. L295 stored the
+caller's effective and expiry dates **verbatim** and ran no derivation at all. L489 ran the whole
+derivation and had no date parameters to ignore, priming both bounds from the row it had just read
+(L513-L514) and the trial-used fact with them (L515).
+
+**Target behaviour.** One member serves both, so one of the two readings had to give way. The derivation
+is kept, because it carries the paid-membership rules the migration must preserve, and the caller's dates
+are honoured as its input. The consequence is confined to a single case and is stated rather than hidden:
+renewing an assignment whose stored expiry is still in the **future** while submitting no expiry of one's
+own offsets from the present instant rather than from that stored expiry, so the unexpired remainder of
+the term is not carried forward. A caller wanting the legacy behaviour submits the stored expiry — which
+is exactly what the screen this member serves did, `SecurityRoles.ascx.vb:L273-L303` having read the
+existing assignment solely to pre-fill the two inputs it then posted back. The trial-used fact is still
+primed from the stored row, because nothing a caller submits may reset it.
+
+### Both clock readings are UTC where the legacy readings were server-local
+
+**Legacy behaviour.** The billing engine read the ambient clock four times — the expiry seed at L505, the
+effective-date comparison at L530, and the expiry comparison and assignment at L533-L534 — and the
+cancellation path read `Date.Today()` at L496 through the Visual Basic runtime's day-offset intrinsic.
+Both `Now` and `Date.Today()` are **server-local**.
+
+**Target behaviour.** The derivation takes **one** reading from the injected clock instead of four, which
+is not a liberty: four readings of a moving clock can disagree, so a request that crossed a tick between
+L530 and L533 could clear an effective date against one instant and seed an expiry from another. One
+reading makes the derivation internally consistent. The clock is **UTC only**, so a derived expiry — and
+the back-dated expiry on the cancellation path, which is a date-only value — can fall on a different
+**calendar day** from the one a legacy installation would have computed for the same real instant, by up
+to the host's offset from Greenwich. Accepted deliberately, for the reasons already recorded under
+*Expiry dates are computed from a UTC clock, not server-local time*: a local-zone stamp is not comparable
+between hosts and cannot be read without knowing the machine that wrote it, and the injected clock is
+what makes this engine testable at all. The `.Date` truncation on the cancellation path is preserved,
+because the legacy value carried no time either and because the row must read as expired for the whole of
+the current day rather than only after the current hour.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`.
+
+## The permission cleanup commits both grant tables as one unit, evicts what it invalidated, and caches only the catalogue
+
+Four deliberate differences in `PermissionService`, all in the same area and all measured against the
+three legacy controllers it replaces — `PermissionController.vb` (71 lines, 9 public members, **0**
+`DataCache` references), `ModulePermissionController.vb` (389 lines, 18 members, 11 references) and
+`TabPermissionController.vb` (349 lines, 15 members, 10 references).
+
+**1. Removing an account's grants is now one transaction, where the legacy pair was two independently
+durable statements.** The legacy cleanup issued `DeleteModulePermissionsByUserID` and
+`DeleteTabPermissionsByUserID` back to back — `ModulePermissionController.vb:L218` and
+`TabPermissionController.vb:L209` — and each committed on its own. The provider *declared* transaction
+members at `Library/Components/Providers/Data/DataProvider.vb:L70-L74` and neither cleanup invoked them,
+so a failure between the two left an account's module grants removed and its page grants intact: grants
+that outlive the account which held them, inheritable by a later account reusing the identifier. Both
+target repository members issue a set-based delete that reaches the store when it is called rather than
+when changes are flushed, so an enclosing transaction is the only construct that makes the pair atomic.
+The removal now opens one transaction, issues both deletes, saves and commits, and rolls back on
+disposal if no commit was taken — including on a cancellation observed between the two deletes. The
+legacy behaviour is **annotated rather than reproduced**: reproducing it would mean writing a known
+half-failure into new code, and the unit-of-work boundary is what this layer is required to own.
+
+**2. The eviction the legacy cleanup performed is restored, and the tab-keyed family is reached page by
+page.** `ModulePermissionController.vb:L220` cleared the module-permission entries of every tab in the
+portal and `TabPermissionController.vb:L211` cleared the portal's page-permission entry, both
+immediately after those same two deletes. An earlier revision of the service dropped both silently,
+which left a deleted account's grants being served from a warm entry — stale *authorisation*, not a
+stale listing. The page-permission entry is portal-keyed and is evicted directly; the module-permission
+entry is **tab-keyed**, so the portal-wide clear is expressed by naming each of the portal's pages in
+turn. That is the breadth `ICacheService` documents its narrow members as replacing, and it is what the
+legacy private `ClearPermissionCache(moduleId)` did internally at `ModulePermissionController.vb:L62-L66`
+— resolve the module, then clear by its owning `TabID`. No new cache member was invented for it. The
+eviction is ordered **after** the commit, so a concurrent reader cannot repopulate the entry from rows
+the transaction is about to remove, and a rolled-back transaction does not discard a valid entry.
+
+**3. The catalogue reads are cached; the decision reads deliberately are not.** The two legacy cache
+entries held **grant row sets** — a tab-keyed dictionary under `ModulePermissions{0}` and a portal-keyed
+list under `TabPermissions{0}` — and the service contract exposes no grant-set read at all, because the
+grant-management surface is deliberately absent. Those two entries therefore have no counterpart read to
+attach to and belong to the evaluator that consumes grant rows. What is cached instead is the permission
+**catalogue**, which is a net addition rather than a translation: the catalogue controller carried no
+cache site whatsoever. It is nevertheless the one thing in the file that is safe to cache — host-wide
+reference data seeded by the upgrade scripts, with no write member anywhere in the solution, consumed by
+no access decision. The legacy lifetime arithmetic is reproduced exactly, twenty minutes times the
+installation-wide performance multiplier, as is the guard that went with it at
+`ModulePermissionController.vb:L183` and `TabPermissionController.vb:L290`: a multiplier of zero
+**bypasses the cache entirely** rather than writing an entry that expires at once. A new key family is
+used rather than either legacy name, because writing a catalogue projection under a grant key would both
+misdescribe the entry and collide with the eviction targeted at that exact name. Only **projections** are
+cached, never entities: the permission repository issues no no-tracking query, so caching what it returns
+would hand a later request an entity attached to a disposed change tracker. The effective-key and
+decision members are **not** cached, and that omission is a security judgement rather than an oversight —
+their answers are caller-dimensioned and no grant mutation exists on this contract from which such an
+entry could be invalidated, so a warm entry would outlive a grant change with no hook able to clear it.
+
+**4. Two contradictory ways of addressing a module placement are refused for every key.** The contract
+states without qualification that naming a placement by its own key and also naming a page that is not
+the one that placement sits on is a contradiction, and that a contradiction is refused rather than
+resolved in favour of either. The rule was enforced only inside the inherited-view branch, so a
+contradictory pair asking about any other key never reached it and was answered from the module's own
+grants as though no placement had been named — which is the wider answer, and therefore the exploitable
+one. The check now runs before the key is considered. The refusal is a **denial** rather than a failure,
+because the member publishes exactly two failure codes — an absent module and an undefined key — and a
+contradiction has none; a denial is also the closed default this whole area falls back to.
+
+**No log and no audit event is emitted, and the omission is measured.** All three legacy controllers
+contain **zero** `AddLog` call sites; their only six logging references are `LogException` inside the
+row-hydration helpers that the object-relational materialiser deletes outright, so there is no audit
+trail to preserve. The account deletion that reaches the cleanup member is already audited as
+`USER_DELETED` by the account service, so a second event here would double-count one action.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/PermissionService.cs`, with
+regression coverage in `backend/tests/DnnMigration.UnitTests/Security/PermissionEvaluatorTests.cs`.
+
+## The account service: the permission cascade reaches its owner, and five omissions are named
+
+**Why this is one entry.** Every difference below was found while completing
+`backend/src/DnnMigration.Application/Services/UserService.cs`, the port of
+`Library/Components/Users/UserController.vb` — 1,372 lines, 64 public members, every one of them
+`Shared`. They share a theme: in each case the legacy behaviour was *measured*, and the target either
+routes it somewhere better or declines to carry it forward. None of them is a silent absorption.
+
+### The user-deletion permission cascade is orchestrated through the permission contract
+
+**Legacy behaviour.** `UserController.vb:L200` cleared the account's direct grants by calling two
+separate provider members before removing the account — `DeleteModulePermissionsByUserID`, reached
+from `ModulePermissionController.vb:L218`, and `DeleteTabPermissionsByUserID`, reached from
+`TabPermissionController.vb:L209`. Each took the account **object** and read the portal off it.
+
+**What it did.** The delivered account service issued those two table deletes itself, against the
+grant repository. That worked, and it was committed and tested — but it put a second copy of a
+permission rule inside a service whose subject is accounts. The rule in question is not incidental:
+only grants made **directly** to the account may be removed, because a grant the account receives
+**through a role** belongs to the role, and removing it would strip every other holder of that role.
+Two copies of that rule are free to drift, and the drift would be invisible until the day one of them
+was updated.
+
+**What it does now.** The cascade is one call to `IPermissionService.DeleteUserPermissionsAsync`,
+which is the member that owns both grant tables and states that rule once. The account identifier
+crosses the boundary as an `int`, never as an entity — which is what makes it impossible to repeat the
+legacy mistake of reading the portal off the object and widening the removal to every portal the
+account belongs to. The call **stages** rather than commits, so it still joins the single
+`SaveChangesAsync` at the foot of the delete and an abandoned deletion leaves the grants in place.
+
+**The divergence, and it is a fix.** The refusal is now **propagated**. The two repository calls
+returned `Task` and reported nothing, so a cascade that failed could not be detected; the consolidated
+member returns `Result`, and a failure abandons the deletion with the account wholly intact. The
+alternative — committing an account row as deleted while its grants remained — is the single outcome
+the cascade exists to prevent, because a later account reusing the identifier would inherit them.
+
+**A documentation defect closed with it.** `Api/Controllers/PermissionsController.cs:62` already
+asserted this collaboration in prose — *"DeleteUserPermissionsAsync by UserService as part of the
+user-deletion cascade. Nothing is orphaned by their absence here"* — while no such call existed. The
+contract documentation and the code now agree, and `DeleteUserPermissionsAsync` has the production
+caller its own documentation claims for it.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/tests/DnnMigration.UnitTests/Services/UserServiceTests.cs`.
+
+### The membership-settings read is not cached, and the legacy expiry it drops was three minutes, not sixty
+
+**Legacy behaviour.** `GetUserSettings` at `UserController.vb:L656-L670` cached its answer under the
+key `SettingsKey(portalId)` — `"UserSettings|" + portalId`, composed at `L924` — and the expiry is the
+reason this entry exists. It is `TimeSpan.FromMinutes(Globals.PerformanceSetting)`: the performance
+setting is **the whole timeout**, not a multiplier over a 20-minute base as at every other caching
+site in the legacy tree. `Globals.PerformanceSetting` resolves an absent host setting to **3**, so the
+real legacy lifetime of this entry was **three minutes** against the sixty the usual convention would
+imply.
+
+**Target behaviour.** The read is not cached. It resolves the tenant's "User Accounts" module by
+definition name and reads ordinary module settings against it, exactly as the legacy did, and returns
+a **successful result whose value is `null`** when the tenant has no such module — the legacy returned
+`Nothing` in that case and its callers fell back to their own defaults, so reporting a failure would
+change behaviour those screens depended upon. As in the legacy, an absence is never cached.
+
+**Why the cache is not reproduced, and it is a correctness reason rather than a performance one.** The
+caching abstraction classifies a key by **declared prefix family** in order to scope its invalidation,
+and `"UserSettings|"` is not one of the declared families, so `InvalidatePortal` could not evict this
+entry. The rows behind it are *ordinary module settings* on the account module instance, writable
+through the module service as well as through the settings-write member beside the read, so an entry
+only the account service knew how to evict would go stale on a write the account service never saw.
+The sibling module service records the same decision, for the same reason, for the analogous
+`GetModuleSettings<id>` and `GetTabModuleSettings<id>` keys. What is cached instead is the
+profile-definition catalogue, which is installation-time reference data with both a declared family
+and a declared eviction member — and which correctly uses the **conventional** `20 ×` multiplier.
+
+**The measurement is recorded so it is not "corrected".** Anyone reintroducing this cache must
+reproduce **three minutes** and must not normalise it to `20 × multiplier`, which would multiply the
+staleness window twentyfold.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### Defect 1: the legacy credential predicate overwrote its verdict, and the defect is annotated rather than fixed
+
+**Legacy behaviour.** `ValidatePassword` at `UserController.vb:L1067` evaluated three rules, but its
+third rule **assigned** its verdict rather than accumulating it. A credential that failed the minimum
+length rule and then matched the configured strength expression was therefore reported **valid** — the
+earlier failure was overwritten.
+
+**Why nothing in `Library/` changes.** Per AAP §0.9.1 a discovered defect is annotated in place and not
+fixed. The legacy tree is a read-only reference input and remains byte-identical.
+
+**Why the defect is dormant, and what the target does.** No strength expression is configured in this
+installation, so the third rule never runs and the legacy and target verdicts agree on every input this
+configuration can produce. The target evaluates the rules in order and returns on the first refusal,
+which is evidently what the legacy code was reaching for. Were a strength expression ever configured,
+the target would refuse a short credential that the legacy predicate accepted — recorded here rather
+than left to be discovered in production.
+
+**Where enforcement lives.** The legacy predicate was **public**, and therefore a second policy free to
+diverge from the one the screens declared; it is not exposed on the target contract at all. Declarative
+request validation in `Application/Validation/` owns enforcement. The service retains a **private**
+guard that reads the **same bound `PasswordPolicyOptions` instance** those validators read, so there is
+one policy with one source: it hardcodes no threshold, adds no rule the options do not declare, and
+skips the non-alphanumeric and strength rules unless the configuration asks for them. Its purpose is
+that a credential write is never performed merely because a validator happened to be wired at the HTTP
+boundary — the service is also reachable from a test, a seeder, or a future host with no such pipeline.
+The legacy policy itself is preserved verbatim from `Website/release.config:L242-L245`: minimum length
+seven, zero required non-alphanumeric characters, no question-and-answer requirement, and electronic
+mail uniqueness not enforced. Tightening a policy during a migration locks out existing account
+holders, so any hardening is a separate and explicit decision.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The ambient caller and tenant accessors are gone, and the never-null account sentinel with them
+
+**Legacy behaviour.** `GetCurrentUserInfo` at `UserController.vb:L381` read the acting account out of
+per-request state — `HttpContext.Current.Items("UserInfo")`, falling back to
+`Thread.CurrentPrincipal.Identity` when there was no request at all — and on every miss returned a
+**newly constructed empty account** rather than nothing. The delete at `L237` separately reached
+`PortalController.GetCurrentPortalSettings`, purely to label its audit entry; that accessor read
+`HttpContext.Current.Items("PortalSettings")`, a mutable per-request composite whose `ActiveTab`
+callers could reassign mid-request.
+
+**Target behaviour.** Neither accessor is reproduced. The acting caller arrives through the injected
+`ICurrentUser` abstraction and every member takes the identifiers it acts on as explicit arguments,
+`portalId` first. No `PortalSettings` type appears anywhere on the service — and could not, because the
+layer graph gives the Application project a reference to Domain only.
+
+**The divergence.** The **never-null contract is deliberately not carried forward.** Returning a hollow
+account made "nobody is signed in" indistinguishable from "an account with no identifier", so a caller
+that forgot to test the identifier silently operated as an anonymous ghost. Absence is now reported as
+absence.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The profile-definition surface is definition management, not a read-only lookup
+
+**The ambiguity.** The plan describes this surface two ways: AAP §0.5.1.4 calls the API surface a
+*"Lookup surface"*, while AAP §0.5.1.8 calls the client feature *"Definition management"*. The
+reconciliation is recorded here so it is not re-litigated downstream.
+
+**The reading, and what settles it.** **Definition management.** `IUserService` declares a create, an
+update and a delete for profile property definitions alongside the two reads, so read-only is not an
+available interpretation of the contract. The legacy source agrees:
+`Website/admin/Users/ProfileDefinitions.ascx.vb` is a management grid with add, edit, reorder and
+delete commands and `EditProfileDefinition.ascx.vb` is its editor, so a read-only surface would have
+**lost a workflow the legacy application offered** — which UI functional parity forbids. The narrower
+phrase is best read as describing how the definitions are *consumed* by the profile screens, which do
+only read them.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### Nine further legacy members are omitted, and the omissions are named
+
+**What is not ported, and why.** `DeleteUsers` (`L273`) and `DeleteUnauthorizedUsers` (`L293`), the
+bulk sweeps — a reachable "remove every account in this tenant" operation is a defect rather than a
+feature, and neither has an endpoint in the target API. `SetAuthCookie` (`L919`), **whose body is empty
+in this checkout**, wrote a forms-authentication cookie that has no counterpart under bearer
+authentication. `GeneratePassword` (`L314`, `L330`) — a generated credential has to be transmitted to
+be useful, which reintroduces exactly the disclosure that dropping retrieval removed.
+`GetUserCreateStatus` (`L598`) mapped a status to a message drawn from the excluded localisation
+mechanism; the status becomes a stable failure code and the wording is authored in the client.
+`GetUserMembership` (`L638`) was a `Sub` that mutated the account it was handed and reported nothing at
+all; the membership facts it fetched are materialised on the account by the repository read path.
+`GetOnlineUsers` (`L415`) is excluded with the users-online subsystem and `GetSuperUsers` (`L1331`)
+with host-level administration. `UpdateDisplayNames` (`L1259`) is a bulk maintenance sweep with no
+endpoint. `GetUserCountByPortal` (`L582`) is omitted as **redundant rather than excluded**: the paged
+envelope the listing member returns already carries the tenant-wide total, so a second member
+answering the same question from a different query would be a second source of truth for one number.
+The hydration and provider-synchronisation switches go with them — `isHydrated`, `hydrateRoles`,
+`ProgressiveHydration`, `SynchronizeUsers` and `AddToMembershipProvider` — because the shape of a
+response is settled by its data transfer object, never by a caller-supplied switch. The caching
+*members* (`GetCachedUser` `L350`, `SettingsKey` `L924`, `GetCacheKey` `L1310`, `CacheKey` `L1315`) and
+the two stateful controller properties that callers configured before invoking a method
+(`DisplayFormat` `L1210`, `PortalId` `L1219`) are gone; the service holds no mutable state of any kind.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.
+
+### The Option Strict asymmetry is resolved towards the stricter side
+
+**Legacy behaviour.** The class library was compiled with Option Strict **on**
+(`Library/DotNetNuke.Library.vbproj:L24` — note that `L23` is `OptionExplicit`, so a citation of `L23`
+for Option Strict is off by one, and the correction is recorded here). The admin code-behinds this
+service absorbs its rules from were compiled with `strict="false"`
+(`Website/release.config:L125`) — Option Strict **off** — and could therefore rely on late binding and
+implicit narrowing that C# rejects outright.
+
+**Target behaviour.** Every such conversion is made explicit. Text arriving from a stored module
+setting is parsed with an invariant culture and an explicit fallback rather than coerced, so a value
+the legacy screen would have silently collapsed to `0` or `""` is either parsed or refused. This is
+also why the twelve `Website/admin/Users/*.ascx.vb` code-behinds are treated as reference inputs for
+endpoint and screen semantics rather than as candidates for line-by-line translation.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`.

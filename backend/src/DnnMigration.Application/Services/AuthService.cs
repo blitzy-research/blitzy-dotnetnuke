@@ -768,7 +768,14 @@ public sealed class AuthService : IAuthService
         // to audit it. An ACCEPTED outcome is deliberately excluded here and recorded further down, after
         // the tokens have been issued, so that the accepted record can carry the weak-credential advisory
         // and cannot describe a sign-in that then failed to issue.
-        if (loginStatus is not (UserLoginStatus.Success or UserLoginStatus.SuperUser))
+        //
+        // The test is the SHARED admitted predicate rather than a list of accepting members written out
+        // here, and that is the whole reason it is shared. The promotion on the line above REPLACES the
+        // value in this local, so by this point an accepted sign-in may hold either of the two weak-
+        // credential members instead of the member it was promoted from. A list naming only the two
+        // unpromoted successes reads as complete and is not: it would emit a REFUSAL record for a caller
+        // this method goes on to sign in, and then a second record besides. See Admitted.
+        if (!Admitted(loginStatus))
         {
             RecordSignInOutcome(
                 loginStatus,
@@ -1310,7 +1317,7 @@ public sealed class AuthService : IAuthService
             properties["PortalName"] = portalName;
         }
 
-        bool accepted = outcome is UserLoginStatus.Success or UserLoginStatus.SuperUser;
+        bool accepted = Admitted(outcome);
 
         _audit.Record(new AuditEvent(AuditEventNameFor(outcome))
         {
@@ -2315,19 +2322,60 @@ public sealed class AuthService : IAuthService
     }
 
     /// <summary>
+    /// Reports whether an outcome ADMITTED the caller.
+    /// </summary>
+    /// <param name="loginStatus">The outcome.</param>
+    /// <returns><see langword="true"/> when the caller was signed in.</returns>
+    /// <remarks>
+    /// <para>
+    /// FOUR members admit, not two, and reading it as two is the trap this helper exists to close. The
+    /// two weak-credential members are PROMOTIONS from the two accepting ones -
+    /// <c>UserController.vb</c> L1144-L1148 REPLACES an already-successful status with the administrator
+    /// advisory when the account name and credential are both ones the product was distributed with, and
+    /// L1149-L1153 does the same to the installation-wide success. Neither branch is reachable from any
+    /// other status, so each promoted member means "admitted, with a credential we published".
+    /// </para>
+    /// <para>
+    /// Because the promotion REPLACES the value in the status local, every later test of that local sees
+    /// the promoted member rather than the member it was promoted from. Enumerating only the two
+    /// unpromoted members - which reads as correct, since those are the two the enumeration names as
+    /// successes - therefore classifies a promoted sign-in as a refusal. The one predicate is shared by
+    /// every such test below so the two cannot drift apart.
+    /// </para>
+    /// </remarks>
+    private static bool Admitted(UserLoginStatus loginStatus) => loginStatus
+        is UserLoginStatus.Success
+        or UserLoginStatus.SuperUser
+        or UserLoginStatus.InsecureAdminPassword
+        or UserLoginStatus.InsecureHostPassword;
+
+    /// <summary>
     /// Maps a sign-in outcome onto the stable legacy event name.
     /// </summary>
     /// <param name="loginStatus">The outcome.</param>
     /// <returns>The event name.</returns>
     /// <remarks>
+    /// <para>
     /// The four members the legacy status enumeration published for a sign-in map one to one; anything
     /// else is recorded as a plain failure, which is what the legacy inequality at
     /// <c>Login.ascx.vb</c> L187 collapsed every unnamed member into.
+    /// </para>
+    /// <para>
+    /// The two weak-credential members map onto the accepting member each was promoted from, and the
+    /// advisory travels as a property of the record rather than as its name. The legacy left no name to
+    /// inherit here: it audited only two of its seven members - the failure and locked-out members,
+    /// grouped at <c>UserController.vb</c> L1138 - and that test ran BEFORE the promotion at L1144, so no
+    /// promoted status was ever written to a trail. Naming them for the sign-in that actually occurred
+    /// keeps an administrator sign-in visible as one, keeps every name in this mapping a string the
+    /// legacy could have written, and keeps the weak-credential fact discoverable on the record's
+    /// advisory property. Recording them as the FAILURE event would be worse than merely imprecise: it
+    /// would describe a caller who was admitted as one who was refused.
+    /// </para>
     /// </remarks>
     private static string AuditEventNameFor(UserLoginStatus loginStatus) => loginStatus switch
     {
-        UserLoginStatus.SuperUser => AuditEventNames.LoginSuperUser,
-        UserLoginStatus.Success => AuditEventNames.LoginSuccess,
+        UserLoginStatus.SuperUser or UserLoginStatus.InsecureHostPassword => AuditEventNames.LoginSuperUser,
+        UserLoginStatus.Success or UserLoginStatus.InsecureAdminPassword => AuditEventNames.LoginSuccess,
         UserLoginStatus.UserLockedOut => AuditEventNames.LoginUserLockedOut,
         UserLoginStatus.UserNotApproved => AuditEventNames.LoginUserNotApproved,
         _ => AuditEventNames.LoginFailure,
