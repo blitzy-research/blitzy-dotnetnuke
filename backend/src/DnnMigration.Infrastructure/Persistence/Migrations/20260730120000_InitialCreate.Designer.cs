@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DnnMigration.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(DnnDbContext))]
-    [Migration("20260802072256_InitialCreate")]
+    [Migration("20260730120000_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />

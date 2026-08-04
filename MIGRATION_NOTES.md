@@ -7235,15 +7235,28 @@ closed was real: the snapshot carried unnamed indexes where the model declares `
 `IX_UserRoles`, `IX_UserRoles_1` and the four named page-permission indexes.
 
 **What deliberately did not change.** `InitialCreate.Up` and `InitialCreate.Down` remain
-**empty**, and the migration identifier is preserved exactly, so an existing
-`__EFMigrationsHistory` row stays valid and no schema statement of any kind can reach a
-database from this work. The migration exists to seed migration history as a baseline, never
-to create or alter a table — the schema depends on externally installed `aspnet_*` membership
-objects that the eighty-eight scripts only ever `ALTER`, so a generated create-migration could
-not reproduce the terminal schema even in principle.
+**empty**, so no schema statement of any kind can reach a database from this work. The
+migration exists to seed migration history as a baseline, never to create or alter a table —
+the schema depends on externally installed `aspnet_*` membership objects that the eighty-eight
+scripts only ever `ALTER`, so a generated create-migration could not reproduce the terminal
+schema even in principle.
+
+**What the identifier is.** The baseline is stamped `20260730120000_InitialCreate`, and that
+identifier is byte-identical across the migration filename, the designer filename and the
+`[Migration]` attribute, so exactly one designer carrying exactly one attribute exists. The
+earlier `20260802072256` stamp is gone, and it had to go: two files declaring the same
+`partial class InitialCreate` with `Up` and `Down` in one namespace is a duplicate-member
+compile error, so the superseded migration was removed and the companion designer renamed with
+its attribute retargeted — a single-line change that preserves `BuildTargetModel` verbatim and
+leaves `DnnDbContextModelSnapshot` untouched. Re-stamping is safe precisely because the bodies
+are empty and nothing applies migrations on its own: no `Migrate`, `MigrateAsync` or
+`EnsureCreated` call exists anywhere in the source, so a database that already carries the
+earlier history row is unaffected until an operator runs `dotnet ef database update`
+deliberately, and when they do the only statement issued is the guarded history insert.
 
 **Annotated in code at.**
-`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260802072256_InitialCreate.Designer.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.Designer.cs`,
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/DnnDbContextModelSnapshot.cs`.
 
 ### Sign-in proves the credential before it approves anything
