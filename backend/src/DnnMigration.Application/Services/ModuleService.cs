@@ -510,10 +510,38 @@ public sealed class ModuleService : IModuleService
             }
         }
 
+        if (request.PageSize == UnpagedPageSize)
+        {
+            return Result<PagedResult<ModuleListItemDto>>.Success(
+                PagedResult<ModuleListItemDto>.Unpaged(rows));
+        }
+
+        // The window is taken over MODULES while the rows carry PLACEMENTS, so the two figures the envelope
+        // needs are not in the same unit and cannot be handed over unreconciled.
+        //
+        // The remarks above note that a module has at most one placement on any one page, and therefore
+        // that the module total and the row count agree for a paged read. That holds only while a page is
+        // NAMED. When tabId is null - which is the default listing of a portal's modules - no page filter is
+        // applied, so a module contributes EVERY placement it has and the expansion can carry more rows than
+        // there are modules behind them. Both of the envelope's guards then reject the arguments: the row
+        // count exceeds the module total, and it can exceed the requested window size as well. That threw
+        // ArgumentOutOfRangeException on a listing whose only unusual feature was a module placed on two
+        // pages, which is an entirely ordinary configuration and the norm for a module marked AllTabs.
+        //
+        // Both figures are therefore raised to the number of rows actually being carried. Neither becomes
+        // less truthful by it: the module total was already a LOWER BOUND on the placement total - the
+        // documented trade, taken because the exact figure needs an unbounded read of every placement in the
+        // portal - and the row count is a better lower bound from the same information. The declared window
+        // widens only when the expansion overflowed it, so a page that fits reports the size that was asked
+        // for, unchanged. No extra repository read is introduced.
+        int carriedRows = rows.Count;
+
         return Result<PagedResult<ModuleListItemDto>>.Success(
-            request.PageSize == UnpagedPageSize
-                ? PagedResult<ModuleListItemDto>.Unpaged(rows)
-                : PagedResult<ModuleListItemDto>.Create(rows, page.TotalCount, page.PageIndex, page.PageSize));
+            PagedResult<ModuleListItemDto>.Create(
+                rows,
+                Math.Max(page.TotalCount, carriedRows),
+                page.PageIndex,
+                Math.Max(page.PageSize, carriedRows)));
     }
 
     /// <summary>

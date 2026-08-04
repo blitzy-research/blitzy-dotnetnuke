@@ -1,7 +1,5 @@
 using DnnMigration.Application.Abstractions;
-using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Services;
-using DnnMigration.Application.Validation;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -35,8 +33,11 @@ namespace DnnMigration.Application;
 /// stop the host before it serves a request. It is also why this method takes no
 /// configuration argument - accepting one would require this project to reference
 /// the configuration abstractions, widening a package surface that currently
-/// closes over the dependency-injection abstractions, options and primitives
-/// alone.
+/// closes over FluentValidation and the dependency-injection abstractions and
+/// nothing else. That surface is narrower than it may appear: the options
+/// abstractions are absent from it, which is why the services and validators in
+/// this layer take a bound settings object directly rather than an
+/// <c>IOptions&lt;T&gt;</c> wrapper they have no way to name.
 /// </para>
 /// </remarks>
 public static class DependencyInjection
@@ -92,6 +93,16 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        // MIGRATION: these registrations replace the legacy reflection-based service location.
+        // Library/Components/Providers/Data/DataProvider.vb declared a shared constructor (L38-L40)
+        // that called Framework.Reflection.CreateObject (L44) and published the result through a
+        // static Instance() accessor (L48), so a collaborator was named by a configuration string
+        // and reached from anywhere without being declared. A mistyped provider name therefore
+        // failed at first use rather than at startup. Resolving the same collaborators through the
+        // container moves that failure to startup and makes each dependency explicit in a
+        // constructor. The counterpart for the persistence and security contracts is
+        // Infrastructure/DependencyInjection.cs; the divergence is recorded in MIGRATION_NOTES.md.
+
         // One service per aggregate, each scoped because each holds repositories that share the
         // request's database context. These registrations belong here rather than in the hosting
         // layer: the contracts and their implementations are both owned by this project, so naming
@@ -104,26 +115,32 @@ public static class DependencyInjection
         services.AddScoped<ITabService, TabService>();
         services.AddScoped<IAuthService, AuthService>();
 
-        // The type argument only names the assembly to scan; it carries no other
-        // significance, and any public validator in this project would do.
-        services.AddValidatorsFromAssemblyContaining<LoginRequestValidator>(
+        // The anchor only names the assembly to scan; it carries no other significance. This class
+        // is the anchor rather than one of the validators because it is the one type here guaranteed
+        // to survive any reorganisation of Validation/ - a validator used as the anchor would
+        // silently take the whole scan with it if it were ever renamed, moved or merged, and an
+        // unregistered validator fails silently: its rules simply never run.
+        //
+        // The typeof form is required, not stylistic. The generic overload cannot be used here
+        // because this class is static and C# forbids a static type as a generic type argument
+        // (CS0718), so AddValidatorsFromAssemblyContaining<DependencyInjection>() does not compile.
+        // The Type overload is the same scan with the same anchor, and naming the assembly this way
+        // still needs no System.Reflection import because the Assembly type is never named.
+        services.AddValidatorsFromAssemblyContaining(
+            typeof(DependencyInjection),
             lifetime: ServiceLifetime.Scoped,
             includeInternalTypes: false);
 
-        // PagedRequestValidator NOW HAS the four sealed derivations this comment used to claim it
-        // had. It did not: the derivations did not exist, the narrow per-collection sortable sets
-        // they were supposed to apply had no consumer anywhere, and every list endpoint bound the
-        // one shared PagedRequest - so a single validator was resolved for all of them and the only
-        // bound it could apply was the UNION of every collection's field names. The account listing
-        // accepted a portal field name, answered 200, and ordered by something else entirely.
-        //
-        // Each collection now binds its own derived request type - PortalPagedRequest and the three
-        // siblings - so the scan above registers exactly one descriptor per contract:
-        // IValidator<PortalPagedRequest> resolves PortalPagedRequestValidator and applies
-        // SortableFields.Portals alone. There is consequently nothing left to disambiguate, and the
-        // defensive re-registration that used to stand here has been removed rather than left as a
-        // statement about a problem that no longer exists. IValidator<PagedRequest> resolves the
-        // unspecialised base, which applies the union to the bare contract no endpoint binds.
+        // Nothing is registered after the scan, and the paged-request validators are why that is
+        // worth stating. Their base, PagedRequestValidator<TRequest>, is an open generic and so is
+        // skipped by the scan; each collection binds its own derived request type, and the sealed
+        // validator closing over that type is what the scan finds. One descriptor per closed
+        // contract results, so IValidator<PortalPagedRequest> resolves the portal validator and
+        // applies that collection's sortable fields alone, while IValidator<PagedRequest> resolves
+        // the unspecialised validator for the bare contract. There is consequently nothing to
+        // disambiguate and no descriptor to override by hand. Deliberately absent: any count of the
+        // validators registered here. The scan is authoritative precisely because it needs no
+        // census, and a number written down in a comment is a number that goes stale silently.
 
         return services;
     }

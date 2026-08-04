@@ -4857,6 +4857,86 @@ meaning of a persisted value and would make a module's own declaration disagree 
 what the database holds. Search itself is deferred by the system boundaries; when it
 arrives, the declarations are already correct.
 
+### Module content crosses the boundary as an escaped document, and four legacy habits around it do not survive
+
+**Legacy behaviour.** Content transfer was assembled inline in
+`Library/Components/Modules/ModuleController.vb`. Export (`AddContent`, `L226`-`L254`) escaped the
+module's payload with `HttpContext.Current.Server.HtmlEncode` at `L244` and wrapped it in a
+`content` element carrying `type` and `version` attributes. Import (`L410`-`L441`) reversed that
+with `HttpContext.Current.Server.HtmlDecode` at `L428`, having first stripped a CDATA wrapper by
+**fixed-offset arithmetic** — `strcontent.Substring(9, strcontent.Length - 12)` at `L413`.
+
+**Target behaviour, and what changed with it.** The element and attribute names are preserved
+exactly, so a document written by a DotNetNuke 4.x installation imports here unchanged and a
+document written here stays readable by the legacy importer. Four habits around them do not carry
+over:
+
+- **The escaping no longer reaches through the request pipeline.** A framework-agnostic helper
+  performs the same escaping in both directions. An Application-layer service cannot reference a
+  web framework and must not acquire an ambient request context to do string work; only 8 of the
+  84 in-scope legacy files touched `System.Web` at all, and the target injects an HTTP accessor in
+  exactly one piece of API middleware.
+- **The fixed-offset CDATA strip is gone.** An XML reader already resolves a CDATA section to its
+  text, so counting characters has nothing left to strip — and counting them was fragile, since
+  the offsets silently corrupt any document whose wrapper is not byte-for-byte what the legacy
+  exporter emitted. A payload that is itself markup is now handed on **as markup and not
+  unescaped**, because it was never escaped and unescaping it would corrupt an entity reference it
+  legitimately contains.
+- **Empty content is a payload, not an absence.** `L234` guarded the append with
+  `If Content <> ""` and, when a module returned the empty string, appended **no element at all** —
+  so the portal template came out silently short of one module's content with no record that
+  anything had been dropped. `Null.NullString` is the empty string rather than null
+  (`Library/Components/Shared/Null.vb:L71`-`L75`), which is exactly why the legacy check could not
+  tell "this module has nothing to say" from "this column was null". The document is now always
+  written, so a caller can see that the module was asked and answered with nothing. Whitespace is
+  carried through unaltered for the same reason — significance the module decides is not filtered
+  by a reader's default.
+- **An import is attributed to the caller.** The legacy tree attributed the same operation to two
+  different people depending on the entry point: `L433` passed `objportal.AdministratorId`, the
+  tenant's administrator regardless of who was signed in, while
+  `Website/admin/Modules/Import.ascx.vb:L200` passed the current user. The administrator variant
+  recorded a change against someone who had not made it. The two are unified onto the caller,
+  which is the only identity true in both cases and the party whose grant on the module was
+  actually verified. An unattributed caller is recorded as the legacy integer sentinel `-1` rather
+  than as `0`, because account identifiers seed low in this schema and `0` risks naming a real
+  account.
+
+**One preserved legacy loss, annotated rather than repaired.** A carriage return in the payload
+comes back as a line feed. The XML specification requires a reader to normalise every line ending,
+inside a CDATA section too, so the legacy path lost it at precisely the same point — this is
+inherited behaviour, not new. Preserving it would need the return written as a character
+reference, which would make documents this service writes unreadable by the legacy importer. It is
+therefore recorded and left alone.
+
+**Also not reproduced: the deferred-import event queue.** `L422` tested the stored capability field
+against the integer sentinel `-1` and, on a match, called `CreateEventQueueMessage` at `L426` to
+park the payload for replay after an application restart — necessary only because the legacy
+discovered a module's capabilities by late-binding its controller at run time, which was impossible
+during the request that installed it. That queue subsystem is excluded from this migration
+wholesale, and no replacement queue is introduced. Nothing is lost, because the condition the
+branch waited for cannot arise: capabilities come from a closed registration map fixed at start-up,
+so a capability is either registered or it is not and waiting changes nothing. The sentinel is
+still interpreted rather than ignored — it reports the package as not portable — so the caller
+receives a refusal they can act on instead of a success that quietly deferred.
+
+**Operational consequence.** Legacy export files remain importable. An export of empty content now
+produces a document where it previously produced silence. An import that would have been queued is
+now refused with a reason naming the cause, and the retry is the caller's to make once the package
+is fully installed.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/ModuleService.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IModuleBusinessControllerFactory.cs`.
+Guarded in
+`backend/tests/DnnMigration.UnitTests/Application/ModuleServiceTests.cs` by
+`ImportModule_UnescapesThePayloadWithoutAnAmbientRequestContext`,
+`ImportModule_WithAMarkupPayload_HandsItOnWithoutUnescapingIt`,
+`ImportModule_AcceptsALegacyDocumentWrittenWithACdataSection`,
+`ExportModule_WithEmptyOrWhitespaceContent_StillProducesADocument`,
+`ImportModule_AttributesTheWriteToTheCallerRatherThanThePortalAdministrator`,
+`ImportModule_WithAnUnattributedCaller_RecordsTheLegacySentinelRatherThanZero` and
+`ImportModule_WithUndeterminedCapabilities_RefusesInsteadOfDeferringToAQueue`.
+
 ### Content upgrade takes one version per call
 
 **Legacy behaviour.** The upgrade path read a comma-separated version attribute and
@@ -7447,6 +7527,52 @@ grids offered no sorting at all, no legacy caller can be affected.
 `backend/src/DnnMigration.Application/Services/UserService.cs`,
 `backend/src/DnnMigration.Application/Services/ModuleService.cs`,
 `backend/src/DnnMigration.Infrastructure/Repositories/PortalRepository.cs`.
+
+### Correction: the module listing could not return the page the entry above describes
+
+**What changed.** The entry immediately above states that the module listing's projected row is
+not its paged unit — "the page window is taken over modules while each module then contributes
+one row per placement, so a page of ten modules routinely returns more than ten rows". The code
+could not actually produce that page. It handed the **module** total and the **module** window
+size to the paging envelope alongside **placement** rows, and the envelope rejects arguments in
+disagreement: a grand total may not be smaller than the page it describes, and a page may not
+carry more records than the size it declares. Both guards fired and the read raised
+`ArgumentOutOfRangeException`, which the API edge publishes as a server error.
+
+**When it fired.** Whenever a paged request was answered without a page filter — `tabId` absent,
+which is the default listing of a tenant's modules — and any module in the window sat on more
+than one page. The service's own remarks reconciled the two figures by observing that a module
+has at most one placement on any one page. That is true, but only while a page is **named**; with
+no page filter a module contributes every placement it has. A module placed on two pages is
+ordinary, and a module marked to appear on all pages triggers it always.
+
+**Target behaviour.** The unpaged answer is unchanged. For a paged answer both figures are raised
+to the number of rows the page actually carries. Neither becomes less truthful by it: the module
+total was already a **lower bound** on the placement total — the trade the service documents,
+taken because the exact figure needs an unbounded read of every placement in the tenant — and the
+row count is a better lower bound drawn from the same information. The declared window widens only
+when the placement expansion overflowed it, so a page whose rows fit reports the size that was
+asked for, unchanged.
+
+**Why this is a correction and not a divergence.** The legacy listing returned an untyped
+`ArrayList` and reported no total, page index or page size at all, so there was no envelope and
+nothing to reconcile. The fault belongs entirely to code written for this migration, which is why
+it is repaired rather than annotated and left in place — the rule that a discovered **legacy**
+defect is recorded rather than quietly improved does not extend to a defect this migration
+introduced.
+
+**Operational consequence.** A default module listing with paging enabled now answers instead of
+failing. No caller sees a narrower or differently ordered page: the rows returned are the same
+rows the read always selected, and only the two count fields describing them changed, each in the
+direction that can only ever grow. No repository read was added, so the read profile is unchanged.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Services/ModuleService.cs`.
+Guarded by
+`ListModules_WhenAModuleOutnumbersItsWindow_ReconcilesTheEnvelopeInsteadOfThrowing` and
+`ListModules_WhenTheRowsFitTheWindow_ReportsTheRequestedGeometryUnchanged` in
+`backend/tests/DnnMigration.UnitTests/Application/ModuleServiceTests.cs`, the first reproducing
+the failure and the second holding the repair to widening only when it must.
 
 ### Correction: the module cache period carries no lower bound, and is no longer clamped
 
