@@ -166,6 +166,19 @@ public sealed class ApiResponse<T>
 /// contract test over the generated OpenAPI document asserts that this type appears nowhere in it, so
 /// a future revision that does make the exchange fails rather than drifts.
 /// </para>
+/// <para>
+/// <strong>No endpoint in this API returns this arity, and none can.</strong> That is recorded here
+/// because the absence is a decision rather than an omission waiting to be filled. A command in this
+/// API that produces nothing answers <c>204 No Content</c>, HTTP forbids a body on a <c>204</c>, and
+/// the acceptance criteria pin deletion to <c>204</c> for portals, modules and users. Attaching this
+/// envelope to those responses would mean demoting them to <c>200</c> so that a declared type acquires
+/// a caller - trading a stated criterion for the tidiness of an unused declaration, which is the wrong
+/// exchange in both directions. The type is kept for the reason the paragraph above gives: the two
+/// arities of one contract are read together, and a reader who finds only the generic form has to
+/// guess what a payload-free success looks like instead of finding the answer written down. A
+/// contract test over the generated OpenAPI document asserts that this type appears nowhere in it, so
+/// a future revision that does make the exchange fails rather than drifts.
+/// </para>
 /// </remarks>
 public sealed class ApiResponse
 {

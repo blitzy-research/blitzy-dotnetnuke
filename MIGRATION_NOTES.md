@@ -917,13 +917,18 @@ policy and had none.
 **Operational consequence.** A deployment that terminates TLS at the API rather
 than at a proxy must enable redirection explicitly *and* adjust the health probe.
 A deployment that serves the SPA from a different origin than the API must add
-that origin to the allowed list; nothing works cross-origin by default.
+that origin to the allowed list. The base configuration file names exactly one
+origin, the local development origin `http://localhost:4200`, and no other; the
+shipped container topology overrides even that from the compose file, and the
+policy never enables credentials, so the wildcard-plus-credentials combination is
+unreachable from configuration at all.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Api/Extensions/CorsExtensions.cs`,
 `backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs`,
-`backend/src/DnnMigration.Api/appsettings.json`,
-`backend/src/DnnMigration.Api/appsettings.Production.json`.
+`backend/src/DnnMigration.Api/appsettings.Production.json`. The base
+`appsettings.json` is strict RFC 8259 and therefore carries no inline annotation;
+its contract is recorded under *Configuration and options* instead.
 
 ### Rate limiting on credential endpoints, as the compensating control for the removed CAPTCHA
 
@@ -2610,6 +2615,150 @@ unused, an attempt to reintroduce `IOptions<T>` in this layer fails to compile
 rather than passing review unnoticed. `Validate()` is declared with
 base-class-library types alone for the same reason.
 
+### `SiteSqlServer` is renamed to `ConnectionStrings:Default`, and the legacy key is not kept for compatibility
+
+**Legacy behaviour.** The database was named twice, under one key.
+`Website/release.config:L21-L26` declares a `<connectionStrings>` entry named `SiteSqlServer`
+pointing at a local, file-attached SQL Server Express database, and `:L36` repeats the identical
+value as an `appSettings` entry commented "kept for backwards compatability - legacy modules".
+Read the two lines in place for the value itself; it is not reproduced here, because a connection
+string is the shape of thing that should be quoted by reference rather than copied into a second
+tracked file. Every provider registration then referred to the key by name -
+`connectionStringName="SiteSqlServer"` appears on both the membership provider at `:L238` and
+the data provider at `:L351`.
+
+**Target behaviour.** One key, `ConnectionStrings:Default`, read in exactly two places:
+`Infrastructure/DependencyInjection.cs:L184` through `GetConnectionString(ConnectionStringName)`
+where `ConnectionStringName` is the constant `"Default"` at `:L57`, and
+`Infrastructure/HealthChecks/DatabaseHealthCheck.cs:L90`. The base `appsettings.json` declares
+the key as an **empty string**, and `:L186` refuses to start the host when it resolves to null or
+whitespace. `SiteSqlServer` does not appear anywhere in the new configuration.
+
+**Why.** Retaining the legacy name would have created a key nothing reads. Unconsumed
+configuration is worse than absent configuration: it looks authoritative, so an operator who
+edits it changes nothing and has no way to discover that from the file. The duplicate
+`appSettings` copy existed only to serve third-party modules loaded by assembly probing, and that
+loading mechanism is not carried forward, so the second name has no remaining consumer either.
+The value is empty rather than a sample because a sample connection string in a tracked file is
+how a real one eventually gets committed - `ConnectionStrings__Default` supplies it per
+deployment, and `docker/docker-compose.yml` sets exactly that from `${DB_CONNECTION_STRING}`.
+
+### The release-versus-development `objectQualifier` divergence is answered by Fluent mapping, not by a configuration key
+
+**Legacy behaviour.** The two shipped configurations disagree about object naming.
+`Website/release.config:L354` sets `objectQualifier=""` while `Website/development.config:L352`
+sets `objectQualifier="dnn_"`; both set `databaseOwner="dbo"`. The qualifier was concatenated into
+every object name at the call site - `SqlDataProvider.vb` builds procedure names as
+`DatabaseOwner & ObjectQualifier & "<ProcName>"` - and it reached further than table names,
+appearing inside generated constraint names in the upgrade scripts.
+
+**Target behaviour.** No `ObjectQualifier` key and no `DatabaseOwner` key exist in any
+`appsettings` file. Schema binding lives in the twenty-one `IEntityTypeConfiguration<T>` classes
+under `Infrastructure/Persistence/Configurations/`, each pinning its table with
+`ToTable("<Name>", "dbo")` and each column with `HasColumnName`.
+
+**Why.** A configuration key is only honest if something reads it, and nothing in this
+application would: Entity Framework Core resolves names when the model is built, not when a
+command is composed, so a qualifier supplied through configuration would have to be threaded into
+every one of the twenty-one configurations to have any effect. Declaring the key without that
+plumbing would produce a setting that silently does nothing - precisely the failure mode the
+legacy duplicate `SiteSqlServer` entry demonstrates. The observed release value is the empty
+string, so the delivered mapping is faithful to the installation this migration targets; a
+differently-qualified installation is a change to the configuration classes, which is a visible,
+reviewable, compile-checked edit rather than a value in a file whose effect nobody can test.
+
+### Provider indirection is removed, not reproduced: fourteen `defaultProvider` declarations collapse into four bound options classes
+
+**Legacy behaviour.** `Website/release.config` declares **fourteen** independently swappable
+provider families, each with a `defaultProvider` attribute and a `<providers>` list naming
+concrete types and their on-disk `providerPath`: membership at `:L218`, HTML editor `:L258`,
+navigation control `:L299`, search index `:L325`, search data store `:L335`, data `:L345`,
+logging `:L359`, scheduling `:L374`, friendly URL `:L386`, caching `:L397`, authentication
+`:L411`, members `:L419`, roles `:L427` and profiles `:L435`. Each was resolved at run time by
+reflection over the assembly name in the registration.
+
+**Target behaviour.** No `Providers` section, no `DefaultProvider` key, and no provider-path
+setting of any kind. Configuration is four bound, self-validating options classes - `Jwt`,
+`PasswordPolicy`, `Portal` and `Caching` - plus a small number of directly-read keys
+(`Cors:AllowedOrigins`, `RateLimiting:Authentication`, `Swagger:Enabled`,
+`Https:RedirectEnabled`, `Proxy:KnownProxies`, `Proxy:KnownNetworks`). Substitution, where it is
+still wanted, is a container registration in the composition root.
+
+**Why.** Nine of the fourteen families belong to subsystems this migration excludes outright -
+HTML editing, navigation menus, search indexing and its data store, scheduling, friendly URLs,
+caching providers, and the separate authentication and profile provider stacks - so reproducing
+their configuration would describe capabilities that do not exist. The remaining families have
+first-class replacements that are chosen by referencing a package and registering a service, not
+by naming a type in a configuration file: dependency injection for substitution, `IMemoryCache`
+behind `ICacheService` for caching, Serilog for logging, and one Entity Framework Core provider
+for data. Reflection over a configured type name also defeats every compile-time check and every
+static analyser, which is the specific property that made the legacy provider model expensive to
+reason about.
+
+### The authenticated-response cacheability switch is not ported
+
+**Legacy behaviour.** `Website/Default.aspx.vb:L119-L133` read the host setting
+`AuthenticatedCacheability` on every authenticated request and mapped its stored string onto the
+`System.Web` client-cache policy - `"0"` to `NoCache`, `"1"` to `Private`, `"2"` to `Public`,
+`"3"` to `Server`, `"4"` to `ServerAndNoCache`, `"5"` to `ServerAndPrivate` - defaulting to
+`ServerAndNoCache` when the setting was blank.
+
+**Target behaviour.** No `Cacheability` key, and no configurable response-cache policy. The API
+sets no client-cache policy from configuration; `/health` is explicitly `no-store, no-cache` and
+data responses are not cached at the client.
+
+**Why.** The setting existed to tune the caching of **server-rendered HTML pages** assembled per
+request from skins, containers and controls - the single most expensive thing the legacy
+application did, and the thing this migration removes. The target serves a static, immutably
+cached bundle from the reverse proxy and returns JSON from the API, so the two halves of the
+legacy trade-off are now made in different places by different mechanisms: the proxy's own
+`expires 1y` rule for fingerprinted assets, and no caching for authenticated data. Offering an
+option numbered `"0"` to `"5"` whose values map onto a page pipeline that no longer exists would
+be a setting that could not be honoured. Any authenticated response for which caching becomes
+worthwhile can carry its own cache headers at its own endpoint, which is a decision visible at
+the endpoint rather than a global mode.
+
+### The base configuration file is strict RFC 8259, declares both secrets as empty strings, and omits two sections on purpose
+
+**Target behaviour.** `backend/src/DnnMigration.Api/appsettings.json` is strict JSON - no
+comments, no trailing commas, no byte-order mark, LF endings, two-space indentation, one trailing
+newline - and holds eleven sections: `ConnectionStrings`, `Jwt`, `PasswordPolicy`, `Cors`,
+`RateLimiting`, `Caching`, `Portal`, `Swagger`, `Https`, `Serilog` and `AllowedHosts`. Every key
+in it binds to a real consumer and every settable property of the four options classes has
+exactly one key: `Jwt` six, `PasswordPolicy` eight, `Portal` four, `Caching` one. The two
+environment overlays keep the release-versus-development twin-file convention the legacy
+`release.config` and `development.config` pair established, and every section they declare also
+exists in the base.
+
+**The two secrets are declared, and declared empty.** `ConnectionStrings:Default` and
+`Jwt:Secret` are both present as `""`. Neither is omitted, because an omitted key documents
+nothing; neither carries a sample, because a sample in a tracked file is how a real value
+eventually arrives there. Both are startup-validated, so the shipped file cannot boot a host: with
+neither supplied the process refuses to start naming `ConnectionStrings__Default`, and with the
+connection string alone it refuses naming `Jwt__Secret`. That is the intended, verified outcome -
+the legacy installation committed the 3DES key that decrypted every stored password
+(`Website/release.config:L89-L93`, and `Website/development.config` additionally hard-codes the
+validation key), and the point of declaring these two as empty is that the same mistake cannot be
+made by editing this file.
+
+**Two sections are deliberately absent.** There is no framework `Logging` section: `Program.cs`
+installs Serilog as the logging provider and reads its levels and sinks from the `Serilog`
+section, and the framework's `LoggerFilterOptions` are not consulted once that happens, so a
+`Logging:LogLevel` block would look like it controls log levels while controlling nothing. There
+is no `Proxy` section either: `Proxy:KnownProxies` and `Proxy:KnownNetworks` are read, but both
+fall back to an empty list, and the addresses of a deployment's own proxies are the definition of
+an environment-specific value, so the base file leaves them to the deployment that knows them.
+
+**Why strict JSON rather than the commented form the framework tolerates.** The .NET
+configuration provider does skip `//` comments, so a commented file works at run time; nothing
+else in the toolchain promises to. Strict RFC 8259 is what `jq`, JSON Schema validators, generic
+`check-json` hooks and any future editing tool can all read without exception, and the file's
+rationale is not lost by being here rather than inline - it is longer, better cross-referenced and
+version-controlled alongside every other migration decision. The one caveat worth stating for
+whoever validates this file next: a naive `grep '//'` will match `"http://localhost:4200"` in the
+`Cors` section, so the presence of comments must be judged with a parser rather than a substring
+search.
+
 ## Request validation, credentials and wire contracts
 
 ### Password recovery by security question is not carried forward, and neither is a server-generated password
@@ -3396,6 +3545,11 @@ never become a sign-in outage. **Operational consequence:** an installation that
 being sent to a profile-completion step at sign-in now receives the advisory on the wire;
 this application does not yet render a step for it, and the profile screens remain reachable
 and enforce their own required-field rules.
+path and would give the completeness rule a second implementation. The
+`MustUpdateProfile` flag is therefore carried by the response contract and left unset
+by the sign-in service. **Operational consequence:** an installation that relied on
+being sent to a profile-completion step at sign-in is not sent there; the profile
+screens remain reachable and enforce their own required-field rules.
 
 **Annotated in code at.**
 `backend/src/DnnMigration.Application/Services/AuthService.cs`,
@@ -3445,6 +3599,9 @@ as a prohibition.
 **What is delivered now.** `Application/Abstractions/IAuditSink.cs` declares the audit
 contract in terms of the base class library only, so it names nothing the layer cannot
 reference. `Infrastructure/Services/LoggingAuditSink.cs` implements it over `ILogger`, where
+**What is delivered now.** `Application/Abstractions/IAuditTrail.cs` declares the audit
+contract in terms of the base class library only, so it names nothing the layer cannot
+reference. `Infrastructure/Services/AuditTrail.cs` implements it over `ILogger`, where
 logging is already available transitively, and is registered as a singleton in
 `Infrastructure/DependencyInjection.cs`. `AuthService` takes the contract and records the
 outcome of **every** sign-in at the one point after which the outcome can no longer
@@ -3457,6 +3614,7 @@ delivered tree carries exactly one, `IAuditSink`; the other was removed rather t
 beside it, because two audit streams that can disagree about the same operation are worse
 than either alone. The reasoning below is unaffected — it was never about the type's name —
 and the safety property is now stated in the shape the delivered contract actually has.
+translated — under stable event `1001 SignInOutcome`.
 
 **The per-gate loss described below is therefore recovered.** The specific gate that
 closed a sign-in *is* now recorded, because the emitted event carries the computed status
@@ -3479,6 +3637,11 @@ omitted from the call sites; there is no member that could carry one, so no futu
 can introduce one. The member returns `void` rather than `Task`, so an audit entry can never
 fail, delay or cancel the operation it describes, and the implementation is documented never
 to throw — including for a null event, which is discarded rather than escalated.
+**The closed method set is the safety property, not a convenience.** The contract exposes
+exactly three members and each takes only the fields its event needs. A credential is not
+merely omitted from the call sites; it is *unexpressible* through the contract, so no
+future call site can introduce one. The members return `void` rather than `Task`, so an
+audit entry can never fail, delay or cancel the operation it describes.
 
 **The network-address note below still stands unchanged.** The address remains absent from
 the layer, and remains recorded by the Api request log.
@@ -3487,6 +3650,8 @@ the layer, and remains recorded by the Api request log.
 `backend/src/DnnMigration.Application/Abstractions/IAuditSink.cs`,
 `backend/src/DnnMigration.Application/Abstractions/AuditEvent.cs`,
 `backend/src/DnnMigration.Infrastructure/Services/LoggingAuditSink.cs`,
+`backend/src/DnnMigration.Application/Abstractions/IAuditTrail.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/AuditTrail.cs`,
 `backend/src/DnnMigration.Application/Services/AuthService.cs`.
 
 ### Superseded gap report: the sign-in audit record cannot be emitted from the application layer
@@ -6853,6 +7018,7 @@ legacy code already declined to record the credential.
 
 **Target behaviour, as corrected under code review.** The record becomes a structured
 log event, and it **is** emitted from this service — through `IAuditSink`, an
+log event, and it **is** emitted from this service — through `IAuditTrail`, an
 abstraction the application layer declares itself in terms of the base class library
 only. The earlier reasoning, preserved below because it remains correct on its own
 terms, established that `ILogger<T>` cannot be named here: `DnnMigration.Application`
@@ -6863,6 +7029,7 @@ project fails to compile with `CS0234` and `CS0246`; that was **verified by comp
 it**, not assumed, exactly as the project file already records for an earlier attempt
 to import the options package. What did not follow from any of that is silence. The
 layer names its own contract and `Infrastructure/Services/LoggingAuditSink.cs` implements it
+layer names its own contract and `Infrastructure/Services/AuditTrail.cs` implements it
 over `ILogger`, which is the same ruling the manifest records for the options package —
 the consumer changes, not the manifest.
 
@@ -7339,6 +7506,15 @@ deliberately, and when they do the only statement issued is the guarded history 
 **Annotated in code at.**
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.cs`,
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260730120000_InitialCreate.Designer.cs`,
+**empty**, and the migration identifier is preserved exactly, so an existing
+`__EFMigrationsHistory` row stays valid and no schema statement of any kind can reach a
+database from this work. The migration exists to seed migration history as a baseline, never
+to create or alter a table — the schema depends on externally installed `aspnet_*` membership
+objects that the eighty-eight scripts only ever `ALTER`, so a generated create-migration could
+not reproduce the terminal schema even in principle.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Persistence/Migrations/20260802072256_InitialCreate.Designer.cs`,
 `backend/src/DnnMigration.Infrastructure/Persistence/Migrations/DnnDbContextModelSnapshot.cs`.
 
 ### Sign-in proves the credential before it approves anything
@@ -7444,6 +7620,17 @@ this one case to a **different** step rather than to the credential interstitial
 exists here. Keeping it in stored session state would put a signal there that no screen can act
 on. An extra property on the wire is ignored, so nothing is lost, and adding it is a one-line
 change on the day a profile-completion step is built. Profile completeness also remains fully
+**Target behaviour.** The sign-in reply carried a `mustUpdateProfile` member that **nothing
+produced** — no code path ever set it, so every reply reported the same value regardless of the
+account's profile. The member is **removed** rather than left in place, and the corresponding
+members are removed from the client-side session model and its derivation as well, so the two
+ends of the contract still agree.
+
+**Why removal rather than implementation.** The gate's authority is a Web Forms control
+setting, and the control model is out of scope; there is no configuration in this migration to
+read it from, and inventing one would be inventing policy. A field that always reports the same
+value is worse than an absent field, because a client cannot tell the difference between "your
+profile is complete" and "nobody implemented this". Profile completeness remains fully
 observable through the profile endpoints.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Dtos/Auth/LoginResponse.cs`,
@@ -8590,6 +8777,15 @@ not have. The bound is specific to that member and must not be generalised: `dbo
 `IDENTITY (-1, 1)` and `dbo.Roles.RoleID` is `IDENTITY (0, 1)`, so "at or below zero means absent" is wrong
 for a sibling identifier on the same route. Whether the nominated user exists remains the service's
 question.
+**Deliberate asymmetries, recorded so they are not mistaken for oversights.** The page term dates ARE
+compared to one another and the module term dates are NOT. The module screen's validators on both boxes
+were format checks alone, so an ordering rule there would be a new restriction on callers; a page's window
+decides whether the page is reachable at all, so a window that never opens hides it permanently. The role
+membership window is likewise not ordered, for the module's reason: a degenerate window is storable, the
+legacy screen declared no ordering validator, and the window is evaluated in SQL on every read. The user
+reference on a membership assignment is not bounded either, even though the identity column is seeded at
+one - that is schema knowledge rather than a rule the legacy screen applied, and existence is a question a
+stateless validator cannot answer.
 
 **The date arithmetic clamps instead of failing, and the weekly case was the worst of the four.** The
 offsets that derive a membership expiry called the framework's date arithmetic directly with a stored
