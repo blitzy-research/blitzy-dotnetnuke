@@ -12,7 +12,41 @@
 //
 // MIGRATION: the two late-bound activation sites at ModuleController.vb:L231 (content export) and
 // L431 (content import) are replaced by IModuleBusinessControllerFactory. Nothing in this file loads
-// an assembly, resolves a type from a string or constructs a type dynamically.
+// an assembly, resolves a type from a string or constructs a type dynamically. These are ORDINARY
+// .NET REFLECTION sites, and the three further sites in EventMessageProcessor.vb (L32, L52, L77) are
+// too: the exclusion covering VB6 and ActiveX activation is vacuous against this codebase, so nothing
+// here should be read as removing that kind of interop, because there was never any to remove.
+//
+// MIGRATION: the two - not one - ambient System.Web calls this file replaces are named here together,
+// because they are one pipeline seen from its two ends and were measured as the only System.Web
+// dependencies in the 1,456-line source (`grep -n HttpContext` returns exactly L244 and L428):
+//
+//     L244  Content    = HttpContext.Current.Server.HtmlEncode(Content)     ' EXPORT
+//     L428  strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)  ' IMPORT
+//
+// Both become System.Net.WebUtility calls at the two sites below, so this layer takes no ASP.NET
+// dependency while the escaping behaviour a stored document was produced under is preserved exactly.
+// WebUtility is the framework's own successor to HttpServerUtility for this pair and is reachable from
+// a plain class library, which HttpUtility historically was not.
+//
+// MIGRATION: reported and not corrected - the migration plan describes ModuleInfo.vb as 58 properties,
+// whereas the measured count of `Public Property` declarations in that 936-line class is 54. The
+// measurement stands; nothing in this file depends on the figure, because the flattened class is
+// consumed here only through the four entities it was split into.
+//
+// MIGRATION: two collaborators the plan names are deliberately NOT injected, and the reasons are
+// recorded so their absence is not read as an oversight.
+//   - ILogger<ModuleService> and IOptions<T> CANNOT be named in this project. Its manifest declares
+//     exactly two packages, both FluentValidation, and neither Microsoft.Extensions.Logging.Abstractions
+//     nor Microsoft.Extensions.Options is in the reference pack a class library targets or is supplied
+//     transitively, so either generic fails to compile with CS0234 and CS0246. The dependency is
+//     therefore inverted rather than imported: IAuditSink is declared in this layer and implemented in
+//     Infrastructure over Serilog, which is exactly where the structured-logging obligation is assigned,
+//     and the bound CachingOptions instance is taken directly instead of a wrapper around it.
+//   - IClock is not injected because this service never reads a clock. Every date it handles is
+//     supplied by the caller on a request DTO and is only ever compared against another supplied date,
+//     and audit records are stamped by the sink. Injecting a clock to leave it unused would be a
+//     dependency the constructor could not justify.
 //
 // MIGRATION: the legacy caching of a module's settings under the keys "GetModuleSettings<id>" and
 // "GetTabModuleSettings<id>" (ModuleController.vb:L1241 and L1338, both expiring after
@@ -23,6 +57,7 @@
 // to a scoped unit of work or reading the rows twice. The definition catalogue, which is
 // installation-time reference data, is cached instead.
 using System.Globalization;
+using System.Net;
 using System.Xml;
 using System.Xml.Linq;
 using DnnMigration.Application.Abstractions;
@@ -116,6 +151,30 @@ public sealed class ModuleService : IModuleService
     /// Reported when a submitted content document cannot be read.
     /// </summary>
     private const string ContentInvalidCode = "module.content_invalid";
+
+    /// <summary>
+    /// Reported when a module hands over content that cannot be carried by the export document.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="ContentInvalidCode"/> on purpose, and the distinction is about WHO can put
+    /// it right. A document the CALLER submitted and that cannot be interpreted is a request to correct, so
+    /// it is reported as invalid content. Content the MODULE produced and that XML cannot represent - a
+    /// control character, for instance, which no escaping in the specification can encode - is a fault in
+    /// the module, and the caller can do nothing about it. The reason token <c>export_failed</c> is
+    /// classified as a server fault by the API's failure-code table, so this surfaces as a 500 rather than
+    /// telling the caller to fix a request that was correct.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy export wrapped its whole document assembly in <c>Try</c> with a <c>Catch</c>
+    /// body of <c>'ignore errors</c> (ModuleController.vb L250-L252), so a module whose content could not
+    /// be written produced a portal template with the content element silently missing and reported
+    /// success. That swallow is a defect and is not reproduced: the failure is surfaced with this code. The
+    /// divergence is recorded rather than absorbed, per the rule that a discovered defect is annotated and
+    /// the swallow is resolved in favour of surfacing.
+    /// </para>
+    /// </remarks>
+    private const string ExportFailedCode = "module.export_failed";
 
     /// <summary>
     /// Carried on an otherwise successful update whose blast radius exceeded the addressed module.
@@ -287,6 +346,33 @@ public sealed class ModuleService : IModuleService
     /// </remarks>
     private const int UnattributedUserId = -1;
 
+    /// <summary>
+    /// Stable audit event name for every module change this service records.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy module audit trail used one event type,
+    /// <c>EventLogType.MODULE_UPDATED</c>, written through
+    /// <c>EventLogController.AddLog</c> at <c>EventMessageProcessor.vb</c> L69 - the only
+    /// <c>AddLog(</c> call site anywhere in the Modules tree. The string is reproduced verbatim so an
+    /// operator reading the new trail recognises the events from the old one, and so a log query written
+    /// against the legacy event type keeps working.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is a local constant rather than a member of <see cref="AuditEventNames"/>, and
+    /// that is a scope boundary rather than a preference. That type is a sibling this file may not
+    /// extend; it declares names for the user, portal, page, role and session domains and none for
+    /// modules. The gap is recorded here instead of being closed by editing a file outside this unit of
+    /// work, and the value is identical to what the shared constant would hold.
+    /// </para>
+    /// </remarks>
+    private const string ModuleUpdatedEventName = "MODULE_UPDATED";
+
+    /// <summary>
+    /// Resource type recorded on every module audit event, naming what the identifier identifies.
+    /// </summary>
+    private const string ModuleResourceType = "Module";
+
     private readonly IModuleRepository _modules;
     private readonly IModuleDefinitionRepository _definitions;
     private readonly ITabRepository _tabs;
@@ -296,6 +382,7 @@ public sealed class ModuleService : IModuleService
     private readonly ICurrentUser _currentUser;
     private readonly IPermissionService _permissions;
     private readonly IModuleBusinessControllerFactory _businessControllers;
+    private readonly IAuditSink _audit;
     private readonly CachingOptions _caching;
 
     /// <summary>
@@ -317,7 +404,16 @@ public sealed class ModuleService : IModuleService
     /// policy can reach them and the check has to happen here, after binding.
     /// </param>
     /// <param name="businessControllers">Resolution of a module's own portable-content contract.</param>
-    /// <param name="caching">Bound caching configuration supplying the performance multiplier.</param>
+    /// <param name="audit">
+    /// The audit trail. Written to for the changes whose effect reaches beyond the addressed module and
+    /// for both directions of content movement, which is where the legacy application kept a record and
+    /// where this contract promises one.
+    /// </param>
+    /// <param name="caching">
+    /// Bound caching configuration supplying the performance multiplier. Taken as the bound instance
+    /// rather than through an options wrapper because this project's package surface does not include
+    /// one, as recorded at the head of this file.
+    /// </param>
     public ModuleService(
         IModuleRepository modules,
         IModuleDefinitionRepository definitions,
@@ -328,6 +424,7 @@ public sealed class ModuleService : IModuleService
         ICurrentUser currentUser,
         IPermissionService permissions,
         IModuleBusinessControllerFactory businessControllers,
+        IAuditSink audit,
         CachingOptions caching)
     {
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
@@ -339,6 +436,7 @@ public sealed class ModuleService : IModuleService
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _businessControllers = businessControllers ?? throw new ArgumentNullException(nameof(businessControllers));
+        _audit = audit ?? throw new ArgumentNullException(nameof(audit));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
     }
 
@@ -857,6 +955,32 @@ public sealed class ModuleService : IModuleService
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         InvalidatePlacements(affectedTabIds);
 
+        // The record is written only when the change reached beyond the addressed module, which is the
+        // condition this contract documents: naming the module as the portal default writes portal-level
+        // keys, and propagating appearance rewrites placements the caller never named. An ordinary edit of
+        // one module is not recorded, because a trail that logs every field edit stops being a record of
+        // consequential change and becomes a change log - and the legacy application logged neither.
+        //
+        // Emitted after the commit, so nothing here can describe a change that was rolled back. The facts
+        // are the blast radius and the identifiers needed to recognise what moved; no free-text the caller
+        // supplied - the title, header and footer - is carried.
+        if (effects.Count > 0)
+        {
+            RecordModuleAudit(
+                portalId,
+                module.ModuleId,
+                new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["Operation"] = "Update",
+                    ["TabModuleId"] = placement.TabModuleId.ToString(CultureInfo.InvariantCulture),
+                    ["TabId"] = placement.TabId.ToString(CultureInfo.InvariantCulture),
+                    ["SetAsDefaultSettings"] = request.SetAsDefaultSettings.ToString(),
+                    ["ApplyToAllModules"] = request.ApplyToAllModules.ToString(),
+                    ["AffectedTabCount"] = affectedTabIds.Count.ToString(CultureInfo.InvariantCulture),
+                    ["Effects"] = string.Join("; ", effects),
+                });
+        }
+
         IReadOnlyDictionary<int, string> friendlyNames =
             await ReadDefinitionNamesAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -1055,23 +1179,29 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
         }
 
-        if (TryNormaliseSettings(
-                moduleSettings,
-                ModuleSettingValueMaximumLength,
-                "module",
-                out Dictionary<string, string> desiredModuleSettings) is ResultReason moduleSettingInvalid)
+        // MIGRATION: the two stores are normalised and length-checked SEPARATELY, against their own column
+        // width and under their own scope word, because they are separate tables - dbo.ModuleSettings keyed
+        // (ModuleID, SettingName) and dbo.TabModuleSettings keyed (TabModuleID, SettingName). The legacy
+        // readers at ModuleController.vb L1237 and L1336 each remarked that the other store was excluded,
+        // and that separation is preserved here rather than collapsed into one map.
+        NormalisedSettings desiredModule =
+            NormaliseSettings(moduleSettings, ModuleSettingValueMaximumLength, "module");
+
+        if (desiredModule.Reason is ResultReason moduleSettingInvalid)
         {
             return Result.Failure(moduleSettingInvalid);
         }
 
-        if (TryNormaliseSettings(
-                tabModuleSettings,
-                PlacementSettingValueMaximumLength,
-                "placement",
-                out Dictionary<string, string> desiredPlacementSettings) is ResultReason placementSettingInvalid)
+        NormalisedSettings desiredPlacement =
+            NormaliseSettings(tabModuleSettings, PlacementSettingValueMaximumLength, "placement");
+
+        if (desiredPlacement.Reason is ResultReason placementSettingInvalid)
         {
             return Result.Failure(placementSettingInvalid);
         }
+
+        Dictionary<string, string> desiredModuleSettings = desiredModule.Values;
+        Dictionary<string, string> desiredPlacementSettings = desiredPlacement.Values;
 
         TabModule? placement = null;
         if (tabModuleId is int addressed)
@@ -1327,11 +1457,24 @@ public sealed class ModuleService : IModuleService
     /// and the requested file name is validated so the caller can label what it receives.
     /// </para>
     /// <para>
-    /// MIGRATION: the payload is escaped by an XML writer rather than by the legacy pair of
-    /// <c>Server.HtmlEncode</c> followed by a CDATA wrap. The business-controller contract states that
-    /// the payload crosses it as an opaque string and that escaping is the caller's concern, and this
-    /// service is that caller. An empty payload still yields a document, because "asked and given
-    /// nothing" is a real answer that the caller is entitled to see.
+    /// MIGRATION: the payload is HTML-encoded before it is written, which is the first half of the
+    /// legacy escaping pipeline and is preserved deliberately. <c>ModuleController.vb</c> L244 read
+    /// <c>Content = HttpContext.Current.Server.HtmlEncode(Content)</c> and the following line wrapped
+    /// the encoded text in a CDATA section; the import path at L428 unwrapped the section and applied
+    /// the matching <c>Server.HtmlDecode</c>. Dropping the encode would still round-trip documents this
+    /// service produced, but it would silently corrupt a document produced by the legacy application -
+    /// its payload would come back with one layer of HTML escaping still on it - and interoperating with
+    /// those documents is the entire purpose of a migrated export format. The ambient
+    /// <c>HttpContext.Current.Server</c> accessor is replaced by <see cref="WebUtility"/>, so the
+    /// escaping is identical while this layer takes no ASP.NET dependency. The CDATA wrap itself is not
+    /// reproduced: an XML writer escapes the element's text content correctly on its own, and the
+    /// reader below accepts either form.
+    /// </para>
+    /// <para>
+    /// An empty payload still yields a document, because "asked and given nothing" is a real answer that
+    /// the caller is entitled to see. This is a documented divergence from the legacy guard at L233,
+    /// which wrote a content element only for non-empty content and therefore left the caller unable to
+    /// distinguish "no content" from "never asked".
     /// </para>
     /// </remarks>
     public async Task<Result<string>> ExportModuleAsync(
@@ -1387,13 +1530,57 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"Module {moduleId} could not be asked for content: {advisory}"));
         }
 
+        // MIGRATION: ModuleController.vb:L244 - `Content = HttpContext.Current.Server.HtmlEncode(Content)`.
+        // The ambient HttpContext accessor is replaced by System.Net.WebUtility, which performs the same
+        // escaping and is reachable from a class library that references no web framework. The encode is
+        // kept rather than dropped so that a document this service writes is escaped the way the legacy
+        // application escaped one, which is what lets ImportModuleAsync accept both interchangeably.
+        string encodedPayload = WebUtility.HtmlEncode(exported.Value);
+
         var document = new XElement(
             ContentElementName,
             new XAttribute(ContentTypeAttributeName, package.ModuleName),
             new XAttribute(ContentVersionAttributeName, package.Version ?? string.Empty),
-            exported.Value);
+            encodedPayload);
 
-        return Result<string>.Success(document.ToString(SaveOptions.DisableFormatting));
+        // Serialising is the step that can still refuse the payload, so it is guarded rather than assumed
+        // to succeed. HTML encoding escapes markup but the XML specification has no encoding at all for a
+        // C0 control character, so a module that returns one produces content this format cannot carry. The
+        // writer signals that by raising, and an unhandled raise here would surface as an unexplained
+        // server error rather than as the documented outcome this contract owes the caller.
+        //
+        // Only the two exception types the writer raises for unrepresentable content are caught. Anything
+        // else is left to propagate: a broad catch would convert a genuine defect into a tidy failure code
+        // and hide it.
+        string serialised;
+        try
+        {
+            serialised = document.ToString(SaveOptions.DisableFormatting);
+        }
+        catch (Exception exception) when (exception is ArgumentException or XmlException)
+        {
+            // The module's own text is deliberately NOT quoted in the message. It is module content and may
+            // carry the portal's user data, and the message is published verbatim as the problem detail.
+            return Result<string>.Failure(
+                ExportFailedCode,
+                FormattableString.Invariant(
+                    $"Module {moduleId} returned content that cannot be represented in an export document."));
+        }
+
+        // The trail records that content left the module, and the SIZE of what left rather than any part
+        // of it: an export payload is module content, which may be arbitrarily large and may carry data
+        // belonging to the portal's users.
+        RecordModuleAudit(
+            portalId,
+            module.ModuleId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Operation"] = "Export",
+                ["BusinessControllerRegistered"] = bool.TrueString,
+                ["PayloadLength"] = exported.Value.Length.ToString(CultureInfo.InvariantCulture),
+            });
+
+        return Result<string>.Success(serialised);
     }
 
     /// <inheritdoc />
@@ -1408,6 +1595,20 @@ public sealed class ModuleService : IModuleService
     /// content was produced by, falling back to the installed version when the document omits it, and
     /// the element's content is the payload. A payload that is itself markup is handed on as markup; a
     /// payload that is text is unescaped once, which round-trips an export exactly.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the extracted payload is HTML-decoded, which is the second half of the legacy escaping
+    /// pipeline. <c>ModuleController.vb</c> L428 read
+    /// <c>strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)</c>, and the line before it
+    /// stripped the CDATA section the export had wrapped the encoded text in - literally
+    /// <c>strcontent.Substring(9, strcontent.Length - 12)</c>, the 9 characters of the opening delimiter
+    /// and the 3 of the closing one. The ambient accessor is replaced by <see cref="WebUtility"/> so this
+    /// layer takes no ASP.NET dependency, and the fixed-offset substring is replaced by reading the
+    /// element's value: an XML reader resolves a CDATA section to its text automatically, so a legacy
+    /// document and one written by this service both arrive here as the same encoded string and are
+    /// decoded identically. The fixed offsets were also a latent defect - a document whose content
+    /// element was not exactly a CDATA section had 9 characters of real payload removed - and replacing
+    /// them removes that failure mode rather than reproducing it.
     /// </para>
     /// <para>
     /// MIGRATION: the legacy path swallowed every exception the module's own import code raised and
@@ -1467,6 +1668,25 @@ public sealed class ModuleService : IModuleService
             return Result.Failure(ContentInvalidCode, "The submitted document is empty.");
         }
 
+        // MIGRATION: THE DEFERRED-IMPORT EVENT-QUEUE BRANCH AT ModuleController.vb:L422 IS OMITTED, and what
+        // replaces it is the refusal below. The legacy code tested
+        // `If objModule.SupportedFeatures = Null.NullInteger` - the integer sentinel -1, meaning "this
+        // module's capabilities have not been determined yet because it was installed in this very request"
+        // - and, when true, called CreateEventQueueMessage to park the payload on a queue for replay after
+        // an application restart. That queue subsystem is excluded from this migration wholesale, so there
+        // is nowhere to park anything.
+        //
+        // Nothing is lost, because the condition the branch existed to wait for cannot arise here. The
+        // legacy had to defer only because it discovered a module's capabilities by late-binding its
+        // controller class at run time, which was impossible mid-install; this service resolves behaviour
+        // from a closed, dependency-injected set that is fixed at start-up, so a capability is either
+        // registered or it is not and waiting changes nothing.
+        //
+        // The sentinel is nonetheless handled rather than ignored: DesktopModule.IsPortable guards
+        // `SupportedFeatures > -1`, so an undetermined capability field reports NOT portable and this
+        // request is refused with a reason the caller can act on - retry once the package is fully
+        // installed - instead of succeeding silently having parked the document somewhere the caller
+        // cannot observe. That is the documented divergence: a clear failure in place of a deferral.
         DesktopModule? package = await ReadPackageAsync(module, cancellationToken).ConfigureAwait(false);
         if (package is null || string.IsNullOrWhiteSpace(package.BusinessControllerClass) || !package.IsPortable)
         {
@@ -1478,7 +1698,12 @@ public sealed class ModuleService : IModuleService
         XDocument document;
         try
         {
-            document = XDocument.Parse(request.Content);
+            // PreserveWhitespace is required, not cosmetic. Without it the reader discards a text node that
+            // is entirely whitespace as insignificant, so a payload of nothing but spaces or tabs arrived as
+            // the empty string and the module was handed content the caller had not sent. Measured, not
+            // theorised: a three-space payload round-tripped to "" until this option was supplied. Content
+            // whose significance the caller decides must not be filtered by an XML reader's default.
+            document = XDocument.Parse(request.Content, LoadOptions.PreserveWhitespace);
         }
         catch (XmlException exception)
         {
@@ -1495,9 +1720,28 @@ public sealed class ModuleService : IModuleService
                 FormattableString.Invariant($"The submitted document must have a <{ContentElementName}> root element."));
         }
 
+        // A payload that is itself markup is handed on as markup and is NOT decoded: it was never encoded,
+        // so decoding it would corrupt any entity reference it legitimately contains. Only the text form -
+        // which is what both this service and the legacy exporter write - carries the encoding to undo.
+        //
+        // MIGRATION: ModuleController.vb:L428 - `strcontent = HttpContext.Current.Server.HtmlDecode(strcontent)`,
+        // preceded by the fixed-offset CDATA strip at L414. WebUtility.HtmlDecode replaces the ambient
+        // HttpContext accessor, and XElement.Value replaces the substring arithmetic because an XML reader
+        // already resolves a CDATA section to its text. This is what makes a legacy-produced export file
+        // importable unchanged.
+        //
+        // MIGRATION: A CARRIAGE RETURN IN THE PAYLOAD BECOMES A LINE FEED, and that is PRESERVED legacy
+        // behaviour rather than a new loss. The XML specification requires a reader to normalise every
+        // line ending to a single line feed, and it applies that inside a CDATA section too, so the legacy
+        // path lost the carriage return at exactly the same point. Verified by running both forms rather
+        // than reasoned about: a payload of "a\r\nb" returns as "a\nb" through the CDATA shape the legacy
+        // exporter wrote and through the shape this service writes, identically. Preserving it would need
+        // the return escaped as a character reference, which would make documents this service writes
+        // unreadable by the legacy importer - so the behaviour is annotated and left alone, per the rule
+        // that a discovered legacy defect is recorded rather than quietly improved.
         string payload = root.HasElements
             ? string.Concat(root.Nodes().Select(node => node.ToString(SaveOptions.DisableFormatting)))
-            : root.Value;
+            : WebUtility.HtmlDecode(root.Value);
 
         string? version = root.Attribute(ContentVersionAttributeName)?.Value;
         if (string.IsNullOrWhiteSpace(version))
@@ -1527,6 +1771,23 @@ public sealed class ModuleService : IModuleService
         {
             _cache.InvalidateModules(placement.TabId);
         }
+
+        // The provenance this contract promises to record: which module received content, where the caller
+        // said it came from, which version the document declared, and how much arrived. The PAYLOAD IS NOT
+        // RECORDED - only its length - because it is module content and may carry the portal's user data.
+        // Emitted after the commit, so a failed import leaves no record claiming success.
+        RecordModuleAudit(
+            portalId,
+            module.ModuleId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Operation"] = "Import",
+                ["Version"] = version,
+                ["SourceFolder"] = request.Folder,
+                ["SourceFileName"] = request.FileName,
+                ["PayloadLength"] = payload.Length.ToString(CultureInfo.InvariantCulture),
+                ["PlacementCount"] = placements.Count.ToString(CultureInfo.InvariantCulture),
+            });
 
         return imported.Reason is ResultReason advisory ? Result.Success(advisory) : Result.Success();
     }
@@ -1694,54 +1955,88 @@ public sealed class ModuleService : IModuleService
             : null;
 
     /// <summary>
+    /// Outcome of normalising one submitted settings store: either the reason it is unusable, or the
+    /// map to write.
+    /// </summary>
+    /// <param name="Reason">
+    /// The reason the submission cannot be stored, or <see langword="null"/> when it can.
+    /// </param>
+    /// <param name="Values">
+    /// The case-insensitive map to write. Empty whenever <paramref name="Reason"/> is present, because a
+    /// refused submission contributes nothing.
+    /// </param>
+    /// <remarks>
+    /// MIGRATION: this pair exists so that the normalising helper reports its outcome through its RETURN
+    /// VALUE rather than through an argument it writes back. AAP 0.7.4 states that no out or by-reference
+    /// parameter appears in the target, and the rule is honoured here rather than being treated as
+    /// applying only to the public surface: an argument that is really a second return value is the exact
+    /// idiom the migration set out to remove, and a private member is not a licence to keep it.
+    /// </remarks>
+    private readonly record struct NormalisedSettings(
+        ResultReason? Reason,
+        Dictionary<string, string> Values);
+
+    /// <summary>
     /// Normalises a submitted settings map, rejecting anything the columns cannot hold.
     /// </summary>
     /// <param name="submitted">The desired state of one settings store.</param>
     /// <param name="valueMaximumLength">Maximum storable value length for that store.</param>
     /// <param name="scope">Word naming the store, used in the reported message.</param>
-    /// <param name="normalised">The case-insensitive map to write, when the submission is usable.</param>
-    /// <returns>The reason the submission is unusable, or <see langword="null"/> when it is usable.</returns>
-    private static ResultReason? TryNormaliseSettings(
+    /// <returns>
+    /// The map to write, or the reason the submission is unusable. A refused submission yields an empty
+    /// map, so a caller that ignores the reason cannot write a partially validated set.
+    /// </returns>
+    private static NormalisedSettings NormaliseSettings(
         IReadOnlyDictionary<string, string> submitted,
         int valueMaximumLength,
-        string scope,
-        out Dictionary<string, string> normalised)
+        string scope)
     {
-        normalised = new Dictionary<string, string>(submitted.Count, StringComparer.OrdinalIgnoreCase);
+        // Names are compared without regard to case, matching the legacy Hashtable's behaviour and the
+        // case-insensitive collation the settings tables use, so two submitted keys differing only in case
+        // resolve to the one stored row rather than racing to overwrite each other.
+        var normalised = new Dictionary<string, string>(submitted.Count, StringComparer.OrdinalIgnoreCase);
+        var refused = new Dictionary<string, string>(0, StringComparer.OrdinalIgnoreCase);
 
         foreach (KeyValuePair<string, string> pair in submitted)
         {
             if (string.IsNullOrWhiteSpace(pair.Key))
             {
-                normalised.Clear();
-                return new ResultReason(
-                    SettingInvalidCode,
-                    FormattableString.Invariant($"A {scope} setting name must not be blank."));
+                return new NormalisedSettings(
+                    new ResultReason(
+                        SettingInvalidCode,
+                        FormattableString.Invariant($"A {scope} setting name must not be blank.")),
+                    refused);
             }
 
             if (pair.Key.Length > SettingNameMaximumLength)
             {
-                normalised.Clear();
-                return new ResultReason(
-                    SettingInvalidCode,
-                    FormattableString.Invariant(
-                        $"The {scope} setting name \"{pair.Key}\" exceeds {SettingNameMaximumLength} characters."));
+                return new NormalisedSettings(
+                    new ResultReason(
+                        SettingInvalidCode,
+                        FormattableString.Invariant(
+                            $"The {scope} setting name \"{pair.Key}\" exceeds {SettingNameMaximumLength} characters.")),
+                    refused);
             }
 
+            // MIGRATION: a null value becomes the empty string rather than being rejected or stored as null.
+            // Null.vb defines NullString as "" rather than as a null reference, and both legacy settings
+            // readers - ModuleController.vb L1237 and L1336 - substituted "" for a DBNull column, so the
+            // empty string is the legacy representation of an absent setting value and is preserved as such.
             string value = pair.Value ?? string.Empty;
             if (value.Length > valueMaximumLength)
             {
-                normalised.Clear();
-                return new ResultReason(
-                    SettingInvalidCode,
-                    FormattableString.Invariant(
-                        $"The value of the {scope} setting \"{pair.Key}\" exceeds {valueMaximumLength} characters."));
+                return new NormalisedSettings(
+                    new ResultReason(
+                        SettingInvalidCode,
+                        FormattableString.Invariant(
+                            $"The value of the {scope} setting \"{pair.Key}\" exceeds {valueMaximumLength} characters.")),
+                    refused);
             }
 
             normalised[pair.Key] = value;
         }
 
-        return null;
+        return new NormalisedSettings(null, normalised);
     }
 
     /// <summary>
@@ -2301,5 +2596,58 @@ public sealed class ModuleService : IModuleService
         {
             _cache.InvalidateModules(tabId);
         }
+    }
+
+    /// <summary>
+    /// Records one module change on the audit trail.
+    /// </summary>
+    /// <param name="portalId">The tenant the module belongs to.</param>
+    /// <param name="moduleId">The module the record is about.</param>
+    /// <param name="facts">
+    /// The facts describing what happened. Callers pass identifiers, counts and sizes only.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy trail was written by <c>EventLogController.AddLog</c> against
+    /// <c>EventLogType.MODULE_UPDATED</c> - the single <c>AddLog(</c> site in the Modules tree, at
+    /// <c>EventMessageProcessor.vb</c> L69, which recorded the business controller class, the version and
+    /// the upgrade results as named properties. The event-log storage provider is out of scope, so the
+    /// record is emitted through <see cref="IAuditSink"/>, whose Infrastructure implementation writes it
+    /// as a structured Serilog event. The event name is preserved verbatim, so the trail remains
+    /// queryable by the identifier an operator already knows.
+    /// </para>
+    /// <para>
+    /// <b>WHAT IS NEVER RECORDED.</b> No caller passes content. An export or import payload is module
+    /// content: it may be arbitrarily large and it may carry data belonging to the portal's users, so the
+    /// trail carries its LENGTH and never any part of it. That is the one rule this helper exists to make
+    /// unmissable - a record naming a payload would move user data into the log store, where it is
+    /// neither access-controlled as module content nor removable with it. Credentials, hashes, tokens and
+    /// connection strings never reach this service at all, so there is nothing here that could leak one.
+    /// </para>
+    /// <para>
+    /// <b>CALLED ONLY AFTER THE COMMIT.</b> A record written before the commit could describe a change
+    /// that was then rolled back, which is worse than no record: it is a trail that disagrees with the
+    /// database. Every call site below sits after its unit of work has been saved.
+    /// </para>
+    /// <para>
+    /// The actor is carried only when the caller is authenticated. An unauthenticated caller reaching a
+    /// write is already refused by the permission checks above, so a null actor here means a genuinely
+    /// anonymous path rather than a missing lookup, and recording it as absent is more honest than
+    /// recording a placeholder identifier.
+    /// </para>
+    /// </remarks>
+    private void RecordModuleAudit(int portalId, int moduleId, IReadOnlyDictionary<string, string?> facts)
+    {
+        AuditEvent record = new(ModuleUpdatedEventName)
+        {
+            PortalId = portalId,
+            ActorUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : null,
+            ActorUserName = _currentUser.IsAuthenticated ? _currentUser.UserName : null,
+            ResourceType = ModuleResourceType,
+            ResourceId = moduleId.ToString(CultureInfo.InvariantCulture),
+            Properties = facts,
+        };
+
+        _audit.Record(record);
     }
 }

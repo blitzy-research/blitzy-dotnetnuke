@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
@@ -105,6 +106,12 @@ public class ModuleServiceTests
     private const string WideEffectCode = "module.update.wide_effect";
 
     /// <summary>
+    /// The stable audit event name every module record carries, reproducing the legacy
+    /// <c>EventLogType.MODULE_UPDATED</c> written at <c>EventMessageProcessor.vb</c> L69.
+    /// </summary>
+    private const string ModuleUpdatedEventName = "MODULE_UPDATED";
+
+    /// <summary>
     /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the module
     /// whose content is being replaced. The token <c>forbidden</c> is what makes the shared status translator
     /// answer <c>403</c> rather than <c>400</c>, so the spelling is part of the contract.
@@ -174,47 +181,52 @@ public class ModuleServiceTests
         var currentUser = new Mock<ICurrentUser>().Object;
         var permissions = new Mock<IPermissionService>().Object;
         var controllers = new Mock<IModuleBusinessControllerFactory>().Object;
+        var audit = new Mock<IAuditSink>().Object;
         var caching = new CachingOptions();
 
         Assert.Throws<ArgumentNullException>("modules", () =>
         {
-            _ = new ModuleService(null!, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(null!, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("definitions", () =>
         {
-            _ = new ModuleService(modules, null!, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(modules, null!, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
-            _ = new ModuleService(modules, definitions, null!, portals, unitOfWork, cache, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(modules, definitions, null!, portals, unitOfWork, cache, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, null!, unitOfWork, cache, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, null!, unitOfWork, cache, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, null!, cache, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, null!, cache, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, null!, currentUser, permissions, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, null!, currentUser, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, null!, permissions, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, null!, permissions, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, null!, controllers, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, null!, controllers, audit, caching);
         });
         Assert.Throws<ArgumentNullException>("businessControllers", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, null!, caching);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, null!, audit, caching);
+        });
+        Assert.Throws<ArgumentNullException>("audit", () =>
+        {
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
-            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, null!);
+            _ = new ModuleService(modules, definitions, tabs, portals, unitOfWork, cache, currentUser, permissions, controllers, audit, null!);
         });
     }
 
@@ -2967,9 +2979,20 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The exported content is wrapped in a document naming the package and its version.
+    /// The exported content is wrapped in a document naming the package and its version, with the
+    /// payload HTML-encoded exactly as the legacy exporter encoded it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The literal below is deliberately spelled out rather than computed, because it IS the wire format
+    /// and a computed expectation would agree with whatever the implementation did. Two escapings are
+    /// present and both are intended: the service applies
+    /// <c>WebUtility.HtmlEncode</c> - standing in for <c>ModuleController.vb</c> L244's
+    /// <c>HttpContext.Current.Server.HtmlEncode</c> - turning <c>&lt;</c> into <c>&amp;lt;</c>, and the
+    /// XML writer then escapes that <c>&amp;</c> into <c>&amp;amp;</c>. The legacy exporter avoided the
+    /// second escaping by wrapping the encoded text in a CDATA section, and an XML reader resolves either
+    /// form to the same text, which is why the reader below accepts both.
+    /// </remarks>
     [Fact]
     public async Task ExportModule_WrapsTheExportedContentInADocument()
     {
@@ -2984,10 +3007,355 @@ public class ModuleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(
-            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">&lt;item&gt;one&lt;/item&gt;</content>");
+            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
+            + "&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</content>");
         harness.BusinessControllers.Verify(
             f => f.ExportModuleContentAsync(BusinessController, ModuleId, It.IsAny<CancellationToken>()),
             Times.Once);
+    }
+
+    /// <summary>
+    /// A document this service exports is imported back as the byte-identical payload the module handed
+    /// over, which is what the encode and decode pair exists to guarantee.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The payload is chosen to exercise every character the two escaping layers touch: angle brackets,
+    /// a bare ampersand, an entity reference that must survive as text rather than being resolved, and
+    /// quotation marks.
+    /// </remarks>
+    [Theory]
+    [InlineData("<item>one</item>")]
+    [InlineData("a & b < c > d")]
+    [InlineData("already &amp; encoded &lt;tag&gt;")]
+    [InlineData("quotes \" and ' apostrophes")]
+    [InlineData("")]
+    public async Task ExportThenImportModule_ReturnsThePayloadUnchanged(string payload)
+    {
+        Harness exporter = Harness.Ready();
+        exporter.ExportOutcome = Result<string?>.Success(payload);
+
+        Result<string> exported = await exporter.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        exported.IsSuccess.Should().BeTrue();
+
+        Harness importer = Harness.Ready();
+        string? handedToTheModule = null;
+        importer.BusinessControllers
+            .Setup(f => f.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string?, int, string?, string?, int, CancellationToken>(
+                (_, _, content, _, _, _) => handedToTheModule = content)
+            .ReturnsAsync(Result.Success());
+
+        Result outcome = await importer.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = exported.Value },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        handedToTheModule.Should().Be(payload);
+    }
+
+    /// <summary>
+    /// A package whose capability field still holds the legacy "not yet determined" sentinel is refused
+    /// with a reason, which is what replaces the legacy deferred-import event-queue branch.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <c>ModuleController.vb</c> L422 tested the capability field against the integer sentinel -1 and
+    /// parked the payload on a queue for replay after an application restart, because it could not discover
+    /// a freshly installed module's capabilities mid-request. That queue subsystem is excluded, and
+    /// resolving behaviour from a closed registered set makes the deferral pointless - so the sentinel
+    /// produces a clear refusal the caller can retry rather than a silent parking they cannot observe.
+    /// Nothing is handed to the module and nothing is recorded.
+    /// </remarks>
+    [Fact]
+    public async Task ImportModule_RefusesAPackageWhoseCapabilitiesAreUndetermined()
+    {
+        Harness harness = Harness.Ready();
+        harness.Packages[DesktopModuleId]!.SupportedFeatures = -1;
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>one</content>" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(NotPortableCode);
+
+        harness.BusinessControllers.Verify(
+            f => f.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Content the module produces but that XML cannot carry is reported as a failure rather than escaping
+    /// as an unhandled exception, and nothing is recorded on the audit trail.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A C0 control character has no representation in XML - no escaping in the specification encodes one -
+    /// so the writer refuses it. The failure code's reason token is classified as a server fault, which is
+    /// the correct reading: the caller submitted a valid request and cannot correct a module that returns
+    /// unrepresentable content. The legacy path wrapped this in a <c>Catch</c> whose body was
+    /// <c>'ignore errors</c> and produced a document with the content element silently missing; that
+    /// swallow is deliberately not reproduced.
+    /// </remarks>
+    [Fact]
+    public async Task ExportModule_ReportsContentThatCannotBeSerialised()
+    {
+        Harness harness = Harness.Ready();
+        harness.ExportOutcome = Result<string?>.Success("before\u0001after");
+
+        Result<string> outcome = await harness.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("module.export_failed");
+        outcome.Reason!.Message.Should()
+            .Be($"Module {ModuleId} returned content that cannot be represented in an export document.");
+
+        // The module's own text must not be quoted back: the message is published verbatim as the problem
+        // detail, and export content may carry the portal's user data.
+        outcome.Reason!.Message.Should().NotContain("before");
+        harness.AuditRecords.Should().BeEmpty("a failed export is not a movement of content");
+    }
+
+    /// <summary>
+    /// A payload that is nothing but whitespace survives the round trip, which it did not while the reader
+    /// was allowed to discard an all-whitespace text node as insignificant.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_KeepsAPayloadThatIsOnlyWhitespace()
+    {
+        Harness harness = Harness.Ready();
+        string? handedToTheModule = null;
+        harness.BusinessControllers
+            .Setup(f => f.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string?, int, string?, string?, int, CancellationToken>(
+                (_, _, content, _, _, _) => handedToTheModule = content)
+            .ReturnsAsync(Result.Success());
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>   </content>" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        handedToTheModule.Should().Be("   ");
+    }
+
+    /// <summary>
+    /// Exporting content records the movement on the audit trail, carrying the payload's LENGTH and no
+    /// part of the payload itself.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The no-payload assertion is the load-bearing one. An export payload is module content: it may be
+    /// arbitrarily large and it may carry data belonging to the portal's users, so putting any of it in the
+    /// trail would move user data into a log store where it is neither access-controlled with the module nor
+    /// removable with it. The fact is written so that it fails if any recorded property ever contains the
+    /// payload, rather than merely checking the properties that exist today.
+    /// </remarks>
+    [Fact]
+    public async Task ExportModule_RecordsTheMovementWithoutRecordingTheContent()
+    {
+        const string Payload = "<item>a-secret-looking-value</item>";
+
+        Harness harness = Harness.Ready();
+        harness.ExportOutcome = Result<string?>.Success(Payload);
+
+        Result<string> outcome = await harness.Service.ExportModuleAsync(
+            PortalId,
+            ModuleId,
+            new ModuleExportRequest { FileName = "content.xml" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleUpdatedEventName);
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
+        record.Properties["Operation"].Should().Be("Export");
+        record.Properties["PayloadLength"].Should()
+            .Be(Payload.Length.ToString(CultureInfo.InvariantCulture));
+
+        record.Properties.Values
+            .Where(value => value is not null)
+            .Should().NotContain(value => value!.Contains("a-secret-looking-value", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Importing content records the provenance the contract promises, and again carries no payload.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RecordsTheProvenanceWithoutRecordingTheContent()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest
+            {
+                ModuleId = ModuleId,
+                Content = $"<content version=\"{PackageVersion}\">a-secret-looking-value</content>",
+                Folder = "Portals/0",
+                FileName = "content.xml",
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleUpdatedEventName);
+        record.PortalId.Should().Be(PortalId);
+        record.ResourceId.Should().Be(ModuleId.ToString(CultureInfo.InvariantCulture));
+        record.Properties["Operation"].Should().Be("Import");
+        record.Properties["Version"].Should().Be(PackageVersion);
+        record.Properties["SourceFileName"].Should().Be("content.xml");
+
+        record.Properties.Values
+            .Where(value => value is not null)
+            .Should().NotContain(value => value!.Contains("a-secret-looking-value", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A refused import writes nothing to the audit trail, so no record can claim a change that never
+    /// happened.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RecordsNothingWhenTheModuleRefusesTheContent()
+    {
+        Harness harness = Harness.Ready();
+        harness.ImportOutcome = Result.Failure("module.import_failed", "The module rejected the document.");
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>one</content>" },
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An ordinary single-module edit writes no audit record, while an edit whose effect reaches beyond
+    /// the addressed module does.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The trail records consequential change, not every field edit. The legacy application recorded
+    /// neither, so recording the wide-effect case alone is the narrowest addition that satisfies this
+    /// contract's promise that a change whose blast radius exceeds the addressed module is recorded.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_RecordsOnlyWhenTheChangeReachesBeyondTheModule()
+    {
+        Harness narrow = Harness.Ready();
+
+        Result<ModuleDetailDto?> ordinary = await narrow.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            new UpdateModuleRequest { TabId = TabId, ModuleTitle = ModuleTitle },
+            CancellationToken.None);
+
+        ordinary.IsSuccess.Should().BeTrue();
+        narrow.AuditRecords.Should().BeEmpty();
+
+        Harness wide = Harness.Ready();
+
+        Result<ModuleDetailDto?> propagated = await wide.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            new UpdateModuleRequest
+            {
+                TabId = TabId,
+                ModuleTitle = ModuleTitle,
+                ApplyToAllModules = true,
+            },
+            CancellationToken.None);
+
+        propagated.IsSuccess.Should().BeTrue();
+
+        AuditEvent record = wide.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(ModuleUpdatedEventName);
+        record.Properties["Operation"].Should().Be("Update");
+        record.Properties["ApplyToAllModules"].Should().Be(bool.TrueString);
+    }
+
+    /// <summary>
+    /// A document produced by the LEGACY exporter - HTML-encoded inside a CDATA section - imports to the
+    /// byte-identical original payload.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the fact that makes the encode and decode pair worth keeping, and it is the interoperability
+    /// case the migration exists to serve: files exported by the running DotNetNuke application must import
+    /// into the replacement. Without the decode the module would receive
+    /// <c>&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</c> - one layer of escaping still attached - and would
+    /// store corrupted content while reporting success, which is the worst available outcome.
+    /// The document literal reproduces the legacy shape exactly: <c>ModuleController.vb</c> L244 encoded the
+    /// payload and the following line wrapped it via <c>XmlUtils.XMLEncode</c>, whose output is a CDATA
+    /// section.
+    /// </remarks>
+    [Fact]
+    public async Task ImportModule_AcceptsALegacyCdataDocument()
+    {
+        Harness harness = Harness.Ready();
+        string? handedToTheModule = null;
+        harness.BusinessControllers
+            .Setup(f => f.ImportModuleContentAsync(
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string?, int, string?, string?, int, CancellationToken>(
+                (_, _, content, _, _, _) => handedToTheModule = content)
+            .ReturnsAsync(Result.Success());
+
+        string legacyDocument =
+            $"<content type=\"{PackageName}\" version=\"{PackageVersion}\">"
+            + "<![CDATA[&lt;item&gt;one&lt;/item&gt;]]></content>";
+
+        Result outcome = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = legacyDocument },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        handedToTheModule.Should().Be("<item>one</item>");
     }
 
     /// <summary>
@@ -3579,6 +3947,15 @@ public class ModuleServiceTests
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             GrantEdit(granted: true);
 
+            // The audit sink records what it is handed so the facts below can assert on the trail without
+            // reaching a log store. A loose mock would swallow the calls silently; capturing them is what
+            // lets a fact prove that a record was written, that it was written only once, and - the rule
+            // that matters most - that no content payload was ever put into it.
+            Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+            AuditRecords = [];
+            Audit.Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
+                .Callback<AuditEvent>(AuditRecords.Add);
+
             Service = new ModuleService(
                 Modules.Object,
                 Definitions.Object,
@@ -3589,6 +3966,7 @@ public class ModuleServiceTests
                 CurrentUser.Object,
                 Permissions.Object,
                 BusinessControllers.Object,
+                Audit.Object,
                 Caching);
         }
 
@@ -3638,6 +4016,13 @@ public class ModuleServiceTests
         public Mock<IModuleBusinessControllerFactory> BusinessControllers { get; }
 
         public Mock<IPermissionService> Permissions { get; }
+
+        public Mock<IAuditSink> Audit { get; }
+
+        /// <summary>
+        /// Every audit event the service recorded, in the order it recorded them.
+        /// </summary>
+        public List<AuditEvent> AuditRecords { get; }
 
         public CachingOptions Caching { get; }
 

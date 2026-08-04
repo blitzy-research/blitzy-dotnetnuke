@@ -563,8 +563,8 @@ public class MappingTests
 
         dto.Keywords.Should().Be(
             "reports,measured",
-            "the entity and the response both spell the field Keywords while the column behind it is "
-            + "spelled KeyWords - the bridge belongs to TabConfiguration.HasColumnName, so this "
+            "the entity and the response both spell the field Keywords while the legacy column behind "
+            + "it is spelled KeyWords - bridging that casing is the persistence layer's job, so this "
             + "projection is a plain like-named assignment and must not silently lose the value");
     }
 
@@ -2371,6 +2371,1695 @@ public class MappingTests
             () => UserMappings.ApplyDefinitionUpdate(null!, new UpdateProfilePropertyDefinitionRequest()));
         Assert.Throws<ArgumentNullException>(() => UserMappings.ApplyDefinitionUpdate(definition, null!));
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Sentinel, enum and determinism boundary
+    //
+    // The legacy layer had no nullable value types, so Library/Components/Shared/Null.vb gave every
+    // primitive a stand-in for "absent": -1 for Short and Integer, 255 for Byte, MinValue for Single,
+    // Double, Decimal and Date, the EMPTY STRING for String, False for Boolean and Guid.Empty for Guid.
+    // Those stand-ins are read 168 times across the five in-scope domains, so they are the null
+    // contract of the system being migrated rather than an incidental helper.
+    //
+    // The target uses nullable CLR types in the domain, which means the mappers are the exact seam
+    // where the two representations meet. Every test below pins one side of that seam: which of null,
+    // "", -1, 0, 255, DateTime.MinValue, Guid.Empty and false the projection is expected to produce,
+    // and - just as important - which pairs of those the projection is expected to keep APART. An
+    // equivalence check that is happy either way would hide precisely the defect worth catching,
+    // because a stand-in silently reinterpreted as "absent" inverts the branch that reads it.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A portal whose handle has never been issued projects <see cref="Guid.Empty"/> as a value on both
+    /// read projections rather than reporting the handle as absent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Guid.Empty</c> was the legacy stand-in for an absent globally unique identifier, and both
+    /// projections declare the member as a non-nullable <c>Guid</c>. There is therefore nowhere for an
+    /// "absent" answer to go, and that is the point: the empty handle travels as itself. The shipped
+    /// <c>_default</c> portal row proves the column is genuinely populated in practice - it carries
+    /// <c>'57ad7180-c5e7-49f5-b282-c6475cdb7ee7'</c> - so an empty handle means "not yet issued", which
+    /// only ever happens between construction and the first save.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the empty handle is preserved rather than translated. Widening the member to
+    /// <c>Guid?</c> so that "not yet issued" could be expressed as null was rejected: the column is
+    /// <c>NOT NULL</c>, so a null could never round-trip, and the response contract would gain a state
+    /// the store cannot hold.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PortalReadProjections_CarryAnUnissuedHandleAsAValueRatherThanAsAbsent()
+    {
+        Portal portal = FullPortal();
+        portal.PortalGuid = Guid.Empty;
+
+        PortalDetailDto detail = PortalMappings.ToDetail(portal, 0, 0, null, null, null, null);
+        PortalSettingsDto settings = PortalMappings.ToSettings(portal);
+
+        detail.Guid.Should().Be(Guid.Empty, "the legacy stand-in for an absent handle is a real value here");
+        settings.Guid.Should().Be(Guid.Empty);
+
+        // And an issued handle still travels unchanged, so the empty case is not being special-cased.
+        Guid issued = new("57ad7180-c5e7-49f5-b282-c6475cdb7ee7");
+        portal.PortalGuid = issued;
+
+        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null).Guid.Should().Be(issued);
+        PortalMappings.ToSettings(portal).Guid.Should().Be(issued);
+    }
+
+    /// <summary>
+    /// The twenty-seven values this suite pushes through the settings request are pairwise distinct, so
+    /// a mapper that assigned two of them to each other's field would fail rather than pass.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The legacy entry point was <c>PortalController.UpdatePortalInfo</c>, twenty-seven positional
+    /// parameters wide, and seven runs of it are adjacent parameters of the SAME type: three strings at
+    /// positions 2-4, two integers at 6-7, two doubles at 10-11, two integers at 12-13, three strings at
+    /// 14-16 - one of which is the payment secret - three strings at 17-19, and a four-wide run of tab
+    /// identifiers at 21-24. A caller that transposed any pair inside a run compiled cleanly and stored
+    /// the wrong column.
+    /// </para>
+    /// <para>
+    /// The request object removes the positional hazard, but the mapper that consumes it reintroduces it
+    /// in assignment form, and an object-graph comparison cannot see it: if the expectation is built by
+    /// the same transposed mapper, both sides agree. The only defence is that every seeded value is
+    /// unique and every field is asserted by name, which is what
+    /// <c>PortalApplyUpdate_OverwritesTheEditableColumnsAndLeavesTheWiringAlone</c> does. This test
+    /// proves the premise that defence rests on, mechanically, so that nobody weakens it later by
+    /// reusing a value.
+    /// </para>
+    /// <para>
+    /// MIGRATION: values are rendered with <see cref="CultureInfo.InvariantCulture"/>. A culture that
+    /// formats a decimal point as a comma could otherwise collapse two distinct seeds into one string and
+    /// report a false pass on one machine while the same code passed honestly on another.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PortalUpdateRequest_IsSeededWithTwentySevenDistinctValues()
+    {
+        UpdatePortalRequest request = new()
+        {
+            PortalId = -1,
+            PortalName = "Renamed Portal",
+            LogoFile = "new-logo.png",
+            FooterText = "New footer",
+            ExpiryDate = new DateTime(2031, 12, 31, 0, 0, 0, DateTimeKind.Utc),
+            UserRegistration = UserRegistrationMode.PublicRegistration,
+            BannerAdvertising = BannerAdvertisingMode.Site,
+            Currency = "EUR",
+            AdministratorId = 88,
+            HostFee = 3.25m,
+            HostSpace = 4096,
+            PageQuota = 75,
+            UserQuota = 750,
+            PaymentProcessor = "Stripe",
+            ProcessorUserId = "new-processor-user",
+            ProcessorPassword = "not-a-real-secret",
+            Description = "A renamed description",
+            KeyWords = "renamed,keywords",
+            BackgroundFile = "new-background.png",
+            SiteLogHistory = 90,
+            SplashTabId = 21,
+            HomeTabId = 22,
+            LoginTabId = 23,
+            UserTabId = 24,
+            DefaultLanguage = "fr-FR",
+            TimeZoneOffset = 60,
+            HomeDirectory = "Portals/renamed",
+        };
+
+        string[] seeded =
+        [
+            request.PortalId.ToString(CultureInfo.InvariantCulture),
+            request.PortalName!,
+            request.LogoFile!,
+            request.FooterText!,
+            request.ExpiryDate!.Value.ToString("O", CultureInfo.InvariantCulture),
+            request.UserRegistration.ToString(),
+            request.BannerAdvertising.ToString(),
+            request.Currency!,
+            request.AdministratorId!.Value.ToString(CultureInfo.InvariantCulture),
+            request.HostFee!.Value.ToString(CultureInfo.InvariantCulture),
+            request.HostSpace!.Value.ToString(CultureInfo.InvariantCulture),
+            request.PageQuota!.Value.ToString(CultureInfo.InvariantCulture),
+            request.UserQuota!.Value.ToString(CultureInfo.InvariantCulture),
+            request.PaymentProcessor!,
+            request.ProcessorUserId!,
+            request.ProcessorPassword!,
+            request.Description!,
+            request.KeyWords!,
+            request.BackgroundFile!,
+            request.SiteLogHistory!.Value.ToString(CultureInfo.InvariantCulture),
+            request.SplashTabId!.Value.ToString(CultureInfo.InvariantCulture),
+            request.HomeTabId!.Value.ToString(CultureInfo.InvariantCulture),
+            request.LoginTabId!.Value.ToString(CultureInfo.InvariantCulture),
+            request.UserTabId!.Value.ToString(CultureInfo.InvariantCulture),
+            request.DefaultLanguage!,
+            request.TimeZoneOffset!.Value.ToString(CultureInfo.InvariantCulture),
+            request.HomeDirectory!,
+        ];
+
+        seeded.Should().HaveCount(
+            27,
+            "the legacy signature took twenty-seven parameters and the request must carry all of them");
+        seeded.Should().OnlyHaveUniqueItems(
+            "a transposition inside one of the seven same-typed runs is invisible to the compiler, so "
+            + "the seeds are what make it visible to the suite");
+
+        typeof(UpdatePortalRequest).GetProperties().Should().HaveCount(
+            27,
+            "the settings contract mirrors the legacy parameter list exactly - no member added, none dropped");
+    }
+
+    /// <summary>
+    /// A portal column holding the empty string projects the empty string, and a column holding null
+    /// projects null; the two are never conflated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the sharpest of the stand-ins, because <c>Null.NullString</c> is the EMPTY STRING rather
+    /// than a null. Once a value had been read through the legacy helper a SQL <c>NULL</c> and an empty
+    /// string were indistinguishable, and the shipped <c>_default</c> portal row demonstrates that the
+    /// empty case reached production data: it inserts <c>PayPalId = ''</c> and <c>HostFee = ''</c>.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the target keeps them apart. A null means the column was never populated and an empty
+    /// string means it was populated with nothing, and the read projections pass both through unchanged
+    /// rather than normalising one into the other. Callers that need the legacy conflation must perform
+    /// it themselves, deliberately, at the point of use.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PortalReadProjections_KeepAnEmptyColumnApartFromAnAbsentOne()
+    {
+        Portal blank = FullPortal();
+        blank.Description = string.Empty;
+        blank.KeyWords = string.Empty;
+        blank.FooterText = string.Empty;
+        blank.LogoFile = string.Empty;
+        blank.PaymentProcessor = string.Empty;
+        blank.ProcessorUserId = string.Empty;
+
+        PortalDetailDto emptied = PortalMappings.ToDetail(blank, 0, 0, null, null, null, null);
+
+        emptied.Description.Should().Be(string.Empty).And.NotBeNull();
+        emptied.KeyWords.Should().Be(string.Empty);
+        emptied.FooterText.Should().Be(string.Empty);
+        emptied.LogoFile.Should().Be(string.Empty);
+        emptied.PaymentProcessor.Should().Be(string.Empty);
+        emptied.ProcessorUserId.Should().Be(string.Empty);
+
+        Portal absent = FullPortal();
+        absent.Description = null;
+        absent.KeyWords = null;
+        absent.FooterText = null;
+        absent.LogoFile = null;
+        absent.PaymentProcessor = null;
+        absent.ProcessorUserId = null;
+
+        PortalDetailDto nulled = PortalMappings.ToDetail(absent, 0, 0, null, null, null, null);
+
+        nulled.Description.Should().BeNull("an unpopulated column is not an empty one");
+        nulled.KeyWords.Should().BeNull();
+        nulled.FooterText.Should().BeNull();
+        nulled.LogoFile.Should().BeNull();
+        nulled.PaymentProcessor.Should().BeNull();
+        nulled.ProcessorUserId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// An expiry date of <see cref="DateTime.MinValue"/> projects that instant as a value and stays
+    /// distinguishable from an absent expiry.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Null.NullDate</c> was <c>Date.MinValue</c>, and the legacy helper compared only the DATE part
+    /// when deciding whether a date was absent - <c>IsNull</c> tests <c>objDate.Date.Equals</c> and the
+    /// write path tests <c>Convert.ToDateTime(objField).Date</c>, with a source comment explaining that
+    /// this "avoids subtle time differences". Two consequences follow, and both are legacy defects that
+    /// this migration annotates rather than repairs: any instant on 0001-01-01 was treated as absent,
+    /// and its time component was discarded on the way to the store.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the target reads absence from null and from nothing else. The stand-in instant is
+    /// therefore an ordinary value here, which is the only reading under which the two states remain
+    /// distinguishable. Normalising <c>MinValue</c> to null inside the mapper was rejected because it
+    /// would make an expiry that the store genuinely holds unrepresentable in the response.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PortalReadProjections_CarryTheDateStandInAsAValueDistinctFromAbsent()
+    {
+        Portal atStandIn = FullPortal();
+        atStandIn.ExpiryDate = DateTime.MinValue;
+
+        PortalMappings.ToDetail(atStandIn, 0, 0, null, null, null, null)
+            .ExpiryDate.Should().Be(DateTime.MinValue);
+        PortalMappings.ToSettings(atStandIn).ExpiryDate.Should().Be(DateTime.MinValue);
+        PortalMappings.ToListItem(atStandIn, [], 0, 0).ExpiryDate.Should().Be(DateTime.MinValue);
+
+        Portal neverExpires = FullPortal();
+        neverExpires.ExpiryDate = null;
+
+        PortalMappings.ToDetail(neverExpires, 0, 0, null, null, null, null).ExpiryDate.Should().BeNull();
+        PortalMappings.ToSettings(neverExpires).ExpiryDate.Should().BeNull();
+        PortalMappings.ToListItem(neverExpires, [], 0, 0).ExpiryDate.Should().BeNull();
+
+        // The time component survives too, which is the half of the legacy defect that lost data.
+        Portal withTime = FullPortal();
+        withTime.ExpiryDate = DateTime.MinValue.AddHours(9).AddMinutes(30);
+
+        PortalMappings.ToDetail(withTime, 0, 0, null, null, null, null)
+            .ExpiryDate.Should().Be(
+                DateTime.MinValue.AddHours(9).AddMinutes(30),
+                "the legacy write path compared only the date part and discarded the time");
+    }
+
+    /// <summary>
+    /// A retention count of 255 travels as the number 255, because the legacy stand-in for an absent
+    /// byte is the only one that is a plausible real value.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Null.NullByte</c> is <c>255</c> - neither a negative, nor a MinValue, nor an empty. That makes
+    /// it the stand-in most likely to be mistaken for data, and equally the one most likely to have BEEN
+    /// data: a site log retention of 255 days is entirely ordinary. The legacy write path turned 255
+    /// back into <c>DBNull</c>, so the two were interchangeable in the store.
+    /// </para>
+    /// <para>
+    /// MIGRATION: 255 is a number. The projections carry it unchanged in both directions, and the absent
+    /// case is expressed as null, which the store can hold because the column is nullable.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PortalMappers_TreatTheByteStandInAsAnOrdinaryCount()
+    {
+        Portal portal = FullPortal();
+        portal.SiteLogHistory = 255;
+
+        PortalMappings.ToDetail(portal, 0, 0, null, null, null, null).SiteLogHistory.Should().Be(255);
+        PortalMappings.ToSettings(portal).SiteLogHistory.Should().Be(255);
+
+        UpdatePortalRequest request = new() { SiteLogHistory = 255 };
+        PortalMappings.ApplyUpdate(portal, request);
+        portal.SiteLogHistory.Should().Be(255, "the byte stand-in is retained on the way in as well");
+
+        UpdatePortalRequest cleared = new() { SiteLogHistory = null };
+        PortalMappings.ApplyUpdate(portal, cleared);
+        portal.SiteLogHistory.Should().BeNull("absent is null here, never 255 and never zero");
+    }
+
+
+    /// <summary>
+    /// A root page projects an absent parent, and the page whose parent is the tab identified by zero
+    /// projects that zero; the two are never conflated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is one of only three places in the whole migration where the legacy -1 legitimately becomes
+    /// null, because a root page genuinely has no parent. The trap is the other half: <c>Tabs.TabID</c> is
+    /// seeded <c>IDENTITY(0,1)</c>, so zero identifies the first page ever created and is a perfectly good
+    /// parent. A mapper that treated a falsy identifier as "no parent" would reparent every child of the
+    /// first page to the root.
+    /// </para>
+    /// <para>
+    /// MIGRATION: absence is null and only null. The update contract carries <c>ParentId</c> as
+    /// <c>int?</c> for the same reason, so promoting a page to the root and parenting it under page zero
+    /// are distinct requests rather than the same one.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TabMappers_DistinguishARootPageFromThePageParentedAtZero()
+    {
+        Tab root = FullTab();
+        root.ParentId = null;
+
+        TabMappings.ToDetail(root, false).ParentId.Should().BeNull();
+        TabMappings.ToListItem(root, false).ParentId.Should().BeNull();
+
+        Tab underFirstPage = FullTab();
+        underFirstPage.ParentId = 0;
+
+        TabMappings.ToDetail(underFirstPage, false).ParentId.Should().Be(
+            0,
+            "Tabs.TabID is seeded IDENTITY(0,1), so zero is the first page rather than no page");
+        TabMappings.ToListItem(underFirstPage, false).ParentId.Should().Be(0);
+
+        // And the same distinction survives the write path in both directions.
+        Tab moved = FullTab();
+        TabMappings.ApplyUpdate(moved, new UpdateTabRequest { ParentId = 0 });
+        moved.ParentId.Should().Be(0);
+
+        TabMappings.ApplyUpdate(moved, new UpdateTabRequest { ParentId = null });
+        moved.ParentId.Should().BeNull("promotion to the root is expressible and is not a no-op");
+    }
+
+    /// <summary>
+    /// The page projections keep an empty column apart from an absent one, carry the byte stand-in as an
+    /// ordinary interval and carry the date stand-in as an ordinary instant.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: three stand-ins meet on one row here - the empty string for <c>Null.NullString</c>, 255
+    /// for <c>Null.NullByte</c> and <c>DateTime.MinValue</c> for <c>Null.NullDate</c>. All three are
+    /// carried as values, and absence is expressed as null throughout. <c>Tabs</c> is altered forty-one
+    /// times across the upgrade chain, so the nullability asserted here is the chain's terminal state
+    /// rather than its baseline.
+    /// </remarks>
+    [Fact]
+    public void TabMappers_CarryEveryStandInAsAValueRatherThanAsAbsent()
+    {
+        Tab tab = FullTab();
+        tab.Title = string.Empty;
+        tab.Description = string.Empty;
+        tab.Keywords = string.Empty;
+        tab.Url = string.Empty;
+        tab.RefreshInterval = 255;
+        tab.StartDate = DateTime.MinValue;
+        tab.EndDate = null;
+
+        TabDetailDto detail = TabMappings.ToDetail(tab, false);
+
+        detail.Title.Should().Be(string.Empty);
+        detail.Description.Should().Be(string.Empty);
+        detail.Keywords.Should().Be(string.Empty, "an empty keyword list is not an absent one");
+        detail.Url.Should().Be(string.Empty);
+        detail.RefreshInterval.Should().Be(255);
+        detail.StartDate.Should().Be(DateTime.MinValue);
+        detail.EndDate.Should().BeNull("absence is null, and only null");
+
+        Tab absent = FullTab();
+        absent.Title = null;
+        absent.Description = null;
+        absent.Keywords = null;
+        absent.Url = null;
+        absent.RefreshInterval = null;
+        absent.StartDate = null;
+
+        TabDetailDto nulled = TabMappings.ToDetail(absent, false);
+
+        nulled.Title.Should().BeNull();
+        nulled.Description.Should().BeNull();
+        nulled.Keywords.Should().BeNull();
+        nulled.Url.Should().BeNull();
+        nulled.RefreshInterval.Should().BeNull();
+        nulled.StartDate.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Every one of the six billing codes round-trips through the create path, the update path and both
+    /// read projections, on the recurrence field and on the trial field alike.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The codes are the single characters the legacy <c>RoleController</c> switched on, and there are
+    /// SIX of them rather than the four that a reading of the recurrence arithmetic alone suggests:
+    /// <c>N</c> and <c>O</c> carry no arithmetic, which is exactly why they are easy to miss. They are
+    /// referential-integrity data, constrained by <c>FK_Roles_CodeFrequency</c> against a lookup table
+    /// whose terminal seeds are the six letters, so dropping one would make a stored role unrepresentable.
+    /// </para>
+    /// <para>
+    /// The trial field is the same closed set as the recurrence field and is typed with the same enum, so
+    /// every code is exercised on both. Both columns are <c>char(1) NULL</c>.
+    /// </para>
+    /// </remarks>
+    /// <param name="code">The billing code under test.</param>
+    [Theory]
+    [InlineData(BillingFrequency.None)]
+    [InlineData(BillingFrequency.OneTime)]
+    [InlineData(BillingFrequency.Day)]
+    [InlineData(BillingFrequency.Week)]
+    [InlineData(BillingFrequency.Month)]
+    [InlineData(BillingFrequency.Year)]
+    public void RoleMappers_RoundTripEveryBillingCodeOnBothRecurrenceFields(BillingFrequency code)
+    {
+        CreateRoleRequest create = new()
+        {
+            RoleName = "Coded Members",
+            BillingFrequency = code,
+            TrialFrequency = code,
+        };
+
+        Role created = RoleMappings.ToNewRole(-1, create);
+
+        created.BillingFrequency.Should().Be(code);
+        created.TrialFrequency.Should().Be(code, "the trial field is the same closed set as the recurrence field");
+
+        RoleMappings.ToDetail(created).BillingFrequency.Should().Be(code);
+        RoleMappings.ToDetail(created).TrialFrequency.Should().Be(code);
+        RoleMappings.ToListItem(created).BillingFrequency.Should().Be(code);
+        RoleMappings.ToListItem(created).TrialFrequency.Should().Be(code);
+
+        Role stored = FullRole();
+        RoleMappings.ApplyUpdate(
+            stored,
+            new UpdateRoleRequest
+            {
+                RoleName = "Coded Members",
+                BillingFrequency = code,
+                TrialFrequency = code,
+            });
+
+        stored.BillingFrequency.Should().Be(code);
+        stored.TrialFrequency.Should().Be(code);
+    }
+
+    /// <summary>
+    /// The billing code is carried as the legacy character, not as the member name and not as the
+    /// ordinal position of the member.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The column is <c>char(1)</c> and the stored letters are <c>N</c>, <c>O</c>, <c>D</c>, <c>W</c>,
+    /// <c>M</c> and <c>Y</c>, so the enum is declared over <c>ushort</c> with each member VALUED at its
+    /// character. That makes the underlying value the wire value and the persistence value at once, and
+    /// it is why the members may be renamed but never renumbered.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the descriptive names are a target-side convenience only. A projection that wrote
+    /// "Month" or 4 into the column would violate the foreign key, so this test pins the numeric identity
+    /// of every member against the character it stands for.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void RoleBillingCode_IsValuedAtTheLegacyCharacterRatherThanAnOrdinal()
+    {
+        ((char)BillingFrequency.None).Should().Be('N');
+        ((char)BillingFrequency.OneTime).Should().Be('O');
+        ((char)BillingFrequency.Day).Should().Be('D');
+        ((char)BillingFrequency.Week).Should().Be('W');
+        ((char)BillingFrequency.Month).Should().Be('M');
+        ((char)BillingFrequency.Year).Should().Be('Y');
+
+        Enum.GetUnderlyingType(typeof(BillingFrequency)).Should().Be(
+            typeof(ushort),
+            "the members are valued at their characters, which will not fit an ordinal-shaped enum");
+
+        Enum.GetValues<BillingFrequency>().Should().HaveCount(6, "the lookup table seeds exactly six codes");
+
+        // The ordinal position of a member is emphatically NOT its value: Day is declared third and
+        // valued 68, so anything that persisted a position would corrupt every row it touched.
+        ((ushort)BillingFrequency.Day).Should().Be(68);
+        ((ushort)BillingFrequency.Month).Should().Be(77);
+        ((ushort)BillingFrequency.None).Should().Be(78);
+    }
+
+    /// <summary>
+    /// A role that never expires carries the <c>N</c> code, and a role whose recurrence was never chosen
+    /// carries null; the two are never conflated.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>N</c> is a STORED letter meaning "does not recur", not a spelling of absent. The
+    /// legacy interface could not tell them apart, because reading a null <c>char(1)</c> through
+    /// <c>Null.SetNull</c> produced the empty string and reading a null enum produced the lowest-sorted
+    /// member. The target keeps them apart, which is what makes "unset" a state a caller can actually
+    /// choose.
+    /// </remarks>
+    [Fact]
+    public void RoleMappers_DistinguishTheNonRecurringCodeFromAnAbsentOne()
+    {
+        Role neverExpires = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Lifetime", BillingFrequency = BillingFrequency.None });
+
+        neverExpires.BillingFrequency.Should().Be(BillingFrequency.None);
+        RoleMappings.ToDetail(neverExpires).BillingFrequency.Should().Be(BillingFrequency.None);
+
+        Role unchosen = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Unpriced", BillingFrequency = null });
+
+        unchosen.BillingFrequency.Should().BeNull("no recurrence was chosen, which is not the same as none");
+        RoleMappings.ToDetail(unchosen).BillingFrequency.Should().BeNull();
+
+        // Clearing a stored code is expressible, so the absent state is reachable and not merely initial.
+        Role stored = FullRole();
+        stored.BillingFrequency.Should().Be(BillingFrequency.Month);
+
+        RoleMappings.ApplyUpdate(stored, new UpdateRoleRequest { RoleName = stored.RoleName });
+        stored.BillingFrequency.Should().BeNull();
+        stored.TrialFrequency.Should().BeNull();
+    }
+
+    /// <summary>
+    /// An unpriced role keeps both charges absent and a free role keeps both charges at zero; the two are
+    /// never conflated in either direction.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy fields were <c>Single</c> and their stand-in for absent was
+    /// <c>Single.MinValue</c>, so "no charge decided" and "charge of nothing" were both expressible but
+    /// only by convention. Here absent is null and free is <c>0m</c>, and the distinction is a real one:
+    /// a role with no charge decided is not yet sellable, whereas a role charging zero is.
+    /// </remarks>
+    [Fact]
+    public void RoleMappers_DistinguishAnUndecidedChargeFromAFreeOne()
+    {
+        Role undecided = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Undecided", ServiceFee = null, TrialFee = null });
+
+        undecided.ServiceFee.Should().BeNull();
+        undecided.TrialFee.Should().BeNull();
+        RoleMappings.ToDetail(undecided).ServiceFee.Should().BeNull();
+        RoleMappings.ToDetail(undecided).TrialFee.Should().BeNull();
+        RoleMappings.ToListItem(undecided).ServiceFee.Should().BeNull();
+        RoleMappings.ToListItem(undecided).TrialFee.Should().BeNull();
+
+        Role free = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Free", ServiceFee = 0m, TrialFee = 0m });
+
+        free.ServiceFee.Should().Be(0m, "a charge of nothing is a decided charge");
+        free.TrialFee.Should().Be(0m);
+        RoleMappings.ToDetail(free).ServiceFee.Should().Be(0m);
+        RoleMappings.ToDetail(free).TrialFee.Should().Be(0m);
+
+        // The periods behave the same way, and zero is a legitimate period rather than an absent one.
+        Role zeroPeriods = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Zeroed", BillingPeriod = 0, TrialPeriod = 0 });
+
+        zeroPeriods.BillingPeriod.Should().Be(0);
+        zeroPeriods.TrialPeriod.Should().Be(0);
+
+        Role absentPeriods = RoleMappings.ToNewRole(-1, new CreateRoleRequest { RoleName = "Unbounded" });
+
+        absentPeriods.BillingPeriod.Should().BeNull();
+        absentPeriods.TrialPeriod.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The legacy stand-in for an undecided charge cannot survive the money-typed column, which is why
+    /// absence is expressed as null instead.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The charge columns reached <c>money</c> in the upgrade chain: the baseline declared them as a narrow
+    /// five-digit decimal, a later script widened both to <c>money</c>, and every stored procedure from
+    /// that point on declares the parameters as <c>money</c> too. Reading the baseline alone would
+    /// therefore describe a type the terminal schema does not have, which is why the assertions below are
+    /// pinned to the widened type. <c>money</c> is a 19-digit type with exactly four decimal places, and
+    /// the legacy property that fed it was a <c>Single</c> carrying roughly seven significant digits.
+    /// Two independent losses follow, and this test pins both.
+    /// </para>
+    /// <para>
+    /// MIGRATION: first, <c>Single.MinValue</c> and <c>Double.MinValue</c> - the stand-ins for an absent
+    /// charge - are around twenty orders of magnitude outside the decimal range, so they cannot even be
+    /// REPRESENTED on the way to the column, let alone stored in it. Second, <c>Decimal.MinValue</c> is
+    /// representable but is floored to zero by the charge floor, which would silently reinterpret
+    /// "undecided" as "free". Both are why the target expresses an absent charge as null, and both are
+    /// recorded as real limitations rather than as clean round-trips. Third, a <c>money</c> value needing
+    /// more than about seven significant digits loses precision if it is ever narrowed through the legacy
+    /// <c>Single</c> shape, so nothing in the target narrows it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void RoleCharges_CannotCarryTheLegacyUndecidedStandIn()
+    {
+        // Held in locals so the conversion happens at run time; as constants these would not compile,
+        // which is itself the point being recorded.
+        float singleStandIn = float.MinValue;
+        double doubleStandIn = double.MinValue;
+
+        FluentActions.Invoking(() => (decimal)singleStandIn).Should().Throw<OverflowException>(
+            "Single.MinValue is about -3.4E+38 and the money-shaped decimal tops out near -7.9E+28");
+        FluentActions.Invoking(() => (decimal)doubleStandIn).Should().Throw<OverflowException>();
+
+        // Representable, but destroyed by the floor - so it cannot mean "undecided" either.
+        PortalMappings.ClampFee(decimal.MinValue).Should().Be(
+            0m,
+            "the floor cannot tell an enormous negative from an ordinary one, which is precisely why "
+            + "absence is carried as null rather than as a magic number");
+
+        Role role = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest { RoleName = "Floored", ServiceFee = decimal.MinValue });
+
+        role.ServiceFee.Should().Be(0m);
+        role.ServiceFee.Should().NotBeNull("a floored charge is decided, and that is the divergence");
+
+        // The precision half of the mismatch, at the top of the money range.
+        const decimal moneyCeiling = 922337203685477.5807m;
+        decimal narrowed = (decimal)(float)moneyCeiling;
+
+        narrowed.Should().NotBe(
+            moneyCeiling,
+            "a money value carries far more significant digits than a Single can hold, so nothing in "
+            + "the target narrows one through the legacy shape");
+
+        // A charge of ordinary size still survives the target's own decimal path untouched.
+        RoleMappings.ToNewRole(-1, new CreateRoleRequest { RoleName = "Priced", ServiceFee = 19.9999m })
+            .ServiceFee.Should().Be(19.9999m, "money holds exactly four decimal places");
+    }
+
+
+    /// <summary>
+    /// Composing a membership anchors the role from the route, takes the member from the body, takes both
+    /// bounds from the caller and starts the trial unused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The bounds arrive as arguments rather than being read off the request, and that separation is
+    /// deliberate: the legacy screen computed an expiry from the role's recurrence and period, arithmetic
+    /// that needs a notion of "now". A mapper that read a clock would stop being a pure projection and
+    /// would make every assertion about it time-dependent, so the computation stays with the service and
+    /// the mapper records the result.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <c>UserRoles.UserRoleID</c> is seeded <c>IDENTITY(1,1)</c>, so a freshly composed
+    /// membership legitimately carries zero until the store issues a key - unlike the portal, role, page
+    /// and module keys, where zero is a real identifier.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void RoleToNewAssignment_AnchorsTheRoleAndRecordsBothBounds()
+    {
+        DateTime effective = new(2026, 3, 1, 8, 0, 0, DateTimeKind.Utc);
+        DateTime expiry = new(2026, 9, 1, 8, 0, 0, DateTimeKind.Utc);
+
+        UserRole assignment = RoleMappings.ToNewAssignment(
+            42,
+            new RoleAssignmentRequest { UserId = 7, NotifyUser = true },
+            effective,
+            expiry);
+
+        assignment.RoleId.Should().Be(42, "the role is addressed by the route, never by the body");
+        assignment.UserId.Should().Be(7);
+        assignment.EffectiveDate.Should().Be(effective);
+        assignment.ExpiryDate.Should().Be(expiry);
+        assignment.IsTrialUsed.Should().BeFalse("a membership that has just been granted has used no trial");
+        assignment.UserRoleId.Should().Be(0, "the key is the store's to issue");
+
+        // The notification flag is a service concern and has no column, so it must not reach the row.
+        typeof(UserRole).GetProperty("NotifyUser").Should().BeNull();
+    }
+
+    /// <summary>
+    /// A membership granted without bounds carries both bounds absent, and the caller's bounds are taken
+    /// verbatim even when they are the legacy date stand-in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the legacy auto-assignment path passed <c>Null.NullDate</c> for BOTH bounds, so an
+    /// unbounded membership was stored as two instants of 0001-01-01 rather than as two nulls. The target
+    /// records absence as null, and this test pins the consequence: the stand-in is carried as an ordinary
+    /// instant, so a caller that hands one over gets one back rather than getting null. Normalising the
+    /// stand-in inside the mapper was rejected - it would silently rewrite a bound the caller chose - so
+    /// the normalisation belongs at the point where legacy rows are read, and the sentinel must not be
+    /// handed to this mapper in the first place.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void RoleToNewAssignment_KeepsAnUnboundedMembershipUnboundedAndTakesTheStandInVerbatim()
+    {
+        UserRole unbounded = RoleMappings.ToNewAssignment(
+            42,
+            new RoleAssignmentRequest { UserId = 7 },
+            effectiveDate: null,
+            expiryDate: null);
+
+        unbounded.EffectiveDate.Should().BeNull();
+        unbounded.ExpiryDate.Should().BeNull();
+
+        UserRole atStandIn = RoleMappings.ToNewAssignment(
+            42,
+            new RoleAssignmentRequest { UserId = 7 },
+            effectiveDate: DateTime.MinValue,
+            expiryDate: DateTime.MinValue);
+
+        atStandIn.EffectiveDate.Should().Be(DateTime.MinValue, "the mapper records what it is given");
+        atStandIn.ExpiryDate.Should().Be(DateTime.MinValue);
+        atStandIn.EffectiveDate.Should().NotBeNull("the stand-in is a value, not an absence");
+    }
+
+    /// <summary>
+    /// Amending a membership moves both bounds and leaves the member, the role, the key and the trial flag
+    /// exactly where they were.
+    /// </summary>
+    [Fact]
+    public void RoleApplyAssignmentUpdate_MovesBothBoundsAndLeavesTheMembershipAlone()
+    {
+        UserRole assignment = new()
+        {
+            UserRoleId = 900,
+            UserId = 7,
+            RoleId = 42,
+            IsTrialUsed = true,
+            EffectiveDate = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
+            ExpiryDate = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+
+        DateTime movedEffective = new(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        DateTime movedExpiry = new(2026, 6, 3, 0, 0, 0, DateTimeKind.Utc);
+
+        RoleMappings.ApplyAssignmentUpdate(assignment, movedEffective, movedExpiry);
+
+        assignment.EffectiveDate.Should().Be(movedEffective);
+        assignment.ExpiryDate.Should().Be(movedExpiry);
+
+        assignment.UserRoleId.Should().Be(900, "an amendment never moves the row");
+        assignment.UserId.Should().Be(7, "an amendment never reassigns the membership to another member");
+        assignment.RoleId.Should().Be(42, "nor to another role");
+        assignment.IsTrialUsed.Should().BeTrue(
+            "whether the trial has been consumed is a fact about the past and is not part of an amendment");
+
+        // Clearing both bounds is expressible, so an amendment can open a membership up again.
+        RoleMappings.ApplyAssignmentUpdate(assignment, null, null);
+
+        assignment.EffectiveDate.Should().BeNull();
+        assignment.ExpiryDate.Should().BeNull();
+        assignment.IsTrialUsed.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The bounds a membership mapper writes are the bounds its status is read from, and the reading needs
+    /// no clock beyond the instant the caller supplies.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Status is computed rather than stored - it appears in no column and on no response contract - so
+    /// what this test guards is the pairing: the mapper records two bounds, and the domain answers from
+    /// those two bounds and an instant handed in. Fixing the instant is what makes every case below
+    /// deterministic; a status rule that read a clock could not be asserted at a boundary at all.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy recurrence codes <c>N</c> and <c>O</c> both mean "does not recur", yet the
+    /// legacy expiry arithmetic sent them to OPPOSITE extremes - <c>N</c> to <c>Null.NullDate</c> and
+    /// <c>O</c> to 9999-12-31. Under the target's rule, in which absence is null and nothing else, a bound
+    /// of <c>DateTime.MinValue</c> is an ordinary instant in the past and therefore reads as EXPIRED -
+    /// the exact inverse of what an <c>N</c> role means. The stand-in must therefore be normalised to null
+    /// when a legacy row is read, before it ever reaches a membership; the far-future bound of an <c>O</c>
+    /// role needs no such care and reads as active on its own. Both halves are asserted below so that the
+    /// asymmetry cannot be forgotten, and the domain rule is left exactly as authored rather than taught
+    /// to recognise the sentinel.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void RoleAssignmentBounds_DriveTheStatusRuleFromTheInstantTheCallerSupplies()
+    {
+        DateTime asOfUtc = new(2026, 6, 15, 12, 0, 0, DateTimeKind.Utc);
+        RoleAssignmentRequest member = new() { UserId = 7 };
+
+        RoleMappings.ToNewAssignment(42, member, asOfUtc.AddDays(-30), asOfUtc.AddDays(30))
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active, "the instant falls inside both bounds");
+
+        RoleMappings.ToNewAssignment(42, member, asOfUtc.AddDays(1), null)
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Pending, "granted, but not yet in force");
+
+        RoleMappings.ToNewAssignment(42, member, null, asOfUtc.AddDays(-1))
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Expired, "the bound has lapsed");
+
+        RoleMappings.ToNewAssignment(42, member, null, null)
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active, "bounded on neither side");
+
+        // Equality at either bound is inclusive, so a membership is in force on the day it starts and on
+        // the day it ends rather than falling into a one-day gap at each edge.
+        RoleMappings.ToNewAssignment(42, member, asOfUtc, null)
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active);
+        RoleMappings.ToNewAssignment(42, member, null, asOfUtc)
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active);
+
+        // The far-future bound an OneTime role was given reads as active unaided.
+        RoleMappings.ToNewAssignment(42, member, null, new DateTime(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc))
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active);
+
+        // The stand-in bound a None role was given does NOT, which is the divergence recorded above.
+        RoleMappings.ToNewAssignment(42, member, null, DateTime.MinValue)
+            .GetStatus(asOfUtc).Should().Be(
+                RoleStatus.Expired,
+                "absence is null and only null, so the legacy stand-in reads as a lapsed bound and has "
+                + "to be normalised away before a legacy row becomes a membership");
+
+        // An effective bound at the stand-in is harmless, because a past instant cannot be pending.
+        RoleMappings.ToNewAssignment(42, member, DateTime.MinValue, null)
+            .GetStatus(asOfUtc).Should().Be(RoleStatus.Active);
+    }
+
+    /// <summary>
+    /// A role column holding the empty string projects the empty string, and the byte stand-in travels as
+    /// an ordinary period.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the invitation code is <c>char(1)</c>-adjacent legacy text whose stand-in for absent was
+    /// the empty string, so an empty code and an unset code were the same thing. They are kept apart here.
+    /// </remarks>
+    [Fact]
+    public void RoleMappers_KeepAnEmptyColumnApartFromAnAbsentOneAndCarryTheByteStandIn()
+    {
+        Role emptied = RoleMappings.ToNewRole(
+            -1,
+            new CreateRoleRequest
+            {
+                RoleName = "Coded",
+                Description = string.Empty,
+                RsvpCode = string.Empty,
+                IconFile = string.Empty,
+                TrialPeriod = 255,
+            });
+
+        emptied.Description.Should().Be(string.Empty);
+        emptied.RsvpCode.Should().Be(string.Empty, "an empty invitation code is not an absent one");
+        emptied.IconFile.Should().Be(string.Empty);
+        emptied.TrialPeriod.Should().Be(255);
+
+        RoleDetailDto detail = RoleMappings.ToDetail(emptied);
+
+        detail.Description.Should().Be(string.Empty);
+        detail.RsvpCode.Should().Be(string.Empty);
+        detail.IconFile.Should().Be(string.Empty);
+        detail.TrialPeriod.Should().Be(255);
+
+        Role absent = RoleMappings.ToNewRole(-1, new CreateRoleRequest { RoleName = "Uncoded" });
+
+        absent.Description.Should().BeNull();
+        absent.RsvpCode.Should().BeNull();
+        absent.IconFile.Should().BeNull();
+        absent.TrialPeriod.Should().BeNull();
+    }
+
+
+    /// <summary>
+    /// Visibility is a property of a module's placement on a page and of nothing else, so the module row
+    /// does not declare it and the projections must not look for it there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The legacy <c>ModuleInfo</c> was one flat object over FIVE tables - the module, its placement on a
+    /// page, its definition, the definition's control and the package the definition came from - so every
+    /// field looked equally like a property of "the module". Splitting it back apart puts visibility on the
+    /// placement, because the same module shown on two pages can be maximised on one and minimised on the
+    /// other. Reading it off the module row instead is the single most likely way to get the split wrong,
+    /// and it would compile, so the absence is asserted rather than assumed.
+    /// </para>
+    /// <para>
+    /// The other five placement-scoped appearance fields sit beside it for the same reason, and the three
+    /// package-scoped fields the detail projection carries come from the package rather than from either.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ModuleEntity_DeclaresNoVisibilityBecauseVisibilityBelongsToThePlacement()
+    {
+        typeof(Module).GetProperty("Visibility").Should().BeNull(
+            "the same module placed on two pages can be maximised on one and minimised on the other");
+        typeof(TabModule).GetProperty("Visibility").Should().NotBeNull();
+
+        foreach (string placementScoped in new[]
+        {
+            "PaneName", "ModuleOrder", "CacheTime", "Alignment", "Color", "Border",
+            "DisplayTitle", "DisplayPrint", "DisplaySyndicate", "ContainerSrc",
+        })
+        {
+            typeof(Module).GetProperty(placementScoped).Should().BeNull(
+                $"{placementScoped} describes one placement of the module, not the module");
+        }
+
+        // And the projection genuinely reads it from the placement: moving the placement's value moves the
+        // projected value, with the module left untouched between the two calls.
+        Module module = FullModule();
+        TabModule maximised = FullPlacement();
+        maximised.Visibility = ModuleVisibility.Maximized;
+        TabModule minimised = FullPlacement();
+        minimised.Visibility = ModuleVisibility.Minimized;
+
+        ModuleMappings.ToDetail(module, maximised, null).Visibility.Should().Be(ModuleVisibility.Maximized);
+        ModuleMappings.ToDetail(module, minimised, null).Visibility.Should().Be(ModuleVisibility.Minimized);
+        ModuleMappings.ToListItem(module, maximised, null).Visibility.Should().Be(ModuleVisibility.Maximized);
+        ModuleMappings.ToListItem(module, minimised, null).Visibility.Should().Be(ModuleVisibility.Minimized);
+    }
+
+    /// <summary>
+    /// All three visibility states round-trip through the create path, the update path and both read
+    /// projections.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy enum left its members unnumbered and the target numbers them explicitly, so
+    /// the stored ordinals are pinned rather than left to declaration order. Maximised is zero, which
+    /// matches the legacy row reader: it collapsed an unreadable value to the first member, so a module
+    /// whose visibility had never been set displayed maximised.
+    /// </remarks>
+    /// <param name="state">The visibility state under test.</param>
+    /// <param name="stored">The ordinal the state is stored as.</param>
+    [Theory]
+    [InlineData(ModuleVisibility.Maximized, 0)]
+    [InlineData(ModuleVisibility.Minimized, 1)]
+    [InlineData(ModuleVisibility.None, 2)]
+    public void ModuleMappers_RoundTripEveryVisibilityState(ModuleVisibility state, int stored)
+    {
+        ((int)state).Should().Be(stored, "the ordinals are part of the contract, not an accident of order");
+
+        TabModule placement = ModuleMappings.ToNewPlacement(
+            new CreateModuleRequest { TabId = 7, Visibility = state });
+
+        placement.Visibility.Should().Be(state);
+
+        Module module = FullModule();
+
+        ModuleMappings.ToDetail(module, placement, null).Visibility.Should().Be(state);
+        ModuleMappings.ToListItem(module, placement, null).Visibility.Should().Be(state);
+
+        TabModule stored2 = FullPlacement();
+        ModuleMappings.ApplyUpdate(module, stored2, new UpdateModuleRequest { Visibility = state });
+        stored2.Visibility.Should().Be(state);
+    }
+
+    /// <summary>
+    /// The three capability flags are read from the package's bitmask rather than recomputed, and the
+    /// mapper never writes one back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The legacy package row stored capability as a single integer of bit flags - portable is bit one,
+    /// searchable bit two and upgradeable bit four - and exposed three settable booleans beside it, so the
+    /// integer and the booleans could disagree. The target derives all three from the integer, which makes
+    /// disagreement unrepresentable, and treats a negative bitmask as "no capabilities" exactly as the
+    /// legacy guard did.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the mapper may read the derived flags and must never set them or re-derive them. There is
+    /// nothing to set - they have no setter - and re-deriving would duplicate a rule that belongs on the
+    /// package. Only portability reaches a response contract, so the other two are asserted on the package
+    /// the mapper consumes.
+    /// </para>
+    /// </remarks>
+    /// <param name="supportedFeatures">The stored capability bitmask.</param>
+    /// <param name="portable">Whether bit one is set.</param>
+    /// <param name="searchable">Whether bit two is set.</param>
+    /// <param name="upgradeable">Whether bit four is set.</param>
+    [Theory]
+    [InlineData(-1, false, false, false)]
+    [InlineData(0, false, false, false)]
+    [InlineData(1, true, false, false)]
+    [InlineData(2, false, true, false)]
+    [InlineData(3, true, true, false)]
+    [InlineData(4, false, false, true)]
+    [InlineData(5, true, false, true)]
+    [InlineData(6, false, true, true)]
+    [InlineData(7, true, true, true)]
+    public void ModuleDefinitionToDto_ReadsEveryCapabilityFlagFromTheBitmask(
+        int supportedFeatures,
+        bool portable,
+        bool searchable,
+        bool upgradeable)
+    {
+        DesktopModule package = NewDesktopModule("Announcements", supportedFeatures);
+
+        package.IsPortable.Should().Be(portable);
+        package.IsSearchable.Should().Be(searchable);
+        package.IsUpgradeable.Should().Be(upgradeable);
+        package.SupportedFeatures.Should().Be(
+            supportedFeatures,
+            "the bitmask itself stays a plain integer - no flags enum, no re-encoding");
+
+        ModuleDefinition definition = new()
+        {
+            ModuleDefinitionId = 4,
+            FriendlyName = "Announcements",
+            DesktopModuleId = package.DesktopModuleId,
+            DefaultCacheTime = 60,
+        };
+
+        ModuleMappings.ToDto(definition, package).IsPortable.Should().Be(
+            portable,
+            "the projection reads the derived flag rather than deriving it a second time");
+
+        typeof(DesktopModule).GetProperty("IsPortable")!.CanWrite.Should().BeFalse(
+            "a derived flag has no setter, so it cannot drift from the bitmask it comes from");
+        typeof(DesktopModule).GetProperty("IsSearchable")!.CanWrite.Should().BeFalse();
+        typeof(DesktopModule).GetProperty("IsUpgradeable")!.CanWrite.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A setting stored with an empty value projects an empty value, because an empty setting is a setting
+    /// that was chosen rather than one that was never made.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy settings collection could not distinguish a setting stored as the empty string
+    /// from an absent one, because the stand-in for an absent string WAS the empty string and the write
+    /// path turned it back into a null. Here the two are distinct states of the map: an empty value is a
+    /// present key, and an absent setting is a missing key. Only a blank NAME is discarded, and that is
+    /// asserted separately.
+    /// </remarks>
+    [Fact]
+    public void ModuleToSettings_KeepsAnEmptySettingValueAsAPresentSetting()
+    {
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+
+        ModuleSettingsDto settings = ModuleMappings.ToSettings(
+            module,
+            placement,
+            [new ModuleSetting { ModuleId = 0, SettingName = "cacheKey", SettingValue = string.Empty }],
+            [new TabModuleSetting { TabModuleId = 31, SettingName = "skin", SettingValue = string.Empty }]);
+
+        settings.ModuleSettings.Should().ContainKey("cacheKey");
+        settings.ModuleSettings["cacheKey"].Should().Be(
+            string.Empty,
+            "a setting stored as nothing is a setting, and the caller has to be able to see it");
+        settings.TabModuleSettings.Should().ContainKey("skin");
+        settings.TabModuleSettings["skin"].Should().Be(string.Empty);
+
+        // Absence is a missing key, which is the state an empty value is being kept apart from.
+        settings.ModuleSettings.Should().NotContainKey("neverSet");
+        settings.TabModuleSettings.Should().NotContainKey("neverSet");
+    }
+
+    /// <summary>
+    /// A module whose inheritance flag was never read is indistinguishable from one whose flag is false,
+    /// and a module date at the legacy stand-in travels as an ordinary instant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the inheritance flag is the one boolean on the module row that is nullable, and the detail
+    /// projection flattens it with a default of false. That reproduces a legacy fixed point rather than
+    /// introducing one: the legacy write path turned an explicit <c>False</c> into a SQL <c>NULL</c>, and
+    /// the read path turned a <c>NULL</c> back into <c>False</c>, so the two were already
+    /// indistinguishable in the store. The flattening is therefore lossless with respect to the legacy
+    /// contract and lossy only with respect to the nullable column, which is why the ENTITY keeps the
+    /// distinction and only the response gives it up.
+    /// </para>
+    /// <para>
+    /// The write path keeps the distinction in both directions, so a caller can still store an explicit
+    /// null.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ModuleMappers_FlattenAnUnreadInheritanceFlagToFalseAndCarryTheDateStandIn()
+    {
+        Module unread = FullModule();
+        unread.InheritViewPermissions = null;
+        unread.StartDate = DateTime.MinValue;
+        unread.EndDate = null;
+
+        ModuleDetailDto fromUnread = ModuleMappings.ToDetail(unread, FullPlacement(), null);
+
+        fromUnread.InheritViewPermissions.Should().BeFalse();
+        fromUnread.StartDate.Should().Be(DateTime.MinValue, "the stand-in instant is a value here");
+        fromUnread.EndDate.Should().BeNull("absence is null, and only null");
+
+        Module explicitlyFalse = FullModule();
+        explicitlyFalse.InheritViewPermissions = false;
+
+        ModuleMappings.ToDetail(explicitlyFalse, FullPlacement(), null)
+            .InheritViewPermissions.Should().BeFalse(
+                "false and never-read are the same answer on the response, which is what the legacy "
+                + "store already did to them");
+
+        // MIGRATION: the write path cannot produce the third state at all. Both request contracts declare
+        // the flag as a plain bool, so an update resolves an unread flag to a decided one and the null can
+        // only ever have come from a row the legacy application wrote. That is a deliberate narrowing of
+        // the column rather than an oversight: the flag governs whether view permissions are inherited,
+        // and leaving it undecided is not a state an administrator should be able to choose.
+        Module written = FullModule();
+        written.InheritViewPermissions = null;
+
+        ModuleMappings.ApplyUpdate(
+            written,
+            FullPlacement(),
+            new UpdateModuleRequest { InheritViewPermissions = false });
+        written.InheritViewPermissions.Should().BeFalse("an update decides the flag one way or the other");
+
+        ModuleMappings.ApplyUpdate(
+            written,
+            FullPlacement(),
+            new UpdateModuleRequest { InheritViewPermissions = true });
+        written.InheritViewPermissions.Should().BeTrue();
+
+        typeof(UpdateModuleRequest).GetProperty("InheritViewPermissions")!
+            .PropertyType.Should().Be(
+                typeof(bool),
+                "the undecided state belongs to rows the legacy application wrote and is not offered "
+                + "to callers of this API");
+        typeof(Module).GetProperty("InheritViewPermissions")!
+            .PropertyType.Should().Be(
+                typeof(bool?),
+                "the entity still has to be able to READ the undecided state out of the column");
+    }
+
+    /// <summary>
+    /// A freshly composed placement shows its title and its print affordance and withholds its syndication
+    /// affordance, because the mapper supplies none of the three and the row's own defaults decide.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the two visible affordances default on and syndication defaults OFF, which follows the
+    /// legacy constructor. The column default introduced later in the upgrade chain is 1, so a row inserted
+    /// by the legacy application and a row inserted by the legacy DDL disagreed with each other. The target
+    /// follows the constructor, because that is what the administration screens actually produced, and the
+    /// divergence from the column default is recorded rather than absorbed.
+    /// </remarks>
+    [Fact]
+    public void ModuleToNewPlacement_LeavesTheAffordanceDefaultsToTheRow()
+    {
+        TabModule fresh = ModuleMappings.ToNewPlacement(new CreateModuleRequest { TabId = 7 });
+
+        fresh.DisplayTitle.Should().BeTrue("the legacy constructor showed the title");
+        fresh.DisplayPrint.Should().BeTrue("and offered the print affordance");
+        fresh.DisplaySyndicate.Should().BeFalse(
+            "the legacy constructor withheld syndication even though the column default is 1");
+
+        // The create contract carries the title affordance, so a caller can still switch it off, and the
+        // other two remain the row's business because the contract does not offer them.
+        ModuleMappings.ToNewPlacement(new CreateModuleRequest { TabId = 7, DisplayTitle = false })
+            .DisplayTitle.Should().BeFalse();
+
+        typeof(CreateModuleRequest).GetProperty("DisplayPrint").Should().BeNull();
+        typeof(CreateModuleRequest).GetProperty("DisplaySyndicate").Should().BeNull();
+    }
+
+
+    /// <summary>
+    /// No response projection declares a credential member, and no response projection carries a
+    /// credential value even when the account it was built from holds all three.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the assertion the whole suite exists to protect. The legacy membership provider was
+    /// registered with reversible password storage and with retrieval ENABLED, and the key that reversed it
+    /// was committed to the repository, so "read a user" and "read a user's password" were a single query
+    /// apart. The migration replaces that with a one-way hash, and the hash must never leave the server
+    /// either - a hash on the wire is an offline cracking target and serves no caller.
+    /// </para>
+    /// <para>
+    /// Both halves are asserted, because either alone is insufficient: the declaration check would miss a
+    /// credential smuggled through a differently-named member, and the value check would miss a member that
+    /// happens to be null in the fixture. The account under test therefore holds a distinctive value in all
+    /// three credential fields, and every string on every projection is compared against all three.
+    /// </para>
+    /// <para>
+    /// MIGRATION: password RETRIEVAL is not carried forward in any form. There is no mapper, no contract
+    /// member and no endpoint for it, and the recovery path is a reset rather than a disclosure.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserReadProjections_NeitherDeclareNorCarryAnyCredential()
+    {
+        const string storedHash = "$2a$12$measuredhashvalue";
+        const string storedAnswer = "not-a-real-answer";
+        const string storedQuestion = "not-a-real-question";
+
+        User user = FullUser();
+        user.PasswordHash = storedHash;
+        user.PasswordAnswer = storedAnswer;
+        user.PasswordQuestion = storedQuestion;
+
+        object[] projections =
+        [
+            UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100"),
+            UserMappings.ToDetail(user, -1, ["Administrators"]),
+            UserMappings.ToProfile(user.UserId, [FullDefinition()], [NewProfileValue("555-0100", null)], 2),
+            UserMappings.ToDto(FullDefinition(), 2),
+        ];
+
+        foreach (object projection in projections)
+        {
+            Type contract = projection.GetType();
+
+            foreach (string credential in new[]
+            {
+                "Password", "PasswordHash", "PasswordAnswer", "PasswordQuestion", "PasswordSalt",
+                "PasswordFormat", "EncryptedPassword", "PasswordConfirmation",
+            })
+            {
+                contract.GetProperty(credential).Should().BeNull(
+                    $"{contract.Name} is a response contract and {credential} is a credential");
+            }
+
+            string?[] carried = contract.GetProperties()
+                .Where(property => property.PropertyType == typeof(string))
+                .Select(property => (string?)property.GetValue(projection))
+                .ToArray();
+
+            carried.Should().NotContain(storedHash, $"{contract.Name} must not carry the stored hash");
+            carried.Should().NotContain(storedAnswer);
+            carried.Should().NotContain(storedQuestion);
+        }
+    }
+
+    /// <summary>
+    /// Creating an account never hashes and never copies the submitted password onto the row, and updating
+    /// an account never touches the stored credential.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: hashing belongs behind the password-hasher abstraction, not in a mapper. A mapper that
+    /// hashed would be neither pure nor testable without a cost parameter, and it would put a credential
+    /// decision in the one layer that is meant only to move fields. The create contract carries the
+    /// submitted password because the service needs it; the entity the mapper returns does not.
+    /// </remarks>
+    [Fact]
+    public void UserWriteMappers_NeverHashAndNeverDisturbTheStoredCredential()
+    {
+        User created = UserMappings.ToNewUser(new CreateUserRequest
+        {
+            Username = "measured_member",
+            FirstName = "Ada",
+            LastName = "Lovelace",
+            Email = "ada@example.com",
+            Password = "not-a-real-password",
+            ConfirmPassword = "not-a-real-password",
+            Authorize = true,
+        });
+
+        created.PasswordHash.Should().BeNull("the mapper neither hashes nor copies the submitted password");
+        created.PasswordAnswer.Should().BeNull();
+        created.PasswordQuestion.Should().BeNull();
+
+        User stored = FullUser();
+        stored.PasswordHash = "$2a$12$measuredhashvalue";
+        stored.PasswordAnswer = "not-a-real-answer";
+        stored.PasswordQuestion = "not-a-real-question";
+
+        UserMappings.ApplyUpdate(stored, new UpdateUserRequest
+        {
+            FirstName = "Augusta",
+            LastName = "King",
+            DisplayName = "Augusta King",
+            Email = "augusta@example.com",
+        });
+
+        stored.PasswordHash.Should().Be(
+            "$2a$12$measuredhashvalue",
+            "the profile contract carries no credential, so an update cannot clobber one");
+        stored.PasswordAnswer.Should().Be("not-a-real-answer");
+        stored.PasswordQuestion.Should().Be("not-a-real-question");
+        stored.UpdatePassword.Should().BeTrue("nor can it clear a standing instruction to change it");
+
+        typeof(UpdateUserRequest).GetProperty("Password").Should().BeNull();
+        typeof(UpdateUserRequest).GetProperty("PasswordHash").Should().BeNull();
+    }
+
+    /// <summary>
+    /// Each account projection declares exactly one address member, because the legacy account and its
+    /// membership record each carried one and the two collapse onto a single field.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the legacy account exposed an e-mail whose setter wrote straight through to the
+    /// membership record's own e-mail, so the pair was already a single value wearing two names. The merge
+    /// keeps one, and this test guards against a future revision reintroducing the second under a
+    /// qualifying prefix - at which point a caller would have to guess which one was authoritative.
+    /// </remarks>
+    [Fact]
+    public void UserReadProjections_DeclareExactlyOneAddressMember()
+    {
+        foreach (Type contract in new[] { typeof(UserListItemDto), typeof(UserDetailDto) })
+        {
+            string[] emailish = contract.GetProperties()
+                .Select(property => property.Name)
+                .Where(name => name.Contains("Email", StringComparison.Ordinal))
+                .ToArray();
+
+            emailish.Should().Equal(
+                ["Email"],
+                $"{contract.Name} must carry one e-mail and must not qualify it with a source");
+        }
+
+        User user = FullUser();
+        user.Email = "ada@example.com";
+
+        UserMappings.ToListItem(user, -1, null, null).Email.Should().Be("ada@example.com");
+        UserMappings.ToDetail(user, -1, []).Email.Should().Be("ada@example.com");
+    }
+
+    /// <summary>
+    /// An account fact that was never read and one that was read as false project the same answer, and a
+    /// membership instant at the legacy stand-in projects as that instant rather than as absent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: the three membership flags are nullable on the entity because the credential store is an
+    /// externally installed set of objects that the migration reads rather than owns, so "not read" is a
+    /// real state. Both projections flatten it to false, and the flattening is faithful rather than lossy
+    /// with respect to the legacy contract: the legacy write path turned an explicit <c>False</c> into a
+    /// SQL <c>NULL</c> and the read path turned a <c>NULL</c> back into <c>False</c>, so the store could
+    /// not tell them apart either. Flattening toward false is also the safe direction for all three -
+    /// unapproved, offline and not-locked-out.
+    /// </para>
+    /// <para>
+    /// The instants are nullable on both sides and stay that way, so absence remains expressible there.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserReadProjections_ReportAnUnreadFlagAsFalseAndCarryTheDateStandIn()
+    {
+        User unread = FullUser();
+        unread.IsApproved = null;
+        unread.IsOnline = null;
+        unread.IsLockedOut = null;
+        unread.CreatedDate = DateTime.MinValue;
+        unread.LastLoginDate = null;
+
+        UserDetailDto fromUnread = UserMappings.ToDetail(unread, -1, []);
+
+        fromUnread.IsApproved.Should().BeFalse();
+        fromUnread.IsOnline.Should().BeFalse();
+        fromUnread.IsLockedOut.Should().BeFalse();
+        fromUnread.CreatedDate.Should().Be(DateTime.MinValue, "the stand-in instant is a value here");
+        fromUnread.LastLoginDate.Should().BeNull("an account that has never signed in has no instant");
+
+        User explicitlyFalse = FullUser();
+        explicitlyFalse.IsApproved = false;
+        explicitlyFalse.IsOnline = false;
+        explicitlyFalse.IsLockedOut = false;
+
+        UserDetailDto fromFalse = UserMappings.ToDetail(explicitlyFalse, -1, []);
+
+        fromFalse.IsApproved.Should().BeFalse(
+            "false and never-read are the same answer on the response, exactly as they were in the store");
+        fromFalse.IsOnline.Should().BeFalse();
+        fromFalse.IsLockedOut.Should().BeFalse();
+
+        UserListItemDto listed = UserMappings.ToListItem(unread, -1, null, null);
+
+        listed.IsApproved.Should().BeFalse();
+        listed.IsOnline.Should().BeFalse();
+        listed.IsLockedOut.Should().BeFalse();
+        listed.CreatedDate.Should().Be(DateTime.MinValue);
+        listed.LastLoginDate.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A host-level profile property projects the legacy host identifier rather than an absent tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A profile property definition either belongs to one portal or is defined once for the whole
+    /// installation, and the legacy convention for the latter was to address the installation AS a portal
+    /// using the identifier -1. That is why -1 is not a spelling of "absent" anywhere in this system: the
+    /// legacy code passes it as a portal identifier to reach host-level rows, while its own absence helper
+    /// would have called the very same value absent.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the entity models the host case as null, which is honest about the column, and the
+    /// response projects it back to -1, which is what every legacy consumer of this contract expects to
+    /// read. The translation is one-directional and lives here.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ProfileDefinitionToDto_ProjectsAHostLevelDefinitionAsTheLegacyHostIdentifier()
+    {
+        ProfilePropertyDefinition hostLevel = FullDefinition();
+        hostLevel.PortalId = null;
+
+        UserMappings.ToDto(hostLevel, 2).PortalId.Should().Be(
+            -1,
+            "the installation is addressed as a portal, and -1 is the identifier it is addressed by");
+
+        ProfilePropertyDefinition tenantLevel = FullDefinition();
+        tenantLevel.PortalId = 0;
+
+        UserMappings.ToDto(tenantLevel, 2).PortalId.Should().Be(
+            0,
+            "Portals.PortalID is seeded IDENTITY(-1,1), so zero is the first tenant rather than no tenant");
+
+        ProfilePropertyDefinition hostAddressedExplicitly = FullDefinition();
+        hostAddressedExplicitly.PortalId = -1;
+
+        UserMappings.ToDto(hostAddressedExplicitly, 2).PortalId.Should().Be(-1);
+    }
+
+    /// <summary>
+    /// A profile answer stored as the empty string projects the empty string rather than falling back to
+    /// the long-text column or reporting the answer as absent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A profile value is stored in one of two columns - a bounded one for ordinary answers and an
+    /// unbounded one for long text - and the projection has to choose. The choice must be made on
+    /// nullness, not on emptiness: an answer of "" is an answer the member gave, and treating it as
+    /// missing would silently substitute a different column's content.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is where the legacy empty-string stand-in does the most damage if it is carried
+    /// forward. Coalescing on emptiness would have reproduced it faithfully and been wrong; the projection
+    /// coalesces on null, and the emptiness case is asserted in both orders so that neither column can
+    /// shadow the other.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void UserToProfile_KeepsAnEmptyAnswerApartFromAnAbsentOne()
+    {
+        Answer(NewProfileValue(string.Empty, "long text that must not be reached"))
+            .PropertyValue.Should().Be(
+                string.Empty,
+                "an empty bounded answer is present, so the long-text column is not consulted");
+
+        Answer(NewProfileValue(null, "long text")).PropertyValue.Should().Be(
+            "long text",
+            "an absent bounded answer is what sends the projection to the long-text column");
+
+        Answer(NewProfileValue(null, string.Empty)).PropertyValue.Should().Be(
+            string.Empty,
+            "and an empty long text is itself an answer rather than a reason to report nothing");
+
+        Answer(NewProfileValue(null, null)).PropertyValue.Should().Be(
+            string.Empty,
+            "with neither column populated the response carries the empty string, because the member is "
+            + "declared non-nullable and a caller rendering a form needs something to bind to");
+
+        // The plain answer path is unaffected, so the empty cases are not being special-cased.
+        Answer(NewProfileValue("555-0100", null)).PropertyValue.Should().Be("555-0100");
+        Answer(NewProfileValue("555-0100", "long text")).PropertyValue.Should().Be("555-0100");
+    }
+
+
+    /// <summary>
+    /// Every enum a mapper carries keeps the member that the legacy row reader would have produced for an
+    /// unreadable value as its lowest-valued member, because that member is what an unset column becomes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The legacy reader had a general rule for enums: sort the declared values and take the first. Any
+    /// column it could not read therefore became the lowest-VALUED member rather than a documented default,
+    /// which makes the numbering of these enums load-bearing. Renumbering one would silently change what
+    /// every unset row means, and nothing would fail to compile.
+    /// </para>
+    /// <para>
+    /// Two of the eight are counter-intuitive and are the reason this test is worth its length. The account
+    /// creation outcome's zero member is the FIRST STEP of the creation attempt, not success - success is
+    /// thirteen - so a defaulted outcome reads as "not finished" rather than "worked", which is the safe
+    /// direction. The billing code's zero-most member is the daily recurrence, not the non-recurring code,
+    /// because the members are valued at their characters and 'D' is 68 while 'N' is 78 - so a defaulted
+    /// billing code reads as "bills every day", which is emphatically NOT safe and is exactly why the
+    /// target carries an unset code as null instead of defaulting it.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the target never defaults an enum on a mapper's behalf. Where the legacy behaviour is
+    /// still observable it is because a non-nullable member has no other state to be in, and this test
+    /// records what that state means in each case.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryCarriedEnum_KeepsTheMemberAnUnsetColumnWouldBecome()
+    {
+        Enum.GetValues<UserCreateStatus>()[0].Should().Be(
+            UserCreateStatus.AddUser,
+            "the lowest-valued outcome is the first step of the attempt, not its success");
+        ((int)UserCreateStatus.Success).Should().Be(13, "success is emphatically not the zero value");
+
+        Enum.GetValues<BillingFrequency>()[0].Should().Be(
+            BillingFrequency.Day,
+            "the members are valued at their characters, so 'D' at 68 sorts below 'N' at 78");
+
+        Enum.GetValues<UserLoginStatus>()[0].Should().Be(
+            UserLoginStatus.Failure,
+            "an unreadable sign-in outcome must fail closed");
+        Enum.GetValues<PasswordFormat>()[0].Should().Be(
+            PasswordFormat.Clear,
+            "the least secure format is the zero value, which is why no code path may default to it");
+        Enum.GetValues<ModuleVisibility>()[0].Should().Be(ModuleVisibility.Maximized);
+        Enum.GetValues<UserRegistrationMode>()[0].Should().Be(
+            UserRegistrationMode.NoRegistration,
+            "an unreadable registration mode must not open registration");
+        Enum.GetValues<BannerAdvertisingMode>()[0].Should().Be(BannerAdvertisingMode.None);
+        Enum.GetValues<PermissionKey>()[0].Should().Be(PermissionKey.VIEW);
+        Enum.GetValues<RoleStatus>()[0].Should().Be(
+            RoleStatus.Pending,
+            "the computed status has no legacy ancestor, and pending is the conservative zero");
+
+        // The one place the rule is still observable through a mapper: the placement's visibility is
+        // non-nullable, so a request that names no state produces the lowest-valued member - which is the
+        // same answer the legacy reader gave, by a different route.
+        ModuleMappings.ToNewPlacement(new CreateModuleRequest { TabId = 7 })
+            .Visibility.Should().Be(ModuleVisibility.Maximized);
+    }
+
+    /// <summary>
+    /// The permission keyword is carried by name, because the column stores the keyword itself rather than
+    /// a number, and no mapper in this suite projects a permission at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The permission column is <c>varchar(20)</c> holding the keyword, so the enum's members carry no
+    /// explicit values and their ordinals are an implementation detail with no meaning outside the process.
+    /// Anything that persisted an ordinal would write a number into a text column that a foreign key
+    /// expects to hold one of four words. The names are upper-case because the stored keywords are.
+    /// </para>
+    /// <para>
+    /// The second half records a boundary rather than a behaviour. The legacy permission objects were
+    /// flattened subclasses of a shared base, and the migration unpicks them into a permission catalogue
+    /// plus two join rows - which means the page's permissions belong to the page's mapper and the module's
+    /// to the module's, and there is no separate permission mapper anywhere. Neither of those two mappers
+    /// projects permissions at this revision, and asserting that keeps the report honest: the pseudo-
+    /// principal rules that govern a permission's role reference are not exercised here because nothing
+    /// here exercises a permission.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void PermissionKeyword_IsCarriedByNameAndNoMapperProjectsAPermission()
+    {
+        Enum.GetNames<PermissionKey>().Should().Equal(
+            ["VIEW", "EDIT", "READ", "WRITE"],
+            "the stored keywords are these four words, upper-case, and there is no fifth");
+
+        nameof(PermissionKey.VIEW).Should().Be("VIEW");
+        Enum.Parse<PermissionKey>("EDIT").Should().Be(PermissionKey.EDIT);
+        Enum.Parse<PermissionKey>(nameof(PermissionKey.WRITE)).ToString().Should().Be("WRITE");
+
+        // MIGRATION: the ordinal is not the wire value and not the stored value. It is asserted here only
+        // to demonstrate that it carries no information a consumer could rely on - EDIT is 1 purely
+        // because it is declared second.
+        ((int)PermissionKey.EDIT).Should().Be(1);
+        Enum.GetUnderlyingType(typeof(PermissionKey)).Should().Be(typeof(int));
+
+        foreach (Type contract in new[]
+        {
+            typeof(TabDetailDto), typeof(TabListItemDto), typeof(UpdateTabRequest),
+            typeof(ModuleDetailDto), typeof(ModuleListItemDto), typeof(ModuleSettingsDto),
+            typeof(RoleDetailDto), typeof(RoleListItemDto),
+        })
+        {
+            string[] permissionish = contract.GetProperties()
+                .Select(property => property.Name)
+                .Where(name => name.Contains("Permission", StringComparison.Ordinal))
+                .ToArray();
+
+            permissionish.Should().BeSubsetOf(
+                ["InheritViewPermissions"],
+                $"{contract.Name} carries no permission collection, so the permission catalogue is "
+                + "projected by the permissions endpoint rather than by any of these five mappers");
+        }
+    }
+
+    /// <summary>
+    /// Every mapper is a pure function of its arguments: called twice with the same input it produces the
+    /// same output, and it reads no clock, no random source and no ambient state.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Purity is what makes every other assertion in this suite stable, and it is not a given: the legacy
+    /// equivalents read the current date, the current request's portal settings and a reflection-resolved
+    /// singleton, so "the same input" did not determine the same output. A mapper that reached for any of
+    /// those would turn a deterministic suite into an intermittent one, and the failure would surface far
+    /// from its cause.
+    /// </para>
+    /// <para>
+    /// Two calls separated by real elapsed time and compared for equivalence is the practical test. A
+    /// clock read would show up as a differing instant, a generated handle as a differing identifier, and
+    /// an accumulated static as a differing collection.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryMapper_IsAPureFunctionOfItsArguments()
+    {
+        Portal portal = FullPortal();
+        Tab tab = FullTab();
+        Role role = FullRole();
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+        User user = FullUser();
+        ProfilePropertyDefinition definition = FullDefinition();
+        RoleGroup group = new()
+        {
+            RoleGroupId = 6,
+            PortalId = -1,
+            RoleGroupName = "Paid Memberships",
+            Description = "A measured group",
+        };
+        ModuleDefinition moduleDefinition = new()
+        {
+            ModuleDefinitionId = 4,
+            FriendlyName = "Announcements",
+            DesktopModuleId = 3,
+            DefaultCacheTime = 60,
+        };
+
+        PortalMappings.ToListItem(portal, ["alpha.example.com"], 3, 4).Should().BeEquivalentTo(
+            PortalMappings.ToListItem(portal, ["alpha.example.com"], 3, 4));
+        PortalMappings.ToDetail(portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5)
+            .Should().BeEquivalentTo(
+                PortalMappings.ToDetail(
+                    portal, 3, 4, "Administrators", "Registered Users", "admin@example.com", 5));
+        PortalMappings.ToSettings(portal).Should().BeEquivalentTo(PortalMappings.ToSettings(portal));
+        PortalMappings.ToDto(portal.PortalAliases.First()).Should()
+            .BeEquivalentTo(PortalMappings.ToDto(portal.PortalAliases.First()));
+
+        TabMappings.ToListItem(tab, true).Should().BeEquivalentTo(TabMappings.ToListItem(tab, true));
+        TabMappings.ToDetail(tab, true).Should().BeEquivalentTo(TabMappings.ToDetail(tab, true));
+
+        RoleMappings.ToListItem(role).Should().BeEquivalentTo(RoleMappings.ToListItem(role));
+        RoleMappings.ToDetail(role).Should().BeEquivalentTo(RoleMappings.ToDetail(role));
+        RoleMappings.ToDto(group).Should().BeEquivalentTo(RoleMappings.ToDto(group));
+
+        ModuleMappings.ToListItem(module, placement, "Announcements").Should()
+            .BeEquivalentTo(ModuleMappings.ToListItem(module, placement, "Announcements"));
+        ModuleMappings.ToDetail(module, placement, "Announcements").Should()
+            .BeEquivalentTo(ModuleMappings.ToDetail(module, placement, "Announcements"));
+        ModuleMappings.ToSettings(module, placement, [], []).Should()
+            .BeEquivalentTo(ModuleMappings.ToSettings(module, placement, [], []));
+        ModuleMappings.ToDto(moduleDefinition, NewDesktopModule("Announcements", 7)).Should()
+            .BeEquivalentTo(ModuleMappings.ToDto(moduleDefinition, NewDesktopModule("Announcements", 7)));
+
+        UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100").Should()
+            .BeEquivalentTo(UserMappings.ToListItem(user, -1, "12 Measured Street", "555-0100"));
+        UserMappings.ToDetail(user, -1, ["Administrators"]).Should()
+            .BeEquivalentTo(UserMappings.ToDetail(user, -1, ["Administrators"]));
+        UserMappings.ToDto(definition, 2).Should().BeEquivalentTo(UserMappings.ToDto(definition, 2));
+        UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2).Should()
+            .BeEquivalentTo(UserMappings.ToProfile(1, [definition], [NewProfileValue("555-0100", null)], 2));
+
+        // The write mappers are pure in the same sense: applied twice they leave the same row, so neither
+        // accumulates nor stamps an instant of its own.
+        Portal appliedOnce = FullPortal();
+        Portal appliedTwice = FullPortal();
+        UpdatePortalRequest request = new() { PortalName = "Renamed Portal", HostFee = 3.25m };
+
+        PortalMappings.ApplyUpdate(appliedOnce, request);
+        PortalMappings.ApplyUpdate(appliedTwice, request);
+        PortalMappings.ApplyUpdate(appliedTwice, request);
+
+        // Compared field by field rather than as an object graph, because the fixture issues a random
+        // handle and an entity graph carries navigations that say nothing about the mapper.
+        PortalMappings.ToSettings(appliedTwice).Should().BeEquivalentTo(
+            PortalMappings.ToSettings(appliedOnce),
+            options => options.Excluding(settings => settings.Guid));
+        appliedTwice.ProcessorPassword.Should().Be(appliedOnce.ProcessorPassword);
+        appliedTwice.AdminTabId.Should().Be(appliedOnce.AdminTabId);
+        appliedTwice.AdministratorRoleId.Should().Be(appliedOnce.AdministratorRoleId);
+        appliedTwice.RegisteredRoleId.Should().Be(appliedOnce.RegisteredRoleId);
+
+        // Freshly composed entities carry no generated handle and no generated instant, so nothing here
+        // depends on when the suite runs.
+        Portal composed = PortalMappings.ToNewPortal(
+            new CreatePortalRequest { PortalName = "Composed" },
+            "GBP",
+            null,
+            0m,
+            0,
+            0,
+            0,
+            null,
+            "Portals/composed");
+
+        composed.PortalGuid.Should().Be(
+            Guid.Empty,
+            "the handle is issued by the store, so the mapper reads no random source");
+
+        UserMappings.ToNewUser(new CreateUserRequest { Username = "u", FirstName = "F", LastName = "L" })
+            .CreatedDate.Should().BeNull("the creation instant belongs to the credential store, not here");
+        RoleMappings.ToNewAssignment(42, new RoleAssignmentRequest { UserId = 7 }, null, null)
+            .EffectiveDate.Should().BeNull("an unbounded membership is unbounded, not bounded at 'now'");
+    }
+
 
     // ---------------------------------------------------------------------------------------------
     // Fixtures
