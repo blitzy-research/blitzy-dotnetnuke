@@ -9047,6 +9047,87 @@ reaches the guard. Nothing depends on that, and nothing re-creates the zero — 
 and is tested as `null`, never against `-1` and never against `0`, so a role that legitimately declares a
 period of zero is refused by the shape check rather than mistaken for one that declares none.
 
+### An absent trial frequency now lets the billing terms govern, because the legacy guard did not short-circuit and its right-hand side could not be null
+
+**Legacy behaviour.** `RoleController.vb:L521` reads
+`If IsTrialUsed = False And role.TrialFrequency.ToString <> "N" Then`, and the operator is `And`, **not**
+`AndAlso` — the non-short-circuiting form. The right-hand side was therefore evaluated even when the
+left-hand side had already decided the answer. That never faulted, for two reasons that both stop holding
+at the migration boundary: `RoleInfo.vb:L188` declared the property as a `String`, and the legacy reader
+coerced a null column to `Null.NullString`, which is the **empty string** and not `Nothing`. The
+consequence was reachable and wrong: a role whose `TrialFrequency` column was `NULL` presented as `""`,
+`"" <> "N"` evaluated **true**, and so the **trial** terms governed the expiry of a role that declared no
+trial at all — taking `TrialPeriod` and an empty frequency into a six-case selection that matched none of
+them.
+
+**Target behaviour.** `dbo.Roles.TrialFrequency` is genuinely `char(1) NULL`, so the migrated property is
+a nullable enumeration and an absent value is a `null` rather than an empty string. The migrated guard
+requires a **present** frequency before the trial can govern, and an absent one falls through to the
+**billing** terms. This is a different answer from the legacy one; it is the answer the column's own
+nullability implies; and it is deliberate rather than incidental. The guard is written as a pattern match
+on the nullable value rather than as a dereference, so neither operand order can fault and the legacy
+question of *when* the property is touched stops mattering. The explicit `.ToString` the legacy line
+performed on an already-`String` property — a coercion the administration screens' `strict="false"`
+compilation permitted — has no migrated counterpart, and neither does the `Convert.ToDateTime` applied to
+an already-`Date` local at L543-L546: both are Option-Strict-off coercions that the migrated types make
+unnecessary rather than merely tidier.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`, and pinned by
+`AssignUserToRole_AbsentTrialFrequency_LetsTheBillingTermsGovern` and
+`AssignUserToRole_AbsentTrialFrequencyAndConsumedTrial_DoesNotFault` in
+`backend/tests/DnnMigration.UnitTests/Application/RoleServiceTests.cs`.
+
+### Cancelling a membership the member does not hold is now reported, where the legacy path deleted nothing and said nothing
+
+**Legacy behaviour.** The cancellation guard at `RoleController.vb:L493-L501` tests the membership for
+`Nothing` as the first of its three conditions and, when it is absent, falls to the **else** arm — which
+calls `DeleteUserRole` for a row that does not exist. That member returned a `Boolean` the caller did not
+read, and the enclosing `Sub` returned nothing at all, so cancelling a membership nobody held was
+indistinguishable from cancelling one that existed: both were silent successes.
+
+**Target behaviour.** The removal operation resolves the membership before it decides anything and reports
+`role_assignment.not_found` when the member does not hold the role, committing nothing and recording no
+audit entry. The externally visible consequence is stated plainly because it changes an HTTP answer: the
+route responds `404` where the legacy screen would have completed, and a caller can now distinguish "there
+was nothing to withdraw" from "the membership was withdrawn". The same resolution order gives the two
+remaining outcomes their own reasons — `role_assignment.protected` for the two assignments the rule
+refuses, and the advisory `role_assignment.expired_not_removed` on a **successful** outcome when the paid
+trial had already been consumed and the row was back-dated instead of deleted, which is the only way a
+caller learns which of the two effects occurred.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`, and pinned by
+`RemoveUserFromRole_MembershipAbsent_IsReportedAsAReasonAndCommitsNothing`,
+`RemoveUserFromRole_ExpiringArm_CarriesAnAdvisoryReasonOnSuccess` and the two protected-rule tests in
+`backend/tests/DnnMigration.UnitTests/Application/RoleServiceTests.cs`.
+
+### An unrecognised frequency character still does not throw, and the value that survives it differs
+
+**Legacy behaviour.** The six-case selection at `RoleController.vb:L540-L547` has **no `Case Else`** — L547
+closes the `Select` immediately after the year case. A character outside the six therefore matched nothing
+and the expiry simply kept whatever the normalisation above had left it, which was never an error. Because
+the local was seeded from the ambient clock at L505 and advanced to `Now` at L534 whenever it lay in the
+past, an unrecognised character in practice stored an expiry equal to **now** — an assignment that lapsed
+the moment it was written.
+
+**Target behaviour.** The non-throwing shape is **preserved**, as the Minimal Change Clause requires of a
+legacy shape discovered during a migration: the migrated switch carries a discard arm that yields the same
+local, so an unrecognised character is still not a failure. Preserving it matters because the terminal
+columns carry neither a foreign key nor a check constraint — `03.00.01.SqlDataProvider` drops the
+`CodeFrequency` lookup and its constraint and nothing recreates them — so the store accepts any single
+character and an unrecognised one is genuinely reachable from live data. A throw would have turned one bad
+character into a failed operation on a row that is otherwise readable.
+
+What **differs** is the value that survives, and the difference follows from the bounds being primed from
+the request rather than from the ambient clock: where the legacy engine stored an already-lapsed expiry,
+the migrated engine stores **no expiry** when the caller submitted none, and preserves the caller's bound
+unchanged when one was submitted. That is the sane reading of the same fall-through, and it is recorded
+here rather than absorbed.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/RoleService.cs`, and pinned by
+`AssignUserToRole_UnrecognisedFrequencyCharacter_DoesNotThrowAndLeavesTheBoundAlone` and
+`AssignUserToRole_UnrecognisedFrequencyCharacter_PreservesASubmittedFutureBound` in
+`backend/tests/DnnMigration.UnitTests/Application/RoleServiceTests.cs`.
+
 ### The renewal bounds are primed from the request, where one of the two legacy members primed them from the row
 
 **Legacy behaviour.** Two members wrote an assignment and they disagreed with each other. L295 stored the
@@ -9203,6 +9284,39 @@ caller its own documentation claims for it.
 
 **Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
 `backend/tests/DnnMigration.UnitTests/Services/UserServiceTests.cs`.
+
+### The deletion guard takes no caller-supplied override, and one boolean becomes three named refusals
+
+**Legacy behaviour.** The signature was
+`DeleteUser(ByRef objUser As UserInfo, ByVal notify As Boolean, ByVal deleteAdmin As Boolean) As Boolean`
+(`UserController.vb:L200`). The tenant's designated administrator was read off the tenant row with
+`Convert.ToInt32(dr("AdministratorId"))` at `L209` and, when the account being removed *was* that
+administrator, `L210` set the verdict to whatever the **caller** had passed as `deleteAdmin`. The
+answer was a single `Boolean`, set false from three unrelated places: the administrator guard, a
+refusal from the membership provider at `L231`, and the `Catch` at the foot of the method, which
+swallowed every fault into the same value.
+
+**Target behaviour, and the two divergences.** `DeleteUserAsync(portalId, userId, cancellationToken)`
+takes the tenant, the account and cancellation, and nothing else.
+
+- **`deleteAdmin` is not carried forward.** Whether a tenant's designated administrator may be deleted
+  is an authorisation rule, and the legacy signature delegated it to whichever screen happened to be
+  calling — so the protection was only as strong as the least careful call site. The administrator is
+  now refused unconditionally, and reassigning the designation on the tenant is the supported way to
+  make that account removable. A second guard is added ahead of it: an installation-wide account is
+  refused outright, because host accounts are beyond a single tenant's administration. That guard has
+  no legacy counterpart at all on this path.
+- **`notify` is not carried forward.** It selected a mail notification, and the mail subsystem is out
+  of scope.
+
+**One boolean becomes three reasons.** A caller previously learned only that the deletion had not
+happened. The three refusals now carry `user.not-found`, `user.delete.superuser-protected` and
+`user.delete.administrator-protected`, so an account holder can be told which of them applied. The
+refusals stand ahead of every destructive step, and nothing — sessions, grants, enrolments, membership
+or credential — is touched once one of them fires.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/tests/DnnMigration.UnitTests/Application/UserServiceTests.cs`.
 
 ### The membership-settings read is not cached, and the legacy expiry it drops was three minutes, not sixty
 

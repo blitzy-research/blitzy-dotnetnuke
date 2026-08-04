@@ -501,16 +501,26 @@ public interface IModuleService
     /// <param name="request">The target module, the document, and the provenance recorded on the audit log.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A task producing a successful <see cref="Result"/>. Fails with <c>module.not_found</c> when the
-    /// target module does not exist in the portal, <c>module.not_portable</c> when its behaviour is not
-    /// registered with the factory or does not support import, or <c>module.content_invalid</c> when the
-    /// document cannot be interpreted.
+    /// A task producing a successful <see cref="Result"/>. Fails with <c>module.request_invalid</c> when
+    /// the request names no target module at all, <c>module.not_found</c> when the target module does not
+    /// exist in the portal, <c>module.not_portable</c> when its behaviour is not registered with the
+    /// factory or does not support import, or <c>module.content_invalid</c> when the document cannot be
+    /// interpreted.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// The whole import is one unit of work, so a document that fails part-way leaves the module exactly
     /// as it was rather than half-loaded. The target module is named in the body because the endpoint
     /// carries no identifier in its route; the portal argument is what prevents that body-supplied
     /// identifier from reaching another tenant's module.
+    /// </para>
+    /// <para>
+    /// Because the target is named in the body, its ABSENCE is a distinct outcome from its being unknown,
+    /// and the two are reported separately. <c>ModuleImportRequest.ModuleId</c> is nullable precisely so
+    /// that this implementation can tell them apart - the module identity column is seeded at zero, so a
+    /// non-nullable property could not have - and no request in this API is refused on the SIGN of an
+    /// identifier, only on its absence or on a failed lookup.
+    /// </para>
     /// </remarks>
     Task<Result> ImportModuleAsync(
         int portalId,

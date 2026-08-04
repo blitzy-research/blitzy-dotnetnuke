@@ -1,5 +1,7 @@
+using System.Collections.ObjectModel;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -7,118 +9,271 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DnnMigration.Infrastructure.Services;
 
+// MIGRATION: 1 - SCOPE. Only the installation-settings TABLE portion of the six legacy members
+// that migrated code actually reached is implemented here. The 2,704-line legacy globals module
+// that 111 files referenced, and the three-file host-entities namespace that 53 files referenced,
+// are NOT ported. The other five replacements each have their own named home elsewhere: the
+// runtime performance multiplier is a bound options class in the Application layer, the
+// application virtual path and the two physical-path members are host-environment and
+// link-generation concerns in the API layer, and the unauthenticated-user role name is a domain
+// constant. Not one of them acquires a member below.
+//
+// MIGRATION: 2 - NARROW RULE-T3 EXCEPTION. Rule T3 routes data access through a repository
+// abstraction, and this is the one documented exception in the layer. The reason is structural
+// rather than convenient: these rows are not one of the twenty-one mapped entities, so there is
+// no entity type, no entity configuration, no mapped entity collection on the context and no
+// repository interface for them - and none of those may be invented, because the entity inventory
+// and the configuration count are both fixed. This service therefore takes the persistence
+// context for exactly one purpose, to borrow the relational connection the context already owns,
+// and the exception is contained rather than concealed: every relational type stays private, so
+// no context, connection, command, reader or query object escapes through any public member.
+//
+// MIGRATION: 3 - REFLECTION SINGLETON AND PRE-GENERICS SHAPES REMOVED. The legacy path reached
+// storage through a reflection-instantiated provider singleton
+// (Library/Components/Providers/Data/DataProvider.vb L31-L50) whose four host members
+// (L87-L90) answered with a forward-only reader, and the caller above them accumulated those rows
+// into an untyped, mutable, pre-generics collection
+// (Library/Components/Host/HostSettings.vb L28-L51). All three shapes are gone: the provider
+// becomes constructor injection, the reader is consumed and closed inside this class, and the
+// collection becomes a materialised, typed, genuinely read-only projection.
+//
+// MIGRATION: 4 - MISSING AND NULL SEMANTICS. A name with no row now yields null, so an empty
+// string means a row exists and holds an empty value. The legacy reader could express neither
+// distinction: it answered a missing key with the empty-string sentinel
+// (Library/Components/Host/HostSettings.vb L20-L26) and mapped a database null to the empty
+// string as well (L37-L41), leaving an absent row, a null column and a genuinely empty value
+// indistinguishable. Going the other way, a null value handed to the write is translated to the
+// empty string at the database boundary and nowhere earlier, because the column is NOT NULL and
+// the legacy absent-string marker was itself the empty string
+// (Library/Components/Shared/Null.vb). That is the Rule-T7 boundary translation: the sentinel is
+// honoured where the schema requires it, never inside the contract.
+//
+// MIGRATION: 5 - ADD AND UPDATE REMAIN ONE UPSERT. The legacy provider declared two distinct
+// write primitives, but its controller already read the row first and branched between them
+// before discarding the host-wide cached copy
+// (Library/Components/Host/HostSettingsController.vb L46-L57), so upsert was always the
+// caller-facing shape. That read-then-branch sequence is preserved exactly, with one correction
+// noted on the write member itself: it now runs inside a transaction, because the legacy sequence
+// left a window in which a concurrent writer could insert the same name between the read and the
+// insert and turn the branch into a primary-key violation.
+//
+// MIGRATION: 6 - READ CACHING INTENTIONALLY OMITTED. The legacy whole-table read cached its
+// result under the key "GetHostSettings" with NO expiry argument at all
+// (Library/Components/Host/HostSettings.vb L43). The target cache contract requires every write
+// to state an explicit expiry span, and no measured host-settings expiry exists anywhere in the
+// legacy source to supply. Inventing one - twenty minutes, sixty minutes, an infinite span or a
+// private never-expiring path - would be a speculative behaviour change dressed as fidelity, and
+// bypassing the abstraction to reach the underlying cache directly would be worse. So the read
+// paths below deliberately do not cache, and this note is the record that AAP 0.7.5.2 requires
+// for an omitted read path rather than allowing it to disappear silently. Explicit invalidation
+// after a successful write is retained, so entries owned by other services still go.
+//
+// MIGRATION: 7 - WRITE-ON-READ SIDE EFFECT RETAINED. The terminal whole-table read is not a pure
+// read. Its measured body
+// (Website/Providers/DataProviders/SqlDataProvider/04.05.00.SqlDataProvider L898-L908) creates
+// the installation's "GUID" row when it is absent and only then projects every row, so an
+// installation acquires its identifier as a side effect of the first read. That side effect is
+// reproduced rather than quietly dropped, which is why the whole-table read below writes.
+//
+// MIGRATION: 8 - SECURE FLAG STORED, NOT BROADENED. The flag is persisted exactly as supplied,
+// for both the insert and the update, because the contract exposes it and its default of false
+// reproduces the legacy two-argument overload
+// (Library/Components/Host/HostSettingsController.vb L42-L44). Nothing here filters on it:
+// withholding a sensitive value is an authorisation decision belonging to whoever publishes it,
+// and the only legacy screens that made that decision are the excluded host-administration pages.
+// The legacy secure-settings reader is deliberately not reproduced either - despite its name it
+// returned only the NON-secure rows and additionally dropped any name containing "password", and
+// under the minimal-change directive that naming defect is recorded rather than repaired.
+//
+// MIGRATION: 9 - DIVERGENCE, STORED PROCEDURES BECOME PARAMETERISED STATEMENTS. The legacy
+// members reached four stored procedures by concatenating a database owner and an object
+// qualifier onto a procedure name and handing the result to a helper whose only artefact in the
+// repository is a compiled assembly with no source
+// (Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb, host region). AAP 0.1.2.1
+// names the elimination of those concatenated procedure names as a goal of this migration and
+// reserves raw procedure invocation for the few procedures whose logic cannot be expressed
+// relationally; AAP 0.5.1.3 repeats that procedures are retained only where behaviourally
+// necessary. These four are a keyed select, a whole-table select, an insert and an update, so
+// each is expressed here as a parameterised statement against the table instead. The measured
+// BEHAVIOUR of every one of them is preserved verbatim, side effect included - only the object
+// the command names changes - and every value still crosses as a bound, sized parameter, so the
+// injection surface the concatenation created is closed rather than moved.
+
 /// <summary>
-/// Reads and writes the installation-wide <c>dbo.HostSettings</c> rows.
+/// Reads and writes the installation-wide configuration rows the legacy platform persisted in the
+/// <c>HostSettings</c> table. This is the single implementation of
+/// <see cref="IHostSettingsService"/>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: this is the narrow replacement for the <c>HostSettings</c>-table portion of two excluded
-/// legacy subsystems - the 2,704-line <c>Library/Components/Shared/Globals.vb</c> module that 111 files
-/// referenced, and the three-file <c>DotNetNuke.Entities.Host</c> namespace that 53 files referenced.
-/// Measured coupling from the code actually being migrated is six distinct members across fourteen call
-/// sites, and only one of those six touches this table. Nothing else from either module is rebuilt here.
+/// <strong>Terminal schema, honoured and never altered.</strong> The table is created at
+/// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.05.SqlDataProvider</c> with
+/// <c>SettingName nvarchar(50) NOT NULL</c> and <c>SettingValue nvarchar(256) NOT NULL</c>;
+/// <c>02.00.01</c> makes the name the clustered primary key, and <c>03.00.12</c> adds
+/// <c>SettingIsSecure bit NOT NULL</c> defaulting to zero, which <c>03.01.01</c> re-asserts. Those
+/// three facts are the whole contract: the two lengths bound the validation below, and the primary
+/// key on the name is what makes a name identify at most one row and therefore makes the upsert
+/// branch unambiguous. Rule T4 applies without exception - nothing here creates, alters, drops or
+/// migrates any database object.
 /// </para>
 /// <para>
-/// <strong>Why explicit statements rather than a mapped entity.</strong> <c>HostSettings</c> is not one
-/// of the twenty-one entities the model owns, and adding a twenty-second would contradict the fixed
-/// entity inventory. It does not belong in that inventory either: these rows are installation-wide
-/// name-and-value configuration, not part of any aggregate, and nothing navigates to them from a mapped
-/// entity. So this service reaches the table the same way <c>MembershipStore</c> reaches the external
-/// credential store - through parameterised statements on the context's own connection, enlisting in the
-/// context's transaction when one is open. Every value crosses as a bound parameter; nothing is
-/// concatenated into SQL.
+/// <strong>Lifetime.</strong> Registered scoped, alongside the scoped context whose connection it
+/// borrows. It holds no mutable state of its own, adds no accessor, factory or disposal member,
+/// and never opens a connection it did not need: the container owns the context, and the context
+/// owns the connection.
 /// </para>
 /// <para>
-/// <strong>Terminal schema.</strong> The table is created at
-/// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.05.SqlDataProvider</c> line 2259 with
-/// <c>SettingName nvarchar(50) NOT NULL</c> and <c>SettingValue nvarchar(256) NOT NULL</c>, uniquely
-/// indexed on the name by <c>IX_HostSettings</c>. A later script adds
-/// <c>SettingIsSecure bit NOT NULL</c> defaulting to 0. The unique index is what makes the upsert below
-/// safe: it is the constraint that guarantees a name identifies at most one row.
-/// </para>
-/// <para>
-/// <strong>Absent means null.</strong> A name with no row yields <see langword="null"/>, so an empty
-/// string now means a row exists and holds an empty value. The legacy reader could not express that
-/// distinction: it answered a missing key with the empty-string sentinel and mapped a database NULL to
-/// the empty string as well, leaving an absent row, a NULL column and a genuinely empty value
-/// indistinguishable to every caller.
-/// </para>
-/// <para>
-/// <strong>The secure flag is stored, not enforced here.</strong> This service records it and does not
-/// filter on it. Withholding sensitive values is an authorisation decision belonging to whichever
-/// caller publishes them, and the only legacy screens that made that decision are the excluded
-/// host-level administration pages. The legacy secure-settings reader is deliberately not reproduced:
-/// despite its name it returned only the NON-secure rows and additionally dropped any name containing
-/// "password". That naming defect is recorded rather than corrected, per the minimal-change directive.
+/// <strong>Cancellation.</strong> Every member is awaitable and every token reaches the operation
+/// that can honour it - opening, executing, reading, beginning a transaction and committing one.
+/// Cancellation is never caught, wrapped or converted anywhere below; it leaves as it arrived. The
+/// single deliberate exception is rollback, which is cleanup and must complete even for a
+/// cancelled operation, and which is documented where it appears.
 /// </para>
 /// </remarks>
 internal sealed class HostSettingsService : IHostSettingsService
 {
-    private readonly DnnDbContext _context;
-    private readonly ICacheService _cache;
+    /// <summary>Longest name the <c>SettingName</c> column accepts.</summary>
+    private const int SettingNameMaxLength = 50;
 
-    /// <summary>Initialises a new instance of the <see cref="HostSettingsService"/> class.</summary>
-    /// <param name="context">The unit-of-work scoped database context, whose connection is borrowed.</param>
-    /// <param name="cache">
-    /// The cache, so that a write discards the host-wide stored copy. The legacy upsert finished with
-    /// exactly that step, at <c>Library/Components/Host/HostSettingsController.vb</c> line 57, and it is
-    /// performed here because it is a storage concern that the contract deliberately does not express.
+    /// <summary>Longest value the <c>SettingValue</c> column accepts.</summary>
+    private const int SettingValueMaxLength = 256;
+
+    /// <summary>Bound parameter carrying the setting name.</summary>
+    private const string SettingNameParameter = "@SettingName";
+
+    /// <summary>Bound parameter carrying the setting value.</summary>
+    private const string SettingValueParameter = "@SettingValue";
+
+    /// <summary>Bound parameter carrying the secure flag.</summary>
+    private const string SettingIsSecureParameter = "@SettingIsSecure";
+
+    /// <summary>
+    /// Name of the row the whole-table read creates when it is missing, preserved verbatim from
+    /// the measured procedure body.
+    /// </summary>
+    private const string InstallationIdentifierSettingName = "GUID";
+
+    /// <summary>Ordinal of the name column in the whole-table projection.</summary>
+    private const int SettingNameOrdinal = 0;
+
+    /// <summary>Ordinal of the value column in the whole-table projection.</summary>
+    private const int SettingValueOrdinal = 1;
+
+    /// <summary>
+    /// Keyed read, reproducing the measured body of the legacy single-setting procedure
+    /// (<c>02.00.00.SqlDataProvider</c>).
+    /// </summary>
+    private const string SelectSettingCommandText =
+        "SELECT TOP (1) [SettingValue] FROM [dbo].[HostSettings] WHERE [SettingName] = @SettingName;";
+
+    /// <summary>
+    /// Whole-table projection. Only the name and the value are read: the secure flag is
+    /// persistence metadata and has no place in the projection this service hands back.
+    /// </summary>
+    private const string SelectAllSettingsCommandText =
+        "SELECT [SettingName], [SettingValue] FROM [dbo].[HostSettings];";
+
+    /// <summary>
+    /// The write-on-read half of the measured whole-table procedure
+    /// (<c>04.05.00.SqlDataProvider</c> L898-L908), expressed as one atomic statement. The legacy
+    /// body tested for the row and inserted it as two separate statements, which races; folding
+    /// the test into the insert and taking an update lock over the key range means a concurrent
+    /// caller cannot slip an identical row in between, so the primary key cannot be violated.
+    /// </summary>
+    private const string InsertInstallationIdentifierCommandText =
+        "INSERT INTO [dbo].[HostSettings] ([SettingName], [SettingValue], [SettingIsSecure]) " +
+        "SELECT @SettingName, CONVERT(nvarchar(256), NEWID()), 0 " +
+        "WHERE NOT EXISTS (SELECT 1 FROM [dbo].[HostSettings] WITH (UPDLOCK, HOLDLOCK) " +
+        "WHERE [SettingName] = @SettingName);";
+
+    /// <summary>
+    /// Existence test for the upsert branch. It takes an update lock over the key range and holds
+    /// it for the life of the surrounding transaction, which is what closes the window the legacy
+    /// read-then-branch sequence left open.
+    /// </summary>
+    private const string SettingExistsCommandText =
+        "SELECT TOP (1) 1 FROM [dbo].[HostSettings] WITH (UPDLOCK, HOLDLOCK) " +
+        "WHERE [SettingName] = @SettingName;";
+
+    /// <summary>
+    /// Insert branch, reproducing the measured body of the legacy add procedure
+    /// (<c>03.00.12.SqlDataProvider</c>).
+    /// </summary>
+    private const string InsertSettingCommandText =
+        "INSERT INTO [dbo].[HostSettings] ([SettingName], [SettingValue], [SettingIsSecure]) " +
+        "VALUES (@SettingName, @SettingValue, @SettingIsSecure);";
+
+    /// <summary>
+    /// Update branch, reproducing the measured body of the legacy update procedure
+    /// (<c>03.00.12.SqlDataProvider</c>), which rewrote the value and the flag together.
+    /// </summary>
+    private const string UpdateSettingCommandText =
+        "UPDATE [dbo].[HostSettings] SET [SettingValue] = @SettingValue, " +
+        "[SettingIsSecure] = @SettingIsSecure WHERE [SettingName] = @SettingName;";
+
+    private readonly DnnDbContext _dbContext;
+    private readonly ICacheService _cacheService;
+
+    /// <summary>
+    /// Initialises a new instance of the <see cref="HostSettingsService"/> class.
+    /// </summary>
+    /// <param name="dbContext">
+    /// The scoped persistence context, taken solely to borrow the relational connection it already
+    /// owns. This is the narrow Rule-T3 exception recorded above; the context is never exposed.
+    /// </param>
+    /// <param name="cacheService">
+    /// The cache, so that a completed write discards the installation-wide stored copy. The legacy
+    /// upsert finished with exactly that step
+    /// (<c>Library/Components/Host/HostSettingsController.vb</c> L57), and it is performed here
+    /// because it is a storage concern the contract deliberately does not express.
     /// </param>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
-    public HostSettingsService(DnnDbContext context, ICacheService cache)
+    public HostSettingsService(
+        DnnDbContext dbContext,
+        ICacheService cacheService)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
     }
 
     /// <inheritdoc />
+    /// <exception cref="ArgumentNullException"><paramref name="settingName"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="settingName"/> is blank, or longer than the column accepts.
+    /// </exception>
+    /// <remarks>
+    /// Absence and emptiness are separated here for the first time. An empty result set means no
+    /// row carries the name, which is reported as <see langword="null"/>; a row whose value is
+    /// empty is reported as the empty string. No caching happens on this path, for the reason
+    /// recorded in migration note 6.
+    /// </remarks>
     public async Task<string?> GetSettingAsync(string settingName, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(settingName);
+        string name = ValidateSettingName(settingName);
 
-        const string sql = "SELECT TOP (1) [SettingValue] FROM [dbo].[HostSettings] WHERE [SettingName] = @name;";
-
-        return await ExecuteAsync(
-                sql,
-                new[] { new KeyValuePair<string, object?>("@name", settingName) },
-                static async (command, token) =>
+        return await WithBorrowedConnectionAsync(
+                async (connection, token) =>
                 {
-                    object? value = await command.ExecuteScalarAsync(token).ConfigureAwait(false);
+                    await using DbCommand command = CreateCommand(connection, SelectSettingCommandText);
+                    AddTextParameter(command, SettingNameParameter, name, SettingNameMaxLength);
 
-                    // DBNull and a missing row are different facts about the store, but the contract
-                    // makes them one answer: there is no value to hand back. The column is declared NOT
-                    // NULL, so only the missing-row case arises in practice; guarding both costs nothing
-                    // and means a hand-edited row cannot produce a cast failure.
-                    return value is null or DBNull ? null : Convert.ToString(value, Culture);
-                },
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
+                    object? scalar = await command.ExecuteScalarAsync(token).ConfigureAwait(false);
 
-    /// <inheritdoc />
-    public async Task<IReadOnlyDictionary<string, string>> GetSettingsAsync(CancellationToken cancellationToken = default)
-    {
-        const string sql = "SELECT [SettingName], [SettingValue] FROM [dbo].[HostSettings];";
-
-        return await ExecuteAsync(
-                sql,
-                Array.Empty<KeyValuePair<string, object?>>(),
-                static async (command, token) =>
-                {
-                    // Ordinal-ignore-case, because the unique index is on the name under a
-                    // case-insensitive collation: two rows differing only in casing cannot exist, so a
-                    // case-sensitive projection would let a caller miss a row it asked for by name.
-                    Dictionary<string, string> settings = new(StringComparer.OrdinalIgnoreCase);
-
-                    using DbDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
-
-                    while (await reader.ReadAsync(token).ConfigureAwait(false))
+                    // A null reference here means the projection returned no ROW, which is the one
+                    // case the contract reports as null. DBNull means a row exists whose column is
+                    // null - impossible against the NOT NULL column, so this arm is boundary
+                    // defence against a hand-edited database, and it answers with the empty string
+                    // because a row does exist. The final arm is unreachable for an nvarchar
+                    // column and exists only because the compiler requires the switch to be
+                    // exhaustive; it converts invariantly so that no ambient culture can reshape a
+                    // stored value in transit.
+                    return scalar switch
                     {
-                        string name = reader.GetString(0);
-                        settings[name] = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-                    }
-
-                    return (IReadOnlyDictionary<string, string>)settings;
+                        null => null,
+                        DBNull => string.Empty,
+                        string text => text,
+                        _ => Convert.ToString(scalar, CultureInfo.InvariantCulture) ?? string.Empty,
+                    };
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -126,16 +281,109 @@ internal sealed class HostSettingsService : IHostSettingsService
 
     /// <inheritdoc />
     /// <remarks>
-    /// One statement, not a read followed by a branch. The legacy controller read the row first and then
-    /// chose between two distinct write primitives, which leaves a window in which a concurrent writer
-    /// inserts the same name between the read and the insert - and <c>IX_HostSettings</c> then turns that
-    /// race into a unique-constraint violation. Updating first and inserting only when nothing was
-    /// updated closes the window to a single round trip, and the unique index remains the guarantee that
-    /// makes the insert branch unambiguous.
     /// <para>
-    /// An empty value is stored as an empty value; it is never read as a request to remove the row. The
-    /// host-wide cached copy is discarded afterwards, so a subsequent read observes what was just
-    /// written rather than the value it replaced.
+    /// Two statements, in the order the measured procedure body used them: create the
+    /// installation-identifier row if it is missing, then project every row. The first is the
+    /// write-on-read side effect recorded in migration note 7, retained rather than dropped; it is
+    /// idempotent and race-safe, so calling this member concurrently is safe even on a database
+    /// that has never held the row.
+    /// </para>
+    /// <para>
+    /// The projection is fully materialised and the reader is closed before anything is returned,
+    /// so no caller can find itself holding an open reader or a live query. Keys compare
+    /// ordinally, which is what the legacy untyped collection did - it used the default
+    /// case-sensitive comparison - so a caller asking by the exact stored name behaves as it always
+    /// did. No caching happens on this path either, for the reason recorded in migration note 6.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<string, string>> GetSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        return await WithBorrowedConnectionAsync(
+                async (connection, token) =>
+                {
+                    await using (DbCommand seed = CreateCommand(connection, InsertInstallationIdentifierCommandText))
+                    {
+                        AddTextParameter(
+                            seed,
+                            SettingNameParameter,
+                            InstallationIdentifierSettingName,
+                            SettingNameMaxLength);
+
+                        await seed.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                    }
+
+                    Dictionary<string, string> settings = new(StringComparer.Ordinal);
+
+                    await using (DbCommand command = CreateCommand(connection, SelectAllSettingsCommandText))
+                    {
+                        // Scoped so that the reader is disposed - and the connection therefore
+                        // freed for the next command - before the projection is handed back.
+                        await using DbDataReader reader = await command
+                            .ExecuteReaderAsync(token)
+                            .ConfigureAwait(false);
+
+                        while (await reader.ReadAsync(token).ConfigureAwait(false))
+                        {
+                            string name = await reader
+                                .GetFieldValueAsync<string>(SettingNameOrdinal, token)
+                                .ConfigureAwait(false);
+
+                            // The column is NOT NULL, so this test is boundary defence rather than
+                            // ordinary data handling. It answers with the empty string, which is
+                            // precisely what the legacy accumulation did for a null column.
+                            bool valueIsNull = await reader
+                                .IsDBNullAsync(SettingValueOrdinal, token)
+                                .ConfigureAwait(false);
+
+                            string value = valueIsNull
+                                ? string.Empty
+                                : await reader
+                                    .GetFieldValueAsync<string>(SettingValueOrdinal, token)
+                                    .ConfigureAwait(false);
+
+                            // Assigned rather than added: the name is the primary key, so a
+                            // duplicate cannot occur, and assignment means a database that somehow
+                            // held one could not turn a read into an exception.
+                            settings[name] = value;
+                        }
+                    }
+
+                    // Genuinely read-only, not a mutable map widened to a read-only interface: a
+                    // caller cannot reach the underlying store by casting the result back.
+                    return (IReadOnlyDictionary<string, string>)new ReadOnlyDictionary<string, string>(settings);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <exception cref="ArgumentNullException"><paramref name="settingName"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="settingName"/> is blank or longer than the column accepts, or
+    /// <paramref name="settingValue"/> is longer than the column accepts.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The legacy sequence is preserved: test for the row, then update or insert accordingly, then
+    /// discard the installation-wide cached copy
+    /// (<c>Library/Components/Host/HostSettingsController.vb</c> L46-L57). One correction is
+    /// applied, and migration note 5 records it. The legacy test and write were two unrelated
+    /// round trips, so a concurrent writer could insert the same name in between and turn the
+    /// insert branch into a primary-key violation. Here the test takes an update lock over the key
+    /// range and a transaction holds it across the write, so the branch cannot be invalidated
+    /// after it is chosen.
+    /// </para>
+    /// <para>
+    /// The transaction is joined rather than imposed. When the surrounding unit of work already has
+    /// one open, this write enlists in it and the caller keeps the decision to commit or roll back,
+    /// which is what keeps a setting change atomic with the work that motivated it. Only when
+    /// there is none does this method begin one, and only then does it commit or roll back.
+    /// </para>
+    /// <para>
+    /// Validation is checked before anything is executed, so an over-long name or value is refused
+    /// rather than silently truncated or turned into a provider error. Neither the value nor any
+    /// part of it appears in an exception message: a setting may hold a credential, and note 8
+    /// explains why this class treats every value as potentially sensitive.
     /// </para>
     /// </remarks>
     public async Task UpsertSettingAsync(
@@ -144,59 +392,138 @@ internal sealed class HostSettingsService : IHostSettingsService
         bool isSecure = false,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(settingName);
-        ArgumentNullException.ThrowIfNull(settingValue);
+        string name = ValidateSettingName(settingName);
+        string value = ValidateSettingValue(settingValue);
 
-        const string sql = @"
-UPDATE [dbo].[HostSettings]
-SET [SettingValue] = @value, [SettingIsSecure] = @secure
-WHERE [SettingName] = @name;
-
-IF @@ROWCOUNT = 0
-    INSERT INTO [dbo].[HostSettings] ([SettingName], [SettingValue], [SettingIsSecure])
-    VALUES (@name, @value, @secure);";
-
-        KeyValuePair<string, object?>[] parameters =
-        [
-            new KeyValuePair<string, object?>("@name", settingName),
-            new KeyValuePair<string, object?>("@value", settingValue),
-            new KeyValuePair<string, object?>("@secure", isSecure),
-        ];
-
-        await ExecuteAsync(
-                sql,
-                parameters,
-                static async (command, token) =>
+        await WithBorrowedConnectionAsync(
+                async (connection, token) =>
                 {
-                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                    return true;
+                    IDbContextTransaction? ambient = _dbContext.Database.CurrentTransaction;
+
+                    // Begun only when the caller has none. A transaction this method did not start
+                    // is not this method's to finish. Disposal is asynchronous and would roll an
+                    // uncommitted transaction back on its own; the explicit rollback below is kept
+                    // so that the failure path is legible rather than implied.
+                    await using IDbContextTransaction? owned = ambient is null
+                        ? await _dbContext.Database.BeginTransactionAsync(token).ConfigureAwait(false)
+                        : null;
+
+                    try
+                    {
+                        bool exists = await SettingExistsAsync(connection, name, token).ConfigureAwait(false);
+
+                        await WriteSettingAsync(
+                                connection,
+                                exists ? UpdateSettingCommandText : InsertSettingCommandText,
+                                name,
+                                value,
+                                isSecure,
+                                token)
+                            .ConfigureAwait(false);
+
+                        if (owned is not null)
+                        {
+                            await owned.CommitAsync(token).ConfigureAwait(false);
+                        }
+
+                        return exists;
+                    }
+                    catch
+                    {
+                        if (owned is not null)
+                        {
+                            // Deliberately not cancellable. Rollback is cleanup, and a cancelled
+                            // operation needs it more than a completed one does, so passing the
+                            // caller's token here would abandon the rollback exactly when it
+                            // matters. Nothing is caught, inspected or converted: the original
+                            // exception, cancellation included, is rethrown unchanged.
+                            await owned.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        }
+
+                        throw;
+                    }
                 },
                 cancellationToken)
             .ConfigureAwait(false);
 
-        _cache.InvalidateHost();
+        // Once, and only after the write is durable. Reaching this line means no exception left the
+        // operation and an owned transaction committed, so a subsequent read cannot observe a
+        // cached value the write has already replaced. A failed write invalidates nothing, because
+        // it changed nothing.
+        _cacheService.InvalidateHost();
     }
 
-    /// <summary>Runs one statement on the context's connection and projects its result.</summary>
-    /// <typeparam name="TResult">What the projection produces.</typeparam>
-    /// <param name="sql">The statement, carrying only parameter placeholders and no interpolated values.</param>
-    /// <param name="parameters">The values to bind.</param>
-    /// <param name="action">The projection to run against the prepared command.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Whatever the projection produced.</returns>
-    /// <remarks>
-    /// The connection is borrowed rather than created, and any transaction the context already has open
-    /// is enlisted, so a write here commits or rolls back with the surrounding unit of work instead of
-    /// escaping it. The connection is closed only when this call is what opened it: closing a connection
-    /// somebody else opened would break the operation that owns it.
-    /// </remarks>
-    private async Task<TResult> ExecuteAsync<TResult>(
-        string sql,
-        IReadOnlyCollection<KeyValuePair<string, object?>> parameters,
-        Func<DbCommand, CancellationToken, Task<TResult>> action,
+    /// <summary>
+    /// Tests whether a row already carries <paramref name="settingName"/>, holding an update lock
+    /// over the key range so that the answer stays true for the life of the transaction.
+    /// </summary>
+    /// <param name="connection">The borrowed connection.</param>
+    /// <param name="settingName">The validated setting name.</param>
+    /// <param name="cancellationToken">Observed while the test is in flight.</param>
+    /// <returns><see langword="true"/> when a row exists.</returns>
+    private async Task<bool> SettingExistsAsync(
+        DbConnection connection,
+        string settingName,
         CancellationToken cancellationToken)
     {
-        DbConnection connection = _context.Database.GetDbConnection();
+        await using DbCommand command = CreateCommand(connection, SettingExistsCommandText);
+        AddTextParameter(command, SettingNameParameter, settingName, SettingNameMaxLength);
+
+        object? scalar = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        // The statement projects the literal one, so anything other than an empty result set means
+        // the row is there.
+        return scalar is not null and not DBNull;
+    }
+
+    /// <summary>
+    /// Runs one of the two write branches with the same three bound, sized parameters the legacy
+    /// procedures declared.
+    /// </summary>
+    /// <param name="connection">The borrowed connection.</param>
+    /// <param name="commandText">The insert or update branch.</param>
+    /// <param name="settingName">The validated setting name.</param>
+    /// <param name="settingValue">The validated value, already translated for the NOT NULL column.</param>
+    /// <param name="isSecure">The secure flag, stored exactly as supplied.</param>
+    /// <param name="cancellationToken">Observed while the write is in flight.</param>
+    /// <returns>A task that completes when the branch has run.</returns>
+    private async Task WriteSettingAsync(
+        DbConnection connection,
+        string commandText,
+        string settingName,
+        string settingValue,
+        bool isSecure,
+        CancellationToken cancellationToken)
+    {
+        await using DbCommand command = CreateCommand(connection, commandText);
+
+        AddTextParameter(command, SettingNameParameter, settingName, SettingNameMaxLength);
+        AddTextParameter(command, SettingValueParameter, settingValue, SettingValueMaxLength);
+        AddBooleanParameter(command, SettingIsSecureParameter, isSecure);
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Lends the context's own connection to <paramref name="operation"/>, opening it only if it
+    /// was not already open and closing it again only if this call is what opened it.
+    /// </summary>
+    /// <typeparam name="TResult">What the operation produces.</typeparam>
+    /// <param name="operation">The work to run against the connection.</param>
+    /// <param name="cancellationToken">Observed while opening and passed on to the operation.</param>
+    /// <returns>Whatever the operation produced.</returns>
+    /// <remarks>
+    /// The connection is borrowed, never created and never disposed: it belongs to the scoped
+    /// context, and disposing it would break every later operation in the same scope. Closing it
+    /// when somebody else opened it would be the same mistake in a smaller form, which is why the
+    /// close is conditional. This method is the whole of the Rule-T3 exception's contact with the
+    /// provider, and it is private, so nothing relational reaches a caller.
+    /// </remarks>
+    private async Task<TResult> WithBorrowedConnectionAsync<TResult>(
+        Func<DbConnection, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        DbConnection connection = _dbContext.Database.GetDbConnection();
         bool openedHere = connection.State != ConnectionState.Open;
 
         if (openedHere)
@@ -206,27 +533,7 @@ IF @@ROWCOUNT = 0
 
         try
         {
-            using DbCommand command = connection.CreateCommand();
-
-            command.CommandText = sql;
-            command.CommandType = CommandType.Text;
-
-            IDbContextTransaction? transaction = _context.Database.CurrentTransaction;
-
-            if (transaction is not null)
-            {
-                command.Transaction = transaction.GetDbTransaction();
-            }
-
-            foreach (KeyValuePair<string, object?> parameter in parameters)
-            {
-                DbParameter bound = command.CreateParameter();
-                bound.ParameterName = parameter.Key;
-                bound.Value = parameter.Value ?? DBNull.Value;
-                command.Parameters.Add(bound);
-            }
-
-            return await action(command, cancellationToken).ConfigureAwait(false);
+            return await operation(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -237,10 +544,126 @@ IF @@ROWCOUNT = 0
         }
     }
 
-    /// <summary>The culture used for the one value conversion this service performs.</summary>
+    /// <summary>
+    /// Prepares a text command on the borrowed connection, enlisted in whatever transaction the
+    /// context currently has open.
+    /// </summary>
+    /// <param name="connection">The borrowed connection.</param>
+    /// <param name="commandText">
+    /// One of this class's constant statements. Caller data never reaches this argument, and no
+    /// statement below is composed, concatenated or interpolated from a value.
+    /// </param>
+    /// <returns>A command ready for its parameters.</returns>
+    private DbCommand CreateCommand(DbConnection connection, string commandText)
+    {
+        DbCommand command = connection.CreateCommand();
+
+        command.CommandText = commandText;
+        command.CommandType = CommandType.Text;
+
+        // Enlisting is what keeps a write inside the surrounding unit of work instead of escaping
+        // it, and it is read afresh for every command so that a transaction begun after this
+        // service was constructed is still picked up.
+        DbTransaction? active = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
+
+        if (active is not null)
+        {
+            command.Transaction = active;
+        }
+
+        return command;
+    }
+
+    /// <summary>Binds a value as a sized text parameter matching the column it targets.</summary>
+    /// <param name="command">The command being prepared.</param>
+    /// <param name="parameterName">The parameter name declared in the statement.</param>
+    /// <param name="value">The value to bind.</param>
+    /// <param name="size">The column's declared length, so that one query plan serves every call.</param>
+    private static void AddTextParameter(DbCommand command, string parameterName, string value, int size)
+    {
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = parameterName;
+        parameter.DbType = DbType.String;
+        parameter.Size = size;
+        parameter.Value = value;
+
+        command.Parameters.Add(parameter);
+    }
+
+    /// <summary>Binds a flag as a boolean parameter matching the bit column it targets.</summary>
+    /// <param name="command">The command being prepared.</param>
+    /// <param name="parameterName">The parameter name declared in the statement.</param>
+    /// <param name="value">The flag to bind.</param>
+    private static void AddBooleanParameter(DbCommand command, string parameterName, bool value)
+    {
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = parameterName;
+        parameter.DbType = DbType.Boolean;
+        parameter.Value = value;
+
+        command.Parameters.Add(parameter);
+    }
+
+    /// <summary>
+    /// Checks a setting name against the column that has to hold it.
+    /// </summary>
+    /// <param name="settingName">The name as supplied.</param>
+    /// <returns>The same name, once it is known to fit.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="settingName"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The name is blank or too long.</exception>
     /// <remarks>
-    /// Invariant, because a setting value is data moving between a store and a caller and must not
-    /// acquire the formatting of whatever culture the current request happens to carry.
+    /// A blank name is refused rather than looked up, because the column is the primary key and a
+    /// blank primary key identifies nothing a caller could have meant. An over-long name is
+    /// refused for the same reason: no row can carry it, so accepting one would either truncate the
+    /// caller's intent or surface as a provider error further down.
     /// </remarks>
-    private static System.Globalization.CultureInfo Culture => System.Globalization.CultureInfo.InvariantCulture;
+    private static string ValidateSettingName(string settingName)
+    {
+        ArgumentNullException.ThrowIfNull(settingName);
+
+        if (string.IsNullOrWhiteSpace(settingName))
+        {
+            throw new ArgumentException("A host setting name is required.", nameof(settingName));
+        }
+
+        if (settingName.Length > SettingNameMaxLength)
+        {
+            throw new ArgumentException(
+                FormattableString.Invariant(
+                    $"A host setting name may be at most {SettingNameMaxLength} characters; this one is {settingName.Length}."),
+                nameof(settingName));
+        }
+
+        return settingName;
+    }
+
+    /// <summary>
+    /// Prepares a setting value for a NOT NULL column and checks that it fits.
+    /// </summary>
+    /// <param name="settingValue">The value as supplied.</param>
+    /// <returns>The value to persist, with a null argument translated to the empty string.</returns>
+    /// <exception cref="ArgumentException">The value is too long for the column.</exception>
+    /// <remarks>
+    /// This is where the Rule-T7 translation from migration note 4 happens, and it happens nowhere
+    /// else. The column is NOT NULL and the legacy absent-string marker was the empty string, so a
+    /// null argument has one unambiguous meaning against this schema and is translated rather than
+    /// rejected. An empty value stays empty and is never read as a request to remove the row. The
+    /// message names only lengths, never the value, because a setting may hold a credential.
+    /// </remarks>
+    private static string ValidateSettingValue(string settingValue)
+    {
+        string value = settingValue ?? string.Empty;
+
+        if (value.Length > SettingValueMaxLength)
+        {
+            throw new ArgumentException(
+                FormattableString.Invariant(
+                    $"A host setting value may be at most {SettingValueMaxLength} characters; this one is {value.Length}."),
+                nameof(settingValue));
+        }
+
+        return value;
+    }
 }

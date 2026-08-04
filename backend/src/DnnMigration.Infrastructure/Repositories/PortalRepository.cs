@@ -16,29 +16,92 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// hydrator in <c>Library/Components/Shared/CBO.vb</c> that did the same job generically - are both
 /// replaced by the Entity Framework materialiser, so no hand-rolled fill method survives.
 /// <para>
-/// No read member applies <c>AsNoTracking</c>. That is a deliberate correctness decision rather than
-/// an oversight: the application layer obtains an entity from a read member, mutates it, and commits
-/// through <see cref="IUnitOfWork"/>, which only works while the entity is tracked by the same
-/// context instance. Detaching listings to save change-tracker work would silently discard those
-/// mutations for any caller that updated a row it had listed.
+/// MIGRATION: caching is deliberately absent from every member below. The legacy controller
+/// interleaved cache reads, an expiry computed as a per-entity timeout multiplied by a global
+/// performance setting, and coarse portal-scoped and host-scoped invalidations directly with its data
+/// access - <c>PortalController.vb</c> lines 208, 211, 218 and 240 for the read-and-populate, and
+/// lines 916, 1128, 1131 and 1205 for the clears. None of that is reproduced here: no member consults
+/// a cache, accepts a cache hint or evicts an entry. Caching and its invalidation are a separate
+/// concern owned by the coordinated cache service, so a reader of this file can be certain that every
+/// answer it returns came from the store on this call.
+/// </para>
+/// <para>
+/// <b>The tracking rule, and why it is not uniform.</b> A read whose result may afterwards be
+/// mutated and committed MUST stay tracked, because the application layer relies on the change
+/// tracker rather than on an explicit re-staging call:
+/// <c>PortalService.UpdatePortalAsync</c> reads through <see cref="GetByIdAsync"/>, applies the
+/// request to the entity, and calls <see cref="IUnitOfWork.SaveChangesAsync"/> <i>without</i> calling
+/// <see cref="UpdateAsync"/> at all. Detaching that read would not raise an error; it would silently
+/// persist nothing, which is the worst failure mode available. <see cref="GetByIdAsync"/> and
+/// <see cref="DeleteAsync"/> are therefore tracked by design, and <see cref="DeleteAsync"/> must be
+/// so in any case because it removes the instance it loaded.
+/// </para>
+/// <para>
+/// Every other read is genuinely read-only and applies <c>AsNoTracking</c>: the listings
+/// (<see cref="ListAsync"/>, <see cref="GetAllAsync"/>), the tenant resolutions
+/// (<see cref="GetByAliasAsync"/>, <see cref="GetByTabAsync"/>) and the projections
+/// (<see cref="GetRoleNamesAsync"/>, <see cref="CountUsersForPortalsAsync"/>,
+/// <see cref="CountPagesForPortalsAsync"/>). Tracking a whole page of entities that will only be
+/// projected onto a data transfer object is pure overhead, and detaching them also removes the risk
+/// that an unrelated commit in the same scope picks up an incidental edit to a listed row. A caller
+/// that intends to modify a portal must obtain it by identifier through
+/// <see cref="GetByIdAsync"/>; that is the single tracked entry point, which is what makes the rule
+/// above checkable rather than a matter of habit.
+/// </para>
+/// <para>
+/// The aggregate members - <see cref="ExistsAsync"/>, <see cref="TabBelongsToPortalAsync"/>,
+/// <see cref="CountAsync"/>, <see cref="CountUsersAsync"/> and <see cref="CountPagesAsync"/> - carry
+/// no <c>AsNoTracking</c> call and need none: a counting or existence terminal materialises no entity,
+/// so the call would be inert. It is omitted rather than added for symmetry, because an inert call
+/// invites a reader to believe it is doing something.
 /// </para>
 /// </remarks>
 internal sealed class PortalRepository : IPortalRepository
 {
     /// <summary>Ordering applied when the caller names no sortable property.</summary>
+    /// <remarks>
+    /// Chosen to match the legacy default rather than invented: the terminal paging procedure
+    /// selected <c>ORDER BY PortalName</c>
+    /// (<c>04.04.00.SqlDataProvider</c>, <c>GetPortalsByName</c>), so an unsorted request produces
+    /// the sequence the legacy administration grid produced.
+    /// </remarks>
     private const string DefaultSortProperty = "PortalName";
 
-    private readonly DnnDbContext _context;
+    private readonly DnnDbContext _dbContext;
 
     /// <summary>Initialises a new instance of the <see cref="PortalRepository"/> class.</summary>
-    /// <param name="context">The unit-of-work scoped database context.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
-    public PortalRepository(DnnDbContext context)
+    /// <param name="dbContext">The unit-of-work scoped database context.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="dbContext"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The context is the only collaborator. No cache, clock, logger, request accessor, password
+    /// hasher, file system or service locator is injected, so nothing this type does can depend on
+    /// ambient state - which is precisely what the reflection-resolved
+    /// <c>DataProvider.Instance()</c> singleton it replaces could not promise.
+    /// </remarks>
+    public PortalRepository(DnnDbContext dbContext)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+        ArgumentNullException.ThrowIfNull(dbContext);
+
+        _dbContext = dbContext;
     }
 
     /// <inheritdoc />
+    // MIGRATION: this single member retires three separate legacy contracts. `GetPortalsByName`
+    // (DataProvider.vb:L102) returned a forward-only reader for one page; `GetPortals`
+    // (PortalController.vb:L1263) returned an untyped, elementless ArrayList built by
+    // FillPortalInfoCollection; and `GetPortalCount` (DataProvider.vb:L100) existed only because
+    // neither reader could report a grand total, so a caller wanting "this page, and how many
+    // altogether?" had to make two round trips. PagedResult<Portal> carries the typed records and the
+    // total together, so the second read and the untyped collection both disappear.
+    //
+    // MIGRATION: the page base is ZERO, and that is the legacy base rather than a modern preference.
+    // The terminal procedure computed its offset as `SET @PageLowerBound = @PageSize * @PageIndex`
+    // (04.04.00.SqlDataProvider, GetPortalsByName), which is exactly what Paging.SkipCount computes
+    // and exactly the base PagedResult<T> documents. No sentinel is involved anywhere: the legacy
+    // "give me everything" call shape passed the -1 of Null.vb:L41 as index, size and total alike,
+    // whereas an unpaged request here is a page size of zero routed through the named Unpaged
+    // factory. -1 is never passed as a coordinate, which matters twice over because -1 is also a real
+    // PortalID in this schema.
     public async Task<PagedResult<Portal>> ListAsync(
         int pageIndex,
         int pageSize,
@@ -47,14 +110,19 @@ internal sealed class PortalRepository : IPortalRepository
         bool descending,
         CancellationToken cancellationToken = default)
     {
-        IQueryable<Portal> query = _context.Portals;
+        // Read-only: the two production call sites project the page onto data transfer objects and
+        // read its total, and neither mutates a listed entity. See the tracking rule on the type.
+        IQueryable<Portal> query = _dbContext.Portals.AsNoTracking();
 
         if (!string.IsNullOrWhiteSpace(nameFilter))
         {
-            // The legacy portals grid matched a fragment of the site name anywhere in the value.
-            // Lower-casing both sides keeps the comparison case-insensitive irrespective of the
-            // collation the installation happens to use, rather than relying on the SQL Server
-            // default being case-insensitive.
+            // MIGRATION: the legacy grid matched a fragment of the site name anywhere in the value,
+            // but it did so by handing the caller's string straight to `PortalName LIKE @NameToMatch`
+            // with the wildcards supplied by the caller. The fragment is translated to a relational
+            // containment test here, so the caller's text is data and can no longer act as a pattern:
+            // a value holding % or _ matches those characters literally instead of widening the
+            // search. Case is folded on both sides so the answer does not depend on the collation the
+            // installation happens to carry, which is what the integration suite asserts.
             string wanted = nameFilter.Trim().ToLowerInvariant();
             query = query.Where(p => p.PortalName.ToLower().Contains(wanted));
         }
@@ -64,11 +132,16 @@ internal sealed class PortalRepository : IPortalRepository
         if (pageSize == 0)
         {
             // A page size of zero requests every match, which is how the callers that need a
-            // complete tenant list ask for one without inventing a sentinel page size.
+            // complete tenant list ask for one without inventing a sentinel page size. It is routed
+            // through Unpaged rather than Create because Create rejects a zero page size paired with
+            // any non-zero index, and because the total of an unpaged read is the record count
+            // itself - so no separate counting round trip is issued for this branch.
             List<Portal> all = await query.ToListAsync(cancellationToken).ConfigureAwait(false);
             return PagedResult<Portal>.Unpaged(all);
         }
 
+        // Counted before the page is read, and counted over the same filtered query, so the total
+        // describes the same set the page was drawn from. The token is threaded through both reads.
         int totalCount = await query.CountAsync(cancellationToken).ConfigureAwait(false);
 
         List<Portal> rows = await query
@@ -81,12 +154,19 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    // MIGRATION: replaces `GetPortals` (DataProvider.vb:L101) and the ArrayList its controller
+    // counterpart returned (PortalController.vb:L1263). Requesting every tenant is a NAMED member
+    // here; the legacy convention of asking for it by passing the -1 null-integer sentinel as a page
+    // coordinate is not reproduced, and could not be, because -1 is itself a real PortalID.
     public async Task<IReadOnlyList<Portal>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         // Ordered for the same reason the paged read is ordered: a caller that walks the whole
         // installation must see a stable sequence between calls. The primary key terminates the
-        // order so tenants sharing a name still have a defined relative position.
-        return await _context.Portals
+        // order so tenants sharing a name still have a defined relative position. Materialised
+        // before returning, so no deferred query escapes into a caller whose scope may outlive the
+        // context that built it.
+        return await _dbContext.Portals
+            .AsNoTracking()
             .OrderBy(p => p.PortalName)
             .ThenBy(p => p.PortalId)
             .ToListAsync(cancellationToken)
@@ -94,17 +174,30 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    // MIGRATION: replaces `GetPortal` (DataProvider.vb:L97), whose reader the controller hydrated
+    // column by column. This is the ONLY tracked read on the type, and deliberately so: it is the
+    // entry point the application layer uses before a write, and PortalService.UpdatePortalAsync
+    // commits the entity it receives here through IUnitOfWork WITHOUT re-staging it. Adding
+    // AsNoTracking would therefore turn every portal update into a silent no-op rather than an error.
     public async Task<Portal?> GetByIdAsync(int portalId, bool includeAliases = false, CancellationToken cancellationToken = default)
     {
-        IQueryable<Portal> query = _context.Portals;
+        IQueryable<Portal> query = _dbContext.Portals;
 
         if (includeAliases)
         {
+            // Loaded only on request. The aliases are needed by the detail projection and by the
+            // update path that rewrites them, and by nothing else, so a listing does not pay for
+            // them. No other navigation is pulled in: a portal owns modules, pages, roles,
+            // memberships and module grants, and including them indiscriminately would turn one
+            // lookup into a multi-table fan-out for callers that asked for none of it.
             query = query.Include(p => p.PortalAliases);
         }
 
         // PortalID is IDENTITY(-1, 1), so both -1 and 0 are legitimate keys and neither may be
-        // treated as "absent". Absence is reported as null and never as a numeric sentinel.
+        // treated as "absent" - the shipped default portal really is portal 0 and the first generated
+        // tenant really is -1, while -1 is simultaneously the legacy Null.NullInteger marker
+        // (Null.vb:L41). The identifier is therefore matched exactly, with no sign test, no range
+        // test and no sentinel shortcut. Absence is reported as null and never as a numeric value.
         return await query
             .FirstOrDefaultAsync(p => p.PortalId == portalId, cancellationToken)
             .ConfigureAwait(false);
@@ -122,12 +215,29 @@ internal sealed class PortalRepository : IPortalRepository
             return null;
         }
 
-        // MIGRATION: the legacy tenant-resolution procedure matched the alias with a
-        // leading-and-trailing wildcard and then took the lowest matching identifier, so one
-        // tenant's alias being a substring of another's could resolve a request to the wrong
-        // tenant. The comparison is an equality test here. Case is normalised on both sides so
-        // the result does not depend on the collation of the installation.
-        return await _context.Portals
+        // MIGRATION: the historical tenant-resolution procedure `GetPortalSettings` matched the alias
+        // with a leading-and-trailing wildcard - `where PortalAlias like '%' + @PortalAlias + '%'`
+        // (01.00.00.SqlDataProvider:L4569 onward) - and then took `min(PortalID)` of whatever matched.
+        // One tenant's alias being a SUBSTRING of another's could therefore resolve a request to the
+        // wrong tenant, and the lowest-identifier tie-break silently decided which. That procedure was
+        // dropped outright at 02.02.00.SqlDataProvider:L267 and the terminal alias comparison in this
+        // schema is an equality test - see `GetPortalByTab` at 02.02.02.SqlDataProvider:L3942, whose
+        // predicate is `HTTPAlias = @HTTPAlias`. The comparison below is that equality test: a WHOLE
+        // VALUE match with no pattern, no wildcard, no containment and no concatenation, so an alias
+        // cannot resolve a tenant it merely occurs inside. The correction is recorded in the migration
+        // notes.
+        //
+        // Case is folded on both sides because the contract on IPortalRepository REQUIRES a
+        // case-insensitive comparison, and because the sibling PortalAliasRepository folds the same
+        // column the same way; a bare comparison would delegate that requirement to whatever collation
+        // the installation happens to carry and would be case-SENSITIVE on a provider that compares
+        // ordinally. Folding is not a widening - the operator either side of it is still equality.
+        //
+        // The ordering is determinism insurance rather than tie-breaking: HTTPAlias carries a UNIQUE
+        // index (IX_PortalAlias), so at most one alias and therefore at most one tenant can match, and
+        // the legacy min(PortalID) choice has nothing left to choose between.
+        return await _dbContext.Portals
+            .AsNoTracking()
             .Where(p => p.PortalAliases.Any(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted))
             .OrderBy(p => p.PortalId)
             .FirstOrDefaultAsync(cancellationToken)
@@ -146,10 +256,21 @@ internal sealed class PortalRepository : IPortalRepository
             return null;
         }
 
-        // Both halves of the legacy check are required: the alias must resolve to a tenant AND
-        // the page must belong to that same tenant. Evaluating them as one predicate is what
-        // stops a page identifier from one tenant being read under another tenant's alias.
-        return await _context.Portals
+        // MIGRATION: this is the terminal `GetPortalByTab` shape (02.02.02.SqlDataProvider:L3942),
+        // reproduced relationally rather than literally. That procedure read
+        //     select HTTPAlias from PortalAlias
+        //     inner join Tabs on PortalAlias.PortalId = Tabs.PortalId
+        //     where TabId = @TabId and HTTPAlias = @HTTPAlias
+        // so the join condition IS the tenant-isolation check: the alias row and the page row had to
+        // share a PortalId. Requiring both predicates of the SAME portal below expresses exactly that,
+        // and returns the portal itself rather than echoing back the alias the caller already had.
+        // Both halves are required as a unit - that is what stops a page identifier belonging to one
+        // tenant from being read under another tenant's alias. The alias comparison is the same
+        // whole-value equality used for alias resolution, never a substring or pattern, and there is
+        // deliberately no host or global fallback: the terminal procedure had none, so inventing one
+        // would widen tenant resolution beyond the behaviour being preserved.
+        return await _dbContext.Portals
+            .AsNoTracking()
             .Where(p => p.PortalAliases.Any(a => a.HttpAlias != null && a.HttpAlias.ToLower() == wanted)
                 && p.Tabs.Any(t => t.TabId == tabId))
             .OrderBy(p => p.PortalId)
@@ -158,24 +279,37 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    // MIGRATION: replaces `VerifyPortal` (DataProvider.vb:L107), which reported existence by handing
+    // back a reader the caller had to test for a row. Existence is a boolean, so it is answered as one
+    // and no record is materialised. The identifier is matched exactly: -1 and 0 are real keys here, so
+    // there is no sign or range test to apply. An existence terminal tracks nothing, so no
+    // AsNoTracking call is needed and none is added.
     public Task<bool> ExistsAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        return _context.Portals.AnyAsync(p => p.PortalId == portalId, cancellationToken);
+        return _dbContext.Portals.AnyAsync(p => p.PortalId == portalId, cancellationToken);
     }
 
     /// <inheritdoc />
+    // MIGRATION: replaces `VerifyPortalTab` (DataProvider.vb:L106), which likewise reported a boolean
+    // fact through a reader.
     public Task<bool> TabBelongsToPortalAsync(int portalId, int tabId, CancellationToken cancellationToken = default)
     {
         // Asked of the page table rather than through the portal's navigation, so the answer is
         // one existence probe. A page that does not exist and a page belonging to another tenant
         // are both false, which is exactly what the legacy reader-returns-no-row result meant.
-        return _context.Tabs.AnyAsync(t => t.TabId == tabId && t.PortalId == portalId, cancellationToken);
+        // Tab.PortalId is nullable because a host page belongs to no tenant; a null never equals a
+        // supplied identifier, so a host page is excluded without a special case.
+        return _dbContext.Tabs.AnyAsync(t => t.TabId == tabId && t.PortalId == portalId, cancellationToken);
     }
 
     /// <inheritdoc />
+    // MIGRATION: replaces `GetPortalCount` (DataProvider.vb:L100). The legacy surface needed a
+    // standalone count because its paged reader could not report a grand total; within a page that
+    // need is now met by PagedResult<Portal>, and this member survives only for the callers that want
+    // the installation-wide tally on its own.
     public Task<int> CountAsync(CancellationToken cancellationToken = default)
     {
-        return _context.Portals.CountAsync(cancellationToken);
+        return _dbContext.Portals.CountAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -184,15 +318,17 @@ internal sealed class PortalRepository : IPortalRepository
         // Membership of a tenant is the UserPortals row, not a column on Users, so the count is
         // taken there. Unauthorised members are included because the legacy portals grid counted
         // every registered account against its tenant regardless of authorisation state.
-        return _context.UserPortals.CountAsync(m => m.PortalId == portalId, cancellationToken);
+        return _dbContext.UserPortals.CountAsync(m => m.PortalId == portalId, cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<int> CountPagesAsync(int portalId, CancellationToken cancellationToken = default)
     {
         // Deletion of a page is the soft delete that backs the legacy recycle bin, so a page in the
-        // bin is excluded from the tenant's page count exactly as the legacy grid excluded it.
-        return _context.Tabs.CountAsync(t => t.PortalId == portalId && !t.IsDeleted, cancellationToken);
+        // bin is excluded from the tenant's page count exactly as the legacy grid excluded it. The
+        // predicate is stated here rather than as a model-wide filter because the model declares no
+        // global query filter, which keeps a soft delete visible at the call sites that care.
+        return _dbContext.Tabs.CountAsync(t => t.PortalId == portalId && !t.IsDeleted, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -210,8 +346,11 @@ internal sealed class PortalRepository : IPortalRepository
 
         // One grouped read replaces one read per identifier. The predicate is the same one the
         // single-portal member uses - every UserPortals row counts, authorised or not - so the batched
-        // and unbatched tallies cannot disagree.
-        List<PortalTally> tallies = await _context.UserPortals
+        // and unbatched tallies cannot disagree. The containment test is over the caller's identifier
+        // SET, which translates to an IN list; it is not a text search and has nothing to do with the
+        // substring matching this repository refuses on alias columns.
+        List<PortalTally> tallies = await _dbContext.UserPortals
+            .AsNoTracking()
             .Where(m => wanted.Contains(m.PortalId))
             .GroupBy(m => m.PortalId)
             .Select(group => new PortalTally { PortalId = group.Key, Count = group.Count() })
@@ -238,7 +377,8 @@ internal sealed class PortalRepository : IPortalRepository
         // tested for a value before it is matched; a null can never equal a supplied identifier and a
         // host page is therefore excluded, exactly as the single-portal member excludes it. The
         // soft-delete predicate is likewise carried over unchanged.
-        List<PortalTally> tallies = await _context.Tabs
+        List<PortalTally> tallies = await _dbContext.Tabs
+            .AsNoTracking()
             .Where(t => t.PortalId.HasValue && wanted.Contains(t.PortalId.Value) && !t.IsDeleted)
             .GroupBy(t => t.PortalId!.Value)
             .Select(group => new PortalTally { PortalId = group.Key, Count = group.Count() })
@@ -296,7 +436,10 @@ internal sealed class PortalRepository : IPortalRepository
     /// <inheritdoc />
     public async Task<IReadOnlyDictionary<int, string>> GetRoleNamesAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        var assignments = await _context.Portals
+        // Projected rather than materialised: only the two nominated role identifiers are wanted, so
+        // the whole tenant row is not read to obtain them.
+        var assignments = await _dbContext.Portals
+            .AsNoTracking()
             .Where(p => p.PortalId == portalId)
             .Select(p => new { p.AdministratorRoleId, p.RegisteredRoleId })
             .FirstOrDefaultAsync(cancellationToken)
@@ -327,7 +470,8 @@ internal sealed class PortalRepository : IPortalRepository
         // RoleID is IDENTITY(0, 1), so zero is a legitimate role key. Only roles that actually
         // exist are returned, which is what lets a caller distinguish an unset assignment from one
         // that points at a role somebody has since deleted.
-        List<KeyValuePair<int, string>> rows = await _context.Roles
+        List<KeyValuePair<int, string>> rows = await _dbContext.Roles
+            .AsNoTracking()
             .Where(r => wanted.Contains(r.RoleId))
             .Select(r => new KeyValuePair<int, string>(r.RoleId, r.RoleName))
             .ToListAsync(cancellationToken)
@@ -344,33 +488,65 @@ internal sealed class PortalRepository : IPortalRepository
     }
 
     /// <inheritdoc />
+    // MIGRATION: collapses two legacy insert paths onto one entity. `AddPortalInfo`
+    // (DataProvider.vb:L93) took FOURTEEN positional arguments and wrote two aggregates - it created
+    // the portal's administrator from the name, surname, username, password and address handed to it -
+    // while `CreatePortal` (L94) took NINE and wrote the Portals row alone. Composing two aggregates
+    // in one call is not reproduced: the application service stages the portal here, stages the
+    // administrator through the user contract, and commits both together.
+    //
+    // MIGRATION: the hosting charge is staged from the entity's `decimal HostFee`, and the schema is
+    // why. Both legacy declarations typed it `As Double` (DataProvider.vb:L93, L94, L104 and
+    // SqlDataProvider.vb:L598, L601, L631), but the terminal column is `money` - the procedure
+    // parameter is declared `@HostFee money` at 02.02.02.SqlDataProvider - and binary floating point
+    // cannot represent a decimal currency value exactly. The entity therefore carries `decimal`, the
+    // configuration maps it to `money`, and no `double` appears anywhere on this path.
     public Task AddAsync(Portal portal, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(portal);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Staged, not written. The key is assigned when the unit of work commits, which is why
-        // this member yields no identifier: returning one would force a flush here and split the
-        // multi-table portal creation into independently durable statements.
-        _context.Portals.Add(portal);
+        // MIGRATION: staged, not written, and no identifier is returned. Each legacy add member ended
+        // by reading back the scope identity and returning the generated key, which forced every
+        // insert to be durable on its own. Returning a key here would require flushing inside this
+        // member and would split the multi-table tenant creation at PortalController.vb:L980 back into
+        // independently durable statements - the precise defect that left a half-created portal
+        // unrecoverable. The key appears on Portal.PortalId once IUnitOfWork.SaveChangesAsync returns.
+        //
+        // MIGRATION: provisioning is NOT performed here. The legacy CreatePortal at
+        // PortalController.vb:L980 took fifteen positional arguments and went on to create the
+        // administrator account, the host alias, the stock roles, the pages, the module instances, the
+        // home directory through a FolderController and the profile definitions, then parsed a portal
+        // template. All of that is application orchestration across several aggregates committed as one
+        // unit of work; this member stages exactly one Portals row and nothing else.
+        _dbContext.Portals.Add(portal);
 
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
+    // MIGRATION: one member replaces two procedures that wrote the SAME Portals row from opposite
+    // ends - `UpdatePortalInfo` (DataProvider.vb:L104) with TWENTY-SEVEN positional arguments covering
+    // the descriptive and configuration columns, and `UpdatePortalSetup` (L105) with NINE covering the
+    // administrator and the well-known page assignments. Splitting one row across two positional lists
+    // made every caller responsible for supplying every column in the right order, and made a partial
+    // update indistinguishable from an intentional overwrite with defaults. The entity carries its own
+    // modified state instead, so a caller reads a portal, changes what it means to change, and stages
+    // the result; nothing is durable until the unit of work commits.
     public Task UpdateAsync(Portal portal, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(portal);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // A portal read through this repository is already tracked, so its modifications are
-        // staged by the tracker and this call is the caller's explicit statement of intent. An
-        // untracked instance - one rebuilt outside this context - is attached and marked
-        // modified so the same call works for it too, which keeps the contract honest for a
-        // caller that did not obtain the entity from a read member here.
-        if (_context.Entry(portal).State is EntityState.Detached)
+        // A portal read through GetByIdAsync is already tracked, so its modifications are staged by
+        // the tracker and this call is the caller's explicit statement of intent rather than the
+        // mechanism. An untracked instance - one rebuilt outside this context, or read through one of
+        // the detached read members - is attached and marked modified so the same call works for it
+        // too, which keeps the contract honest for a caller that did not obtain the entity from the
+        // tracked entry point. Nothing is written either way.
+        if (_dbContext.Entry(portal).State is EntityState.Detached)
         {
-            _context.Portals.Update(portal);
+            _dbContext.Portals.Update(portal);
         }
 
         return Task.CompletedTask;
@@ -379,22 +555,25 @@ internal sealed class PortalRepository : IPortalRepository
     /// <inheritdoc />
     public async Task DeleteAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        // Resolved before removal because the contract identifies its target by identifier, as
-        // the legacy procedure did. When the caller already holds the entity, this resolves from
-        // the change tracker without a round trip. Dependent rows are left to the schema's own
-        // referential rules rather than a deletion order encoded here.
-        Portal? portal = await _context.Portals
+        // MIGRATION: replaces `DeletePortalInfo` (DataProvider.vb:L95), which likewise identified its
+        // target by identifier alone. The row is resolved before removal because that is what the
+        // contract's shape requires, and the read is deliberately TRACKED - an entity must be tracked
+        // to be staged for removal, so AsNoTracking has no place on this path. The identifier is
+        // matched exactly, so a valid -1 or 0 is deleted like any other key. Dependent rows are left
+        // to the schema's own cascade rules rather than a deletion order encoded here; sequencing
+        // dependent writes is not a decision a persistence contract should make.
+        Portal? portal = await _dbContext.Portals
             .FirstOrDefaultAsync(p => p.PortalId == portalId, cancellationToken)
             .ConfigureAwait(false);
 
         if (portal is null)
         {
-            // Nothing to stage. Absence is not an error: a caller that has already established
-            // absence need not distinguish the two cases.
+            // Nothing to stage, and that is not an error. A caller that has already established
+            // absence need not distinguish the two cases, so the call is idempotent.
             return;
         }
 
-        _context.Portals.Remove(portal);
+        _dbContext.Portals.Remove(portal);
     }
 
     /// <summary>

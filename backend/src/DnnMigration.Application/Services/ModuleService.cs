@@ -1422,21 +1422,41 @@ public sealed class ModuleService : IModuleService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // MIGRATION: the target module arrives in the BODY, because this endpoint carries no identifier in
+        // its route, and ModuleImportRequest.ModuleId is consequently NULLABLE so that an omitted value is
+        // distinguishable from a supplied one. That distinction has to be resolved right here and cannot be
+        // deferred: this request has no FluentValidation validator - the planned validator set contains no
+        // entry for it - so nothing upstream refuses the omission, and Modules.ModuleID is IDENTITY(0,1),
+        // which makes ZERO A REAL MODULE. A non-nullable property would therefore have deserialised a
+        // missing moduleId into a live request against module zero, and this service could not have told
+        // the two apart.
+        //
+        // Refused by ABSENCE alone, never by sign. Both 0 and -1 are legitimate identifier values in this
+        // schema - 0 is the module identity seed and -1 is a real portal identifier as well as the legacy
+        // integer sentinel - so a caller that sends either has made a lookup, and it must be allowed to
+        // fail as a lookup below rather than be misreported as a malformed request.
+        if (request.ModuleId is not int moduleId)
+        {
+            return Result.Failure(
+                RequestInvalidCode,
+                "The module to import into must be supplied.");
+        }
+
         Module? module = await _modules
-            .GetByIdAsync(request.ModuleId, cancellationToken)
+            .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
         if (module is null || module.PortalId != portalId)
         {
             return Result.Failure(
                 NotFoundCode,
-                FormattableString.Invariant($"Module {request.ModuleId} does not exist in portal {portalId}."));
+                FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
         }
 
         // The caller must hold the edit grant on the module whose content they are replacing. Verified here
         // for the same reason as on creation - the target arrives in the BODY - and verified at all because it
         // previously was not, so any authenticated caller could overwrite any tenant's module content.
-        if (await EnsureMayEditModuleAsync(portalId, request.ModuleId, cancellationToken).ConfigureAwait(false)
+        if (await EnsureMayEditModuleAsync(portalId, moduleId, cancellationToken).ConfigureAwait(false)
             is ResultReason forbidden)
         {
             return Result.Failure(forbidden);
@@ -1452,7 +1472,7 @@ public sealed class ModuleService : IModuleService
         {
             return Result.Failure(
                 NotPortableCode,
-                FormattableString.Invariant($"Module {request.ModuleId} does not support content import."));
+                FormattableString.Invariant($"Module {moduleId} does not support content import."));
         }
 
         XDocument document;

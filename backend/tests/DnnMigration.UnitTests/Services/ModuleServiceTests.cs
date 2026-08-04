@@ -3071,6 +3071,43 @@ public class ModuleServiceTests
     }
 
     /// <summary>
+    /// A request that names no target module at all is refused as malformed, and is distinguished from one
+    /// that names module zero.
+    /// </summary>
+    /// <remarks>
+    /// THE REGRESSION TEST FOR THE IDENTITY-SEED COLLISION. <c>Modules.ModuleID</c> is
+    /// <c>IDENTITY (0, 1)</c>, so zero is a real module - and it is the very value this fixture uses as its
+    /// canonical module. <c>ModuleImportRequest.ModuleId</c> is therefore nullable, so that an omitted
+    /// identifier arrives as <see langword="null"/> rather than being deserialised into a live request
+    /// against module zero. Nothing upstream can catch the omission - this request has no validator - so the
+    /// discrimination has to happen in the service, and it must be made on ABSENCE rather than on sign.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ImportModule_RefusesARequestNamingNoModuleWithoutMistakingItForModuleZero()
+    {
+        Harness harness = Harness.Ready();
+
+        Result omitted = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { Content = "<content>x</content>" },
+            CancellationToken.None);
+
+        omitted.IsFailure.Should().BeTrue();
+        omitted.Reason!.Code.Should().Be(RequestInvalidCode);
+        omitted.Reason!.Message.Should().Be("The module to import into must be supplied.");
+
+        // Zero is a legitimate identifier, so the same request naming it must get PAST this guard. The
+        // fixture's canonical module is zero, so a successful import here is the proof.
+        Result zero = await harness.Service.ImportModuleAsync(
+            PortalId,
+            new ModuleImportRequest { ModuleId = ModuleId, Content = "<content>x</content>" },
+            CancellationToken.None);
+
+        zero.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>
     /// Importing into a module the tenant does not have is refused.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>

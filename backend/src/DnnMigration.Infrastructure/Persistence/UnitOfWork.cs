@@ -39,17 +39,28 @@ namespace DnnMigration.Infrastructure.Persistence;
 /// </remarks>
 internal sealed class UnitOfWork : IUnitOfWork
 {
-    private readonly DnnDbContext _context;
+    private readonly DnnDbContext _dbContext;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="UnitOfWork"/> class.
     /// </summary>
-    /// <param name="context">The context whose tracked changes this instance commits.</param>
+    /// <param name="dbContext">The context whose tracked changes this instance commits.</param>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="context"/> is <see langword="null"/>.
+    /// Thrown when <paramref name="dbContext"/> is <see langword="null"/>.
     /// </exception>
-    public UnitOfWork(DnnDbContext context) =>
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+    /// <remarks>
+    /// The constructor is public on a type that is not, which is deliberate: the container registration
+    /// and this assembly are the only things that can name either this type or the context it takes, so a
+    /// public constructor grants no reach that internal accessibility has not already withheld. Nothing
+    /// beyond the guard happens here - no scope is opened, no query is issued and no state is read - so
+    /// resolving the unit of work costs nothing on a request that never commits.
+    /// </remarks>
+    public UnitOfWork(DnnDbContext dbContext)
+    {
+        ArgumentNullException.ThrowIfNull(dbContext);
+
+        _dbContext = dbContext;
+    }
 
     /// <summary>
     /// Commits every tracked change.
@@ -64,8 +75,18 @@ internal sealed class UnitOfWork : IUnitOfWork
     /// Thrown when the store rejects the write, for example on a unique index violation that a
     /// pre-flight check could not exclude because of a concurrent insert.
     /// </exception>
+    // MIGRATION: this one call is now the atomic commit boundary. Legacy portal, user, role, tab, module
+    // and alias creation each issued its own stored procedure with no transaction spanning them - portal
+    // creation (Library/Components/Portal/PortalController.vb, line 980) writes the portal row, the
+    // administrator, the roles, the pages, the modules and the alias as separately durable steps, and its
+    // only recovery is an in-process compensation call that cannot run if the process is terminated - so a
+    // failure part way through left a half-built portal behind. The provider even declared transaction
+    // members (Library/Components/Providers/Data/DataProvider.vb, lines 70 to 74) that no caller invoked.
+    // Every repository in this assembly stages against the one scoped context committed here, so the whole
+    // batch now applies or none of it does. Gaining atomicity is a deliberate behavioural improvement over
+    // the legacy write paths, not an incidental effect, and is recorded as such in MIGRATION_NOTES.md.
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
-        _context.SaveChangesAsync(cancellationToken);
+        _dbContext.SaveChangesAsync(cancellationToken);
 
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">
@@ -83,7 +104,7 @@ internal sealed class UnitOfWork : IUnitOfWork
         TransactionIsolation isolation = TransactionIsolation.Default,
         CancellationToken cancellationToken = default)
     {
-        if (_context.Database.CurrentTransaction is not null)
+        if (_dbContext.Database.CurrentTransaction is not null)
         {
             throw new InvalidOperationException(
                 "A transaction is already open on this unit of work. Nested transactions are not "
@@ -101,12 +122,12 @@ internal sealed class UnitOfWork : IUnitOfWork
         // reads this flag and the substitution has to be in place by the time the first SaveChanges inside
         // the scope creates a strategy. See DnnDbContext.ExplicitTransactionOpen for why the factory cannot
         // simply ask the database facade whether a transaction is open.
-        _context.ExplicitTransactionOpen = true;
+        _dbContext.ExplicitTransactionOpen = true;
 
         IDbContextTransaction transaction;
         try
         {
-            transaction = await _context.Database
+            transaction = await _dbContext.Database
                 .BeginTransactionAsync(level, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -115,11 +136,11 @@ internal sealed class UnitOfWork : IUnitOfWork
             // Nothing was opened, so nothing may be left announced. Leaving the flag set would suppress
             // retrying for the remainder of the request on the strength of a transaction that does not
             // exist - a silent loss of resilience that no later call could diagnose.
-            _context.ExplicitTransactionOpen = false;
+            _dbContext.ExplicitTransactionOpen = false;
             throw;
         }
 
-        return new TransactionScope(_context, transaction);
+        return new TransactionScope(_dbContext, transaction);
     }
 
     /// <summary>
@@ -132,17 +153,24 @@ internal sealed class UnitOfWork : IUnitOfWork
     /// </remarks>
     private sealed class TransactionScope : ITransactionScope
     {
-        private readonly DnnDbContext _context;
+        private readonly DnnDbContext _dbContext;
         private readonly IDbContextTransaction _transaction;
 
         /// <summary>
         /// Initialises a new scope over an open provider transaction.
         /// </summary>
-        /// <param name="context">The context whose retry suppression this scope owns.</param>
+        /// <param name="dbContext">The context whose retry suppression this scope owns.</param>
         /// <param name="transaction">The open transaction.</param>
-        public TransactionScope(DnnDbContext context, IDbContextTransaction transaction)
+        /// <remarks>
+        /// No argument is guarded, and that is not an omission. The type is private to
+        /// <see cref="UnitOfWork"/> and is constructed at exactly one call site, which has just proved both
+        /// arguments non-null - the context by the outer constructor's guard and the transaction by having
+        /// been returned from the provider. A guard here would be unreachable code asserting something the
+        /// compiler and the single caller already establish.
+        /// </remarks>
+        public TransactionScope(DnnDbContext dbContext, IDbContextTransaction transaction)
         {
-            _context = context;
+            _dbContext = dbContext;
             _transaction = transaction;
         }
 
@@ -165,7 +193,7 @@ internal sealed class UnitOfWork : IUnitOfWork
             }
             finally
             {
-                _context.ExplicitTransactionOpen = false;
+                _dbContext.ExplicitTransactionOpen = false;
             }
         }
     }

@@ -6,57 +6,118 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
+// MIGRATION: this type carries rows and interprets none of them. Each of the three legacy static
+//            controllers it replaces mixed retrieval with interpretation, and consequently each carried
+//            its own copy of the same allow-and-deny precedence rule. Deciding what a caller holds, and
+//            rendering a principal's display name from a negative identifier, both live in
+//            Infrastructure/Security/PermissionEvaluator.cs, which is the single authority on them.
+//            That is why no member below takes a principal, a claims set or a list of role names, none
+//            returns a verdict, and none composes a display string.
+//
+// MIGRATION: no entry is evicted from any cache here either. The two legacy grant controllers made
+//            twenty-one static cache calls between them, interleaved with the reads and writes they
+//            performed, so a caller could not tell retrieval from invalidation. Invalidation is
+//            coordinated by ICacheService at the Application service layer, where the breadth of a
+//            change is known - a single grant, a page, or an entire tenant. A repository that evicted
+//            on its own behalf would either evict too narrowly to be correct or too widely to be
+//            useful, and would do it invisibly to the service that actually knows which happened.
+//
+// MIGRATION: materialisation is the object-relational mapper's job. The legacy permission code reached
+//            rows three different ways - a reflection-driven row hydrator with six call sites in
+//            PermissionController.vb alone, column-by-column reader loops that assigned one property
+//            per line, and pre-generics CollectionBase wrappers over the two grant families - and none
+//            of the three produces a target file. Every read below hands back a materialised
+//            IReadOnlyList<T> or a single nullable entity: no untyped collection, no dictionary keyed
+//            by a stringly-typed column name, no reflection, and never an open query that would let a
+//            caller keep composing against a live connection it does not own.
+//
+// MIGRATION: table names, ANSI string types, lengths and the permission-key text conversion are pinned
+//            once in Persistence/Configurations and are deliberately not restated here. The three
+//            physical tables are SINGULAR - and stating that in this file would create a second place
+//            for it to be wrong. In particular the key column is varchar rather than nvarchar, so
+//            nothing below applies a case conversion, a collation hint or any other manual coercion to
+//            a permission string: doing so would make each parameter a different type from the column
+//            it is compared against and cost the unique index its usefulness for lookup.
+//
+// MIGRATION: the two legacy grant readers selected from vw_ModulePermissions and vw_TabPermissions.
+//            Neither view is mapped as an entity and neither is queried. Both were flat projections
+//            that left-joined the catalogue and the roles table onto a grant and folded the negative
+//            role identifiers into a display name, so mapping one would introduce a fourth entity that
+//            owns no table, duplicates three that do, and bakes presentation into the persistence
+//            model. The base tables are queried instead and the joined payload is reached through the
+//            navigations the entity configurations already declare.
+
 /// <summary>
-/// Reads and writes the permission catalogue and the <see cref="ModulePermission"/> and
-/// <see cref="TabPermission"/> grants recorded against it.
+/// Reads and writes the permission catalogue together with the grants recorded against a module
+/// instance and against a page.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: replaces the thirty-three permission procedures reached from the legacy core data
-/// provider and the data-access halves of <c>PermissionController.vb</c>,
-/// <c>ModulePermissionController.vb</c> and <c>TabPermissionController.vb</c> - nine, eighteen and
-/// fifteen public members respectively, plus six reflection-hydrator call sites - behind one contract.
+/// MIGRATION: this one type replaces the data-access halves of three static controllers -
+/// <c>PermissionController.vb</c> (9 public members), <c>ModulePermissionController.vb</c> (18) and
+/// <c>TabPermissionController.vb</c> (15) - and the thirty-three permission procedures they reached
+/// through a reflection-instantiated provider singleton. The singleton accessor is gone: the context
+/// arrives by constructor injection, so a test substitutes a database rather than defeating a static
+/// initialiser.
 /// </para>
 /// <para>
-/// <strong>This type answers no access question.</strong> Every member reads or writes rows. Deciding
-/// what a caller consequently holds - allow-and-deny precedence, pseudo-role sentinels, the role
-/// lookup that keeps one tenant's grants away from another's - belongs to
-/// <see cref="Security.PermissionEvaluator"/>, which is the single authority on it. Splitting the two
-/// concerns is the point: the legacy controllers mixed retrieval with precedence and consequently
-/// carried three copies of the same rule.
+/// <strong>Negative role identifiers are real stored data.</strong> Neither grant table declares a
+/// foreign key on its role column, and in this schema that is deliberate rather than an omission: a
+/// grant's role identifier may name a pseudo-principal that has no row in the roles table at all, and
+/// the legacy grant views folded exactly three of them into a display name - <c>-1</c> for all users,
+/// <c>-2</c> for the superuser and <c>-3</c> for unauthenticated users. Nothing below reads a negative
+/// role identifier as absent, converts one to a null, or filters one out. Absence is expressed only by
+/// the nullable CLR property being null, which is the one thing a stored negative value is not.
 /// </para>
 /// <para>
-/// <strong>Pseudo-role sentinels are legitimate stored values.</strong> Neither grant table has a
-/// foreign key to <c>Roles</c>, and that is deliberate in the legacy schema rather than an omission: a
-/// grant's <c>RoleID</c> may hold a sentinel that has no <c>Roles</c> row at all - <c>-1</c> is "All
-/// Users", <c>-2</c> is "Superuser", <c>-3</c> is "Unauthenticated Users" and <c>-4</c> is a
-/// deliberate non-match. Nothing here treats a negative role identifier as absent, and nothing here
-/// filters one out; the rows are returned as stored and interpreted elsewhere.
+/// <strong>The wildcard in the two-argument readers is a different thing entirely.</strong> It happens
+/// to be <c>-1</c> as well, which is precisely why the two are separated by name below rather than
+/// left to a shared constant. A <c>-1</c> arriving as a filter argument means "every one of them"; a
+/// <c>-1</c> stored in a role column means a specific principal. Collapsing the two would turn a query
+/// widening into a principal lookup, or the reverse.
 /// </para>
 /// <para>
-/// <strong>Writes are staged, not committed.</strong> The three insert members stage and return no
-/// generated key, so a batch of grants - a page's permissions copied onto its children, or the
-/// portal-creation sequence that writes portals, aliases, roles, pages and modules together - commits
-/// atomically through the unit of work rather than one row at a time. Each entity's identity property
-/// holds its key once that commit completes.
+/// <strong>Reads do not track; deletes must.</strong> Every read-only query is issued without change
+/// tracking, so a materialised grant cannot be mutated into an accidental update by unrelated work
+/// sharing the scoped context. The load that precedes a removal is the deliberate exception: staging a
+/// removal requires the entity the change tracker will act on.
+/// </para>
+/// <para>
+/// <strong>Writes and removals are staged, never committed.</strong> No member below commits, and none
+/// issues a set-based statement that would reach the store before the surrounding unit of work is
+/// ready. That is what allows a batch - a page's grants copied onto each of its children, or the
+/// tenant-creation sequence that writes portals, aliases, roles, pages and modules together - to
+/// succeed or fail as one operation. Each staged entity carries its generated key once the unit of
+/// work commits.
 /// </para>
 /// </remarks>
 internal sealed class PermissionRepository : IPermissionRepository
 {
     /// <summary>
-    /// The value the legacy two-argument grant readers accept in place of a real identifier to mean
-    /// "every one of them".
+    /// The value the module position of the module-grant reader accepts in place of a real module
+    /// identifier to mean "every module".
     /// </summary>
     /// <remarks>
-    /// MIGRATION: measured from the terminal procedure bodies, not assumed.
-    /// <c>GetModulePermissionsByModuleID</c> (04.04.00) guards both of its arguments with
-    /// <c>(@ModuleID = -1 OR ModuleID = @ModuleID)</c> and
-    /// <c>(PermissionID = @PermissionID OR @PermissionID = -1)</c>, and
-    /// <c>GetTabPermissionsByTabID</c> (04.05.00) carries the same guard on its permission argument
-    /// only. That wildcard is part of the procedure contract the Domain interface inherits, which is
-    /// why it is honoured here rather than quietly dropped: a caller asking for every grant on one
-    /// module has no other way to say so. It is a wildcard and nothing else - it is emphatically not
-    /// an absence marker, and a stored <c>RoleID</c> of the same value is a real principal.
+    /// MIGRATION: measured from the terminal procedure body rather than assumed. The module-grant
+    /// reader recreated by <c>04.04.00.SqlDataProvider</c> guards its scope argument with
+    /// <c>(@ModuleID = -1 OR ModuleID = @ModuleID …)</c>, so a caller asking for every grant in the
+    /// installation has no other way to say so and the wildcard is part of the contract the domain
+    /// interface inherits. It is a query widening and nothing else - emphatically not an absence
+    /// marker, and unrelated to <see cref="ModulePermission.RoleId"/> holding the same number.
+    /// </remarks>
+    private const int AnyModuleId = -1;
+
+    /// <summary>
+    /// The value the permission position of both two-argument grant readers accepts in place of a real
+    /// permission identifier to mean "every permission".
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: the module-grant reader in <c>04.04.00.SqlDataProvider</c> and the page-grant reader
+    /// recreated by <c>04.05.00.SqlDataProvider</c> both guard this argument with
+    /// <c>(PermissionID = @PermissionID OR @PermissionID = -1)</c>. Declared separately from
+    /// <see cref="AnyModuleId"/> on purpose: the numbers coincide, the contracts do not - the page
+    /// reader carries a wildcard here and none at all in its page position, so there is deliberately
+    /// no page-side counterpart to <see cref="AnyModuleId"/> for anyone to reach for.
     /// </remarks>
     private const int AnyPermissionId = -1;
 
@@ -64,57 +125,71 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// The scope code carried by the catalogue entries every module definition shares.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the literal <c>'SYSTEM_MODULE_DEFINITION'</c> appears in the terminal bodies of
-    /// <c>GetPermissionsByModuleID</c> (04.05.03) and <c>GetModulePermissionsByModuleID</c> (04.04.00).
-    /// It is reference data seeded by the upgrade scripts, so it is a stored value rather than a
-    /// configurable one and is named here instead of being repeated as a literal at each use.
+    /// MIGRATION: reference data seeded by the upgrade chain, appearing in the terminal bodies of the
+    /// module-scoped catalogue reader (<c>04.05.03.SqlDataProvider</c>) and the module-grant reader
+    /// (<c>04.04.00.SqlDataProvider</c>). It is a stored value rather than a configurable one, which is
+    /// why it is named here once instead of repeated as a literal at each use. It is not a mapping
+    /// declaration: no table or column name appears in this file.
     /// </remarks>
     private const string ModuleDefinitionScopeCode = "SYSTEM_MODULE_DEFINITION";
 
     /// <summary>The scope code carried by the catalogue entries every page shares.</summary>
     /// <remarks>
-    /// MIGRATION: the literal <c>'SYSTEM_TAB'</c> in the terminal bodies of
-    /// <c>GetPermissionsByTabID</c> (04.05.03) and <c>GetTabPermissionsByTabID</c> (04.05.00).
+    /// MIGRATION: the counterpart literal in the terminal body of the page-scoped catalogue reader
+    /// (<c>04.05.03.SqlDataProvider</c>), where it is the ONLY predicate the statement applies.
     /// </remarks>
     private const string TabScopeCode = "SYSTEM_TAB";
 
-    private readonly DnnDbContext _context;
+    private readonly DnnDbContext _dbContext;
 
     /// <summary>Initialises a new instance of the <see cref="PermissionRepository"/> class.</summary>
-    /// <param name="context">The unit-of-work scoped database context.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
-    public PermissionRepository(DnnDbContext context)
+    /// <param name="dbContext">The context scoped to the current unit of work.</param>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="dbContext"/> is <see langword="null"/>.
+    /// </exception>
+    /// <remarks>
+    /// MIGRATION: the only dependency, by design. The legacy controllers additionally reached a static
+    /// cache module, a reflection-created provider singleton and the ambient request context; none of
+    /// the three has a counterpart here, because caching is coordinated above this layer, the provider
+    /// indirection is replaced by injection, and nothing about reading a row depends on who asked.
+    /// </remarks>
+    public PermissionRepository(DnnDbContext dbContext)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+        _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
     // =================================================================================================
-    // Permission - the catalogue.
+    // Permission - the catalogue. A row declares that an action exists; it grants nothing.
     // =================================================================================================
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the terminal single-row reader selects the five catalogue columns for one primary
+    /// key, so at most one row can match and the answer is a nullable entity rather than a list. An
+    /// identifier naming no row yields <see langword="null"/>, which is an answer rather than a fault.
+    /// </remarks>
     public Task<Permission?> GetByIdAsync(int permissionId, CancellationToken cancellationToken = default)
     {
-        return _context.Permissions
-            .FirstOrDefaultAsync(p => p.PermissionId == permissionId, cancellationToken);
+        return _dbContext.Permissions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(entry => entry.PermissionId == permissionId, cancellationToken);
     }
 
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// The set is materialised into an array before it is used in the predicate, so the translated
-    /// <c>IN</c> list is built once from a stable snapshot rather than from a collection the caller could
-    /// still be mutating. Duplicates are collapsed first, because a repeated identifier would lengthen
-    /// the parameter list without widening the answer.
+    /// The set is snapshotted into an array before it reaches the predicate, so the translated
+    /// membership test is built once from a stable sequence rather than from a collection the caller
+    /// could still be mutating. Duplicates collapse first: a repeated identifier would lengthen the
+    /// parameter list without widening the answer.
     /// </para>
     /// <para>
-    /// An empty request short-circuits with no round trip. That is not merely an optimisation: EF Core
-    /// translates an empty <c>Contains</c> into a constant-false predicate, and issuing a query whose
-    /// answer is known to be empty is a round trip spent to learn nothing.
+    /// An empty request short-circuits with no round trip, which is correctness as much as economy - the
+    /// answer is knowably empty, so issuing a statement to learn it spends a round trip on nothing.
     /// </para>
     /// <para>
-    /// Ordering by identifier matches the definition-scoped and page-scoped readers on this type, so
-    /// every catalogue read in this repository returns a stable sequence.
+    /// Ordering by identifier matches every other catalogue read on this type, so the whole family
+    /// returns a stable sequence.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByIdsAsync(
@@ -128,60 +203,99 @@ internal sealed class PermissionRepository : IPermissionRepository
             return Array.Empty<Permission>();
         }
 
-        int[] distinct = permissionIds.Distinct().ToArray();
+        int[] wanted = permissionIds.Distinct().ToArray();
 
-        return await _context.Permissions
-            .Where(p => distinct.Contains(p.PermissionId))
-            .OrderBy(p => p.PermissionId)
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .Where(entry => wanted.Contains(entry.PermissionId))
+            .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetPermissionsByModuleDefID</c> (04.05.03) filters on the definition
-    /// column alone and orders by permission identifier, which is reproduced exactly.
+    /// MIGRATION: the terminal definition-scoped reader (<c>04.05.03.SqlDataProvider</c>) filters on the
+    /// definition column alone and orders by permission identifier. Both halves are reproduced exactly.
+    /// A definition that declares no entry yields an empty list, which the legacy statement also did.
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByModuleDefinitionIdAsync(int moduleDefinitionId, CancellationToken cancellationToken = default)
     {
-        return await _context.Permissions
-            .Where(p => p.ModuleDefinitionId == moduleDefinitionId)
-            .OrderBy(p => p.PermissionId)
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .Where(entry => entry.ModuleDefinitionId == moduleDefinitionId)
+            .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetPermissionsByModuleID</c> (04.05.03) resolves the module's own
-    /// definition through a scalar subquery and then takes the union of that definition's entries with
-    /// every entry carrying the product-wide module-definition scope code. Both halves are reproduced,
-    /// because dropping the second would silently narrow the result for every module in the
-    /// installation. A module identifier that names no row contributes nothing from the first half and
-    /// still yields the second, which is what the legacy statement did.
+    /// <para>
+    /// MIGRATION: the terminal module-scoped catalogue reader (<c>04.05.03.SqlDataProvider</c>) resolves
+    /// the module's own definition through a scalar subquery and takes the union of that definition's
+    /// entries with every entry carrying the product-wide module-definition scope code. Both halves are
+    /// reproduced, because dropping the second would silently narrow the answer for every module in the
+    /// installation.
+    /// </para>
+    /// <para>
+    /// It reads the catalogue and not the grant table, even though its argument names a module instance.
+    /// That asymmetry is the legacy shape and is kept: there is no join to a grant here, so a module
+    /// with no grants at all still receives the entries that apply to it.
+    /// </para>
+    /// <para>
+    /// A module identifier naming no row contributes nothing from the first half and still yields the
+    /// second, which is what the legacy scalar subquery did - comparing a column to a null subquery
+    /// result matched nothing rather than failing.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default)
     {
-        IQueryable<int> owningDefinitionIds = _context.Modules
-            .Where(m => m.ModuleId == moduleId)
-            .Select(m => m.ModuleDefinitionId);
+        // Composed as a subquery rather than resolved in a first round trip, so the union below stays a
+        // single statement exactly as the legacy procedure was. Nothing is materialised from it: it
+        // appears only inside a predicate, so no module entity is tracked or returned.
+        IQueryable<int> owningDefinitionIds = _dbContext.Modules
+            .Where(module => module.ModuleId == moduleId)
+            .Select(module => module.ModuleDefinitionId);
 
-        return await _context.Permissions
-            .Where(p => owningDefinitionIds.Contains(p.ModuleDefinitionId)
-                || p.PermissionCode == ModuleDefinitionScopeCode)
-            .OrderBy(p => p.PermissionId)
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .Where(entry => owningDefinitionIds.Contains(entry.ModuleDefinitionId)
+                || entry.PermissionCode == ModuleDefinitionScopeCode)
+            .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetPermissionByCodeAndKey</c> (04.06.00) compares each column to its
-    /// argument and can match many rows, which is why the contract is plural despite the singular
-    /// legacy name. The scope code is compared case-insensitively because
-    /// <c>Permission.PermissionCode</c> is a free-text <c>varchar</c> column whose shipped rows are not
-    /// consistently cased; the key is compared as the enumeration, which the mapping converts to the
-    /// same column text.
+    /// <para>
+    /// MIGRATION: <strong>the singular legacy name is a misnomer and the plural return is deliberate.</strong>
+    /// The terminal procedure (<c>04.06.00.SqlDataProvider</c>) compares each column to its argument and
+    /// can match many rows - the uniqueness rule on this table spans the scope code, the definition and
+    /// the key, so one code-and-key pair may legitimately exist once per definition. The legacy wrapper
+    /// returned a collection for exactly that reason. Preserving the singular name here and returning a
+    /// single entity would silently discard rows.
+    /// </para>
+    /// <para>
+    /// MIGRATION: both columns are compared by direct equality, which is what the terminal statement
+    /// does. The scope code is matched as stored, so whether the comparison is case sensitive remains a
+    /// property of the column's collation exactly as it was before this migration - applying a case
+    /// conversion here would override that decision, diverge on a case-sensitive installation, and make
+    /// the predicate unusable by the unique index. Trimming and other input normalisation belong to the
+    /// Application layer, which already performs them before calling.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the key is compared as the domain enumeration. The configured text conversion turns it
+    /// into the member's own spelling - the exact value a production database already holds - so the
+    /// comparison happens against the stored text without this file naming any spelling, and no numeric
+    /// ordinal reaches the column.
+    /// </para>
+    /// <para>
+    /// The terminal statement declares no ordering. Ordering by identifier is added so repeated calls
+    /// return the same sequence; it narrows nothing, since the legacy caller received the same rows in
+    /// whatever order the engine chose.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByCodeAndKeyAsync(
         string permissionCode,
@@ -190,295 +304,565 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         ArgumentNullException.ThrowIfNull(permissionCode);
 
-        string wanted = permissionCode.Trim().ToLowerInvariant();
-
-        return await _context.Permissions
-            .Where(p => p.PermissionCode.ToLower() == wanted && p.PermissionKey == permissionKey)
-            .OrderBy(p => p.PermissionId)
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .Where(entry => entry.PermissionCode == permissionCode && entry.PermissionKey == permissionKey)
+            .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetPermissionsByTabID</c> (04.05.03) filters on the product-wide page
-    /// scope code and never references its page argument at all, so every page receives the same
-    /// catalogue. That is reproduced rather than corrected - inventing a page filter the legacy
-    /// statement did not apply would narrow results the legacy application returned.
+    /// <para>
+    /// MIGRATION: the terminal page-scoped catalogue reader (<c>04.05.03.SqlDataProvider</c>) filters on
+    /// the product-wide page scope code and <strong>never references its page argument at all</strong>, so
+    /// every page receives the same catalogue. That is reproduced rather than corrected. Inventing the
+    /// page filter the legacy statement does not apply would narrow an answer the legacy application
+    /// returned in full, and this note exists so that nobody reads the body below as having lost a
+    /// predicate.
+    /// </para>
+    /// <para>
+    /// The argument is therefore accepted and unused. It is kept because the contract declares it and
+    /// callers pass it, and because removing it would change a signature to describe an implementation
+    /// detail of one statement rather than the question being asked.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<Permission>> GetByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        return await _context.Permissions
-            .Where(p => p.PermissionCode == TabScopeCode)
-            .OrderBy(p => p.PermissionId)
+        _ = tabId;
+
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .Where(entry => entry.PermissionCode == TabScopeCode)
+            .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// A set-based delete, so an identifier naming no row removes nothing and is not an error, which is
-    /// what the legacy procedure did.
+    /// MIGRATION: staged for removal rather than removed. The entity is loaded WITH change tracking -
+    /// the one deliberate exception to the no-tracking rule on this type - because the change tracker
+    /// needs the instance it is being asked to act on. An identifier naming no row stages nothing and is
+    /// not a fault, which is what the legacy procedure did.
     /// </remarks>
-    public Task DeleteAsync(int permissionId, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(int permissionId, CancellationToken cancellationToken = default)
     {
-        return _context.Permissions
-            .Where(p => p.PermissionId == permissionId)
-            .ExecuteDeleteAsync(cancellationToken);
-    }
+        Permission? entry = await _dbContext.Permissions
+            .FirstOrDefaultAsync(candidate => candidate.PermissionId == permissionId, cancellationToken)
+            .ConfigureAwait(false);
 
-    /// <inheritdoc />
-    public Task AddAsync(Permission permission, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(permission);
+        if (entry is null)
+        {
+            return;
+        }
 
-        _context.Permissions.Add(permission);
-
-        return Task.CompletedTask;
-    }
-
-    /// <inheritdoc />
-    public Task UpdateAsync(Permission permission, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(permission);
-
-        _context.Permissions.Update(permission);
-
-        return Task.CompletedTask;
-    }
-
-    // =================================================================================================
-    // ModulePermission - grants recorded against a module instance.
-    // =================================================================================================
-
-    /// <inheritdoc />
-    public Task<ModulePermission?> GetModulePermissionByIdAsync(int modulePermissionId, CancellationToken cancellationToken = default)
-    {
-        return _context.ModulePermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .FirstOrDefaultAsync(p => p.ModulePermissionId == modulePermissionId, cancellationToken);
+        _dbContext.Permissions.Remove(entry);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// Both arguments honour the legacy wildcard, so this one member serves "every grant on this
-    /// module", "this permission on this module" and "this permission everywhere". Allowing and denying
-    /// grants both come back, and the permission, role and account references are loaded alongside:
-    /// this is the grid-shaped read, and a caller presenting a permission matrix needs the rows
-    /// themselves rather than the decision they add up to. The role reference is null for a grant held
-    /// against a pseudo-role sentinel, which is a legitimate row and not a broken one.
+    /// MIGRATION: the legacy insert took four positional arguments and returned the generated key from
+    /// <c>SCOPE_IDENTITY()</c>. The four values travel as properties on one entity and no key is
+    /// returned, because returning one would force this member to commit on its own and destroy the
+    /// unit-of-work boundary. The identity property on the passed entity holds its key once the caller
+    /// commits.
+    /// </remarks>
+    public Task AddAsync(Permission permission, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(permission);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        _dbContext.Permissions.Add(permission);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the legacy update took five positional arguments led by the identifier; all five
+    /// travel as properties on one entity. Staged explicitly rather than left to change detection, so
+    /// the call behaves identically whether the caller mutated a tracked entity or rebuilt a detached
+    /// one.
+    /// </remarks>
+    public Task UpdateAsync(Permission permission, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(permission);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        _dbContext.Permissions.Update(permission);
+        return Task.CompletedTask;
+    }
+
+    // =================================================================================================
+    // ModulePermission - one grant recorded against one module instance, to a role or to an account.
+    //
+    // MIGRATION: each read below loads the catalogue entry, the role and the account alongside the
+    //            grant. That is not convenience: the legacy reader selected every column of a view that
+    //            left-joined the catalogue and the roles table onto the grant, so those values were part
+    //            of what a caller received. Reaching them through the configured navigations keeps that
+    //            payload available without mapping the view. The role navigation is null for a grant
+    //            addressed to a pseudo-principal - the left join finds no row, because none exists - and
+    //            that is a correct grant rather than a broken one, which is exactly why the raw
+    //            identifier is the fact to read and the navigation is the convenience.
+    // =================================================================================================
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the terminal single-row grant reader (<c>04.04.00.SqlDataProvider</c>) selects one row
+    /// by primary key. This member has no counterpart in the page-grant family, and that absence is
+    /// measured rather than accidental - see the note above the page section.
+    /// </remarks>
+    public Task<ModulePermission?> GetModulePermissionByIdAsync(int modulePermissionId, CancellationToken cancellationToken = default)
+    {
+        return _dbContext.ModulePermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User)
+            .FirstOrDefaultAsync(grant => grant.ModulePermissionId == modulePermissionId, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: <strong>both arguments carry the legacy wildcard, and each is translated by composing
+    /// the predicate rather than by pushing the comparison into it.</strong> The terminal body guards its
+    /// scope argument with <c>(@ModuleID = -1 OR ModuleID = @ModuleID …)</c> and its permission argument
+    /// with <c>(PermissionID = @PermissionID OR @PermissionID = -1)</c>. Applying each filter only when
+    /// it is not the wildcard produces the same four answers this one member has always given - every
+    /// grant on one module, one permission on one module, one permission across every module, and every
+    /// grant in the installation - while letting each shape be satisfied by an index instead of an
+    /// unconditional disjunction that can be satisfied by none.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the wildcard is a filter sentinel for a positive identity and nothing more. It is
+    /// compared against the arguments only, never against a stored column, so a persisted role
+    /// identifier of the same value is untouched by it and is returned as the real principal it names.
+    /// The two concerns do not share a constant here precisely so that they cannot be conflated.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the terminal body additionally unions in grants whose module column is null carrying
+    /// the product-wide module-definition scope code. That branch cannot arise against this model - the
+    /// grant entity declares a non-nullable module identifier behind an enforced foreign key - so no
+    /// member reproduces it, and inventing one would describe rows this schema cannot hold.
+    /// </para>
+    /// <para>
+    /// Denying grants come back alongside allowing ones. A consumer that never saw a denial would be
+    /// unable to suppress anything, which is the one failure mode an access-control read must not have.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<ModulePermission>> GetModulePermissionsByModuleIdAsync(
         int moduleId,
         int permissionId,
         CancellationToken cancellationToken = default)
     {
-        return await _context.ModulePermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .Where(p => moduleId == AnyPermissionId || p.ModuleId == moduleId)
-            .Where(p => permissionId == AnyPermissionId || p.PermissionId == permissionId)
-            .OrderBy(p => p.PermissionId)
-            .ThenBy(p => p.RoleId)
-            .ThenBy(p => p.UserId)
+        IQueryable<ModulePermission> query = _dbContext.ModulePermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User);
+
+        if (moduleId != AnyModuleId)
+        {
+            query = query.Where(grant => grant.ModuleId == moduleId);
+        }
+
+        if (permissionId != AnyPermissionId)
+        {
+            query = query.Where(grant => grant.PermissionId == permissionId);
+        }
+
+        // Finishing on the primary key makes the sequence total. The three columns before it group the
+        // rows the way a permission matrix reads, but they cannot order it on their own: under either
+        // wildcard two rows can agree on all three.
+        return await query
+            .OrderBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.ModulePermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetModulePermissionsByPortal</c> (04.04.00) joins the grant view to
-    /// the modules table and filters on the portal column, which is what confines the answer to one
-    /// tenant.
+    /// MIGRATION: the terminal tenant-scoped grant reader (<c>04.04.00.SqlDataProvider</c>) joins the
+    /// grant to the modules table and filters on its tenant column, which is what keeps one tenant's
+    /// grants away from another tenant's answer. The join is expressed through the configured module
+    /// relationship rather than restated as a manual join. The module's tenant column is nullable, and
+    /// comparing it to a plain value excludes the null rows exactly as the legacy inner join did, so
+    /// installation-wide modules are not attributed to a tenant that does not own them.
     /// </remarks>
     public async Task<IReadOnlyList<ModulePermission>> GetModulePermissionsByPortalIdAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        return await _context.ModulePermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .Where(p => p.Module!.PortalId == portalId)
-            .OrderBy(p => p.ModuleId)
-            .ThenBy(p => p.PermissionId)
-            .ThenBy(p => p.RoleId)
-            .ThenBy(p => p.UserId)
+        return await _dbContext.ModulePermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User)
+            .Where(grant => grant.Module.PortalId == portalId)
+            .OrderBy(grant => grant.ModuleId)
+            .ThenBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.ModulePermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetModulePermissionsByTabID</c> (04.04.00) joins the grant view to the
-    /// module placement table, so this returns module grants selected by page rather than page grants.
+    /// <para>
+    /// MIGRATION: the terminal page-scoped grant reader (<c>04.04.00.SqlDataProvider</c>) joins the grant
+    /// to the placement table on the module and filters on the page. It returns MODULE grants selected by
+    /// page, never page grants, and the page-grant family has no mirror image of it - a genuine
+    /// cross-scope query that exists on one side only.
+    /// </para>
+    /// <para>
+    /// The placement path is composed as a membership test over the configured placement set, so a module
+    /// placed on the page more than once contributes its grants once rather than once per placement. It
+    /// resolves which modules are on the page and nothing else: no grant is judged here and no principal
+    /// name is composed.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<ModulePermission>> GetModulePermissionsByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        IQueryable<int> placedModuleIds = _context.TabModules
-            .Where(tm => tm.TabId == tabId)
-            .Select(tm => tm.ModuleId);
+        IQueryable<int> placedModuleIds = _dbContext.TabModules
+            .Where(placement => placement.TabId == tabId)
+            .Select(placement => placement.ModuleId);
 
-        return await _context.ModulePermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .Where(p => placedModuleIds.Contains(p.ModuleId))
-            .OrderBy(p => p.ModuleId)
-            .ThenBy(p => p.PermissionId)
-            .ThenBy(p => p.RoleId)
-            .ThenBy(p => p.UserId)
+        return await _dbContext.ModulePermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User)
+            .Where(grant => placedModuleIds.Contains(grant.ModuleId))
+            .OrderBy(grant => grant.ModuleId)
+            .ThenBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.ModulePermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task DeleteModulePermissionsByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// MIGRATION: the terminal bulk removal filters on the module column alone. The rows are loaded WITH
+    /// change tracking and staged for removal, so the removal lands in the same commit as everything else
+    /// the caller has staged - typically the module itself. A set-based statement issued here would reach
+    /// the store before that commit, leave the change tracker holding rows the store no longer has, and
+    /// put the removal outside the rollback protecting the rest of the operation. Removing nothing is a
+    /// legitimate outcome, so a module with no grants stages nothing and reports nothing.
+    /// </remarks>
+    public async Task DeleteModulePermissionsByModuleIdAsync(int moduleId, CancellationToken cancellationToken = default)
     {
-        return _context.ModulePermissions
-            .Where(p => p.ModuleId == moduleId)
-            .ExecuteDeleteAsync(cancellationToken);
+        List<ModulePermission> doomed = await _dbContext.ModulePermissions
+            .Where(grant => grant.ModuleId == moduleId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (doomed.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.ModulePermissions.RemoveRange(doomed);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>DeleteModulePermissionsByUserID</c> (04.08.00) joins the grant table
-    /// to the modules table so only the named tenant's grants are removed, which is reproduced by the
-    /// portal predicate here. Only grants naming the account itself go: a grant the account receives
-    /// through a role belongs to the role, and removing it would strip every other holder of that role.
+    /// <para>
+    /// MIGRATION: the terminal account-scoped bulk removal (<c>04.08.00.SqlDataProvider</c>) joins the
+    /// grant to the modules table so that only the named tenant's grants go. <strong>Both</strong>
+    /// predicates are therefore load-bearing: filtering on the account alone would strip that account's
+    /// grants in every other tenant it belongs to, which is a cross-tenant data loss rather than a
+    /// missing filter.
+    /// </para>
+    /// <para>
+    /// MIGRATION: only grants naming the account itself are removed. A grant the account receives through
+    /// a role belongs to the role, and removing it would revoke access from every other holder of that
+    /// role. The account column is nullable and is compared to a plain value, so role-addressed grants
+    /// are not matched.
+    /// </para>
+    /// <para>
+    /// The rows are staged rather than removed outright. This member is one half of a two-table cleanup,
+    /// and staging is what lets both halves land in one commit instead of leaving the account's module
+    /// grants gone and its page grants intact.
+    /// </para>
     /// </remarks>
-    public Task DeleteModulePermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
+    public async Task DeleteModulePermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
     {
-        return _context.ModulePermissions
-            .Where(p => p.UserId == userId && p.Module!.PortalId == portalId)
-            .ExecuteDeleteAsync(cancellationToken);
+        List<ModulePermission> doomed = await _dbContext.ModulePermissions
+            .Where(grant => grant.UserId == userId && grant.Module.PortalId == portalId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (doomed.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.ModulePermissions.RemoveRange(doomed);
     }
 
     /// <inheritdoc />
-    public Task DeleteModulePermissionAsync(int modulePermissionId, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// MIGRATION: staged for removal, with the row loaded WITH change tracking because the change tracker
+    /// needs the instance it is being asked to act on. An identifier naming no row stages nothing and is
+    /// not a fault.
+    /// </remarks>
+    public async Task DeleteModulePermissionAsync(int modulePermissionId, CancellationToken cancellationToken = default)
     {
-        return _context.ModulePermissions
-            .Where(p => p.ModulePermissionId == modulePermissionId)
-            .ExecuteDeleteAsync(cancellationToken);
+        ModulePermission? grant = await _dbContext.ModulePermissions
+            .FirstOrDefaultAsync(candidate => candidate.ModulePermissionId == modulePermissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (grant is null)
+        {
+            return;
+        }
+
+        _dbContext.ModulePermissions.Remove(grant);
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the legacy insert took five positional arguments and returned the generated key from
+    /// <c>SCOPE_IDENTITY()</c>. The five values travel as properties on one entity and no key is
+    /// returned, so a batch of grants stages together and commits atomically. The nullable role and
+    /// account properties are staged exactly as supplied: a negative role identifier is a real principal
+    /// and is never coerced to a null, and a null is never turned into a number.
+    /// </remarks>
     public Task AddModulePermissionAsync(ModulePermission modulePermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(modulePermission);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _context.ModulePermissions.Add(modulePermission);
-
+        _dbContext.ModulePermissions.Add(modulePermission);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the legacy update took six positional arguments led by the identifier; all six travel
+    /// as properties on one entity. Staged explicitly rather than left to change detection, so the call
+    /// behaves identically for a tracked entity and for a detached one, and the stored role and account
+    /// values survive the round trip unchanged.
+    /// </remarks>
     public Task UpdateModulePermissionAsync(ModulePermission modulePermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(modulePermission);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _context.ModulePermissions.Update(modulePermission);
-
+        _dbContext.ModulePermissions.Update(modulePermission);
         return Task.CompletedTask;
     }
 
     // =================================================================================================
-    // TabPermission - grants recorded against a page.
+    // TabPermission - one grant recorded against one page, to a role or to an account.
+    //
+    // MIGRATION: this section is deliberately NARROWER than the module section above, in three separate
+    //            and independently measured ways. The legacy provider declared a single-row reader for a
+    //            module grant and NO equivalent single-row reader for a page grant - seven members here
+    //            against nine there - even though it declared a single-row REMOVAL for both. It also
+    //            declared a cross-scope reader that selects module grants by page, with no page-side
+    //            counterpart. And its two-argument page reader guards only its permission argument,
+    //            while the module one guards both. None of the three gaps is closed: the asymmetry is
+    //            what the legacy surface measurably is, so no page-grant getter by identifier is
+    //            invented here, and no page wildcard constant exists for one to be built from. A
+    //            reviewer looking for the missing members should stop here rather than add them.
+    //
+    // MIGRATION: as in the module section, the catalogue entry, role and account are loaded alongside
+    //            each grant because the legacy reader selected every column of a view that left-joined
+    //            them. The view also carried the tenant column, sourced from its inner join to the pages
+    //            table; here the tenant is reached through the configured page relationship instead, so
+    //            no fourth entity is introduced to hold a column that belongs to the page.
     // =================================================================================================
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>GetTabPermissionsByPortal</c> (04.04.00) also matches the host-level
-    /// rows whose portal column is null, but only when its argument is itself null. The contract takes a
-    /// plain value, so that branch is unreachable and host-level grants are not returned here.
+    /// <para>
+    /// MIGRATION: the terminal tenant-scoped page-grant reader (<c>04.04.00.SqlDataProvider</c>) filters
+    /// on the tenant column its view sources from the pages table, so the tenant path is expressed here
+    /// through the configured page relationship.
+    /// </para>
+    /// <para>
+    /// MIGRATION: that statement also matches the installation-wide rows whose tenant column is null, but
+    /// <strong>only when its argument is itself null</strong>. This contract takes a plain value, so the
+    /// branch is unreachable and installation-wide grants are not returned - comparing a nullable column
+    /// to a value excludes nulls, which is the same answer the legacy statement gave for a non-null
+    /// argument. A caller needing those rows asks for them by their own scope rather than receiving them
+    /// mixed into a tenant's answer.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<TabPermission>> GetTabPermissionsByPortalIdAsync(int portalId, CancellationToken cancellationToken = default)
     {
-        return await _context.TabPermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .Where(p => p.Tab!.PortalId == portalId)
-            .OrderBy(p => p.TabId)
-            .ThenBy(p => p.PermissionId)
-            .ThenBy(p => p.RoleId)
-            .ThenBy(p => p.UserId)
+        return await _dbContext.TabPermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User)
+            .Where(grant => grant.Tab.PortalId == portalId)
+            .OrderBy(grant => grant.TabId)
+            .ThenBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.TabPermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// The permission argument honours the legacy wildcard, so this member serves both "every grant on
-    /// this page" and "this permission on this page". The page argument does not: the terminal
-    /// <c>GetTabPermissionsByTabID</c> (04.05.00) guards only its permission argument, and that measured
-    /// asymmetry with the module reader is preserved rather than smoothed over.
+    /// <para>
+    /// MIGRATION: <strong>the wildcard applies to the permission argument only.</strong> The terminal body
+    /// (<c>04.05.00.SqlDataProvider</c>) guards its permission argument with
+    /// <c>(PermissionID = @PermissionID OR @PermissionID = -1)</c> and matches its page exactly, with no
+    /// guard of any kind. The page filter below is therefore unconditional while the permission filter is
+    /// composed only when a real identifier is named - the shape of the code is the shape of the measured
+    /// asymmetry, not an oversight in one of the two readers.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is the second half of the reason the two wildcard constants are declared
+    /// separately. Only the permission one is reachable from here; there is no page equivalent, so the
+    /// code cannot accidentally widen an argument the legacy statement never widened.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the terminal body additionally unions in grants whose page column is null carrying the
+    /// product-wide page scope code. That branch cannot arise against this model, whose grant entity
+    /// declares a non-nullable page identifier behind an enforced foreign key, so no member reproduces
+    /// it. Denying grants come back alongside allowing ones.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<TabPermission>> GetTabPermissionsByTabIdAsync(
         int tabId,
         int permissionId,
         CancellationToken cancellationToken = default)
     {
-        return await _context.TabPermissions
-            .Include(p => p.Permission)
-            .Include(p => p.Role)
-            .Include(p => p.User)
-            .Where(p => p.TabId == tabId)
-            .Where(p => permissionId == AnyPermissionId || p.PermissionId == permissionId)
-            .OrderBy(p => p.PermissionId)
-            .ThenBy(p => p.RoleId)
-            .ThenBy(p => p.UserId)
+        IQueryable<TabPermission> query = _dbContext.TabPermissions
+            .AsNoTracking()
+            .Include(grant => grant.Permission)
+            .Include(grant => grant.Role)
+            .Include(grant => grant.User)
+            .Where(grant => grant.TabId == tabId);
+
+        if (permissionId != AnyPermissionId)
+        {
+            query = query.Where(grant => grant.PermissionId == permissionId);
+        }
+
+        return await query
+            .OrderBy(grant => grant.PermissionId)
+            .ThenBy(grant => grant.RoleId)
+            .ThenBy(grant => grant.UserId)
+            .ThenBy(grant => grant.TabPermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task DeleteTabPermissionsByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// MIGRATION: the terminal bulk removal filters on the page column alone. The rows are loaded WITH
+    /// change tracking and staged, so the removal commits with whatever else the caller staged - typically
+    /// the page itself, or the page's grants being replaced wholesale. Removing nothing is a legitimate
+    /// outcome.
+    /// </remarks>
+    public async Task DeleteTabPermissionsByTabIdAsync(int tabId, CancellationToken cancellationToken = default)
     {
-        return _context.TabPermissions
-            .Where(p => p.TabId == tabId)
-            .ExecuteDeleteAsync(cancellationToken);
+        List<TabPermission> doomed = await _dbContext.TabPermissions
+            .Where(grant => grant.TabId == tabId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (doomed.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.TabPermissions.RemoveRange(doomed);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the terminal <c>DeleteTabPermissionsByUserID</c> (04.08.00) joins the grant table to
-    /// the pages table so only the named tenant's grants are removed. As with its module counterpart,
-    /// only grants naming the account itself are removed.
+    /// <para>
+    /// MIGRATION: the terminal account-scoped bulk removal (<c>04.08.00.SqlDataProvider</c>) joins the
+    /// grant to the pages table so that only the named tenant's grants go, and both predicates are
+    /// load-bearing for the same reason as in the module counterpart: filtering on the account alone would
+    /// strip its grants in every other tenant it belongs to.
+    /// </para>
+    /// <para>
+    /// MIGRATION: only grants naming the account itself are removed; a grant reaching the account through
+    /// a role belongs to the role. Staged rather than removed outright, so this half and its module
+    /// counterpart land in one commit - the alternative leaves an account half-cleaned, and a later
+    /// account reusing the identifier would inherit whatever was left behind.
+    /// </para>
     /// </remarks>
-    public Task DeleteTabPermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
+    public async Task DeleteTabPermissionsByUserIdAsync(int portalId, int userId, CancellationToken cancellationToken = default)
     {
-        return _context.TabPermissions
-            .Where(p => p.UserId == userId && p.Tab!.PortalId == portalId)
-            .ExecuteDeleteAsync(cancellationToken);
+        List<TabPermission> doomed = await _dbContext.TabPermissions
+            .Where(grant => grant.UserId == userId && grant.Tab.PortalId == portalId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (doomed.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.TabPermissions.RemoveRange(doomed);
     }
 
     /// <inheritdoc />
-    public Task DeleteTabPermissionAsync(int tabPermissionId, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// MIGRATION: the legacy block offers this removal by identifier while offering no read by identifier,
+    /// which is part of the measured asymmetry recorded above the section. The row is loaded WITH change
+    /// tracking and staged; an identifier naming no row stages nothing and is not a fault.
+    /// </remarks>
+    public async Task DeleteTabPermissionAsync(int tabPermissionId, CancellationToken cancellationToken = default)
     {
-        return _context.TabPermissions
-            .Where(p => p.TabPermissionId == tabPermissionId)
-            .ExecuteDeleteAsync(cancellationToken);
+        TabPermission? grant = await _dbContext.TabPermissions
+            .FirstOrDefaultAsync(candidate => candidate.TabPermissionId == tabPermissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (grant is null)
+        {
+            return;
+        }
+
+        _dbContext.TabPermissions.Remove(grant);
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the legacy insert took five positional arguments and returned the generated key from
+    /// <c>SCOPE_IDENTITY()</c>. The five values travel as properties on one entity and no key is
+    /// returned, which is what lets a page's grants be copied onto each of its children as one commit
+    /// rather than one commit per grant. The nullable role and account properties are staged as supplied:
+    /// a negative role identifier is a real principal and survives untouched.
+    /// </remarks>
     public Task AddTabPermissionAsync(TabPermission tabPermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tabPermission);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _context.TabPermissions.Add(tabPermission);
-
+        _dbContext.TabPermissions.Add(tabPermission);
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the legacy update took six positional arguments led by the identifier; all six travel as
+    /// properties on one entity. Staged explicitly rather than left to change detection, so the call
+    /// behaves identically for a tracked entity and for a detached one.
+    /// </remarks>
     public Task UpdateTabPermissionAsync(TabPermission tabPermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tabPermission);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _context.TabPermissions.Update(tabPermission);
-
+        _dbContext.TabPermissions.Update(tabPermission);
         return Task.CompletedTask;
     }
 }

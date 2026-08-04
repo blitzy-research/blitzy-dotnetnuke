@@ -4,6 +4,7 @@ using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 
 namespace DnnMigration.Api.Authorization;
@@ -132,6 +133,17 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
     private readonly IPortalContextHolder _portalContext;
 
     /// <summary>
+    /// Records why a requirement could not be evaluated, or why an evaluated requirement was not met.
+    /// </summary>
+    /// <remarks>
+    /// A requirement this handler cannot evaluate FAILS CLOSED, and silence about that is the problem the
+    /// diagnostics below solve: an unevaluable requirement and a legitimately refused one are the same
+    /// 403 to the caller, so without a record the two cannot be told apart from the outside. Nothing here
+    /// influences the decision, and no diagnostic names a credential.
+    /// </remarks>
+    private readonly ILogger<PermissionAuthorizationHandler> _logger;
+
+    /// <summary>
     /// Creates the handler over the permission service that decides, the caller it decides about, and
     /// the tenant context used as the last resort for naming the tenant.
     /// </summary>
@@ -145,6 +157,10 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
     /// The tenant context, resolved on demand from the requested host when neither the route nor the
     /// caller names a tenant. Registered scoped.
     /// </param>
+    /// <param name="logger">
+    /// Records why a requirement could not be evaluated, and why an evaluated requirement was refused.
+    /// Diagnostic only: nothing it receives influences the decision.
+    /// </param>
     /// <exception cref="ArgumentNullException">
     /// Thrown when any dependency is <see langword="null"/>. Failing at activation is deliberate: a
     /// handler missing a collaborator could only ever decline, and a policy that silently declines
@@ -153,15 +169,18 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
     public PermissionAuthorizationHandler(
         IPermissionService permissions,
         ICurrentUser currentUser,
-        IPortalContextHolder portalContext)
+        IPortalContextHolder portalContext,
+        ILogger<PermissionAuthorizationHandler> logger)
     {
         ArgumentNullException.ThrowIfNull(permissions);
         ArgumentNullException.ThrowIfNull(currentUser);
         ArgumentNullException.ThrowIfNull(portalContext);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _permissions = permissions;
         _currentUser = currentUser;
         _portalContext = portalContext;
+        _logger = logger;
     }
 
     /// <summary>
@@ -190,16 +209,27 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         // handler decidable in isolation and keeps one more piece of ambient state from this layer.
         if (context.Resource is not HttpContext httpContext)
         {
+            _logger.LogWarning(
+                "A {Requirement} could not be evaluated because there is no request to read a scope from.",
+                nameof(PermissionRequirement));
             return;
         }
 
         if (await ResolvePortalIdAsync(httpContext).ConfigureAwait(false) is not { } portalId)
         {
+            _logger.LogWarning(
+                "A {Scope} permission requirement was declared on a route that names no tenant, and the "
+                + "caller's token carries none either, so the requirement cannot be evaluated.",
+                requirement.Scope);
             return;
         }
 
         if (ResolveRouteKey(requirement.Scope) is not { } routeKey)
         {
+            _logger.LogWarning(
+                "A {Scope} permission requirement was declared for a scope this handler can read no route "
+                + "key for, so there is nothing to evaluate the permission against.",
+                requirement.Scope);
             return;
         }
 
@@ -208,6 +238,11 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         // would be to invent a key and grant against whatever it happened to match.
         if (ReadRouteId(httpContext, routeKey) is not { } scopeId)
         {
+            _logger.LogWarning(
+                "A {Scope} permission requirement was declared on a route that has no '{RouteKey}' value, "
+                + "so there is nothing to evaluate the permission against.",
+                requirement.Scope,
+                routeKey);
             return;
         }
 
@@ -266,7 +301,20 @@ public sealed class PermissionAuthorizationHandler : AuthorizationHandler<Permis
         if (decision.IsSuccess && decision.Value)
         {
             context.Succeed(requirement);
+            return;
         }
+
+        // Refused, and the reason is recorded because the caller is told nothing beyond the status. A
+        // failed evaluation and an honest refusal are separated by the failure code, which is the only
+        // thing that distinguishes them once the response has left.
+        _logger.LogInformation(
+            "A {Scope} {Permission} requirement was not met for scope {ScopeId} in portal {PortalId}: "
+            + "{FailureCode}.",
+            requirement.Scope,
+            requirement.Permission,
+            scopeId,
+            portalId,
+            decision.IsFailure ? decision.Reason?.Code : "not_permitted");
     }
 
     /// <summary>

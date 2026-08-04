@@ -5,100 +5,222 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
+// =====================================================================================================
+// MIGRATION: this repository spans the TWO legacy provider stacks its contract was assembled from, and
+// nothing else. The per-user answers come from the membership provider's "Profile" block -
+// Library/Providers/MembershipProviders/DataProvider/DataProvider.vb:L117-L119, implemented at
+// Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L302 and L306 - while the
+// declarations those answers are keyed by come from the core provider's "profile property definitions"
+// block at Library/Components/Providers/Data/DataProvider.vb:L250-L256, implemented at
+// Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L1017-L1048. Both stacks resolved
+// through a reflection-created static singleton, and ProfileController.vb held one of each in a shared
+// field (L48 and L49); both are replaced by the single injected context below.
+//
+// MIGRATION: the older SERIALIZED profile is not ported. The core provider's personalization block -
+// GetAllProfiles (L245), GetProfile(UserId, PortalId) (L246), AddProfile(UserId, PortalId) (L247) and
+// UpdateProfile(UserId, PortalId, ProfileData As String) (L248) - stored a whole profile as one opaque
+// string keyed by user AND portal. The surviving row model is keyed by user and declaration and takes
+// no portal at all, which is what proves the two are successive generations rather than peers, and the
+// Personalization subsystem is out of scope. No member here reads or writes serialized profile content.
+//
+// MIGRATION: the single membership upsert splits into two explicit operations. UpdateProfileProperty
+// (DataProvider.vb:L119) carried six positional arguments and its procedure decided at run time which
+// arm to take: UpdateUserProfileProperty resolves a null or -1 @ProfileID against the
+// (UserID, PropertyDefinitionID) natural key (04.00.04.SqlDataProvider:L1616-L1620) and then branches
+// to an UPDATE arm (L1622) or an INSERT arm (L1633). Those two arms are AddProfileValueAsync and
+// UpdateProfileValueAsync. The branch itself does not survive, and no member below inspects
+// ProfileId - least of all against -1 - to decide what to stage: a caller that read a row knows it
+// exists and a caller building one knows it does not, so the decision is made where the knowledge is.
+//
+// MIGRATION: the sixth legacy argument, LastUpdatedDate, is a COLUMN and not a parameter. dbo.UserProfile
+// is the only in-scope table that carries it - it arrived with the table at 03.02.03.SqlDataProvider:L1372
+// - so the value travels on UserProfileValue.LastUpdatedDate, stamped by the Application layer from the
+// injected clock. No member here takes a DateTime and none reads ambient time, which is what keeps
+// time-dependent behaviour testable.
+//
+// MIGRATION: both storage columns are preserved exactly as stored. The write procedure splits every
+// submitted value across PropertyValue and PropertyText on DATALENGTH(@PropertyValue) > 7500, in its
+// UPDATE arm (04.00.04:L1626-L1627) and its INSERT arm (L1647-L1648), so a long answer lives ONLY in
+// PropertyText; the read procedure then hid the split behind one coalesced column,
+// "case when (PropertyValue Is Null) then PropertyText else PropertyValue end" aliased PropertyValue
+// (04.00.04:L1592). Reproducing that coalesce here would conceal which column a round trip actually
+// wrote, so this repository returns both columns untouched and the Application mapper performs the
+// PropertyValue ?? PropertyText projection where it can be seen and tested.
+//
+// MIGRATION: hydration is gone rather than translated. ProfileController.vb reached rows two ways -
+// reflection through CBO.FillCollection into an ArrayList wrapped in ProfilePropertyDefinitionCollection
+// (L102-L103), and a hand-rolled reader loop assigning each column through Null.SetNull (L136-L160) -
+// and handed the result back as a pre-generics CollectionBase subclass. The Entity Framework materialiser
+// replaces both paths and IReadOnlyList<T> replaces the wrapper, so this file contains no reader, no
+// Fill member, no reflection and no sentinel translation on the read path.
+//
+// MIGRATION: WRITES STAGE, THEY DO NOT COMMIT, and no write member answers with a key. The legacy insert
+// procedures could return one because they had already written the row - AddPropertyDefinition ends in
+// SELECT @PropertyDefinitionId over SCOPE_IDENTITY() (04.03.03.SqlDataProvider:L150 and L168) and the
+// value insert ends in SELECT SCOPE_IDENTITY() (04.00.04:L1653). Under an object-relational mapper the
+// key is assigned when the unit of work is saved, so returning it would force a flush here and split
+// batches that must be atomic: provisioning a tenant's default declarations writes a whole set, and
+// portal creation writes across five tables. IUnitOfWork.SaveChangesAsync remains the only commit point.
+//
+// MIGRATION: rules that shape a declaration stay OUT of this layer, deliberately. ProfileController.vb
+// forced Visible true whenever Required was set, in the add path (L373-L375) and again in the update path
+// (L535-L537); it seeded a tenant's default declarations one at a time (L334); it filtered an
+// already-loaded collection by category with no backing procedure (L485); it cloned every entry on the
+// way out (L512-L518); and it mutated a caller's UserInfo in place through a ByRef argument (L226). None
+// of that is persistence. This repository stages whatever declaration it is handed, returns entities
+// rather than clones, and mutates no caller's object.
+//
+// MIGRATION: caching is not performed here. ProfileController.vb read definitions through
+// DataCache.ProfileDefinitionsCacheKey with a timeout multiplied by Common.Globals.PerformanceSetting
+// (L188-L204), cleared them portal-wide on every write (L397-L398, L412, L544) and cleared the user
+// cache on a profile write (L250). The target coordinates that above this layer through ICacheService,
+// which is why no member below takes a bypass, refresh or clear flag and no cache is touched: a
+// repository that cached its own reads would answer from a cache the committing caller cannot evict.
+// =====================================================================================================
+
 /// <summary>
-/// Reads and writes <see cref="ProfilePropertyDefinition"/> profile metadata and the
-/// <see cref="UserProfileValue"/> rows that hold each account's answers.
+/// Reads and writes the user-profile slice of the User aggregate over the legacy
+/// <c>dbo.UserProfile</c> and <c>dbo.ProfilePropertyDefinition</c> tables.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: implements a contract deliberately assembled from BOTH legacy provider stacks - the
-/// six profile-property-definition members of the core provider
-/// (<c>Library/Components/Providers/Data/DataProvider.vb:L250-L256</c>) and the two profile-value
-/// members of the membership provider
-/// (<c>Library/Providers/MembershipProviders/DataProvider/DataProvider.vb:L117-L119</c>) - together
-/// with the data-access half of <c>Library/Components/Users/Profile/ProfileController.vb</c>,
-/// including its two reflection-hydrator call sites. The legacy <c>UserProfile</c> class exposed
-/// nineteen fixed properties; here the answers are a key-value row set keyed by definition, which is
-/// what the terminal <c>dbo.UserProfile</c> table has actually held since the 03.02.03 script.
+/// The type is <see langword="internal"/> and sealed. Callers reach it only through
+/// <see cref="IUserProfileRepository"/>, resolved from the container, so neither the Application layer
+/// nor the API layer can name it, name the context it holds, or extend a query it did not build. Its
+/// provenance in the two legacy provider stacks, and every legacy member deliberately left out, are set
+/// out in the migration notes above.
 /// </para>
 /// <para>
-/// Definition removal is a hard delete, and <c>FK_UserProfile_ProfilePropertyDefinition</c> is
-/// declared <c>ON DELETE CASCADE</c> (<c>04.00.04.SqlDataProvider:L1429</c>), so the store removes
-/// the answers with the definition. Both <see cref="GetDefinitionByIdAsync"/> and
-/// <see cref="DeleteDefinitionAsync"/> nevertheless ensure
-/// <see cref="ProfilePropertyDefinition.ProfileValues"/> is loaded, so that the cascade is also
-/// performed by the change tracker as explicit statements. Without that, the delete would depend
-/// entirely on a database-level constraint and would silently orphan rows on any provider that does
-/// not enforce one - which is exactly the situation an integration run against a non-SQL-Server
-/// provider creates.
+/// Every read applies <see cref="EntityFrameworkQueryableExtensions.AsNoTracking{TEntity}"/> and
+/// materialises before returning, so a caller is handed values rather than a live query and the change
+/// tracker carries nothing a read merely looked at. That is safe here - and it is worth stating why,
+/// because the sibling repositories in this folder deliberately track their reads - because BOTH write
+/// members below stage a detached instance explicitly. A caller that reads a row, mutates it and calls
+/// the matching update member gets exactly the same committed outcome it would from a tracked read; what
+/// it does not get is a silent commit of a mutation it never announced.
 /// </para>
 /// <para>
-/// MIGRATION: no member deletes an individual profile VALUE row, because no legacy member did. The
-/// membership provider's profile block declares exactly two members - the reader at L118 and the
-/// upsert at L119 - and a case-insensitive sweep of all eighty-eight upgrade scripts finds no
-/// procedure that deletes a profile value and no <c>DELETE</c> statement against the
-/// <c>UserProfile</c> table at all. Clearing an answer is an update carrying an empty value, which
-/// is what <see cref="UpdateProfileValueAsync"/> stages.
+/// The one read that must track is the resolution inside
+/// <see cref="DeleteDefinitionAsync(int, CancellationToken)"/>, which is a write in progress rather than
+/// a read: staging a removal requires a tracked entity, and the answers recorded against the declaration
+/// are loaded with it so the cascade is staged by the change tracker as explicit statements instead of
+/// depending on the store enforcing <c>FK_UserProfile_ProfilePropertyDefinition</c>
+/// (<c>04.00.04.SqlDataProvider:L1429</c>).
 /// </para>
 /// <para>
-/// Every write member STAGES its change and returns without saving, so the unit of work remains the
-/// single commit boundary. No read member applies <c>AsNoTracking</c>, for the reason given on
-/// <see cref="PortalRepository"/>.
+/// Nothing here validates and nothing here decides. A declaration's required flag, declared length and
+/// validation expression constrain the ANSWERS a tenant may give and are tenant data rather than code,
+/// so they are stored by this layer and enforced above it; whether a viewer may see a value is an
+/// authorisation question, so <see cref="UserProfileValue.Visibility"/> travels as the plain persisted
+/// integer the column holds.
 /// </para>
 /// </remarks>
 internal sealed class UserProfileRepository : IUserProfileRepository
 {
-    private readonly DnnDbContext _context;
+    /// <summary>
+    /// The identifier a legacy caller passed to ask for host-level, portal-independent declarations.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is <c>Null.NullInteger</c> (<c>Library/Components/Shared/Null.vb:L41-L45</c>), and
+    /// the translation it drives is measured rather than assumed. The legacy definition readers did not
+    /// pass a portal identifier straight through: <c>GetPropertyDefinitionByName</c> and
+    /// <c>GetPropertyDefinitionsByPortal</c> both wrapped it as <c>GetNull(portalId)</c>
+    /// (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c>), <c>GetNull</c> is
+    /// <c>Null.GetNull(Field, DBNull.Value)</c> (<c>L325-L326</c>), and that helper turns an
+    /// <see cref="int"/> equal to -1 into <c>DBNull.Value</c> (<c>Null.vb:L167-L170</c>). The terminal
+    /// procedures then filter
+    /// <c>(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL))</c>
+    /// (<c>04.03.03.SqlDataProvider:L206</c> and <c>L226</c>), so a request carrying -1 reached the rows
+    /// stored with a SQL <c>NULL</c> portal - the host-level declarations - and nothing else.
+    /// </para>
+    /// <para>
+    /// MIGRATION: it is NOT a wildcard, and the mapping is applied at THIS boundary only. Every ordinary
+    /// identifier is matched exactly, so no request ever spans more than the tenant it named plus, for
+    /// this one value, the host-level rows the sentinel historically reached. The domain model itself
+    /// holds no sentinel: <see cref="ProfilePropertyDefinition.PortalId"/> is
+    /// <see cref="Nullable{T}"/> and host-level means genuine <see langword="null"/>.
+    /// </para>
+    /// </remarks>
+    private const int HostPortalId = -1;
+
+    private readonly DnnDbContext _dbContext;
 
     /// <summary>Initialises a new instance of the <see cref="UserProfileRepository"/> class.</summary>
-    /// <param name="context">The unit-of-work scoped database context.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="context"/> is <see langword="null"/>.</exception>
-    public UserProfileRepository(DnnDbContext context)
+    /// <param name="dbContext">The unit-of-work scoped database context.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="dbContext"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// MIGRATION: the context is the whole dependency. The legacy controller reached two reflection-created
+    /// static providers (<c>ProfileController.vb:L48</c> and <c>L49</c>), a static cache, a static host
+    /// setting and a list service; none of those is a persistence concern, so none is injected here.
+    /// </remarks>
+    public UserProfileRepository(DnnDbContext dbContext)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+        _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
-    // =================================================================================
+    // =================================================================================================
     // SECTION A - PROFILE VALUES  (membership DataProvider.vb:L117-L119)
-    // =================================================================================
+    // =================================================================================================
 
     /// <inheritdoc />
     /// <remarks>
-    /// The definition is loaded with each answer, because an answer is meaningless without the
-    /// property it answers: the caller needs the name, the data type and the validation expression in
-    /// order to present or validate it, and the stored value itself - whichever of
-    /// <see cref="UserProfileValue.PropertyValue"/> and
-    /// <see cref="UserProfileValue.PropertyText"/> holds it - is only interpretable alongside them.
-    /// Ordering follows the same display order as <see cref="GetDefinitionsByPortalIdAsync"/>.
     /// <para>
-    /// MIGRATION: the legacy reader took the account alone
-    /// (<c>membership DataProvider.vb:L118 GetUserProfile(ByVal UserId As Integer)</c>) and no
-    /// portal filter is applied here for that reason - narrowing by tenant would narrow a result the
-    /// legacy reader never narrowed.
+    /// MIGRATION: replaces <c>GetUserProfile(ByVal UserId As Integer) As IDataReader</c>
+    /// (membership <c>DataProvider.vb:L118</c>, executed at
+    /// <c>MembershipProviders/DataProvider/SqlDataProvider.vb:L302</c>). The filter is the account and
+    /// only the account, exactly as the procedure's <c>WHERE UserId = @UserId</c>
+    /// (<c>04.00.04.SqlDataProvider:L1596</c>) - narrowing by tenant here would narrow a result the
+    /// legacy reader never narrowed, because this generation of the profile store is not portal-scoped.
+    /// </para>
+    /// <para>
+    /// MIGRATION: both storage columns are returned as stored. The legacy procedure projected one
+    /// coalesced column (<c>04.00.04.SqlDataProvider:L1592</c>) and so could not report which of the two
+    /// a round trip had written; the Application mapper performs
+    /// <see cref="UserProfileValue.PropertyValue"/> then <see cref="UserProfileValue.PropertyText"/>
+    /// instead, and neither column is discarded, normalised or combined on the way out.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the ordering is a deliberate ADDITION. The legacy procedure declared no
+    /// <c>ORDER BY</c> at all (<c>04.00.04.SqlDataProvider:L1583-L1594</c>), so its row order was
+    /// whatever the query plan produced and no caller could depend on it. Ordering by the declaration
+    /// key and then by the row key makes the sequence stable across providers and plans without
+    /// asserting any order the legacy contract promised, and it needs no join to compute.
+    /// </para>
+    /// <para>
+    /// The declaration is loaded with each answer, because an answer carries no name, data type or
+    /// validation expression of its own and is only interpretable beside the property it answers.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
         int userId,
         CancellationToken cancellationToken = default)
     {
-        return await _context.UserProfileValues
-            .Include(v => v.PropertyDefinition)
-            .Where(v => v.UserId == userId)
-            .OrderBy(v => v.PropertyDefinition!.ViewOrder)
-            .ThenBy(v => v.PropertyDefinition!.PropertyName)
-            .ThenBy(v => v.ProfileId)
+        return await _dbContext.UserProfileValues
+            .AsNoTracking()
+            .Include(value => value.PropertyDefinition)
+            .Where(value => value.UserId == userId)
+            .OrderBy(value => value.PropertyDefinitionId)
+            .ThenBy(value => value.ProfileId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the insert arm of the single legacy upsert at
-    /// <c>membership DataProvider.vb:L119</c>, whose procedure branch is
-    /// <c>UpdateUserProfileProperty</c> at <c>04.00.04.SqlDataProvider:L1634</c>. Staged rather than
-    /// written: the legacy procedure could answer with <c>SELECT @ProfileID</c> because it had
-    /// already inserted the row, whereas here
-    /// <see cref="UserProfileValue.ProfileId"/> is assigned when the unit of work commits.
+    /// <para>
+    /// MIGRATION: the INSERT arm of the single membership upsert
+    /// (<c>DataProvider.vb:L119</c>, procedure branch <c>04.00.04.SqlDataProvider:L1633</c>). Six
+    /// positional arguments become one entity, and the arm is chosen by the caller calling this member
+    /// rather than rediscovered by a natural-key probe on every write: this method stages the row it is
+    /// given and never inspects <see cref="UserProfileValue.ProfileId"/> to decide anything.
+    /// </para>
+    /// <para>
+    /// MIGRATION: staged, not written, and no identifier is returned.
+    /// <see cref="UserProfileValue.ProfileId"/> holds its generated key once
+    /// <c>IUnitOfWork.SaveChangesAsync</c> has run, which is where the legacy
+    /// <c>SELECT SCOPE_IDENTITY()</c> (<c>04.00.04.SqlDataProvider:L1653</c>) now happens.
+    /// </para>
     /// </remarks>
     public Task AddProfileValueAsync(
         UserProfileValue profileValue,
@@ -107,19 +229,33 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         ArgumentNullException.ThrowIfNull(profileValue);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _context.UserProfileValues.Add(profileValue);
+        _dbContext.UserProfileValues.Add(profileValue);
 
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: the update arm of that same upsert
-    /// (<c>04.00.04.SqlDataProvider:L1622</c>). An answer read through this repository is already
-    /// tracked, so its modifications are staged by the tracker and this call is the caller's explicit
-    /// statement of intent. An untracked instance is attached and marked modified so the same call
-    /// works for it too. This is also the member that CLEARS an answer, by carrying an empty value -
-    /// the legacy behaviour, since no delete path for a value row ever existed.
+    /// <para>
+    /// MIGRATION: the UPDATE arm of that same upsert (procedure branch
+    /// <c>04.00.04.SqlDataProvider:L1622</c>). The legacy procedure reached this arm by resolving a null
+    /// or -1 <c>@ProfileID</c> against the <c>(UserID, PropertyDefinitionID)</c> natural key
+    /// (<c>L1616-L1620</c>); no such probe happens here, and <c>-1</c> carries no meaning in this member.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this is also how an answer is CLEARED. No legacy member and no procedure in the
+    /// eighty-eight upgrade scripts ever deleted a <c>UserProfile</c> row - the membership provider's
+    /// profile block declares only the reader at <c>L118</c> and this upsert at <c>L119</c> - so
+    /// clearing was an upsert carrying an empty value, which preserved the row's visibility and
+    /// refreshed its timestamp where a deletion would have reset both. Staging a blanked value through
+    /// this member reproduces that exactly, which is why the contract offers no value-deletion member.
+    /// </para>
+    /// <para>
+    /// MIGRATION: <see cref="UserProfileValue.LastUpdatedDate"/> arrives on the entity. The legacy
+    /// provider took it as the sixth argument and the profile provider stamped it from
+    /// <c>Now()</c> at the call site; here the Application layer stamps it from the injected clock, so
+    /// this member neither accepts a date nor reads one.
+    /// </para>
     /// </remarks>
     public Task UpdateProfileValueAsync(
         UserProfileValue profileValue,
@@ -128,23 +264,46 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         ArgumentNullException.ThrowIfNull(profileValue);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_context.Entry(profileValue).State is EntityState.Detached)
-        {
-            _context.UserProfileValues.Update(profileValue);
-        }
+        StageModified(profileValue);
 
         return Task.CompletedTask;
     }
 
-    // =================================================================================
+    // =================================================================================================
     // SECTION B - PROFILE PROPERTY DEFINITIONS  (core DataProvider.vb:L250-L256)
-    // =================================================================================
+    // =================================================================================================
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L251 AddPropertyDefinition</c> and its eleven
-    /// positional arguments, all of which are properties of the entity. Staged rather than written,
-    /// so that provisioning a tenant's whole default declaration set commits atomically.
+    /// <para>
+    /// MIGRATION: replaces <c>AddPropertyDefinition</c> (core <c>DataProvider.vb:L251</c>, executed at
+    /// <c>SqlDataProvider.vb:L1017-L1031</c>), whose ELEVEN positional arguments are all properties of
+    /// <see cref="ProfilePropertyDefinition"/>. The whole list collapses to one parameter, so a call site
+    /// can no longer transpose two same-typed arguments.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy member was an insert-OR-update in disguise and this one is not. Its
+    /// procedure probed
+    /// <c>(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL)) AND PropertyName = @PropertyName</c>
+    /// first (<c>04.03.03.SqlDataProvider:L114-L118</c>) and silently UPDATED the row it found, clearing
+    /// <c>Deleted</c> as it went (<c>L152-L166</c>). That hid two different outcomes behind one call and,
+    /// worse, hid an undelete. Here a create stages a create; the duplicate test the Application layer
+    /// performs before calling this member is
+    /// <see cref="GetDefinitionByNameAsync(int, string, CancellationToken)"/>, whose answer it can act on.
+    /// </para>
+    /// <para>
+    /// MIGRATION: no rule is applied to the declaration on the way in. The legacy add forced
+    /// <c>Visible</c> true whenever <c>Required</c> was set (<c>ProfileController.vb:L373-L375</c>) and a
+    /// separate member seeded a tenant's whole default set (<c>L334</c>); both are Application
+    /// orchestration, and the second is simply a sequence of calls to this member under one unit of work.
+    /// </para>
+    /// <para>
+    /// MIGRATION: staged, not written, and no identifier is returned - the legacy member answered with
+    /// <c>SCOPE_IDENTITY()</c> (<c>04.03.03.SqlDataProvider:L150</c> and <c>L168</c>), whereas
+    /// <see cref="ProfilePropertyDefinition.PropertyDefinitionId"/> holds its generated key once the unit
+    /// of work is saved. Returning it here would force a flush and break the batch that tenant
+    /// provisioning commits atomically.
+    /// </para>
     /// </remarks>
     public Task AddDefinitionAsync(
         ProfilePropertyDefinition definition,
@@ -153,17 +312,30 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         ArgumentNullException.ThrowIfNull(definition);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _context.ProfilePropertyDefinitions.Add(definition);
+        _dbContext.ProfilePropertyDefinitions.Add(definition);
 
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L256 UpdatePropertyDefinition</c> and its ten
-    /// positional arguments. A declaration read through this repository is already tracked; an
-    /// untracked instance is attached and marked modified so the member is honest for a caller that
-    /// rebuilt the entity elsewhere.
+    /// <para>
+    /// MIGRATION: replaces <c>UpdatePropertyDefinition</c> (core <c>DataProvider.vb:L256</c>, executed at
+    /// <c>SqlDataProvider.vb:L1044-L1048</c>) and its TEN positional arguments, nine of which the
+    /// eleven-argument insert also carried. The two lists differed only in which key led them, which is
+    /// exactly the redundancy an entity parameter removes.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the required-implies-visible coupling the legacy update applied
+    /// (<c>ProfileController.vb:L535-L537</c>) is NOT reproduced. Silently rewriting a submitted value is
+    /// a rule, not persistence, and hiding it here would make the stored declaration differ from the one
+    /// the caller believes it saved; the Application layer applies it where it can be seen and tested.
+    /// </para>
+    /// <para>
+    /// Reordering a tenant's profile form needs no member of its own: the legacy grid swapped the display
+    /// order of two declarations and persisted each through this same call, so the order is simply
+    /// <see cref="ProfilePropertyDefinition.ViewOrder"/> on the declarations being updated.
+    /// </para>
     /// </remarks>
     public Task UpdateDefinitionAsync(
         ProfilePropertyDefinition definition,
@@ -172,38 +344,55 @@ internal sealed class UserProfileRepository : IUserProfileRepository
         ArgumentNullException.ThrowIfNull(definition);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_context.Entry(definition).State is EntityState.Detached)
-        {
-            _context.ProfilePropertyDefinitions.Update(definition);
-        }
+        StageModified(definition);
 
         return Task.CompletedTask;
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L252 DeletePropertyDefinition(definitionId)</c>,
-    /// which took the identifier alone - so the declaration is resolved before removal. When the
-    /// caller already holds it, that resolves from the change tracker without a round trip.
     /// <para>
-    /// Removal is a hard delete, matching the legacy procedure.
-    /// <see cref="ProfilePropertyDefinition.IsDeleted"/> exists and the contract permits a
-    /// flag-based reading, but the legacy member deleted the row and this implementation preserves
-    /// that. The dependent answers are loaded first so the cascade is staged by the change tracker
-    /// as well as enforced by <c>FK_UserProfile_ProfilePropertyDefinition</c>, which keeps the
-    /// outcome identical on a provider that does not enforce the constraint itself.
+    /// MIGRATION: replaces <c>DeletePropertyDefinition(ByVal definitionId As Integer)</c> (core
+    /// <c>DataProvider.vb:L252</c>, executed at <c>SqlDataProvider.vb:L1032-L1034</c>). The identifier
+    /// alone was the whole legacy signature and it is the whole signature here: no flag chooses between a
+    /// physical and a logical removal, and no companion member restores one, because the legacy surface
+    /// offered neither.
     /// </para>
     /// <para>
-    /// Absence is not an error: a caller that has already established absence need not distinguish
-    /// the two cases.
+    /// MIGRATION: the removal is PHYSICAL, matching that legacy member.
+    /// <see cref="ProfilePropertyDefinition.IsDeleted"/> is a real column and the contract permits an
+    /// implementation to honour this member by setting it, but the legacy call deleted the row and the
+    /// Application layer above depends on that reading - it guards this call precisely because "removal
+    /// here is physical and cascades the stored answers". Turning this member into a flag write would
+    /// change an outcome a caller already reasons about, so the flag stays what it is: state the caller
+    /// sets through <see cref="UpdateDefinitionAsync(ProfilePropertyDefinition, CancellationToken)"/>
+    /// and this repository filters on in
+    /// <see cref="GetDefinitionsByPortalIdAsync(int, CancellationToken)"/>.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the resolution is TRACKED and pulls the recorded answers with it, which is the one
+    /// place in this file where tracking is required rather than avoided.
+    /// <c>FK_UserProfile_ProfilePropertyDefinition</c> is declared <c>ON DELETE CASCADE</c>
+    /// (<c>04.00.04.SqlDataProvider:L1429</c>), so a SQL Server store would cascade on its own - but a
+    /// cascade the store performs is invisible to the change tracker, and a provider that does not
+    /// enforce the constraint would leave every account's answer behind referencing a declaration that
+    /// no longer exists. Loading them makes the removal explicit on every provider.
+    /// </para>
+    /// <para>
+    /// Absence is not an error. A caller that has already established absence - as the Application layer
+    /// does before calling this member - need not distinguish the two cases, so nothing is staged and no
+    /// exception is raised.
     /// </para>
     /// </remarks>
     public async Task DeleteDefinitionAsync(
         int propertyDefinitionId,
         CancellationToken cancellationToken = default)
     {
-        ProfilePropertyDefinition? definition = await _context.ProfilePropertyDefinitions
-            .FirstOrDefaultAsync(d => d.PropertyDefinitionId == propertyDefinitionId, cancellationToken)
+        ProfilePropertyDefinition? definition = await _dbContext.ProfilePropertyDefinitions
+            .Include(candidate => candidate.ProfileValues)
+            .FirstOrDefaultAsync(
+                candidate => candidate.PropertyDefinitionId == propertyDefinitionId,
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (definition is null)
@@ -211,42 +400,77 @@ internal sealed class UserProfileRepository : IUserProfileRepository
             return;
         }
 
-        await EnsureAnswersLoadedAsync(definition, cancellationToken).ConfigureAwait(false);
-
-        _context.ProfilePropertyDefinitions.Remove(definition);
+        _dbContext.ProfilePropertyDefinitions.Remove(definition);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L253 GetPropertyDefinition(definitionId)</c>. The
-    /// answers are loaded with the declaration so that removal cascades through the change tracker as
-    /// well as through the store constraint - see the type remarks.
+    /// <para>
+    /// MIGRATION: replaces <c>GetPropertyDefinition(ByVal definitionId As Integer) As IDataReader</c>
+    /// (core <c>DataProvider.vb:L253</c>, executed at <c>SqlDataProvider.vb:L1035-L1037</c>). A reader a
+    /// caller had to drain to discover emptiness becomes a nullable return, so absence lives in the type
+    /// system. Note that the legacy identifier reached the procedure unwrapped - there is no
+    /// <c>GetNull</c> around it, unlike the two portal-scoped readers - so this lookup is an exact key
+    /// match with no sentinel handling of any kind.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy controller answered this question from a cache first and fell through to the
+    /// database only on a miss, and its cache was keyed by PORTAL rather than by definition
+    /// (<c>ProfileController.vb:L425-L442</c>), so a declaration belonging to another tenant was answered
+    /// from whichever portal's list happened to be warm. This member reads the store by key, once, and
+    /// caching is coordinated above it.
+    /// </para>
+    /// <para>
+    /// MIGRATION: absence is <see langword="null"/> and never a sentinel identifier. Both values the
+    /// legacy <c>Null</c> helper treated as empty are genuine keys in this schema - <c>Portals.PortalID</c>
+    /// seeds at -1 and <c>Roles.RoleID</c>, <c>Tabs.TabID</c> and <c>Modules.ModuleID</c> seed at 0 - so no
+    /// caller should test a returned declaration's identifier to decide whether it was found.
+    /// </para>
     /// </remarks>
     public async Task<ProfilePropertyDefinition?> GetDefinitionByIdAsync(
         int propertyDefinitionId,
         CancellationToken cancellationToken = default)
     {
-        return await _context.ProfilePropertyDefinitions
-            .Include(d => d.ProfileValues)
-            .FirstOrDefaultAsync(d => d.PropertyDefinitionId == propertyDefinitionId, cancellationToken)
+        return await _dbContext.ProfilePropertyDefinitions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                definition => definition.PropertyDefinitionId == propertyDefinitionId,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L254 GetPropertyDefinitionByName(portalId, name)</c>,
-    /// and like the legacy member it answers with the declaration rather than with a boolean, so a
-    /// caller rejecting a duplicate name during an edit can tell "found" from "found, but it is the
-    /// row I am editing".
     /// <para>
-    /// <c>IX_ProfilePropertyDefinition</c> is unique over
-    /// <c>(PortalID, ModuleDefID, PropertyName)</c>, so a name can legitimately repeat within a
-    /// portal across different module declarations. This member deliberately reports the weaker
-    /// portal-wide answer, because the profile screens the legacy application exposed presented one
-    /// flat property list per portal and a repeated name there would be indistinguishable to an
-    /// administrator. Retired declarations are included, so a soft-deleted declaration still reserves
-    /// its name and restoring it cannot introduce a duplicate. The match is case-insensitive and
-    /// ignores surrounding whitespace, as the legacy screens' comparison did.
+    /// MIGRATION: replaces
+    /// <c>GetPropertyDefinitionByName(ByVal portalId As Integer, ByVal name As String) As IDataReader</c>
+    /// (core <c>DataProvider.vb:L254</c>, executed at <c>SqlDataProvider.vb:L1038-L1040</c>). It answers
+    /// with the declaration rather than with a boolean, as the legacy member did, which is what lets the
+    /// caller that principally uses it - a duplicate-name test during an edit - tell "found" from "found,
+    /// but it is the row I am editing".
+    /// </para>
+    /// <para>
+    /// MIGRATION: the name comparison is exact, and stays the store's own comparison. The terminal
+    /// procedure matched <c>PropertyName = @Name</c> (<c>04.03.03.SqlDataProvider:L207</c>), so
+    /// case-sensitivity was and remains the column collation's decision; forcing a case fold or a trim
+    /// here would both diverge from that and defeat the unique index over
+    /// <c>(PortalID, ModuleDefID, PropertyName)</c>. The legacy empty-string sentinel needs no handling
+    /// either: <c>Null.NullString</c> WAS the empty string, so an empty name was legally representable and
+    /// is matched as the ordinary value it is rather than read as a request for any name.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the portal scope is resolved by <see cref="HostPortalId"/>, whose remarks carry the
+    /// evidence. Ordering follows the legacy <c>ORDER BY ViewOrder</c> (<c>L208</c>) with the definition
+    /// key as a tie-break, so that a store holding a host-level and a tenant declaration of the same name
+    /// - which the unique index permits - answers the same way on every read rather than the way the plan
+    /// happened to produce.
+    /// </para>
+    /// <para>
+    /// MIGRATION: withdrawn declarations are deliberately still visible to this member. The legacy
+    /// procedure applied no <c>Deleted</c> filter here, unlike its portal listing (<c>L227</c>), so a
+    /// retired declaration still reserves its name - which is what keeps a duplicate from being created
+    /// against a row that could later be restored. The Application layer decides what a withdrawn
+    /// declaration means to the operation in hand.
     /// </para>
     /// </remarks>
     public async Task<ProfilePropertyDefinition?> GetDefinitionByNameAsync(
@@ -256,65 +480,139 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     {
         ArgumentNullException.ThrowIfNull(propertyName);
 
-        string wanted = propertyName.Trim().ToLowerInvariant();
-
-        return await _context.ProfilePropertyDefinitions
-            .Where(d => d.PortalId == portalId && d.PropertyName.ToLower() == wanted)
-            .OrderBy(d => d.PropertyDefinitionId)
+        return await DefinitionsInPortalScope(portalId)
+            .Where(definition => definition.PropertyName == propertyName)
+            .OrderBy(definition => definition.ViewOrder)
+            .ThenBy(definition => definition.PropertyDefinitionId)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// MIGRATION: replaces core <c>DataProvider.vb:L255 GetPropertyDefinitionsByPortal(portalId)</c>,
-    /// whose reader was hydrated by reflection through <c>CBO</c> into a
-    /// <c>ProfilePropertyDefinitionCollection</c>; both are replaced by a materialised read-only list.
     /// <para>
-    /// Declarations are returned in the display order the legacy profile editor used -
-    /// <c>ViewOrder</c> first, then the property name - so that a caller renders a profile form
-    /// without re-sorting. Declarations withdrawn through
-    /// <see cref="ProfilePropertyDefinition.IsDeleted"/> are excluded, so a retired property is never
-    /// presented for answering; a caller that needs to see one addresses it by key through
-    /// <see cref="GetDefinitionByIdAsync"/> or by name through
-    /// <see cref="GetDefinitionByNameAsync"/>, neither of which filters the flag.
+    /// MIGRATION: replaces
+    /// <c>GetPropertyDefinitionsByPortal(ByVal portalId As Integer) As IDataReader</c> (core
+    /// <c>DataProvider.vb:L255</c>, executed at <c>SqlDataProvider.vb:L1041-L1043</c>), whose reader was
+    /// hydrated by reflection through <c>CBO</c> and handed back inside a 313-line
+    /// <c>CollectionBase</c> subclass. A materialised <see cref="IReadOnlyList{T}"/> replaces both.
+    /// </para>
+    /// <para>
+    /// MIGRATION: withdrawn declarations are excluded, reproducing the procedure's <c>AND Deleted = 0</c>
+    /// (<c>04.03.03.SqlDataProvider:L227</c>). No global query filter is configured for this entity, so
+    /// the predicate belongs to the read that needs it; a caller wanting a retired declaration addresses
+    /// it by key or by name, neither of which filters the flag.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the ordering reproduces <c>ORDER BY ViewOrder</c> (<c>L228</c>) - callers render profile
+    /// forms straight from this sequence - and adds the property name and then the key as tie-breaks,
+    /// because the legacy order was ambiguous whenever two declarations shared a display position and a
+    /// form that reshuffles between two identical reads is a defect the legacy plan merely hid.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the read is UNPAGED and uncategorised, matching the legacy member, which took neither
+    /// page coordinates nor a category. Category filtering existed only as an in-memory predicate over an
+    /// already-loaded collection (<c>ProfileController.vb:L485-L496</c>) with a procedure that the core
+    /// provider never called, so it is an Application projection over this result rather than a member
+    /// here. Entries are returned as tracked-free entities rather than the clones the legacy accessor
+    /// produced (<c>L512-L518</c>), which is what <c>AsNoTracking</c> already guarantees: nothing a
+    /// caller does to them can reach the change tracker.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<ProfilePropertyDefinition>> GetDefinitionsByPortalIdAsync(
         int portalId,
         CancellationToken cancellationToken = default)
     {
-        return await _context.ProfilePropertyDefinitions
-            .Where(d => d.PortalId == portalId && !d.IsDeleted)
-            .OrderBy(d => d.ViewOrder)
-            .ThenBy(d => d.PropertyName)
-            .ThenBy(d => d.PropertyDefinitionId)
+        return await DefinitionsInPortalScope(portalId)
+            .Where(definition => !definition.IsDeleted)
+            .OrderBy(definition => definition.ViewOrder)
+            .ThenBy(definition => definition.PropertyName)
+            .ThenBy(definition => definition.PropertyDefinitionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Ensures a declaration's recorded answers are tracked before it is removed.
+    /// Builds the untracked declaration query for one tenant, translating the legacy host-level sentinel.
     /// </summary>
-    /// <param name="definition">The declaration about to be removed.</param>
-    /// <param name="cancellationToken">Token observed while the collection is loaded.</param>
-    /// <returns>A task that completes once the answers are tracked.</returns>
+    /// <param name="portalId">The tenant identifier the caller named.</param>
+    /// <returns>A no-tracking query narrowed to the declarations that identifier reaches.</returns>
     /// <remarks>
-    /// The schema cascades from a declaration to its answers, but a cascade the store performs is
-    /// invisible to the change tracker, and a provider that does not enforce the constraint would
-    /// leave the answers behind entirely. Loading them first makes the removal explicit on every
-    /// provider. The collection is loaded only when it is not already present, so a declaration
-    /// obtained through <see cref="GetDefinitionByIdAsync"/> costs no second round trip.
+    /// <para>
+    /// MIGRATION: this is the single place the portal scope of a declaration read is decided, and it
+    /// reproduces the terminal procedures' own predicate,
+    /// <c>(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL))</c>
+    /// (<c>04.03.03.SqlDataProvider:L206</c> and <c>L226</c>), for a caller that names a tenant rather
+    /// than passing a raw parameter. An ordinary identifier matches exactly, which is the first disjunct
+    /// and excludes the host-level rows because SQL <c>NULL</c> is equal to nothing. The sentinel
+    /// <see cref="HostPortalId"/> additionally matches those host-level rows, which is the second
+    /// disjunct: the legacy stack turned -1 into <c>DBNull</c> before the parameter ever reached the
+    /// procedure (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c> through
+    /// <c>Null.GetNull</c> at <c>L325-L326</c> and <c>Null.vb:L167-L170</c>), so a request carrying -1
+    /// did reach them.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the second disjunct is ADDITIVE, and that is the one place this file knowingly differs
+    /// from a literal reading of the legacy translation, for a measured reason. Dropping the exact match
+    /// for -1 - translating the sentinel and nothing else - would be faithful to a schema in which -1
+    /// cannot be a tenant, and this schema is not that: <c>Portals.PortalID</c> is
+    /// <c>IDENTITY(-1, 1)</c>, so -1 is the FIRST tenant a fresh installation creates, and the
+    /// Application mapper deliberately stores a declaration created for it with <c>PortalID</c> -1
+    /// rather than folding it into <see langword="null"/>, precisely so the declaration is not silently
+    /// reassigned away from the tenant the caller named. Matching only <see langword="null"/> for -1
+    /// would therefore make the target unable to read back what the target had just written. The union
+    /// is the only reading under which the sentinel keeps reaching the host-level declarations AND the
+    /// round trip holds.
+    /// </para>
+    /// <para>
+    /// MIGRATION: it is NOT an all-portals wildcard and must never be widened into one. At most two
+    /// scopes are ever in play - the named tenant, plus the host-level declarations for the one
+    /// identifier that historically addressed them - and every other identifier reaches exactly one.
+    /// </para>
     /// </remarks>
-    private async Task EnsureAnswersLoadedAsync(
-        ProfilePropertyDefinition definition,
-        CancellationToken cancellationToken)
+    private IQueryable<ProfilePropertyDefinition> DefinitionsInPortalScope(int portalId)
     {
-        var answers = _context.Entry(definition).Collection(d => d.ProfileValues);
+        IQueryable<ProfilePropertyDefinition> definitions =
+            _dbContext.ProfilePropertyDefinitions.AsNoTracking();
 
-        if (!answers.IsLoaded)
+        return portalId == HostPortalId
+            ? definitions.Where(
+                definition => definition.PortalId == portalId || definition.PortalId == null)
+            : definitions.Where(definition => definition.PortalId == portalId);
+    }
+
+    /// <summary>
+    /// Stages a caller-supplied entity for update without traversing the graph hanging off it.
+    /// </summary>
+    /// <typeparam name="TEntity">The entity type being staged.</typeparam>
+    /// <param name="entity">The entity whose stored row is to be rewritten.</param>
+    /// <remarks>
+    /// <para>
+    /// An entity this repository is handed is normally DETACHED, because every read member here is
+    /// untracked, so the update members cannot rely on the change tracker having noticed a mutation.
+    /// Setting the entry's state attaches the instance and marks its scalar properties modified. An
+    /// instance that is already tracked is left exactly as it is: it is either being mutated under the
+    /// tracker's eye, or already staged as added or removed, and none of those states should be
+    /// overwritten by a statement of intent.
+    /// </para>
+    /// <para>
+    /// The state assignment is deliberate in preference to <c>DbSet.Update</c>. That method walks the
+    /// graph reachable from the entity and marks everything it finds, which for a value carrying the
+    /// declaration it was read with - see
+    /// <see cref="GetProfileValuesAsync(int, CancellationToken)"/> - would stage a rewrite of that
+    /// declaration as well, and would fail outright if another instance of it were already tracked.
+    /// Setting the state touches this entity and nothing else, which is exactly the promise the write
+    /// members make.
+    /// </para>
+    /// </remarks>
+    private void StageModified<TEntity>(TEntity entity)
+        where TEntity : class
+    {
+        var entry = _dbContext.Entry(entity);
+
+        if (entry.State is EntityState.Detached)
         {
-            await answers.LoadAsync(cancellationToken).ConfigureAwait(false);
+            entry.State = EntityState.Modified;
         }
     }
 }

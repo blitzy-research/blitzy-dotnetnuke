@@ -7,6 +7,57 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
+// MIGRATION: THE EXTERNAL STORE IS QUERIED, NEVER OWNED. The aspnet_* tables this type reads are
+//            installed by Microsoft's ASP.NET SQL registration payload, not by DotNetNuke: no
+//            "CREATE TABLE aspnet_*" appears anywhere in the eighty-eight numbered upgrade scripts, and
+//            the chain only ever ALTERs those objects - 04.00.00.SqlDataProvider grafts DotNetNuke's own
+//            bookkeeping onto procedures it did not write at lines 31, 119, 271, 305, 333, 475, 619, 648,
+//            703 and 828. Nothing here creates, alters, seeds, migrates or drops them, and no entity type,
+//            configuration or migration models them (Rule T4). They are a pre-existing dependency that
+//            this repository maps alongside, which is exactly why they are reached through explicit
+//            statements rather than through the model.
+//
+// MIGRATION: NO CREDENTIAL IS EVER DECRYPTED, VERIFIED, COMPARED, RE-HASHED OR LOGGED HERE. The legacy
+//            store was reversible by design - registered with passwordFormat="Encrypted" and
+//            enablePasswordRetrieval="true" at Website/release.config lines 245 and 239, over a 3DES key
+//            committed to source control at lines 89 to 93 - and neither the reversible storage nor the
+//            retrieval it enabled is reproduced. A stored hash is a value this type carries between the
+//            store and IPasswordHasher; the comparison itself belongs to the Application AuthService.
+//            AN ADMINISTRATIVE RESET IS THE ONLY WAY A PRE-EXISTING CREDENTIAL BECOMES USABLE: re-hashing
+//            on first sign-in would require verifying the submitted password against the legacy value
+//            first, and nothing in this solution can do that, so the "rehash on first login" path must not
+//            be described as a fallback that exists. That functional reduction is recorded in
+//            MIGRATION_NOTES.md, which this file does not edit.
+//
+// MIGRATION: APPROVAL AND AUTHORISATION ARE TWO DIFFERENT FACTS AND ARE NEVER CONFLATED. Approval lives
+//            in the external membership store and is installation-wide, so it is composed onto
+//            User.IsApproved by the read path and set through SetApprovalAsync. Authorisation is
+//            per-portal, lives on UserPortals.Authorised, and is reached through the listing's
+//            authorisation filter and through GetMembershipAsync. The legacy AddUser and UpdateUser
+//            members took both as arguments on one call, which is what made them look like one fact; they
+//            are separately addressable here precisely so that approving an account cannot silently grant
+//            it a tenancy, nor the reverse.
+//
+// MIGRATION: the legacy hydration and collection machinery produces nothing here. The reflection-based
+//            row hydrator at Library/Components/Shared/CBO.vb and the hand-rolled Null.SetNull reader
+//            blocks are both replaced by the Entity Framework materialiser, so no Fill method, no CBO
+//            equivalent and no manual reader survives. The untyped ArrayList returns become typed
+//            materialised collections, the Hashtable settings return becomes a typed Application object,
+//            and the isHydrated toggle that doubled every legacy paged overload is gone because a
+//            materialised entity is not partially built. Caching is not performed here either: the legacy
+//            controllers called a static DataCache directly, whereas caching is now a coordinated concern
+//            outside this type, so a read here is always a read.
+//
+// MIGRATION: User.IsOnline is reported but never maintained, and the omission is deliberate rather than
+//            incomplete. The legacy window was real - Website/release.config line 219 sets
+//            userIsOnlineTimeWindow="15" - but the presence records it was evaluated against were kept
+//            current by a scheduled purge job coupling to DotNetNuke.Services.Scheduling, which is out of
+//            scope. Deriving presence from a store nothing updates would invent an answer that looks
+//            authoritative and decays silently, so the property is left null, which is what its nullable
+//            type exists to express. No member here reads an ambient clock: every instant this type needs
+//            is supplied by its caller as an argument, so nothing it returns depends on the server's
+//            local time.
+
 /// <summary>
 /// Reads and writes <see cref="User"/> accounts, their portal memberships and their credentials.
 /// </summary>
@@ -58,6 +109,18 @@ internal sealed class UserRepository : IUserRepository
     /// </summary>
     private const string DefaultSortProperty = "DisplayName";
 
+    /// <summary>
+    /// Character that removes the special meaning of a <c>LIKE</c> metacharacter in the profile-value
+    /// patterns this repository builds.
+    /// </summary>
+    /// <remarks>
+    /// Declared once and passed explicitly to every <c>LIKE</c> this repository emits, because
+    /// SQL Server has no default escape character: without an <c>ESCAPE</c> clause a backslash in a
+    /// pattern is an ordinary literal, so the escaping performed by
+    /// <see cref="LikePrefixPattern(string)"/> would silently do nothing.
+    /// </remarks>
+    private const string LikeEscapeCharacter = "\\";
+
     private readonly DnnDbContext _context;
     private readonly MembershipStore _membership;
 
@@ -96,6 +159,25 @@ internal sealed class UserRepository : IUserRepository
     /// total.
     /// </para>
     /// </remarks>
+    // MIGRATION: this one member absorbs EIGHT legacy overloads, and the consolidation is what keeps a
+    //            page and its total in agreement. Library/Components/Users/UserController.vb declared
+    //            GetUsers at L725 and L746, GetUsersByEmail at L769 and L793, GetUsersByUserName at L816
+    //            and L840 and GetUsersByProfileProperty at L864 and L889 - four searches, each doubled by
+    //            an isHydrated toggle the materialiser renders meaningless. Every one of them reported its
+    //            grand total through a "ByRef totalRecords As Integer" argument, and the legacy surface
+    //            needed a separate count member beside them as well. Here the total travels inside
+    //            PagedResult, and NO out or ref parameter appears in this member or anywhere else in this
+    //            type. Splitting this back into one member per legacy search would reintroduce the defect
+    //            the consolidation removes: a filter applied after the count is taken produces a pager
+    //            that disagrees with the rows beside it.
+    //
+    // MIGRATION: the unpaged case is requested with a page size of ZERO, not with the legacy sentinel
+    //            triple. UserController.vb L687 and L706 both read "GetUsers(portalId, False, -1, -1, -1)",
+    //            passing the -1 defined at Library/Components/Shared/Null.vb:L41 as page index, page size
+    //            and total alike. That convention is not reproduced, and could not safely be: Portals
+    //            .PortalID is IDENTITY(-1, 1), so -1 is a legitimate portal identifier and must never
+    //            double as an absence marker. A zero page size is answered by PagedResult.Unpaged, which
+    //            names the intent instead of encoding it, and negative coordinates are rejected outright.
     public async Task<PagedResult<User>> ListAsync(
         int portalId,
         int pageIndex,
@@ -282,6 +364,14 @@ internal sealed class UserRepository : IUserRepository
     /// address genuinely may repeat. This member therefore reports a collision and leaves enforcement to
     /// whichever caller's policy asks for it; enforcing it here would reject accounts that already exist.
     /// </remarks>
+    // MIGRATION: an address is a PLAIN STRING here, not a validated value object, and it is deliberately
+    //            not unique. Duplicate addresses are legitimate existing data because the legacy provider
+    //            was registered with requiresUniqueEmail="false" (Website/release.config line 244), and the
+    //            shipped Host account's value would not satisfy an address expression at all - so requiring
+    //            a validated type on this boundary would make real rows unreachable and turn a search term
+    //            into something that has to be a well-formed address before it may be searched for. The
+    //            legacy null-string sentinel was the empty string rather than null, so an empty value was
+    //            legally representable too and is not silently coerced into an absent one.
     public Task<bool> EmailExistsAsync(int portalId, string email, int? excludingUserId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(email);
@@ -406,6 +496,27 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
+    // MIGRATION: THE SWALLOWED DUPLICATE PATH IS NOT REPRODUCED, AND THAT IS A CONTRACT BOUNDARY RATHER
+    //            THAN AN OMISSION. The legacy membership provider wrapped its whole AddUser body in a
+    //            catch-all and answered a failure of ANY kind by returning the -1 null-integer sentinel, so
+    //            a duplicate username, a constraint violation and a dead connection were indistinguishable
+    //            to the caller - and every one of them was reported as though it were an ordinary,
+    //            expected outcome. Neither half of that is carried forward: this member catches nothing and
+    //            returns no sentinel. An EXPECTED failure - the username is taken - is decided before the
+    //            write by the Application UserService, which asks UsernameExistsAsync and answers with a
+    //            Result carrying the reason; an UNEXPECTED failure stays an exception and surfaces as
+    //            ProblemDetails. That division is why no Result-returning member is added to this
+    //            repository and why a duplicate does not raise a domain exception from here: staging a
+    //            write is all this member does.
+    //
+    // MIGRATION: staging replaces the legacy positional call and its generated identifier. AddUser took
+    //            ten positional arguments and ended in SCOPE_IDENTITY(), so it both wrote and answered
+    //            with a key. Here the entity carries its own values, nothing is written until
+    //            IUnitOfWork.SaveChangesAsync runs, and User.UserId is populated BY that commit - so this
+    //            member has no identifier to return and deliberately returns nothing to await. The legacy
+    //            call also wrote the per-portal row in the same statement; AddMembership is the other half,
+    //            and committing both in one unit of work is what preserves the atomicity that single
+    //            statement had.
     public void Add(User user)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -625,19 +736,100 @@ internal sealed class UserRepository : IUserRepository
         };
     }
 
+    /// <summary>
+    /// Turns literal search text into a <c>LIKE</c> pattern that matches it as a prefix.
+    /// </summary>
+    /// <param name="text">The literal text to match at the start of a value.</param>
+    /// <returns>
+    /// A pattern for use with <see cref="LikeEscapeCharacter"/> as the escape character, matching any
+    /// value that begins with <paramref name="text"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Every metacharacter in the caller's text is escaped, so the match is a literal prefix rather than
+    /// a pattern the caller can influence. Only the appended trailing wildcard is left live, which is
+    /// exactly the shape the legacy search had: <c>Website/admin/Users/Users.ascx.vb</c> line 274 passes
+    /// <c>SearchText + "%"</c>, a single trailing wildcard and nothing more.
+    /// </para>
+    /// <para>
+    /// The escape character is replaced FIRST, and the order matters rather than being incidental. Were
+    /// it replaced after the others, the backslash this method had just introduced in front of a
+    /// metacharacter would itself be escaped, leaving a literal backslash followed by a still-live
+    /// metacharacter - so escaping would produce precisely the pattern it was meant to prevent.
+    /// </para>
+    /// <para>
+    /// Three metacharacters are escaped and a fourth deliberately is not. <c>%</c> and <c>_</c> are the
+    /// SQL wildcards; <c>[</c> opens a character-class range. A closing <c>]</c> needs no escape because
+    /// it has no meaning unless a range was opened, and escaping the opener is what guarantees none was.
+    /// </para>
+    /// </remarks>
+    private static string LikePrefixPattern(string text)
+    {
+        string literal = text
+            .Replace(LikeEscapeCharacter, LikeEscapeCharacter + LikeEscapeCharacter, StringComparison.Ordinal)
+            .Replace("%", LikeEscapeCharacter + "%", StringComparison.Ordinal)
+            .Replace("_", LikeEscapeCharacter + "_", StringComparison.Ordinal)
+            .Replace("[", LikeEscapeCharacter + "[", StringComparison.Ordinal);
+
+        return literal + "%";
+    }
+
     /// <summary>Applies the optional profile-property filter to a listing.</summary>
     /// <param name="query">The listing so far.</param>
     /// <param name="propertyDefinitionId">The property to search, or <see langword="null"/>.</param>
     /// <param name="valuePrefix">The value prefix to match, or <see langword="null"/>.</param>
     /// <returns>The filtered listing.</returns>
     /// <remarks>
+    /// <para>
     /// The two arguments are independent, so three shapes are meaningful: both together select accounts
     /// whose answer to one property starts with the prefix, which is the legacy
     /// <c>GetUsersByProfileProperty</c> search; a property alone selects accounts that answered it at
-    /// all; and a prefix alone searches every property. Only <c>PropertyValue</c> is searched, never the
-    /// <c>PropertyText</c> overflow column, because that is the column the legacy search compared and
-    /// because a prefix match over <c>ntext</c> would force a scan of the whole profile table.
+    /// all; and a prefix alone searches every property.
+    /// </para>
+    /// <para>
+    /// The property is addressed by definition identifier rather than by name, which scopes it to one
+    /// portal more precisely than the legacy procedure's
+    /// <c>P.PortalId = @PortalId OR (P.PortalId IS NULL AND @PortalId IS NULL)</c> did: a definition
+    /// identifier belongs to exactly one definition row, and that row carries its own portal. The
+    /// Application layer resolves the caller's property name against the definitions of the portal being
+    /// listed before it reaches this method, so a name belonging to another portal is refused at the
+    /// boundary rather than silently matching here.
+    /// </para>
     /// </remarks>
+    // MIGRATION: BOTH storage columns are searched, which corrects a real behavioural divergence rather
+    //            than adding a refinement. A profile answer is stored in ONE of two columns:
+    //            UserProfile.PropertyValue is nvarchar(3750) and UserProfile.PropertyText is ntext, the
+    //            overflow column used when an answer exceeds the shorter one - so an account whose answer
+    //            overflowed has PropertyValue null and is invisible to a search that reads only the short
+    //            column. The terminal legacy procedure searched both:
+    //            Website/Providers/DataProviders/SqlDataProvider/04.03.03.SqlDataProvider line 266 reads
+    //            "(PropertyValue LIKE @PropertyValue OR PropertyText LIKE @PropertyValue)".
+    //
+    //            An earlier revision of this method searched PropertyValue alone and justified it on the
+    //            grounds that PropertyValue "is the column the legacy search compared". THAT CLAIM WAS
+    //            FALSE and is removed rather than softened. The procedure was redefined across five
+    //            upgrade scripts and the two-column form appears in four of them - 03.02.03 line 901,
+    //            03.03.03 line 266, 04.00.04 line 946 and terminally 04.03.03 line 266. Only 03.02.06
+    //            line 148 narrowed it to the single column, and DotNetNuke reverted that in the very next
+    //            release. The single-column reading therefore reproduced a transient defect its own
+    //            authors had already withdrawn, and it is the terminal state that Rule T4 makes
+    //            authoritative.
+    //
+    // MIGRATION: the match is expressed with LIKE rather than with a StartsWith translation, and that is
+    //            forced by the store rather than chosen. SQL Server rejects an ntext argument to LEN, to
+    //            LEFT, to LOWER and to the equality operator - measured against the live schema as
+    //            "Msg 8116 ... invalid for argument 1 of len function" and "Msg 402 ... incompatible in
+    //            the equal to operator" - and LEN with LEFT is precisely how a StartsWith over a
+    //            parameter is translated. LIKE is the one comparison the type admits, which is why the
+    //            legacy procedure used it too.
+    //
+    // MIGRATION: consequently the case-insensitivity of this filter comes from the column collation
+    //            rather than from folding the case in the query, because LOWER cannot be applied to
+    //            ntext at all. Both columns are SQL_Latin1_General_CP1_CI_AS, and that is the same
+    //            mechanism the legacy procedure relied on - its LIKE was likewise unfolded. A deployment
+    //            onto a case-sensitive collation would make this one filter case-sensitive, exactly as it
+    //            would have made the legacy search case-sensitive; preserving that is behaviour
+    //            preservation and not an oversight.
     private IQueryable<User> ApplyProfileFilter(IQueryable<User> query, int? propertyDefinitionId, string? valuePrefix)
     {
         bool hasProperty = propertyDefinitionId.HasValue;
@@ -648,7 +840,9 @@ internal sealed class UserRepository : IUserRepository
             return query;
         }
 
-        string prefix = hasPrefix ? valuePrefix!.Trim().ToLowerInvariant() : string.Empty;
+        // One pattern is built once and compared against both columns, reproducing the legacy procedure's
+        // own shape: it bound a single @PropertyValue parameter and applied it to each column in turn.
+        string pattern = hasPrefix ? LikePrefixPattern(valuePrefix!.Trim()) : string.Empty;
 
         if (hasProperty && hasPrefix)
         {
@@ -656,8 +850,8 @@ internal sealed class UserRepository : IUserRepository
             return query.Where(u => _context.UserProfileValues.Any(v =>
                 v.UserId == u.UserId
                 && v.PropertyDefinitionId == definition
-                && v.PropertyValue != null
-                && v.PropertyValue.ToLower().StartsWith(prefix)));
+                && ((v.PropertyValue != null && EF.Functions.Like(v.PropertyValue, pattern, LikeEscapeCharacter))
+                    || (v.PropertyText != null && EF.Functions.Like(v.PropertyText, pattern, LikeEscapeCharacter)))));
         }
 
         if (hasProperty)
@@ -669,8 +863,8 @@ internal sealed class UserRepository : IUserRepository
 
         return query.Where(u => _context.UserProfileValues.Any(v =>
             v.UserId == u.UserId
-            && v.PropertyValue != null
-            && v.PropertyValue.ToLower().StartsWith(prefix)));
+            && ((v.PropertyValue != null && EF.Functions.Like(v.PropertyValue, pattern, LikeEscapeCharacter))
+                || (v.PropertyText != null && EF.Functions.Like(v.PropertyText, pattern, LikeEscapeCharacter)))));
     }
 
     /// <summary>Populates the membership-derived properties of the accounts just read.</summary>
@@ -684,6 +878,21 @@ internal sealed class UserRepository : IUserRepository
     /// representation and no value has to be invented. None of these properties is mapped, so assigning
     /// them cannot mark an entity modified.
     /// </remarks>
+    // MIGRATION: this helper absorbs UserController.GetUserMembership(ByRef objUser), declared at
+    //            Library/Components/Users/UserController.vb:L638, which mutated the account it was handed
+    //            in order to graft the external membership facts onto it. There is deliberately no
+    //            equivalent public member: a caller could forget to call one, and an account described only
+    //            half-way is indistinguishable from an account whose approval and lockout genuinely are
+    //            false. Composition therefore happens inside every read on the way out, which is what lets
+    //            the ByRef argument disappear rather than merely change shape.
+    //
+    // MIGRATION: the read is BATCHED and SEQUENTIAL, and both properties are required rather than
+    //            incidental. Batched, because the legacy screen issued one membership read per displayed
+    //            row, so a page cost a round trip per account; here one statement serves up to a bounded
+    //            number of names and a page costs a bounded number of round trips regardless of its size.
+    //            Sequential, because a DbContext and its connection are not thread-safe - fanning the
+    //            batches out with Task.WhenAll over this one context would be a concurrency defect that
+    //            happens to pass under light load, so the batches are awaited in turn.
     private async Task PopulateAsync(IReadOnlyList<User> users, CancellationToken cancellationToken)
     {
         if (users.Count == 0)
