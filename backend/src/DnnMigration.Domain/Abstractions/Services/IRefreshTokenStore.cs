@@ -13,9 +13,10 @@ namespace DnnMigration.Domain.Abstractions.Services;
 /// refresh token, access token, role, permission, password or key may be persisted by this contract.
 /// </para>
 /// <para>
-/// Every operation is asynchronous because the production implementation is durable SQL storage.
-/// Rotation and revocation are atomic at the store boundary, and cancellation is observed on every
-/// round trip.
+/// Every operation is asynchronous so that an implementation backed by shared storage satisfies this
+/// contract without changing it; the shipped implementation is process-local and completes
+/// synchronously. Rotation and revocation are atomic at the store boundary, and cancellation is
+/// observed before any state is examined.
 /// </para>
 /// </remarks>
 public interface IRefreshTokenStore

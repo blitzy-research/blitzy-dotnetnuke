@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net;
 using System.Text.Json;
 using DnnMigration.Api.Middleware;
 using Microsoft.AspNetCore.Builder;
@@ -27,12 +26,11 @@ namespace DnnMigration.Api.Extensions;
 /// except the stage in front of it.
 /// </para>
 /// <para>
-/// <b>The fixed order.</b> Forwarded-header normalization precedes these ten stages,
-/// whose relative sequence is fixed by the
-/// migration plan and are not open to local variation. The additional stages this
-/// file adds around them - forwarded-header processing, transport security, the tenant
-/// path base, the rate limiter and the documentation console - are placed so that they
-/// do not disturb the relative order of the ten:
+/// <b>The fixed order.</b> Ten stages carry a mandated relative sequence and are not open to local
+/// variation. The additional stages this file adds around them - forwarded-header processing,
+/// transport security, the tenant path base, the credential cache-control marker, the rate limiter
+/// and the documentation console - are placed so that they do not disturb the relative order of the
+/// ten:
 /// </para>
 /// <list type="number">
 /// <item><description><c>UseExceptionHandler()</c>, parameterless.</description></item>
@@ -41,16 +39,31 @@ namespace DnnMigration.Api.Extensions;
 /// <item><description><c>UseRouting()</c>.</description></item>
 /// <item><description><c>UseCors(CorsExtensions.PolicyName)</c>, the named policy.</description></item>
 /// <item><description><c>UseAuthentication()</c>.</description></item>
-/// <item><description><c>UseAuthorization()</c>.</description></item>
 /// <item><description><c>UseMiddleware&lt;PortalAliasResolutionMiddleware&gt;()</c>.</description></item>
+/// <item><description><c>UseAuthorization()</c>.</description></item>
 /// <item><description><c>MapControllers()</c>.</description></item>
 /// <item><description>
-/// <c>MapHealthChecks("/health")</c> and <c>MapHealthChecks("/health/ready")</c>, both anonymous. One
-/// step, two views: the first selects every probe that is NOT readiness-tagged, the second selects
-/// exactly those that are. The order between them carries no meaning - they are sibling terminal
-/// endpoints on distinct paths - which is why they occupy one position rather than two.
+/// <c>MapHealthChecks("/health")</c>, <c>MapHealthChecks("/health/ready")</c> and
+/// <c>MapHealthChecks("/health/live")</c>, all anonymous. One step, three views: the first selects
+/// every probe that is NOT readiness-tagged, the second selects exactly those that are, and the
+/// third selects none. The order between them carries no meaning - they are sibling terminal
+/// endpoints on distinct paths - which is why they occupy one position rather than three.
 /// </description></item>
 /// </list>
+/// <para>
+/// MIGRATION: THE TENANT STAGE PRECEDES AUTHORISATION, WHERE THE PLAN'S STAGE LIST PUT IT AFTER.
+/// AAP 0.5.1.4 enumerates a single "portal-alias resolution" stage and places it behind
+/// <c>UseAuthorization</c>. The implementation cannot have a single stage: rewriting the path base
+/// for a child portal has to happen BEFORE routing, while deciding whether a particular endpoint
+/// needs a tenant has to happen AFTER it, so resolution and refusal are two stages rather than one.
+/// Once they are two, the refusal cannot stay behind authorisation - an authorisation policy that
+/// reconciles the caller's portal against the arrival portal would be evaluated with no arrival
+/// portal at all, which is the defect a code review raised against the earlier arrangement. The
+/// refusal is therefore the stage that sits between authentication and authorisation, and the
+/// pre-routing stage is reduced to the path-base prerequisite plus the diagnosis. No other named
+/// stage moves, and the divergence from the plan's list is recorded in <c>MIGRATION_NOTES.md</c>
+/// rather than left for a reader to discover from the code.
+/// </para>
 /// <para>
 /// <b>Why each join is where it is.</b> A stage moved one position is silently wrong,
 /// so the reason for every adjacency is recorded rather than left to be re-derived:
@@ -84,8 +97,12 @@ namespace DnnMigration.Api.Extensions;
 /// principal that authorisation evaluates.
 /// </description></item>
 /// <item><description>
-/// <b>Tenant resolution follows authentication</b> because it consults the caller's
-/// claims; it cannot run before the claims exist.
+/// <b>Tenant refusal sits between authentication and authorisation</b>, and that is the
+/// whole reason it is a separate stage from the path-base one. It follows authentication
+/// because it consults the caller's claims and must not disclose to an anonymous caller
+/// which host names the installation serves; it precedes authorisation because a policy
+/// that reconciles the caller's portal against the arrival portal must never be
+/// evaluated with no arrival portal.
 /// </description></item>
 /// <item><description>
 /// <b>The endpoints are last</b> because executing one terminates the pipeline.
@@ -93,9 +110,18 @@ namespace DnnMigration.Api.Extensions;
 /// <item><description>
 /// <b>Forwarded headers are applied immediately inside the exception handler</b>, ahead
 /// of every stage that observes the caller's address or scheme - correlation, request
-/// logging, routing and the rate limiter. Placed later, each of those would see the
-/// reverse proxy rather than the caller, and the credential limiter's per-caller
-/// partition would collapse into one budget shared by everybody behind the proxy.
+/// logging, transport security, routing and the rate limiter. Placed later, each of those
+/// would see the reverse proxy rather than the caller, and the credential limiter's
+/// per-caller partition would collapse into one budget shared by everybody behind the
+/// proxy.
+/// </description></item>
+/// <item><description>
+/// <b>Correlation and request logging precede transport security</b>, which is a
+/// correction rather than a preference. With redirection installed ahead of them, a
+/// cleartext request that was redirected received no correlation identifier and was never
+/// recorded - so the requests most worth seeing, the ones refused at the perimeter, were
+/// the only ones the log did not carry. Redirection now happens INSIDE both stages, so a
+/// 308 is correlated and recorded like any other answer.
 /// </description></item>
 /// </list>
 /// <para>
@@ -114,35 +140,49 @@ namespace DnnMigration.Api.Extensions;
 /// caller behind the proxy choose which tenant serves it.
 /// </para>
 /// <para>
-/// <b>Transport security is enforced, with two named exemptions.</b> Redirection to
-/// HTTPS is applied wherever a deployment configures it, and the production overlay
-/// configures it. It is branched rather than blanket, because two classes of request
-/// must never be answered with a redirect: the anonymous health endpoint, which answers
-/// a container health probe over plain HTTP before any credential exists and which the
-/// compose topology waits on before starting the front end; and a loopback-addressed
-/// request, which never traverses a network and so has nothing for a redirect to
-/// protect - the same carve-out the framework's own strict transport security makes by
-/// default. Every other request, which is to say every request addressed by a real host
-/// name, must arrive over HTTPS or be redirected until it does; that is what makes a
-/// directly reachable plain-HTTP API port unusable for credentials rather than merely
-/// discouraged. See <see cref="UseApiPipeline(WebApplication)"/> for the mechanism and
-/// the citations.
+/// <b>Transport security is enforced, with exactly one exemption: the three health
+/// paths.</b> Redirection to HTTPS is applied wherever a deployment configures it, and
+/// the production overlay configures it. It is branched rather than blanket for one
+/// reason only - the anonymous health endpoints answer a container probe over plain HTTP
+/// before any credential exists, and the compose topology waits on that probe before
+/// starting the front end, so a redirect there would leave the container permanently
+/// unhealthy. EVERY other request must arrive over HTTPS or be redirected until it does.
 /// </para>
 /// <para>
-/// <b>All health views are anonymous, unthrottled and unredirected.</b>
-/// <c>/health</c> and <c>/health/live</c> report process liveness without dependencies;
-/// <c>/health/ready</c> runs the ready-tagged database probes and gates frontend startup.
+/// SEC: THERE IS NO LOOPBACK EXEMPTION ANY MORE, AND ITS REMOVAL IS THE POINT. An earlier
+/// revision also withheld the redirect from a "loopback-addressed" request, deciding that
+/// from <c>Request.Host</c> - a value the CALLER sends. A remote client could therefore
+/// send <c>Host: localhost</c> to a published listener, be exempted from the redirect and
+/// be served over cleartext, which is precisely the enforcement this stage exists to
+/// apply. The exemption is gone rather than re-derived from the connection: nothing that
+/// ships needs it. The base compose topology disables redirection outright, the TLS
+/// overlay forwards <c>X-Forwarded-Proto: https</c> from a named hop so the request is
+/// already secure, and the container's own probe is a health path. See
+/// <see cref="UseApiPipeline(WebApplication)"/> for the mechanism and the citations.
+/// </para>
+/// <para>
+/// <b>All health views are anonymous, unthrottled and unredirected.</b> <c>/health</c> is
+/// the LIVENESS view and is the one the container image's own probe and the compose
+/// <c>service_healthy</c> condition read; it runs every probe that is not readiness-tagged,
+/// which today means the process-local audit-delivery signal and no external dependency.
+/// <c>/health/live</c> runs no probe at all. <c>/health/ready</c> runs the ready-tagged
+/// database probes and is available for an orchestrator that wants to gate traffic on the
+/// store; nothing in this repository's deployment artefacts reads it.
 /// </para>
 /// </remarks>
 public static class ApplicationBuilderExtensions
 {
     /// <summary>
-    /// Backward-compatible liveness endpoint: <c>/health</c>.
+    /// The deployed liveness endpoint: <c>/health</c>.
     /// </summary>
     /// <remarks>
-    /// Retained for existing monitors. Container readiness uses
-    /// <see cref="ReadinessEndpointPath"/> instead, and <see cref="LivenessHealthEndpointPath"/>
-    /// is the view that executes no dependency checks at all.
+    /// THIS IS THE PATH THE DEPLOYMENT ARTEFACTS PROBE, byte for byte:
+    /// <c>docker/api.Dockerfile</c>'s <c>HEALTHCHECK</c>, <c>docker/docker-compose.yml</c>'s api
+    /// health check and the end-to-end validation gate all read it, and the front-end service's
+    /// <c>condition: service_healthy</c> is satisfied by it. It selects every probe that is not
+    /// readiness-tagged, which is why it can answer while the external store is unreachable.
+    /// <see cref="ReadinessEndpointPath"/> is the stricter view and is read by nothing in this
+    /// repository; <see cref="LivenessHealthEndpointPath"/> executes no probe at all.
     /// </remarks>
     public const string HealthEndpointPath = "/health";
 
@@ -282,21 +322,20 @@ public static class ApplicationBuilderExtensions
     /// <remarks>
     /// <para>
     /// <b>On transport security.</b> Strict transport security is applied outside
-    /// development and needs no switch: the stage that applies it ignores requests
-    /// that did not arrive over HTTPS and ignores loopback hosts, so it cannot affect
-    /// the container's own plain-HTTP health probe. Redirection is configured rather than
-    /// unconditional, and the production overlay configures it on, because the model this
-    /// deployment implements is TLS terminated at the browser-facing edge with plain HTTP
-    /// on the internal network only. What makes enforcement safe there is
-    /// <see cref="TransportSecurityApplies(HttpContext)"/>, which withholds the redirect
-    /// from the health endpoint and from a loopback-addressed request and from nothing
-    /// else. Redirecting those two would answer the container's own probe with a redirect
-    /// to a port nothing is listening on, the probe would never report healthy, and the
-    /// front-end container would never start - a total outage produced by a hardening
-    /// measure. Redirecting everything else is the point: a caller that reaches this
-    /// process in clear text over a network is answered with a redirect rather than served,
-    /// so a directly published API port cannot be used to send a credential or a bearer
-    /// token unencrypted.
+    /// development and needs no switch: the stage that applies it only ever ADDS a
+    /// response header, and only on a request that already arrived over HTTPS, so it
+    /// cannot affect the container's own plain-HTTP health probe. Redirection is
+    /// configured rather than unconditional, and the production overlay configures it on,
+    /// because the model this deployment implements is TLS terminated at the
+    /// browser-facing edge with plain HTTP on the internal network only. What makes
+    /// enforcement safe there is <see cref="TransportSecurityApplies(HttpContext)"/>,
+    /// which withholds the redirect from the three health paths and from NOTHING else.
+    /// Redirecting those would answer the container's own probe with a redirect to a port
+    /// nothing is listening on, the probe would never report healthy, and the front-end
+    /// container would never start - a total outage produced by a hardening measure.
+    /// Redirecting everything else is the point: a caller that reaches this process in
+    /// clear text is answered with a redirect rather than served, so a directly published
+    /// API port cannot be used to send a credential or a bearer token unencrypted.
     /// </para>
     /// <para>
     /// <b>On the port the redirect names.</b> It is configured, not discovered. The
@@ -309,14 +348,17 @@ public static class ApplicationBuilderExtensions
     /// redirection on cannot silently do nothing.
     /// </para>
     /// <para>
-    /// <b>On the tenant stage's position.</b> It is placed after authorisation, where
-    /// the plan puts it, even though the authorisation handler that decides portal
-    /// administration needs a resolved tenant and therefore runs first. That is not a
-    /// contradiction: resolution is idempotent and is triggered by whichever of the
-    /// two reaches it first, so the handler resolves the tenant when it asks and this
-    /// stage then finds the work already done. Its remaining job is the one the
-    /// handler cannot do - guaranteeing that an endpoint reached without any
-    /// authorisation requirement still cannot execute against an unresolved tenant.
+    /// <b>On the tenant stage's position.</b> It is placed after authentication and
+    /// before authorisation, which is the position the security property requires: no
+    /// authorisation policy may be evaluated for an endpoint that needs a tenant while
+    /// no tenant is resolved, and a stage behind authorisation cannot promise that.
+    /// Resolution itself is idempotent and has usually already happened in the
+    /// pre-routing path-base stage, so this stage ordinarily observes that outcome
+    /// rather than repeating the work; what it adds is the endpoint-specific REFUSAL,
+    /// which needs the matched endpoint's metadata and therefore cannot be done before
+    /// routing. Its refusal is withheld from an unauthenticated caller on a protected
+    /// endpoint, because the fallback policy answers such a caller with 401 from every
+    /// host alike and refusing here first would let it enumerate configured host names.
     /// </para>
     /// <para>
     /// <b>On the exception handler's overload.</b> The parameterless overload is the
@@ -403,12 +445,32 @@ public static class ApplicationBuilderExtensions
             app.UseForwardedHeaders();
         }
 
-        // Applied outside development, and it needs no switch of its own because it
-        // cannot reach the health probe. This stage only sets a response header - it
-        // never redirects and never changes a status code - and it sets it only on a
-        // request that arrived over HTTPS to a host that is not excluded. The
-        // container's probe is plain HTTP to a loopback address, so it satisfies
-        // neither condition and the header is never even emitted.
+        // Before request logging, and that ordering is the whole point: this stage
+        // opens the logging scope that carries the correlation identifier, so a log
+        // written by any later stage is correlated without that stage having to know
+        // the identifier exists.
+        app.UseMiddleware<CorrelationIdMiddleware>();
+
+        // Immediately inside the correlation scope, and outside everything else, so the
+        // one entry it writes measures the whole of the work the request caused and
+        // reports the status code the caller actually received.
+        app.UseMiddleware<RequestLoggingMiddleware>();
+
+        // SEC-B4: TRANSPORT ENFORCEMENT RUNS INSIDE CORRELATION AND REQUEST LOGGING, NOT
+        // AHEAD OF THEM. Both stages above used to be registered after this one, and the
+        // consequence was silent: a cleartext request that this stage redirected
+        // short-circuited before a correlation identifier existed and before the request
+        // envelope was written, so the perimeter refusals - the requests an operator most
+        // needs to see, and the only evidence that enforcement is working at all - were
+        // the one class of request that produced no log entry and no correlation loop with
+        // the client's interceptor. Moving the redirect inside them costs nothing: neither
+        // stage reads the scheme, and both restore what they changed on the way out.
+        //
+        // Applied outside development, and strict transport security needs no switch of its
+        // own because it cannot reach the health probe. That stage only sets a response
+        // header - it never redirects and never changes a status code - and it sets it only
+        // on a request that arrived over HTTPS. The container's probe is plain HTTP, so it
+        // fails that condition and the header is never even emitted.
         if (!app.Environment.IsDevelopment())
         {
             app.UseHsts();
@@ -416,11 +478,11 @@ public static class ApplicationBuilderExtensions
 
         // Redirection to HTTPS is enforced wherever a deployment turns it on, and the
         // production overlay turns it on. What makes that safe is the branch predicate,
-        // not a blanket switch: TransportSecurityApplies excludes the two classes of
-        // request for which a redirect would be destructive rather than protective.
+        // not a blanket switch: TransportSecurityApplies excludes the one class of request
+        // for which a redirect would be destructive rather than protective.
         //
-        // The health probe is the first. docker/api.Dockerfile probes
-        // "wget --spider http://127.0.0.1:8080/health" over plain HTTP, and
+        // That class is the health probe. docker/api.Dockerfile probes
+        // "wget --spider http://localhost:8080/health" over plain HTTP, and
         // docker-compose.yml holds the front-end container back on
         // "condition: service_healthy"; answering that probe with a redirect would leave
         // the container permanently unhealthy, the front end permanently unstarted and the
@@ -428,19 +490,24 @@ public static class ApplicationBuilderExtensions
         // reports that mistake, which is why the exclusion is explicit and documented
         // here.
         //
-        // A loopback-addressed request is the second. It never leaves the machine that
-        // made it, so there is no network on which it could be observed and nothing for
-        // the redirect to protect; this is the same carve-out the framework's own strict
-        // transport security makes by default, and honouring it in both stages keeps them
-        // consistent. It is also what keeps the shipped topology usable: nginx forwards
-        // the browser's own host, which on that topology is a loopback address.
+        // SEC-B4: THE SECOND EXCLUSION IS GONE. A "loopback-addressed" request was also
+        // exempted, and the classification read context.Request.Host - the authority the
+        // CALLER asked for. A remote client that sent "Host: localhost" to a published
+        // listener was therefore exempted from enforcement and served over cleartext, and
+        // nginx repeated the same mistake with the same header. Deriving it from the
+        // connection instead would have closed the spoof, but nothing that ships needs the
+        // exemption at all: docker-compose.yml sets Https__RedirectEnabled=false because
+        // that topology is cleartext behind a proxy end to end, docker-compose.tls.yml
+        // turns enforcement on and its proxy forwards X-Forwarded-Proto=https from a named
+        // hop so the request is already secure, and the container's own probe is a health
+        // path. An operator diagnosing this process over plain HTTP on a TLS-mode
+        // deployment now receives the redirect, which is the honest answer.
         //
-        // Everything else - which is to say every request addressed by a real host name -
-        // must reach this application over HTTPS or be redirected until it does. That is
-        // what closes the plain-HTTP path to a directly published API port: a caller that
-        // bypasses the proxy and speaks plain HTTP to this process is answered with a
-        // redirect it cannot satisfy without TLS, so no credential and no bearer token
-        // crosses a network in clear text.
+        // Everything other than a health path must therefore reach this application over
+        // HTTPS or be redirected until it does. That is what closes the plain-HTTP path to
+        // a directly published API port: a caller that bypasses the proxy and speaks plain
+        // HTTP to this process is answered with a redirect it cannot satisfy without TLS,
+        // so no credential and no bearer token crosses a network in clear text.
         if (app.Configuration.GetValue<bool>(HttpsRedirectionSectionName))
         {
             app.UseWhen(
@@ -467,25 +534,16 @@ public static class ApplicationBuilderExtensions
                 ServiceCollectionExtensions.KnownNetworksSectionName);
         }
 
-        // Before request logging, and that ordering is the whole point: this stage
-        // opens the logging scope that carries the correlation identifier, so a log
-        // written by any later stage is correlated without that stage having to know
-        // the identifier exists.
-        app.UseMiddleware<CorrelationIdMiddleware>();
-
-        // Immediately inside the correlation scope, and outside everything else, so the
-        // one entry it writes measures the whole of the work the request caused and
-        // reports the status code the caller actually received.
-        app.UseMiddleware<RequestLoggingMiddleware>();
-
         // Before routing, and only this stage can be. A child portal is addressed by a
         // path segment beneath a shared host, so the segment that identifies the tenant
         // sits in front of the path the routes were written against; it has to move
         // into the path base before routing matches, or every request to a child
         // portal answers 404 no matter how correctly its tenant resolved. Routing
         // cannot be un-done afterwards, which is why the named portal-alias stage
-        // below - fixed after authorisation by the mandated order - cannot do this.
-        // Nothing named in that order moves: this is an additional, un-named stage.
+        // below cannot do this. This stage is deliberately reduced to that prerequisite
+        // and the diagnosis of a failure to resolve: the REFUSAL belongs to the named
+        // stage, which runs after authentication where it can tell an anonymous caller
+        // apart from a known one and where the matched endpoint's metadata exists.
         app.UseMiddleware<TenantPathBaseMiddleware>();
 
         // MIGRATION: no static-file stage, and none is missing. The legacy application
@@ -544,20 +602,37 @@ public static class ApplicationBuilderExtensions
         // unless the environment or an explicit opt-in says so.
         app.UseSwaggerDocumentation(app.Environment, app.Configuration);
 
-        app.UseAuthorization();
-
-        // After authorisation, before the endpoints. See the remarks above for why
-        // this position is correct even though the portal-administration handler needs
-        // a resolved tenant and runs earlier.
+        // SEC-B4: AFTER AUTHENTICATION AND BEFORE AUTHORISATION, WHICH IS A CORRECTION.
+        // This stage used to be registered after UseAuthorization, on the reasoning that
+        // resolution is idempotent so an authorisation handler could resolve the tenant
+        // itself when it asked. That reasoning holds for RESOLUTION and fails for
+        // ENFORCEMENT: every tenant-scoped authorisation decision reconciles the caller's
+        // portal, the route's portal and the ARRIVAL portal, and with the refusal behind
+        // authorisation those policies were evaluated on requests that had no arrival
+        // portal at all - a three-sided check silently degrading to a two-sided one
+        // exactly where a host name resolved to nothing. Enforcing here means no policy
+        // ever sees that state.
+        //
+        // It stays after the documentation console because that console answers requests
+        // itself and describes the API rather than serving a tenant's data; the stage
+        // exempts its paths in any case, so the adjacency is belt and braces.
         app.UseMiddleware<PortalAliasResolutionMiddleware>();
+
+        app.UseAuthorization();
 
         app.MapControllers();
 
-        // Anonymous, explicitly and necessarily. /health and /health/live are
-        // liveness views and therefore execute no dependency check: the process can
-        // answer even while SQL Server is unavailable. /health/ready selects only the
-        // checks tagged "ready" and is what the image and compose topology use to
-        // decide whether traffic can be served and the frontend may start.
+        // Anonymous, explicitly and necessarily. /health is the LIVENESS view and is the
+        // one the image's HEALTHCHECK, the compose api health check and the end-to-end
+        // gate all read, so it is what decides whether the api container reports healthy
+        // and therefore whether the frontend service starts. It selects every probe that
+        // is NOT readiness-tagged - today the process-local audit-delivery signal, and no
+        // external dependency - so the process can answer it while SQL Server is
+        // unreachable. /health/live runs no probe at all. /health/ready selects only the
+        // checks tagged "ready" and is offered for an orchestrator that wants to gate
+        // TRAFFIC on the store; nothing in this repository's deployment artefacts reads
+        // it, and pointing the container probe at it would hold the frontend back behind a
+        // service the compose topology does not even declare.
         //
         // It is also unthrottled, and that is a property of the limiter's classifier
         // rather than of anything declared here: every partition resolves to the shared
@@ -616,7 +691,9 @@ public static class ApplicationBuilderExtensions
         // document shape. It is a separate PATH rather than a query parameter on the first, because the
         // liveness path is depended upon from outside this codebase, byte for byte, by the image's own
         // health check and by the compose condition, and a probe that had to pass a parameter to get the
-        // liveness answer would be one edit away from getting the readiness answer instead.
+        // liveness answer would be one edit away from getting the readiness answer instead. Nothing in
+        // this repository probes THIS path; it exists for an orchestrator that gates traffic rather than
+        // start-up on the store.
         app.MapHealthChecks(
                 ReadinessEndpointPath,
                 new HealthCheckOptions
@@ -688,78 +765,62 @@ public static class ApplicationBuilderExtensions
     /// </summary>
     /// <param name="context">The request being classified.</param>
     /// <returns>
-    /// <see langword="false"/> for the health probe and for a loopback-addressed request,
-    /// so neither is ever answered with a redirect; otherwise <see langword="true"/>.
+    /// <see langword="false"/> for the three published health paths, so none of them is ever
+    /// answered with a redirect; otherwise <see langword="true"/>.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// Both exclusions are load-bearing rather than lenient, and the reasoning for each is
-    /// recorded at the call site. The health probe must answer a container health check
-    /// that runs over plain HTTP before any credential exists in the system, and a
-    /// loopback-addressed request never traverses a network, so a redirect protects nothing
-    /// while breaking a deployment that the shipped topology depends on.
+    /// ONE EXCLUSION, AND IT IS LOAD-BEARING RATHER THAN LENIENT. The health paths must answer
+    /// a container health check that runs over plain HTTP before any credential exists in the
+    /// system, and the compose topology holds the front-end service back until that check
+    /// succeeds; redirecting it would leave a correctly built deployment permanently unhealthy.
     /// </para>
     /// <para>
-    /// The path test is a SEGMENT test rather than a character-prefix test: it exempts the
-    /// liveness view and the readiness view mapped beneath it - both are probes that run over
-    /// plain HTTP inside the container - while a longer path that merely begins with the same
-    /// characters, such as a hypothetical <c>/healthz</c>, is a different endpoint and does not
-    /// inherit the exemption.
+    /// SEC: THE PREDICATE READS NOTHING THE CALLER SUPPLIES. An earlier revision also exempted
+    /// a request whose <c>Host</c> named <c>localhost</c> or a loopback literal. The host is
+    /// the authority the CALLER asked for, so a remote client could disable transport
+    /// enforcement for itself with one header - the exemption was, in effect, an opt-out from
+    /// HTTPS published to the internet. It is removed rather than re-derived from the
+    /// connection endpoint, because nothing that ships needs it: the cleartext compose
+    /// topology disables redirection outright, the TLS topology's proxy forwards the secure
+    /// scheme from a named hop, and the container's own probe is a health path. The path is the
+    /// only input, and a path is matched by this process rather than trusted from it.
+    /// </para>
+    /// <para>
+    /// The comparison is against the three EXACT published paths rather than a prefix, so a
+    /// longer path beneath the health namespace - or one that merely begins with the same
+    /// characters, such as a hypothetical <c>/healthz</c> - is a different endpoint and does
+    /// not inherit the exemption. A single trailing separator is tolerated because a probe may
+    /// spell the address either way and both reach the same endpoint.
     /// </para>
     /// </remarks>
-    private static bool TransportSecurityApplies(HttpContext context)
-    {
-        if (context.Request.Path.StartsWithSegments(HealthEndpointPath, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return !IsLoopbackAddressed(context);
-    }
+    private static bool TransportSecurityApplies(HttpContext context) =>
+        !IsPublishedHealthPath(context.Request.Path);
 
     /// <summary>
-    /// Reports whether a request names a host that resolves only within the machine that
-    /// issued it.
+    /// Reports whether a path is one of the three health views mapped by this pipeline.
     /// </summary>
-    /// <param name="context">The request being classified.</param>
-    /// <returns>
-    /// <see langword="true"/> when the requested host is <c>localhost</c> or a loopback IP
-    /// literal; otherwise <see langword="false"/>.
-    /// </returns>
-    /// <remarks>
-    /// <para>
-    /// The host is read rather than the connection's remote address, and the difference
-    /// matters: the question this answers is which authority the caller ASKED for, because
-    /// that authority is what a redirect would send it back to. A request forwarded by a
-    /// proxy carries the browser's own host, so reading it here is what lets a proxied
-    /// loopback deployment work while a proxied public one is still enforced.
-    /// </para>
-    /// <para>
-    /// The literal name and the address forms are both recognised because a caller may use
-    /// either, and an address is tested through the framework's own loopback predicate
-    /// rather than against a list, so the whole of the reserved IPv4 loopback range and the
-    /// IPv6 loopback address are covered without enumerating them. The bracket form an IPv6
-    /// authority carries in a URL is stripped by the host type before it reaches here, and
-    /// is trimmed defensively so a caller that supplies an unusual spelling is classified
-    /// the same way.
-    /// </para>
-    /// </remarks>
-    private static bool IsLoopbackAddressed(HttpContext context)
+    /// <param name="path">The request path.</param>
+    /// <returns><see langword="true"/> when the path addresses a health view exactly.</returns>
+    private static bool IsPublishedHealthPath(PathString path)
     {
-        string host = context.Request.Host.Host;
-
-        if (host.Length == 0)
+        if (!path.HasValue)
         {
             return false;
         }
 
-        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        string candidate = path.Value!;
+
+        // A single trailing separator addresses the same endpoint, and routing treats the two
+        // spellings alike, so the exemption has to as well.
+        if (candidate.Length > 1 && candidate.EndsWith('/'))
         {
-            return true;
+            candidate = candidate[..^1];
         }
 
-        return IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? address)
-            && IPAddress.IsLoopback(address);
+        return string.Equals(candidate, HealthEndpointPath, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(candidate, ReadinessEndpointPath, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(candidate, LivenessHealthEndpointPath, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Writes the health report as JSON.</summary>

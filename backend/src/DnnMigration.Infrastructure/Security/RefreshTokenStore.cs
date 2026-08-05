@@ -1,64 +1,118 @@
-using System.Data;
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Enums;
-using DnnMigration.Infrastructure.Persistence;
-using Microsoft.Data.SqlClient;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Infrastructure.Security;
 
 /// <summary>
-/// SQL-backed refresh-token store with atomic single-use rotation, family revocation and bounded
+/// Process-local refresh-token store with atomic single-use rotation, family revocation and bounded
 /// same-client concurrent-use grace.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: legacy FormsAuthentication sign-out had no server-side session record. The target
-/// keeps refresh state durably in the target-owned <c>DnnMigration.RefreshTokens</c> table while
-/// access-token sign-out remains expiry plus client-side discard. Only SHA-256 token digests and
-/// minimal identity/lifecycle fields are stored; raw refresh tokens are returned once and retained
-/// nowhere.
+/// MIGRATION: legacy <c>FormsAuthentication</c> sign-out had no server-side session record at all - the
+/// ticket was a self-contained cookie and revoking one was impossible. The target keeps refresh state in
+/// this singleton for the lifetime of the process while access-token sign-out remains expiry plus
+/// client-side discard. Only SHA-256 token digests and minimal identity/lifecycle fields are held; raw
+/// refresh tokens are returned once and retained nowhere.
 /// </para>
 /// <para>
-/// The table is provisioned explicitly by the operator-run script under
-/// <c>Persistence/Scripts</c>. Application startup never creates, alters or migrates a production
-/// schema, and no legacy DotNetNuke object is modified.
+/// <strong>NO DATABASE OBJECT IS READ, WRITTEN OR REQUIRED BY THIS TYPE, AND THAT IS THE POINT.</strong>
+/// An earlier revision persisted refresh families into a target-owned <c>[DnnMigration].[RefreshTokens]</c>
+/// table, provisioned by a data-definition script an operator had to run first. That violated AAP rule T4 -
+/// the existing DotNetNuke schema is immutable and no <c>CREATE</c>, <c>ALTER</c> or <c>DROP</c> may reach a
+/// production database from this work - and it had a worse consequence than the rule breach: every
+/// successful credential verification called <see cref="IssueAsync"/> before returning tokens, so against
+/// the unaltered database the API was mandated to run on, login answered "token store unavailable" and
+/// authentication could not complete at all. AAP section 0.4.3 registers the token service as a
+/// <em>singleton</em>, which is only coherent for a store that holds its own state; this type is that store.
+/// </para>
+/// <para>
+/// <strong>The operational consequence is stated rather than hidden.</strong> Refresh state does not survive
+/// a process restart and is not shared between replicas, so a restart or a load-balanced second instance
+/// forces callers to sign in again rather than refresh. That is a bounded availability cost - the access
+/// token a caller already holds stays valid until its stamped expiry - and it is the cost of leaving the
+/// existing schema untouched. It is recorded in <c>MIGRATION_NOTES.md</c> so a deployment that needs
+/// cross-process refresh continuity knows it must supply a shared store of its own behind this same
+/// contract rather than discovering the limitation in production.
+/// </para>
+/// <para>
+/// <strong>Every state transition is serialised on one lock.</strong> The SQL implementation this replaces
+/// held a <c>SERIALIZABLE</c> transaction with <c>UPDLOCK, HOLDLOCK</c> around each read-modify-write, so
+/// two exchanges racing on one token produced exactly one successor. A single monitor over the whole
+/// dictionary reproduces that guarantee exactly, and it is affordable because every operation is a handful
+/// of dictionary lookups with no I/O inside the region. No <c>await</c> occurs while the lock is held, so
+/// the lock can never be taken on one thread and released on another.
 /// </para>
 /// </remarks>
 internal sealed class RefreshTokenStore : IRefreshTokenStore
 {
     private const int TokenEntropyBytes = 32;
-    private const int DigestLength = 32;
-    private const int ExpiredPruneBatchSize = 500;
     private const int ConcurrentUseGraceSeconds = 5;
-    private const string TableName = "[DnnMigration].[RefreshTokens]";
+
+    /// <summary>
+    /// Hard ceiling on how many generations this store tracks at once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A bound is mandatory rather than defensive. The SQL implementation this replaces was bounded by disk
+    /// and pruned in batches; an unbounded in-process dictionary is a memory-exhaustion vector, because a
+    /// caller holding valid credentials adds one entry per sign-in and two per rotation and nothing expires
+    /// for the whole family lifetime. The credential rate limiter bounds how fast that can happen; this
+    /// bounds how far it can go.
+    /// </para>
+    /// <para>
+    /// 100,000 entries is roughly ten megabytes of tracked state, and it is far above any legitimate working
+    /// set: one caller refreshing every half hour for the full thirty-day family lifetime accounts for about
+    /// 1,400 entries. When the ceiling is reached the families closest to their absolute ceiling are evicted
+    /// first, so the cost of the bound is that the OLDEST refresh families stop refreshing and their holders
+    /// sign in again - a bounded availability cost, never a failure to serve.
+    /// </para>
+    /// </remarks>
+    private const int MaximumTrackedTokens = 100_000;
 
     private static readonly TimeSpan ConcurrentUseGrace =
         TimeSpan.FromSeconds(ConcurrentUseGraceSeconds);
 
-    private readonly string _connectionString;
+    /// <summary>
+    /// Serialises every read-modify-write, standing in for the SERIALIZABLE transaction the SQL
+    /// implementation used.
+    /// </summary>
+    private readonly object _gate = new();
+
+    /// <summary>
+    /// Live and consumed generations, keyed by the SHA-256 digest of the token that addresses them.
+    /// </summary>
+    /// <remarks>
+    /// A consumed generation is deliberately RETAINED rather than removed: its digest is the theft signal
+    /// that lets a replay be recognised, and it stays until the family's absolute ceiling passes. The
+    /// comparer is the fixed-length digest comparer below, so lookup is by value rather than by array
+    /// reference.
+    /// </remarks>
+    private readonly Dictionary<byte[], StoredToken> _tokens = new(DigestComparer.Instance);
+
     private readonly IClock _clock;
     private readonly TimeSpan _slidingLifetime;
     private readonly TimeSpan _familyLifetime;
 
     /// <summary>Initialises a new instance of the <see cref="RefreshTokenStore"/> class.</summary>
-    /// <param name="context">Supplies the configured SQL Server connection string.</param>
     /// <param name="clock">UTC clock used for every lifecycle decision.</param>
     /// <param name="jwtOptions">Validated access and refresh-token options.</param>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
     /// <exception cref="OptionsValidationException">The token lifetimes are invalid.</exception>
-    /// <exception cref="InvalidOperationException">No database connection string is configured.</exception>
+    /// <remarks>
+    /// Both dependencies are themselves singletons, so this type may be one: it captures no request-scoped
+    /// service and holds no database context. The database context the SQL implementation took - solely to
+    /// read a connection string off it - is gone with the SQL, which is what removes the captive-dependency
+    /// problem that forced the scoped registrations AAP section 0.4.3 forbids.
+    /// </remarks>
     public RefreshTokenStore(
-        DnnDbContext context,
         IClock clock,
         IOptions<JwtOptions> jwtOptions)
     {
-        ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(jwtOptions);
 
@@ -71,16 +125,13 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
                 failures);
         }
 
-        _connectionString = context.Database.GetConnectionString()
-            ?? throw new InvalidOperationException(
-                "The durable refresh-token store requires ConnectionStrings:Default.");
         _clock = clock;
         _slidingLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenExpirationDays);
         _familyLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenAbsoluteExpirationDays);
     }
 
     /// <inheritdoc />
-    public async Task<RefreshTokenIssueResult> IssueAsync(
+    public Task<RefreshTokenIssueResult> IssueAsync(
         RefreshTokenSubject subject,
         CancellationToken cancellationToken = default)
     {
@@ -92,64 +143,30 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         DateTime expiresAtUtc = Earlier(now.Add(_slidingLifetime), familyExpiresAtUtc);
         TokenMaterial token = CreateToken();
 
-        try
+        lock (_gate)
         {
-            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using SqlTransaction transaction = (SqlTransaction)await connection
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-                .ConfigureAwait(false);
+            PruneExpired(now);
 
-            await PruneExpiredAsync(connection, transaction, now, cancellationToken).ConfigureAwait(false);
-
-            await using SqlCommand command = Command(
-                connection,
-                transaction,
-                $"""
-                INSERT INTO {TableName}
-                    ([TokenDigest], [FamilyId], [Generation], [UserId], [PortalId],
-                     [CreatedAtUtc], [ExpiresAtUtc], [FamilyExpiresAtUtc],
-                     [ConsumedAtUtc], [ConsumedClientDigest], [RevokedAtUtc])
-                VALUES
-                    (@digest, @familyId, 0, @userId, @portalId,
-                     @now, @expires, @familyExpires, NULL, NULL, NULL);
-                """);
-            Binary(command, "@digest", token.Digest);
-            command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
-            {
-                Value = Guid.NewGuid(),
-            });
-            command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
-            {
-                Value = subject.UserId,
-            });
-            command.Parameters.Add(new SqlParameter("@portalId", SqlDbType.Int)
-            {
-                Value = subject.PortalId,
-            });
-            DateTimeParameter(command, "@now", now);
-            DateTimeParameter(command, "@expires", expiresAtUtc);
-            DateTimeParameter(command, "@familyExpires", familyExpiresAtUtc);
-
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-            return RefreshTokenIssueResult.Succeeded(
-                token.RawToken,
-                expiresAtUtc,
-                subject);
+            _tokens[token.Digest] = new StoredToken(
+                FamilyId: Guid.NewGuid(),
+                Generation: 0,
+                UserId: subject.UserId,
+                PortalId: subject.PortalId,
+                ExpiresAtUtc: expiresAtUtc,
+                FamilyExpiresAtUtc: familyExpiresAtUtc,
+                ConsumedAtUtc: null,
+                ConsumedClientDigest: null,
+                RevokedAtUtc: null);
         }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            return RefreshTokenIssueResult.Failed(RefreshTokenOutcome.StoreUnavailable);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(token.Digest);
-        }
+
+        return Task.FromResult(RefreshTokenIssueResult.Succeeded(
+            token.RawToken,
+            expiresAtUtc,
+            subject));
     }
 
     /// <inheritdoc />
-    public async Task<RefreshTokenInspection> InspectAsync(
+    public Task<RefreshTokenInspection> InspectAsync(
         string refreshToken,
         string clientBinding,
         CancellationToken cancellationToken = default)
@@ -160,7 +177,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            return RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown);
+            return Task.FromResult(RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown));
         }
 
         byte[] digest = Digest(refreshToken);
@@ -169,57 +186,37 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         try
         {
-            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using SqlTransaction transaction = (SqlTransaction)await connection
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-                .ConfigureAwait(false);
-
-            StoredToken? stored = await ReadForUpdateAsync(
-                    connection,
-                    transaction,
-                    digest,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (stored is null)
+            lock (_gate)
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown);
+                if (!_tokens.TryGetValue(digest, out StoredToken? stored))
+                {
+                    return Task.FromResult(RefreshTokenInspection.Failed(RefreshTokenOutcome.Unknown));
+                }
+
+                RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
+                if (outcome == RefreshTokenOutcome.AlreadyUsed)
+                {
+                    RevokeAllForUserCore(stored.UserId, now);
+                }
+
+                return Task.FromResult(outcome == RefreshTokenOutcome.Succeeded
+                    ? RefreshTokenInspection.Succeeded(
+                        new RefreshTokenSubject(stored.UserId, stored.PortalId),
+                        stored.ExpiresAtUtc)
+                    : RefreshTokenInspection.Failed(outcome, stored.UserId));
             }
-
-            RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
-            if (outcome == RefreshTokenOutcome.AlreadyUsed)
-            {
-                await RevokeAllForUserCoreAsync(
-                        connection,
-                        transaction,
-                        stored.UserId,
-                        now,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-            return outcome == RefreshTokenOutcome.Succeeded
-                ? RefreshTokenInspection.Succeeded(
-                    new RefreshTokenSubject(stored.UserId, stored.PortalId),
-                    stored.ExpiresAtUtc)
-                : RefreshTokenInspection.Failed(outcome, stored.UserId);
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            return RefreshTokenInspection.Failed(RefreshTokenOutcome.StoreUnavailable);
         }
         finally
         {
+            // The lookup digest is a locally computed copy: the dictionary retains the array it was first
+            // keyed with, so clearing this one cannot disturb a stored key.
             CryptographicOperations.ZeroMemory(digest);
             CryptographicOperations.ZeroMemory(clientDigest);
         }
     }
 
     /// <inheritdoc />
-    public async Task<RefreshTokenRotationResult> RotateAsync(
+    public Task<RefreshTokenRotationResult> RotateAsync(
         string refreshToken,
         string clientBinding,
         CancellationToken cancellationToken = default)
@@ -230,7 +227,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown);
+            return Task.FromResult(RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown));
         }
 
         byte[] digest = Digest(refreshToken);
@@ -239,86 +236,61 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         try
         {
-            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using SqlTransaction transaction = (SqlTransaction)await connection
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-                .ConfigureAwait(false);
-
-            StoredToken? stored = await ReadForUpdateAsync(
-                    connection,
-                    transaction,
-                    digest,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (stored is null)
+            lock (_gate)
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown);
-            }
-
-            RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
-            if (outcome != RefreshTokenOutcome.Succeeded)
-            {
-                if (outcome == RefreshTokenOutcome.AlreadyUsed)
+                if (!_tokens.TryGetValue(digest, out StoredToken? stored))
                 {
-                    await RevokeAllForUserCoreAsync(
-                            connection,
-                            transaction,
-                            stored.UserId,
-                            now,
-                            cancellationToken)
-                        .ConfigureAwait(false);
+                    return Task.FromResult(
+                        RefreshTokenRotationResult.Failed(RefreshTokenOutcome.Unknown));
                 }
 
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return RefreshTokenRotationResult.Failed(outcome);
-            }
+                RefreshTokenOutcome outcome = Classify(stored, clientDigest, now);
+                if (outcome != RefreshTokenOutcome.Succeeded)
+                {
+                    if (outcome == RefreshTokenOutcome.AlreadyUsed)
+                    {
+                        RevokeAllForUserCore(stored.UserId, now);
+                    }
 
-            TokenMaterial replacement = CreateToken();
-            try
-            {
-                await MarkConsumedAsync(
-                        connection,
-                        transaction,
-                        digest,
-                        clientDigest,
-                        now,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                    return Task.FromResult(RefreshTokenRotationResult.Failed(outcome));
+                }
 
+                if (stored.Generation == int.MaxValue)
+                {
+                    throw new InvalidOperationException(
+                        "The refresh-token family exhausted its generation counter.");
+                }
+
+                TokenMaterial replacement = CreateToken();
                 DateTime replacementExpiresAtUtc = Earlier(
                     now.Add(_slidingLifetime),
                     stored.FamilyExpiresAtUtc);
 
-                await InsertReplacementAsync(
-                        connection,
-                        transaction,
-                        replacement.Digest,
-                        stored,
-                        now,
-                        replacementExpiresAtUtc,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                // The presented generation is marked consumed and KEPT. Its digest, paired with the client
+                // fingerprint that spent it, is what distinguishes a near-simultaneous same-client retry
+                // from a replay arriving from somewhere else.
+                _tokens[digest] = stored with
+                {
+                    ConsumedAtUtc = now,
+                    ConsumedClientDigest = (byte[])clientDigest.Clone(),
+                };
 
-                await PruneExpiredAsync(connection, transaction, now, cancellationToken)
-                    .ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                _tokens[replacement.Digest] = stored with
+                {
+                    Generation = checked(stored.Generation + 1),
+                    ExpiresAtUtc = replacementExpiresAtUtc,
+                    ConsumedAtUtc = null,
+                    ConsumedClientDigest = null,
+                    RevokedAtUtc = null,
+                };
 
-                RefreshTokenSubject subject = new(stored.UserId, stored.PortalId);
-                return RefreshTokenRotationResult.Succeeded(
+                PruneExpired(now);
+
+                return Task.FromResult(RefreshTokenRotationResult.Succeeded(
                     replacement.RawToken,
                     replacementExpiresAtUtc,
-                    subject);
+                    new RefreshTokenSubject(stored.UserId, stored.PortalId)));
             }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(replacement.Digest);
-            }
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            return RefreshTokenRotationResult.Failed(RefreshTokenOutcome.StoreUnavailable);
         }
         finally
         {
@@ -328,7 +300,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     }
 
     /// <inheritdoc />
-    public async Task<RefreshTokenOutcome> RevokeAsync(
+    public Task<RefreshTokenOutcome> RevokeAsync(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
@@ -337,7 +309,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            return RefreshTokenOutcome.Unknown;
+            return Task.FromResult(RefreshTokenOutcome.Unknown);
         }
 
         byte[] digest = Digest(refreshToken);
@@ -345,40 +317,18 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
         try
         {
-            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using SqlTransaction transaction = (SqlTransaction)await connection
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-                .ConfigureAwait(false);
-
-            StoredToken? stored = await ReadForUpdateAsync(
-                    connection,
-                    transaction,
-                    digest,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (stored is null)
+            lock (_gate)
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return RefreshTokenOutcome.Unknown;
+                if (!_tokens.TryGetValue(digest, out StoredToken? stored))
+                {
+                    return Task.FromResult(RefreshTokenOutcome.Unknown);
+                }
+
+                int changed = RevokeFamilyCore(stored.FamilyId, now);
+                return Task.FromResult(changed == 0
+                    ? RefreshTokenOutcome.AlreadyRevoked
+                    : RefreshTokenOutcome.Succeeded);
             }
-
-            int changed = await RevokeFamilyCoreAsync(
-                    connection,
-                    transaction,
-                    stored.FamilyId,
-                    now,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return changed == 0
-                ? RefreshTokenOutcome.AlreadyRevoked
-                : RefreshTokenOutcome.Succeeded;
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            return RefreshTokenOutcome.StoreUnavailable;
         }
         finally
         {
@@ -387,48 +337,34 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     }
 
     /// <inheritdoc />
-    public async Task<RefreshTokenOutcome> RevokeAllForUserAsync(
+    public Task<RefreshTokenOutcome> RevokeAllForUserAsync(
         int userId,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTime now = Utc(_clock.UtcNow);
 
-        try
+        lock (_gate)
         {
-            await using SqlConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using SqlTransaction transaction = (SqlTransaction)await connection
-                .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-                .ConfigureAwait(false);
-
-            int known = await CountForUserAsync(
-                    connection,
-                    transaction,
-                    userId,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (known == 0)
+            bool known = false;
+            foreach (StoredToken candidate in _tokens.Values)
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return RefreshTokenOutcome.Unknown;
+                if (candidate.UserId == userId)
+                {
+                    known = true;
+                    break;
+                }
             }
 
-            int changed = await RevokeAllForUserCoreAsync(
-                    connection,
-                    transaction,
-                    userId,
-                    now,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            if (!known)
+            {
+                return Task.FromResult(RefreshTokenOutcome.Unknown);
+            }
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return changed == 0
+            int changed = RevokeAllForUserCore(userId, now);
+            return Task.FromResult(changed == 0
                 ? RefreshTokenOutcome.AlreadyRevoked
-                : RefreshTokenOutcome.Succeeded;
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            return RefreshTokenOutcome.StoreUnavailable;
+                : RefreshTokenOutcome.Succeeded);
         }
     }
 
@@ -470,257 +406,114 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             : RefreshTokenOutcome.Succeeded;
     }
 
-    private async Task<SqlConnection> OpenAsync(CancellationToken cancellationToken)
+    /// <summary>Marks every unrevoked generation of one family revoked.</summary>
+    /// <param name="familyId">The family to revoke.</param>
+    /// <param name="now">The revocation instant.</param>
+    /// <returns>How many generations this call changed.</returns>
+    /// <remarks>Callers must already hold <see cref="_gate"/>.</remarks>
+    private int RevokeFamilyCore(Guid familyId, DateTime now) =>
+        RevokeWhere(stored => stored.FamilyId == familyId, now);
+
+    /// <summary>Marks every unrevoked generation belonging to one account revoked.</summary>
+    /// <param name="userId">The account whose families are revoked.</param>
+    /// <param name="now">The revocation instant.</param>
+    /// <returns>How many generations this call changed.</returns>
+    /// <remarks>Callers must already hold <see cref="_gate"/>.</remarks>
+    private int RevokeAllForUserCore(int userId, DateTime now) =>
+        RevokeWhere(stored => stored.UserId == userId, now);
+
+    /// <summary>Marks every unrevoked generation matching a predicate revoked.</summary>
+    /// <param name="match">Selects the generations to revoke.</param>
+    /// <param name="now">The revocation instant.</param>
+    /// <returns>How many generations this call changed.</returns>
+    /// <remarks>
+    /// The keys are collected before any entry is replaced, because a dictionary cannot be written to while
+    /// it is being enumerated. Callers must already hold <see cref="_gate"/>.
+    /// </remarks>
+    private int RevokeWhere(Func<StoredToken, bool> match, DateTime now)
     {
-        SqlConnection connection = new(_connectionString);
+        List<byte[]>? affected = null;
 
-        try
+        foreach (KeyValuePair<byte[], StoredToken> entry in _tokens)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            return connection;
-        }
-        catch
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-    }
-
-    private static async Task<StoredToken?> ReadForUpdateAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        byte[] digest,
-        CancellationToken cancellationToken)
-    {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            SELECT [FamilyId], [Generation], [UserId], [PortalId],
-                   [ExpiresAtUtc], [FamilyExpiresAtUtc], [ConsumedAtUtc],
-                   [ConsumedClientDigest], [RevokedAtUtc]
-            FROM {TableName} WITH (UPDLOCK, HOLDLOCK)
-            WHERE [TokenDigest] = @digest;
-            """);
-        Binary(command, "@digest", digest);
-
-        await using SqlDataReader reader = await command
-            .ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken)
-            .ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            return null;
+            if (entry.Value.RevokedAtUtc is null && match(entry.Value))
+            {
+                (affected ??= []).Add(entry.Key);
+            }
         }
 
-        return new StoredToken(
-            reader.GetGuid(0),
-            reader.GetInt32(1),
-            reader.GetInt32(2),
-            reader.GetInt32(3),
-            Utc(reader.GetDateTime(4)),
-            Utc(reader.GetDateTime(5)),
-            reader.IsDBNull(6) ? null : Utc(reader.GetDateTime(6)),
-            reader.IsDBNull(7) ? null : reader.GetFieldValue<byte[]>(7),
-            reader.IsDBNull(8) ? null : Utc(reader.GetDateTime(8)));
-    }
-
-    private static async Task MarkConsumedAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        byte[] digest,
-        byte[] clientDigest,
-        DateTime now,
-        CancellationToken cancellationToken)
-    {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            UPDATE {TableName}
-            SET [ConsumedAtUtc] = @now,
-                [ConsumedClientDigest] = @clientDigest
-            WHERE [TokenDigest] = @digest
-              AND [ConsumedAtUtc] IS NULL
-              AND [RevokedAtUtc] IS NULL;
-            """);
-        Binary(command, "@digest", digest);
-        Binary(command, "@clientDigest", clientDigest);
-        DateTimeParameter(command, "@now", now);
-
-        int changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        if (changed != 1)
+        if (affected is null)
         {
-            throw new InvalidOperationException(
-                "The refresh-token row changed after it was locked for rotation.");
-        }
-    }
-
-    private static async Task InsertReplacementAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        byte[] replacementDigest,
-        StoredToken stored,
-        DateTime now,
-        DateTime expiresAtUtc,
-        CancellationToken cancellationToken)
-    {
-        if (stored.Generation == int.MaxValue)
-        {
-            throw new InvalidOperationException(
-                "The refresh-token family exhausted its generation counter.");
+            return 0;
         }
 
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            INSERT INTO {TableName}
-                ([TokenDigest], [FamilyId], [Generation], [UserId], [PortalId],
-                 [CreatedAtUtc], [ExpiresAtUtc], [FamilyExpiresAtUtc],
-                 [ConsumedAtUtc], [ConsumedClientDigest], [RevokedAtUtc])
-            VALUES
-                (@digest, @familyId, @generation, @userId, @portalId,
-                 @now, @expires, @familyExpires, NULL, NULL, NULL);
-            """);
-        Binary(command, "@digest", replacementDigest);
-        command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
+        foreach (byte[] key in affected)
         {
-            Value = stored.FamilyId,
-        });
-        command.Parameters.Add(new SqlParameter("@generation", SqlDbType.Int)
-        {
-            Value = checked(stored.Generation + 1),
-        });
-        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
-        {
-            Value = stored.UserId,
-        });
-        command.Parameters.Add(new SqlParameter("@portalId", SqlDbType.Int)
-        {
-            Value = stored.PortalId,
-        });
-        DateTimeParameter(command, "@now", now);
-        DateTimeParameter(command, "@expires", expiresAtUtc);
-        DateTimeParameter(command, "@familyExpires", stored.FamilyExpiresAtUtc);
+            _tokens[key] = _tokens[key] with { RevokedAtUtc = now };
+        }
 
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return affected.Count;
     }
 
-    private static async Task<int> RevokeFamilyCoreAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        Guid familyId,
-        DateTime now,
-        CancellationToken cancellationToken)
+    /// <summary>Discards every generation whose family has passed its absolute ceiling.</summary>
+    /// <param name="now">The instant to prune against.</param>
+    /// <remarks>
+    /// Bounded by the family lifetime rather than by a batch size: a family past its ceiling can never be
+    /// redeemed and is no longer a theft signal, so keeping it would only grow the dictionary. Callers must
+    /// already hold <see cref="_gate"/>.
+    /// </remarks>
+    private void PruneExpired(DateTime now)
     {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            UPDATE {TableName}
-            SET [RevokedAtUtc] = @now
-            WHERE [FamilyId] = @familyId
-              AND [RevokedAtUtc] IS NULL;
-            """);
-        command.Parameters.Add(new SqlParameter("@familyId", SqlDbType.UniqueIdentifier)
+        List<byte[]>? expired = null;
+
+        foreach (KeyValuePair<byte[], StoredToken> entry in _tokens)
         {
-            Value = familyId,
-        });
-        DateTimeParameter(command, "@now", now);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
+            if (entry.Value.FamilyExpiresAtUtc <= now)
+            {
+                (expired ??= []).Add(entry.Key);
+            }
+        }
 
-    private static async Task<int> RevokeAllForUserCoreAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        int userId,
-        DateTime now,
-        CancellationToken cancellationToken)
-    {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            UPDATE {TableName}
-            SET [RevokedAtUtc] = @now
-            WHERE [UserId] = @userId
-              AND [RevokedAtUtc] IS NULL;
-            """);
-        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+        if (expired is not null)
         {
-            Value = userId,
-        });
-        DateTimeParameter(command, "@now", now);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            foreach (byte[] key in expired)
+            {
+                _tokens.Remove(key);
+            }
+        }
+
+        EnforceCapacity();
     }
 
-    private static async Task<int> CountForUserAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        int userId,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Evicts the generations nearest their family ceiling until the tracked set fits
+    /// <see cref="MaximumTrackedTokens"/>.
+    /// </summary>
+    /// <remarks>
+    /// Runs only once expiry-based pruning has already reclaimed everything it can, so an ordinary
+    /// deployment never reaches it. Ordering by the family ceiling and then by generation makes the eviction
+    /// deterministic and keeps a family's generations together, so a family is retired as a unit rather than
+    /// left half-tracked. Callers must already hold <see cref="_gate"/>.
+    /// </remarks>
+    private void EnforceCapacity()
     {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            SELECT COUNT_BIG(*)
-            FROM {TableName} WITH (UPDLOCK, HOLDLOCK)
-            WHERE [UserId] = @userId;
-            """);
-        command.Parameters.Add(new SqlParameter("@userId", SqlDbType.Int)
+        int excess = _tokens.Count - MaximumTrackedTokens;
+        if (excess <= 0)
         {
-            Value = userId,
-        });
+            return;
+        }
 
-        object? count = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        long value = count is null or DBNull ? 0 : Convert.ToInt64(count, CultureInfo.InvariantCulture);
-        return value > int.MaxValue ? int.MaxValue : (int)value;
-    }
+        byte[][] evictions = _tokens
+            .OrderBy(entry => entry.Value.FamilyExpiresAtUtc)
+            .ThenBy(entry => entry.Value.Generation)
+            .Take(excess)
+            .Select(entry => entry.Key)
+            .ToArray();
 
-    private static async Task PruneExpiredAsync(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        DateTime now,
-        CancellationToken cancellationToken)
-    {
-        await using SqlCommand command = Command(
-            connection,
-            transaction,
-            $"""
-            DELETE TOP ({ExpiredPruneBatchSize})
-            FROM {TableName}
-            WHERE [FamilyExpiresAtUtc] <= @now;
-            """);
-        DateTimeParameter(command, "@now", now);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static SqlCommand Command(
-        SqlConnection connection,
-        SqlTransaction transaction,
-        string commandText)
-    {
-        SqlCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = commandText;
-        return command;
-    }
-
-    private static void Binary(SqlCommand command, string name, byte[] value)
-    {
-        command.Parameters.Add(new SqlParameter(name, SqlDbType.Binary, DigestLength)
+        foreach (byte[] key in evictions)
         {
-            Value = value,
-        });
-    }
-
-    private static void DateTimeParameter(SqlCommand command, string name, DateTime value)
-    {
-        command.Parameters.Add(new SqlParameter(name, SqlDbType.DateTime2)
-        {
-            Value = value,
-        });
+            _tokens.Remove(key);
+        }
     }
 
     private static TokenMaterial CreateToken()
@@ -761,46 +554,72 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
     private readonly record struct TokenMaterial(string RawToken, byte[] Digest);
 
-    private sealed class StoredToken
+    /// <summary>One stored generation of one refresh family.</summary>
+    /// <param name="FamilyId">Identifies the rotation family every generation belongs to.</param>
+    /// <param name="Generation">Zero-based position of this token within its family.</param>
+    /// <param name="UserId">The account the family represents.</param>
+    /// <param name="PortalId">The tenant the family represents.</param>
+    /// <param name="ExpiresAtUtc">This generation's own sliding expiry.</param>
+    /// <param name="FamilyExpiresAtUtc">The family's absolute ceiling, shared by every generation.</param>
+    /// <param name="ConsumedAtUtc">When this generation was spent, or <see langword="null"/> while live.</param>
+    /// <param name="ConsumedClientDigest">
+    /// The bounded client fingerprint that spent it, present exactly when
+    /// <paramref name="ConsumedAtUtc"/> is.
+    /// </param>
+    /// <param name="RevokedAtUtc">When this generation was revoked, or <see langword="null"/>.</param>
+    /// <remarks>
+    /// A record so that a transition is expressed as a replacement rather than as a mutation: an entry a
+    /// caller is holding cannot be changed underneath it, which is what lets classification run outside the
+    /// dictionary write.
+    /// </remarks>
+    private sealed record StoredToken(
+        Guid FamilyId,
+        int Generation,
+        int UserId,
+        int PortalId,
+        DateTime ExpiresAtUtc,
+        DateTime FamilyExpiresAtUtc,
+        DateTime? ConsumedAtUtc,
+        byte[]? ConsumedClientDigest,
+        DateTime? RevokedAtUtc);
+
+    /// <summary>Compares fixed-length SHA-256 digests by value.</summary>
+    /// <remarks>
+    /// Required because the dictionary is keyed by <see cref="byte"/> arrays, whose default comparer is
+    /// reference identity - which would make every lookup miss. Equality is constant-time over the whole
+    /// digest, and the hash code is taken from the leading four bytes of a value that is already a
+    /// uniformly distributed hash.
+    /// </remarks>
+    private sealed class DigestComparer : IEqualityComparer<byte[]>
     {
-        public StoredToken(
-            Guid familyId,
-            int generation,
-            int userId,
-            int portalId,
-            DateTime expiresAtUtc,
-            DateTime familyExpiresAtUtc,
-            DateTime? consumedAtUtc,
-            byte[]? consumedClientDigest,
-            DateTime? revokedAtUtc)
+        /// <summary>The single shared instance.</summary>
+        public static readonly DigestComparer Instance = new();
+
+        private DigestComparer()
         {
-            FamilyId = familyId;
-            Generation = generation;
-            UserId = userId;
-            PortalId = portalId;
-            ExpiresAtUtc = expiresAtUtc;
-            FamilyExpiresAtUtc = familyExpiresAtUtc;
-            ConsumedAtUtc = consumedAtUtc;
-            ConsumedClientDigest = consumedClientDigest;
-            RevokedAtUtc = revokedAtUtc;
         }
 
-        public Guid FamilyId { get; }
+        /// <inheritdoc />
+        public bool Equals(byte[]? x, byte[]? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return true;
+            }
 
-        public int Generation { get; }
+            return x is not null
+                && y is not null
+                && CryptographicOperations.FixedTimeEquals(x, y);
+        }
 
-        public int UserId { get; }
+        /// <inheritdoc />
+        public int GetHashCode(byte[] obj)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
 
-        public int PortalId { get; }
-
-        public DateTime ExpiresAtUtc { get; }
-
-        public DateTime FamilyExpiresAtUtc { get; }
-
-        public DateTime? ConsumedAtUtc { get; }
-
-        public byte[]? ConsumedClientDigest { get; }
-
-        public DateTime? RevokedAtUtc { get; }
+            return obj.Length >= sizeof(int)
+                ? BitConverter.ToInt32(obj, 0)
+                : obj.Length;
+        }
     }
 }

@@ -136,9 +136,14 @@ public sealed class PermissionEvaluatorTests
 
     private const string KeyInvalidCode = "permission.key_invalid";
 
-    private const string AllUsersRoleName = "All Users";
+    // Aliases for the domain constants, not copies of their values. Restating the literals here is how a
+    // suite comes to assert a name the production code no longer uses, and these two names are the exact
+    // strings matched against Roles.RoleName - so a drifted copy would pass while the application matched
+    // nothing. The one place a literal IS written out is the fact that asserts the constants hold the
+    // legacy values, which is where a change to either name has to be noticed.
+    private const string AllUsersRoleName = SpecialRoleNames.AllUsers;
 
-    private const string UnauthenticatedRoleName = "Unauthenticated Users";
+    private const string UnauthenticatedRoleName = SpecialRoleNames.Unauthenticated;
 
     // The three negative role identifiers below are REAL PERSISTED PRINCIPALS, not absence markers, and
     // that is the single most dangerous thing about this table. Roles.RoleID is IDENTITY (0, 1)
@@ -1052,21 +1057,45 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The pseudo-role names come from configuration rather than from a literal.
+    /// The pseudo-role names are the immutable domain constants, and no configuration can move them.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: THIS FACT ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS THE DEFECT. It set
+    /// <c>Portal:AllUsersRoleName</c> to "Tout le monde" and <c>Portal:UnauthenticatedRoleName</c> to
+    /// "Visiteurs" and required the service to follow, which is exactly the mutable-authorization
+    /// boundary the review found: a deploy-time string decided which stored role receives every-caller
+    /// and anonymous-caller semantics. The settings are gone and the names are
+    /// <see cref="SpecialRoleNames"/>, so the fact now asserts what must be true instead of what used
+    /// to be configurable - the exact legacy values, and no configuration surface able to change them.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task EffectiveKeys_UseTheConfiguredPseudoRoleNames()
+    public async Task EffectiveKeys_UseTheImmutablePseudoRoleConstants()
     {
         Harness harness = Harness.Ready();
-        harness.PortalOptions.AllUsersRoleName = "Tout le monde";
-        harness.PortalOptions.UnauthenticatedRoleName = "Visiteurs";
 
         await harness.Service.GetEffectivePermissionKeysAsync(
             PortalId,
             userId: null,
             cancellationToken: CancellationToken.None);
 
-        harness.CapturedRoleNames.Should().Equal(new[] { "Tout le monde", "Visiteurs" });
+        harness.CapturedRoleNames.Should().Equal(
+            new[] { SpecialRoleNames.AllUsers, SpecialRoleNames.Unauthenticated });
+
+        SpecialRoleNames.AllUsers.Should().Be(
+            "All Users",
+            "the legacy glbRoleAllUsersName value is matched against Roles.RoleName as a string");
+        SpecialRoleNames.Unauthenticated.Should().Be(
+            "Unauthenticated Users",
+            "the legacy glbRoleUnauthUserName value is matched against Roles.RoleName as a string");
+
+        typeof(PortalOptions)
+            .GetProperties()
+            .Select(property => property.Name)
+            .Should()
+            .NotContain(
+                ["AllUsersRoleName", "UnauthenticatedRoleName"],
+                "reintroducing either setting would make an authorization audience configurable again");
     }
 
     /// <summary>
@@ -3371,7 +3400,6 @@ public sealed class PermissionEvaluatorTests
         Mock<IUnitOfWork> unitOfWork = new();
         Mock<ICacheService> cache = new();
         Mock<IClock> clock = new();
-        PortalOptions options = new();
         CachingOptions caching = new();
 
         // One case per constructor parameter, each passing null in exactly one position. Written out rather
@@ -3382,73 +3410,67 @@ public sealed class PermissionEvaluatorTests
         {
             _ = new PermissionService(
                 null!, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, null!, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, null!, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, null!, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, null!, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, null!,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                null!, unitOfWork.Object, cache.Object, clock.Object, options, caching);
+                null!, unitOfWork.Object, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, null!, cache.Object, clock.Object, options, caching);
+                roles.Object, null!, cache.Object, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, null!, clock.Object, options, caching);
+                roles.Object, unitOfWork.Object, null!, clock.Object, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, null!, options, caching);
+                roles.Object, unitOfWork.Object, cache.Object, null!, caching);
         });
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
                 permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, null!, caching);
-        });
-        Assert.Throws<ArgumentNullException>(() =>
-        {
-            _ = new PermissionService(
-                permissions.Object, evaluator.Object, portals.Object, modules.Object, tabs.Object, users.Object,
-                roles.Object, unitOfWork.Object, cache.Object, clock.Object, options, null!);
+                roles.Object, unitOfWork.Object, cache.Object, clock.Object, null!);
         });
     }
 
@@ -3998,22 +4020,26 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The evaluator refuses to be constructed without any one of its five collaborators.
+    /// The evaluator refuses to be constructed without any one of its four collaborators.
     /// </summary>
     /// <param name="omitted">Which collaborator is withheld.</param>
     /// <remarks>
-    /// Five arguments and every one of them earns its place: the grants and the catalogue, the roles a
+    /// Four arguments and every one of them earns its place: the grants and the catalogue, the roles a
     /// name resolves through, and the module and page reads that establish which portal owns the scope
     /// under evaluation - without which a role name could only be resolved installation-wide, which is
     /// the cross-tenant escalation the contract forbids. A missing collaborator must fail at
     /// construction rather than produce a decision that quietly consulted less than it should.
+    ///
+    /// MIGRATION: a fifth argument used to appear here, an options accessor supplying the two built-in
+    /// role display names. It is gone: those names are the immutable domain constants
+    /// <see cref="SpecialRoleNames.AllUsers"/> and <see cref="SpecialRoleNames.Unauthenticated"/>, so no
+    /// collaborator can supply, override or blank them.
     /// </remarks>
     [Theory]
     [InlineData("permissions")]
     [InlineData("roles")]
     [InlineData("modules")]
     [InlineData("tabs")]
-    [InlineData("portalOptions")]
     public void Evaluator_RequiresEveryCollaborator(string omitted)
     {
         EvaluatorWorld world = EvaluatorWorld.Create();
@@ -4023,40 +4049,46 @@ public sealed class PermissionEvaluatorTests
             omitted == "permissions" ? null : world.Permissions.Object,
             omitted == "roles" ? null : world.RoleStore.Object,
             omitted == "modules" ? null : world.ModuleStore.Object,
-            omitted == "tabs" ? null : world.TabStore.Object,
-            omitted == "portalOptions" ? null : Options.Create(world.Portal));
+            omitted == "tabs" ? null : world.TabStore.Object);
 
         construct.Should().Throw<ArgumentNullException>().And.ParamName.Should().Be(omitted);
     }
 
     /// <summary>
-    /// A blank built-in role name is refused at construction rather than left to match nothing.
+    /// The evaluator takes no configuration at all, so no configured value can redefine the built-in
+    /// role names.
     /// </summary>
-    /// <param name="allUsersRoleName">The configured name standing for every caller.</param>
-    /// <param name="unauthenticatedRoleName">The configured name standing for an anonymous caller.</param>
     /// <remarks>
-    /// Both values are load-bearing: they are the names by which a caller is taken to stand for every
-    /// user or for an unidentified one, and the comparison against a stored role name is exact. A blank
-    /// value would therefore stop matching silently, revoking every public grant in the installation
-    /// without any error to explain it, which is precisely the failure mode a start-up refusal exists to
-    /// convert into a visible one.
+    /// MIGRATION: THIS REPLACES A FACT THAT ASSERTED A BLANK CONFIGURED ROLE NAME WAS REFUSED AT
+    /// CONSTRUCTION. Refusing a blank value was the right guard for the wrong design: while the names
+    /// were settings, a deployment could also set them to a NON-blank value that named a different row of
+    /// the <c>Roles</c> table, which silently moved every-caller or anonymous-caller semantics onto a
+    /// role an administrator had created for another purpose - and no start-up refusal can catch that,
+    /// because the value is perfectly well formed. The names are now compiled-in constants, so the whole
+    /// class of failure is unreachable and there is nothing left to validate. What is asserted instead is
+    /// the structural property that makes it unreachable: this type accepts no options of any kind.
     /// </remarks>
-    [Theory]
-    [InlineData("", UnauthenticatedRoleName)]
-    [InlineData("   ", UnauthenticatedRoleName)]
-    [InlineData(AllUsersRoleName, "")]
-    [InlineData(AllUsersRoleName, "   ")]
-    public void Evaluator_RefusesABlankBuiltInRoleName(
-        string allUsersRoleName,
-        string unauthenticatedRoleName)
+    [Fact]
+    public void Evaluator_TakesNoConfigurationThatCouldRedefineTheBuiltInRoleNames()
     {
-        EvaluatorWorld world = EvaluatorWorld.Create();
-        world.Portal.AllUsersRoleName = allUsersRoleName;
-        world.Portal.UnauthenticatedRoleName = unauthenticatedRoleName;
+        Type[] parameters = [.. RegisteredEvaluatorType()
+            .GetConstructors()
+            .Single()
+            .GetParameters()
+            .Select(parameter => parameter.ParameterType)];
 
-        Action construct = () => _ = world.Build();
+        parameters.Should().HaveCount(4);
+        parameters.Should().OnlyContain(
+            parameter => parameter.IsInterface && parameter.Name!.EndsWith("Repository", StringComparison.Ordinal),
+            "the evaluator resolves grants and roles and reads nothing else; configuration cannot reach it");
 
-        construct.Should().Throw<ArgumentException>().And.ParamName.Should().Be("portalOptions");
+        typeof(PortalOptions)
+            .GetProperties()
+            .Select(property => property.Name)
+            .Should()
+            .NotContain(
+                ["AllUsersRoleName", "UnauthenticatedRoleName"],
+                "reintroducing either setting would make the audience configurable again");
     }
 
     /// <summary>
@@ -4510,18 +4542,18 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The configured everyone role participates for every caller, and the configured anonymous role
-    /// only for a caller with no account.
+    /// The built-in everyone role participates for every caller, and the built-in anonymous role only for
+    /// a caller with no account.
     /// </summary>
     /// <param name="identified">Whether the caller carries an account identifier.</param>
     /// <param name="expectedKeys">The keys the caller should hold.</param>
     /// <remarks>
-    /// Both names are matched against real role rows, which is why they are configurable rather than
-    /// compiled in: the legacy comparison matched a persisted display name as a string, so an
-    /// installation that renamed either role would silently stop matching a literal. Neither name has to
-    /// be declared by the caller - that is the whole point of them - and the two are asserted together
-    /// because the difference between "unconditionally" and "only when anonymous" is the difference
-    /// between a public grant and a narrower one.
+    /// Both names are matched against real role rows by exact string comparison, and both are compiled-in
+    /// domain constants rather than settings - see <see cref="SpecialRoleNames"/> for why an authorization
+    /// audience may not be chosen at deploy time. Neither name has to be declared by the caller, which is
+    /// the whole point of them, and the two are asserted together because the difference between
+    /// "unconditionally" and "only when anonymous" is the difference between a public grant and a narrower
+    /// one.
     /// </remarks>
     [Theory]
     [InlineData(true, new[] { "VIEW" })]
@@ -4548,17 +4580,26 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The built-in role names come from configuration, so renaming one moves which stored role it
-    /// matches.
+    /// Only the role actually named <c>All Users</c> receives every-caller semantics; a role given any
+    /// other name is an ordinary role.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: THIS FACT ASSERTED THE INVERSE, AND THE INVERSE WAS THE DEFECT. It set
+    /// <c>Portal:AllUsersRoleName</c> to "Everybody" and then required a role called "Everybody" to
+    /// receive every-caller reach while the role genuinely called "All Users" became an ordinary role -
+    /// which is precisely the mutable authorization boundary the review found. The direction is now
+    /// fixed by <see cref="SpecialRoleNames.AllUsers"/>: the role carrying the legacy name is the one
+    /// that stands for every caller, a role called anything else grants only what a caller declares, and
+    /// no deployment value can swap them.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ModuleKeys_UseTheConfiguredBuiltInRoleNames()
+    public async Task ModuleKeys_ApplyTheBuiltInNameOnlyToTheRoleThatCarriesIt()
     {
         EvaluatorWorld world = EvaluatorWorld.Create();
-        world.Portal.AllUsersRoleName = "Everybody";
         world.WithModule(ModuleId);
-        world.WithRole(EveryoneRoleId, "Everybody");
-        world.WithRole(ForeignRoleId, AllUsersRoleName);
+        world.WithRole(EveryoneRoleId, SpecialRoleNames.AllUsers);
+        world.WithRole(ForeignRoleId, "Everybody");
         world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.VIEW, ModuleDefinitionScopeCode));
         world.Catalogue.Add(CatalogueEntry(SecondPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
         world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: EveryoneRoleId));
@@ -4569,8 +4610,8 @@ public sealed class PermissionEvaluatorTests
 
         keys.Should().Equal(
             new[] { "VIEW" },
-            "the renamed role is the one that stands for every caller, and the role still carrying the "
-            + "default name is now an ordinary role nobody declared");
+            "the role named 'All Users' stands for every caller, and a role named 'Everybody' is an "
+            + "ordinary role that this caller never declared");
     }
 
     /// <summary>
@@ -5615,13 +5656,6 @@ public sealed class PermissionEvaluatorTests
         /// <summary>Gets the store that establishes which portal owns a page.</summary>
         public Mock<ITabRepository> TabStore { get; } = new(MockBehavior.Strict);
 
-        /// <summary>Gets the configuration supplying the two built-in role names.</summary>
-        public PortalOptions Portal { get; } = new()
-        {
-            AllUsersRoleName = AllUsersRoleName,
-            UnauthenticatedRoleName = UnauthenticatedRoleName,
-        };
-
         /// <summary>Gets the modules the store holds.</summary>
         public List<Module> Modules { get; } = [];
 
@@ -5705,8 +5739,7 @@ public sealed class PermissionEvaluatorTests
             Permissions.Object,
             RoleStore.Object,
             ModuleStore.Object,
-            TabStore.Object,
-            Options.Create(Portal));
+            TabStore.Object);
     }
 
     /// <summary>
@@ -5762,7 +5795,6 @@ public sealed class PermissionEvaluatorTests
             PortalTabs = [Tab];
             CacheKeysRequested = [];
             CacheLifetimesRequested = [];
-            PortalOptions = new PortalOptions();
 
             Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
             Evaluator = new Mock<IPermissionEvaluator>(MockBehavior.Loose);
@@ -5802,7 +5834,6 @@ public sealed class PermissionEvaluatorTests
                 UnitOfWork.Object,
                 Cache.Object,
                 Clock.Object,
-                PortalOptions,
                 CachingOptions);
         }
 
@@ -5814,8 +5845,6 @@ public sealed class PermissionEvaluatorTests
 
         /// <summary>The tenant row, mutable so that a portal with no administrator designation is testable.</summary>
         public Portal PortalRow { get; }
-
-        public PortalOptions PortalOptions { get; }
 
         /// <summary>The caller's role assignments within the portal, as the role store would return them.</summary>
         public IReadOnlyList<UserRole> RoleAssignments { get; set; }
@@ -6185,8 +6214,11 @@ public sealed class PermissionEvaluatorTests
     /// <para>
     /// Registrations are collected rather than a provider built, so this costs nothing and opens no
     /// connection: <c>AddInfrastructure</c> reads the connection string to hand it to the context and to
-    /// the database probe, and never dials it, so the throwaway value below is never used for anything.
-    /// The result is computed once per run.
+    /// the database probe, and never dials it, so the throwaway value below is never connected to.
+    /// It must still be a STRUCTURALLY COMPLETE connection string, because <c>AddInfrastructure</c>
+    /// refuses a value that names no server, no catalogue or no way to authenticate rather than deferring
+    /// that discovery to the first request. Naming integrated security is what makes the throwaway value
+    /// complete without putting a credential in a test. The result is computed once per run.
     /// </para>
     /// </remarks>
     private static Type RegisteredEvaluatorType() => RegisteredEvaluator.Value;
@@ -6198,7 +6230,8 @@ public sealed class PermissionEvaluatorTests
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Default"] = "Server=(registration-read-only);Database=(unused)",
+                ["ConnectionStrings:Default"] =
+                    "Server=(registration-read-only);Database=(unused);Integrated Security=True",
             })
             .Build();
 

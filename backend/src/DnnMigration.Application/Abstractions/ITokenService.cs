@@ -83,19 +83,24 @@ namespace DnnMigration.Application.Abstractions;
 /// <c>AddInfrastructure(IConfiguration)</c> registers it instead.
 /// </para>
 /// <para>
-/// Lifetime. Signing is stateless, but refresh-token persistence is scoped database I/O. The
-/// shipped implementation is therefore registered as <b>scoped</b> alongside
-/// <c>IRefreshTokenStore</c>; it may capture that scoped store and must never be promoted to a
-/// singleton. Scope validation is enabled by the hosted integration fixture so an accidental
-/// singleton-to-scoped dependency fails at startup rather than pinning one request's database
-/// context for the life of the process.
+/// Lifetime. Signing is stateless and refresh state is held by the store itself, so the shipped
+/// implementation is registered as a <b>singleton</b> alongside <c>IRefreshTokenStore</c>, which is
+/// what AAP section 0.4.3 specifies. It captures no scoped service - no database context, no request
+/// accessor, no tenant snapshot - and it must stay that way: scope validation is enabled by the hosted
+/// integration fixture, so an accidental singleton-to-scoped dependency fails at startup rather than
+/// pinning one request's state for the life of the process.
 /// </para>
 /// <para>
-/// Refresh state is durable and shared. The implementation records only SHA-256 digests and the
-/// minimal subject in <c>DnnMigration.RefreshTokens</c>, an additive application-owned table
-/// created by the operator-run script under Infrastructure/Persistence/Scripts. A restart therefore
-/// preserves outstanding sessions, and replicas observe the same issue, rotation and revocation
-/// state. The legacy <c>dbo</c> objects remain untouched.
+/// Refresh state is PROCESS-LOCAL, and the reason is a hard constraint rather than a preference. An
+/// earlier revision recorded digests in an application-owned <c>DnnMigration.RefreshTokens</c> table
+/// provisioned by an operator-run script; that table does not exist in the unaltered DotNetNuke schema
+/// this API is mandated to map onto, and creating one is forbidden by AAP rule T4, so login - which
+/// issues a refresh token before returning any pair - could not complete at all. The store therefore
+/// holds its own state. Two consequences follow and are recorded in <c>MIGRATION_NOTES.md</c>: a restart
+/// does not preserve outstanding refresh families, and replicas do not share them, so a caller refreshes
+/// against the instance that issued it or signs in again. An already-issued access token is unaffected
+/// until its stamped expiry. A deployment needing cross-process continuity supplies its own shared
+/// implementation of <c>IRefreshTokenStore</c>; the legacy <c>dbo</c> objects remain untouched either way.
 /// </para>
 /// <para>
 /// Rule T4 is preserved by ownership and deployment mechanics: no migration or application startup
@@ -142,7 +147,7 @@ namespace DnnMigration.Application.Abstractions;
 /// What rotation may change, and what it may never change. Exchanging a token proves possession of
 /// something issued to one caller in one tenant, and nothing about that proof can license
 /// describing the successor as belonging to anybody else. The subject identifier, the portal
-/// identifier are therefore taken from the durable store's own record of the token being exchanged,
+/// identifier are therefore taken from the store's own record of the token being exchanged,
 /// never from anything the caller supplies alongside it. No mutable authority or display field is
 /// accepted by this contract, so none can be copied from the request or persisted with the family.
 /// </para>
@@ -244,7 +249,7 @@ public interface ITokenService
     /// failure is code <c>TOKEN_STORE_UNAVAILABLE</c>, reported when the refresh-token record
     /// could not be persisted; no pair is returned in that case, because handing a caller a
     /// refresh token that was never recorded would defer the failure to its first exchange. The
-    /// code is part of this contract for the benefit of a store whose write can fail - a durable one
+    /// code is part of this contract for the benefit of a store whose write can fail - a shared or durable one
     /// reached over a network. A store held in the process has no failing write and so never reports
     /// it, which is why the code must be handled rather than relied upon: whether it can occur at
     /// all is a property of the store the deployment supplied.
@@ -267,7 +272,7 @@ public interface ITokenService
     /// </para>
     /// <para>
     /// The replacement access token repeats only the minimal account and tenant identity recorded by
-    /// the durable store. Roles, permission keys, names and host authority are deliberately absent
+    /// the refresh-token store. Roles, permission keys, names and host authority are deliberately absent
     /// from the token and are re-read by the server or by the explicit current-user endpoint.
     /// </para>
     /// <para>

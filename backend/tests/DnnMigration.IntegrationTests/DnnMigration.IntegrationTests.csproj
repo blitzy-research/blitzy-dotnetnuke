@@ -54,9 +54,12 @@
     e_sqlite3 asset is never loaded and a load or behaviour regression has no path to
     reach a test. If a fixture ever does adopt Sqlite, re-validate this pin against
     that fixture first, and prefer aligning the EF Core version over deepening the
-    pin. The production SQL client is now directly pinned to 6.1.6 for a different,
-    exercised reason: removing a deprecated runtime authentication graph, with the
-    full SQL Server integration suite proving compatibility.
+    pin. The production SQL client carries a direct pin too, but at the version the
+    frozen dependency inventory names - Microsoft.Data.SqlClient 5.2.3 (AAP 0.6.1) -
+    and for the reason the inventory gives: without the pin the SQL Server provider
+    resolves an older 5.1.x line transitively. An earlier revision raised that pin to
+    6.1.6 on its own initiative; it was withdrawn, because raising a version the plan
+    pins is not this project's decision to take unilaterally.
   -->
 
   <PropertyGroup>
@@ -96,7 +99,6 @@
     <EmbeddedResource Include="Schema\DnnSchema.sql" />
     <EmbeddedResource Include="Schema\MembershipSchema.sql" />
     <EmbeddedResource Include="Schema\HostSettingsSchema.sql" />
-    <EmbeddedResource Include="Schema\RefreshTokenSchema.sql" />
   </ItemGroup>
 
   <!--

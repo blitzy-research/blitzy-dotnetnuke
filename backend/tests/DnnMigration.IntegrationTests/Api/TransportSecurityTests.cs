@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Serilog.Core;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -156,6 +157,108 @@ public sealed class TransportSecurityTests
     }
 
     /// <summary>
+    /// SEC-B4 REGRESSION. A cleartext request that CLAIMS a loopback authority in its own <c>Host</c> header
+    /// is redirected like any other, because the predicate no longer reads the host at all.
+    /// </summary>
+    /// <param name="claimedAuthority">The loopback authority the caller asserts.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHAT THIS REVERSES. The predicate used to withhold the redirect from a request whose
+    /// <c>Request.Host</c> was <c>localhost</c> or a loopback literal, reasoning that such a request never
+    /// traverses a network. The host is the authority the CALLER asked for: a remote client reaching a
+    /// published listener could send one header, be exempted from transport enforcement, and be served over
+    /// cleartext - an opt-out from HTTPS published to the internet. The remote address here is a
+    /// documentation address precisely so that the request is unambiguously remote while its header claims
+    /// otherwise.
+    /// </para>
+    /// <para>
+    /// Both spellings are asserted because a fix that special-cased only the literal name would leave the
+    /// address form as a working bypass, and vice versa.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    public async Task ApiRequestOverCleartext_ClaimingALoopbackAuthority_IsStillRedirected(
+        string claimedAuthority)
+    {
+        using (ApiTestFixture.OverrideEnvironment(EnforcingConfiguration()))
+        {
+            await using var host = new TransportHost(UntrustedHop);
+            using HttpClient client = host.CreateClient(NoRedirects);
+            client.BaseAddress = new Uri($"http://{claimedAuthority}/", UriKind.Absolute);
+
+            using HttpResponseMessage response = await client.GetAsync(PortalsEndpoint());
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.PermanentRedirect,
+                "a caller must not be able to exempt itself from transport enforcement with a header");
+            response.Headers.Location.Should().NotBeNull();
+            response.Headers.Location!.Scheme.Should().Be(Uri.UriSchemeHttps);
+        }
+    }
+
+    /// <summary>
+    /// SEC-B4 REGRESSION. A request the perimeter redirects is still correlated and still recorded, because
+    /// transport enforcement now runs INSIDE the correlation and request-logging stages.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHAT THIS REVERSES. Forwarded headers, strict transport security and the redirect were registered
+    /// between the exception handler and the correlation stage, so a redirected request short-circuited
+    /// before a correlation identifier existed and before the request envelope was written. The requests
+    /// most worth seeing - the ones the perimeter refuses, and the only evidence that enforcement is working
+    /// - were the one class that produced no log entry and no correlation header for the client's
+    /// interceptor to pair with.
+    /// </para>
+    /// <para>
+    /// The host is built immediately before the request because a Serilog logger is process-wide: every host
+    /// built in this process replaces the logger the shared fixture installed, so a fact asserting on
+    /// records has to own the host that writes them and register the sink on it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task RedirectedCleartextRequest_IsCorrelatedAndRecorded()
+    {
+        using (ApiTestFixture.OverrideEnvironment(EnforcingConfiguration()))
+        {
+            await using var host = new TransportHost(UntrustedHop);
+            using HttpClient client = host.CreateClient(NoRedirects);
+            client.BaseAddress = PerimeterAddress;
+
+            int recordsBefore = RecordedLogs.Snapshot().Count;
+
+            using HttpResponseMessage response = await client.GetAsync(PortalsEndpoint());
+
+            response.StatusCode.Should().Be(HttpStatusCode.PermanentRedirect);
+
+            response.Headers.TryGetValues(CorrelationHeader, out IEnumerable<string>? correlation)
+                .Should()
+                .BeTrue("a redirected request must still carry the correlation identifier");
+            correlation!.Should().ContainSingle().Which.Should().NotBeNullOrWhiteSpace();
+
+            LogRecord[] envelopes = [.. RecordedLogs.Snapshot()
+                .Skip(recordsBefore)
+                .Where(record =>
+                    record.Properties.TryGetValue("SourceContext", out object? source)
+                    && string.Equals(source as string, EnvelopeSourceContext, StringComparison.Ordinal))];
+
+            envelopes.Should().NotBeEmpty(
+                "the request envelope is written for a redirected request, not only for a served one");
+
+            bool recordedTheRedirect = envelopes.Any(record =>
+                record.Properties.TryGetValue("StatusCode", out object? status)
+                && status is int code
+                && code == (int)HttpStatusCode.PermanentRedirect);
+
+            recordedTheRedirect.Should().BeTrue(
+                "the recorded envelope must report the status the caller actually received");
+        }
+    }
+
+    /// <summary>
     /// A request forwarded as HTTPS by a TRUSTED hop is treated as secure and is not redirected.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -226,6 +329,17 @@ public sealed class TransportSecurityTests
     /// </remarks>
     private const string ForwardedProtoHeader = "X-Forwarded-Proto";
 
+    /// <summary>The header the correlation identifier travels back on.</summary>
+    /// <remarks>
+    /// A literal rather than a reference to the middleware's own constant, for the same reason the forwarded
+    /// header above is: this is the name the client's interceptor and the proxy both spell, so a rename that
+    /// silently broke the loop must fail here.
+    /// </remarks>
+    private const string CorrelationHeader = "X-Correlation-Id";
+
+    /// <summary>The logger category the request envelope is written under.</summary>
+    private const string EnvelopeSourceContext = "DnnMigration.Api.Middleware.RequestLoggingMiddleware";
+
     /// <summary>A client that reports a redirect instead of following it.</summary>
     private static WebApplicationFactoryClientOptions NoRedirects => new() { AllowAutoRedirect = false };
 
@@ -279,6 +393,12 @@ public sealed class TransportSecurityTests
     /// A host built with the fixture's environment, whose connections report a chosen remote address.
     /// </summary>
     /// <param name="remoteAddress">The address every request appears to arrive from.</param>
+    /// <remarks>
+    /// The recording sink is registered as well as the address filter. A Serilog logger is process-wide, so
+    /// this host replaces the one the shared fixture installed for as long as it lives; without the
+    /// registration the events its own requests write would reach no sink at all, and the envelope fact above
+    /// would observe nothing. Registering it changes nothing for the facts that assert only on responses.
+    /// </remarks>
     private sealed class TransportHost(IPAddress remoteAddress) : WebApplicationFactory<Program>
     {
         /// <inheritdoc />
@@ -288,7 +408,10 @@ public sealed class TransportSecurityTests
 
             builder.UseEnvironment("Testing");
             builder.ConfigureServices(services =>
-                services.AddSingleton<IStartupFilter>(new RemoteAddressStartupFilter(remoteAddress)));
+            {
+                services.AddSingleton<IStartupFilter>(new RemoteAddressStartupFilter(remoteAddress));
+                services.AddSingleton<ILogEventSink>(RecordedLogs.Sink);
+            });
         }
     }
 

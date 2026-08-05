@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Serilog.Core;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -73,6 +75,27 @@ public sealed class TenantResolutionTests
 
     /// <summary>The name of the marker attribute, matched by name so no internals need exposing.</summary>
     private const string MarkerAttributeName = "TenantOptionalAttribute";
+
+    /// <summary>The logger category the pre-routing stage writes its tenant diagnosis under.</summary>
+    /// <remarks>
+    /// Spelled as a literal rather than taken from the type, which is internal to the API assembly. The same
+    /// string identifies the stage in an operator's log query, so a rename that moved the entry to another
+    /// category must fail here rather than pass against a log nobody is reading.
+    /// </remarks>
+    private const string TenantDiagnosisSourceContext =
+        "DnnMigration.Api.Middleware.TenantPathBaseMiddleware";
+
+    /// <summary>
+    /// A caller-supplied path segment shaped like the two things a log must never keep.
+    /// </summary>
+    /// <remarks>
+    /// The same value the request-logging redaction suite uses, so both edges are proved against one shape:
+    /// an address that identifies a person and a fragment that looks like a credential.
+    /// </remarks>
+    private const string SensitivePathSegment = "victim.user%40example.com-Password1";
+
+    /// <summary>The same value as it appears once the server has decoded the path.</summary>
+    private const string DecodedSensitivePathSegment = "victim.user@example.com-Password1";
 
     private readonly ApiTestFixture _fixture;
 
@@ -325,6 +348,127 @@ public sealed class TenantResolutionTests
     }
 
     /// <summary>
+    /// SEC-B4 ORDERING FACT. For an AUTHENTICATED caller the tenant refusal answers BEFORE any authorisation
+    /// policy, which is what proves the stage sits between authentication and authorisation.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE CALLER IS DELIBERATELY UNPRIVILEGED, and that is the whole discriminator. An ordinary member on a
+    /// portal-scoped route is refused by the portal-administrator policy with <c>auth.not_permitted</c>; with
+    /// the stage registered after <c>UseAuthorization</c> - where it used to be - that policy answered first
+    /// and the tenant refusal was never reached. Reading <c>portal.tenant_unresolved</c> here therefore
+    /// establishes the ORDER and not merely the refusal, which a host account could not: a host account
+    /// bypasses the policy, so it would read the same body from either arrangement.
+    /// </para>
+    /// <para>
+    /// WHY THE ORDER MATTERS RATHER THAN BEING A PREFERENCE. Every tenant-scoped policy reconciles three
+    /// identities - the caller's portal, the route's portal and the ARRIVAL portal. Evaluated on a request
+    /// whose host name resolved to nothing, the third is absent and a three-sided check silently degrades to
+    /// a two-sided one exactly where a caller has chosen an address the installation does not serve.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task TenantRefusal_AnswersBeforeAuthorisation_ForAnAuthenticatedCaller()
+    {
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
+        client.DefaultRequestHeaders.Host = UnconfiguredHost;
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/portals/{ApiTestFixture.Route(_fixture.Seed.PortalId)}", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Type.Should().Be(
+            TenantUnresolvedProblemType,
+            "the tenant refusal must be reached before the policy that would otherwise answer first");
+    }
+
+    /// <summary>
+    /// SEC-B4 REGRESSION. The diagnostic entry for an unresolved tenant records a bounded host candidate and
+    /// a fingerprint, and never the caller's own path.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHAT THIS REVERSES. The entry used to log the whole address - the host name followed by the request's
+    /// FULL path - at warning level, on a stage that runs before routing and therefore for every request. An
+    /// unknown host name is chosen by the caller, so a caller could pick any host it liked and force
+    /// arbitrary path text into the production log with it: a mistyped credential, a token pasted into a
+    /// URL, an e-mail address. The request envelope records the matched route template rather than the path
+    /// for precisely this reason, and this entry bypassed that protection.
+    /// </para>
+    /// <para>
+    /// The path below carries both shapes a log must never keep, so a single assertion covers a credential
+    /// fragment and a personal identifier. The host is built immediately before the request because a
+    /// Serilog logger is process-wide: a fact asserting on records has to own the host that writes them.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task TenantFailureDiagnosis_RecordsABoundedHostCandidateAndNeverTheCallerPath()
+    {
+        await using var host = new RecordingTenantHost();
+        using HttpClient client = host.CreateClient();
+        client.DefaultRequestHeaders.Host = UnconfiguredHost;
+
+        int recordsBefore = RecordedLogs.Snapshot().Count;
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/{SensitivePathSegment}", UriKind.Relative));
+
+        // The caller is anonymous, so the fallback policy answers 401 - and it does so whether or not the
+        // address matches a route, because a request with no endpoint carries no authorize data and the
+        // fallback applies to it too. What the answer is does not matter to this fact: the diagnosis under
+        // test is written by the PRE-ROUTING stage, before anything could refuse the request, which is
+        // exactly why a caller could use it to write to the log at will.
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Unauthorized,
+            "an anonymous caller learns nothing from either host, which is asserted in its own right above");
+
+        LogRecord[] diagnoses = [.. RecordedLogs.Snapshot()
+            .Skip(recordsBefore)
+            .Where(record =>
+                record.Properties.TryGetValue("SourceContext", out object? source)
+                && string.Equals(source as string, TenantDiagnosisSourceContext, StringComparison.Ordinal))];
+
+        diagnoses.Should().NotBeEmpty(
+            "an unresolvable host must still be diagnosed for the operator who has to correct it");
+
+        foreach (LogRecord diagnosis in diagnoses)
+        {
+            diagnosis.Message.Should().NotContain(
+                DecodedSensitivePathSegment,
+                "the caller's own path must not reach the log through the tenant diagnosis");
+            diagnosis.Message.Should().NotContain(SensitivePathSegment);
+
+            diagnosis.Properties.Should().ContainKey(
+                "AliasCandidate",
+                "the operator needs the host candidate in order to add or correct an alias row");
+            diagnosis.Properties["AliasCandidate"].Should().Be(
+                UnconfiguredHost,
+                "the host candidate is the host portion alone, with the path discarded");
+
+            diagnosis.Properties.Should().ContainKey(
+                "AddressFingerprint",
+                "repeated failures against one full address must still be recognisable as one problem");
+            (diagnosis.Properties["AddressFingerprint"] as string).Should().MatchRegex(
+                "^[0-9a-f]{16}$",
+                "the fingerprint is a bounded lower-case digest prefix and nothing else");
+
+            foreach (object? value in diagnosis.Properties.Values)
+            {
+                (value as string)?.Should().NotContain(
+                    DecodedSensitivePathSegment,
+                    "no property may carry the caller's path either");
+            }
+        }
+    }
+
+    /// <summary>
     /// Every tenant-optional mark in the API carries a stated reason, and the marked set is exactly the
     /// inventory reviewed here.
     /// </summary>
@@ -395,24 +539,26 @@ public sealed class TenantResolutionTests
 
     /// <summary>
     /// SEC-006 REGRESSION, THE STATIC BOUNDARY. A host name the installation was never configured for is
-    /// refused with <c>400 Bad Request</c> before routing, when the shipped restricted list is in force.
+    /// refused with <c>400 Bad Request</c> before routing, when a deployment-scoped restricted list is in force.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// WHY A SECOND BOUNDARY EXISTS AT ALL. Tenant resolution is a DYNAMIC boundary: it matches the arriving
-    /// host against alias rows that an operator adds and removes at run time, so it cannot be expressed in a
-    /// file. Host filtering is the STATIC one, and it answers a question the dynamic boundary cannot: which
-    /// host names is this process willing to be addressed by in the first place. The shipped configuration
-    /// used to answer "any", which meant an arbitrary <c>Host</c> header reached every stage of the pipeline,
-    /// including the tenant-optional endpoints that deliberately serve requests with no tenant - the
-    /// credential endpoints among them.
+    /// WHAT THIS FACT ASSERTS, AND WHAT IT DOES NOT. It asserts that host filtering WORKS when a deployment
+    /// configures it - that a host outside an explicit list is refused before any application middleware
+    /// runs. It does not assert that the shipped configuration carries such a list, because it deliberately
+    /// does not: <c>appsettings.json</c> ships <c>AllowedHosts</c> as <c>*</c> so that exact
+    /// <c>PortalAlias</c> resolution is the single authority for which hosts identify a tenant. Two
+    /// independent allow-lists for one question is the defect, not the control - the static one runs first,
+    /// so an alias an operator adds through the API would be refused with 400 before resolution could see
+    /// it. Nothing is granted by the widened default: an unmatched host still reaches no tenant, and every
+    /// tenant-scoped endpoint refuses a request with no resolved tenant.
     /// </para>
     /// <para>
-    /// WHY THIS FACT BUILDS ITS OWN HOST. The shared fixture widens the list to every host, because it invents
-    /// alias host names at run time and cannot enumerate them in advance. That widening would make this fact
-    /// vacuous, so the restricted list is applied to a host built here. The value used is the loopback name
-    /// only, which is a subset of what <c>appsettings.json</c> ships, so a fact that passes here passes under
-    /// the shipped file as well.
+    /// WHY THIS FACT BUILDS ITS OWN HOST. A deployment-scoped static list is legitimate where the set of
+    /// names is known in advance, and <c>docker/docker-compose.tls.yml</c> configures exactly one. This fact
+    /// reproduces that arrangement: it applies the loopback name only to a host built here, which is the
+    /// narrowest list any shipped topology uses, so passing here means the mechanism holds for every
+    /// deployment that opts into it.
     /// </para>
     /// <para>
     /// THE STATUS CODE IS THE FRAMEWORK'S, NOT THIS APPLICATION'S, and that is deliberate: the refusal happens
@@ -438,7 +584,7 @@ public sealed class TenantResolutionTests
 
     /// <summary>
     /// THE NEGATIVE CONTROL FOR THE FACT ABOVE, AND THE ONE THAT PROTECTS THE CONTAINER. The loopback name is
-    /// served under the same restricted list, which is what the shipped health probes depend on: the image
+    /// served under the same restricted list, which is what every shipped health probe depends on: the image
     /// probes <c>http://localhost:8080/health</c> and the compose file probes <c>http://127.0.0.1:8080/health</c>,
     /// so a restricted list that excluded either name would report the container permanently unhealthy and,
     /// through the frontend's dependency on that condition, never start the application at all.
@@ -458,15 +604,16 @@ public sealed class TenantResolutionTests
             "the loopback name is what every shipped health probe addresses");
     }
 
-    /// <summary>A host carrying the shipped restricted host list rather than the suite's widened one.</summary>
+    /// <summary>A host carrying a deployment-scoped restricted host list rather than the shipped wildcard.</summary>
     /// <remarks>
-    /// The value is applied through an in-memory configuration source added LAST, so it wins over the
-    /// environment variable the shared fixture sets for the whole process. Applying it any other way would
-    /// leave the fact silently asserting against the widened list.
+    /// The value is applied through an in-memory configuration source added LAST, so it wins over both the
+    /// shipped <c>*</c> and the environment variable the shared fixture sets for the whole process. Applying
+    /// it any other way would leave the fact silently asserting against the widened list, which permits
+    /// every host and would make it vacuous.
     /// </remarks>
     private sealed class RestrictedHost : WebApplicationFactory<Program>
     {
-        /// <summary>The list under test: the loopback name only, a subset of what appsettings.json ships.</summary>
+        /// <summary>The list under test: the loopback name only, the narrowest list any shipped topology uses.</summary>
         private const string RestrictedAllowedHosts = "localhost";
 
         /// <inheritdoc />
@@ -477,6 +624,27 @@ public sealed class TenantResolutionTests
             builder.UseEnvironment("Testing");
             builder.ConfigureAppConfiguration(configuration => configuration.AddInMemoryCollection(
                 new Dictionary<string, string?> { ["AllowedHosts"] = RestrictedAllowedHosts }));
+        }
+    }
+
+    /// <summary>A host of this suite's own whose log records reach the shared recording sink.</summary>
+    /// <remarks>
+    /// NEEDED BECAUSE A SERILOG LOGGER IS PROCESS-WIDE. <c>Program</c> hands ownership of the static logger to
+    /// the host it builds, so every host built in this process replaces the one the shared fixture installed -
+    /// configured from its own settings and without the fixture's sink registration. A fact that reads records
+    /// therefore has to own the host that writes them and register the sink on it, or it would pass when it
+    /// ran first and fail when it did not.
+    /// </remarks>
+    private sealed class RecordingTenantHost : WebApplicationFactory<Program>
+    {
+        /// <inheritdoc />
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+
+            builder.UseEnvironment("Testing");
+            builder.ConfigureServices(services =>
+                services.AddSingleton<ILogEventSink>(RecordedLogs.Sink));
         }
     }
 

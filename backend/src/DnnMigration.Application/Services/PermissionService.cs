@@ -279,7 +279,6 @@ public sealed class PermissionService : IPermissionService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
     private readonly IClock _clock;
-    private readonly PortalOptions _portalOptions;
     private readonly CachingOptions _caching;
 
     /// <summary>
@@ -311,7 +310,6 @@ public sealed class PermissionService : IPermissionService
     /// Cache reads for the catalogue and the eviction the account cleanup owes its two grant tables.
     /// </param>
     /// <param name="clock">The instant role assignments are evaluated as of.</param>
-    /// <param name="portalOptions">Bound configuration supplying the two pseudo-role names.</param>
     /// <param name="caching">
     /// Bound configuration supplying the performance multiplier that scales every cache lifetime. Taken as
     /// the options class itself rather than through an options accessor, because this project references
@@ -329,7 +327,6 @@ public sealed class PermissionService : IPermissionService
         IUnitOfWork unitOfWork,
         ICacheService cache,
         IClock clock,
-        PortalOptions portalOptions,
         CachingOptions caching)
     {
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
@@ -342,7 +339,6 @@ public sealed class PermissionService : IPermissionService
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
-        _portalOptions = portalOptions ?? throw new ArgumentNullException(nameof(portalOptions));
         _caching = caching ?? throw new ArgumentNullException(nameof(caching));
     }
 
@@ -1360,7 +1356,7 @@ public sealed class PermissionService : IPermissionService
             return new CallerIdentity(
                 Found: true,
                 IsSuperUser: false,
-                RoleNames: [_portalOptions.AllUsersRoleName, _portalOptions.UnauthenticatedRoleName]);
+                RoleNames: [SpecialRoleNames.AllUsers, SpecialRoleNames.Unauthenticated]);
         }
 
         User? account = await _users.GetAsync(portalId, callerId, cancellationToken).ConfigureAwait(false);
@@ -1384,7 +1380,7 @@ public sealed class PermissionService : IPermissionService
 
         var roleNames = new List<string>(assigned.Count + 1);
         roleNames.AddRange(assigned);
-        roleNames.Add(_portalOptions.AllUsersRoleName);
+        roleNames.Add(SpecialRoleNames.AllUsers);
 
         return new CallerIdentity(Found: true, IsSuperUser: false, RoleNames: roleNames);
     }

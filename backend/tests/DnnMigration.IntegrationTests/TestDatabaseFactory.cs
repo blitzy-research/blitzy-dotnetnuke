@@ -184,10 +184,6 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     /// <summary>Embedded resource holding the unmapped installation-wide settings table.</summary>
     private const string HostSettingsResourceName = "DnnMigration.IntegrationTests.Schema.HostSettingsSchema.sql";
 
-    /// <summary>Embedded resource holding the target-owned durable refresh-token store.</summary>
-    private const string RefreshTokenResourceName =
-        "DnnMigration.IntegrationTests.Schema.RefreshTokenSchema.sql";
-
     private readonly MsSqlContainer? _container;
     private readonly string _administrativeConnectionString;
     private readonly string _databaseName;
@@ -362,8 +358,12 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
             await ApplyScriptAsync(connectionString, ReadResource(HostSettingsResourceName), cancellationToken)
                 .ConfigureAwait(false);
 
-            await ApplyScriptAsync(connectionString, ReadResource(RefreshTokenResourceName), cancellationToken)
-                .ConfigureAwait(false);
+            // THREE SCRIPTS, AND NO FOURTH. A fourth once created [DnnMigration].[RefreshTokens] here, so the
+            // suite silently provisioned a table the production application required and the unaltered
+            // DotNetNuke schema does not contain - which made every refresh-token fact pass while login was
+            // broken against the database this API is mandated to run on. The store is now process-local and
+            // needs no schema, so the suite provisions only what the mapped model and the external membership
+            // objects genuinely need.
         }
         catch (Exception primary)
         {

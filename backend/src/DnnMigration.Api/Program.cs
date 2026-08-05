@@ -137,23 +137,39 @@ try
     //    4. routing                  UseRouting()
     //    5. CORS                     UseCors(named policy)
     //    6. authentication           UseAuthentication()
-    //    7. authorization            UseAuthorization()
-    //    8. portal-alias resolution  PortalAliasResolutionMiddleware
+    //    7. portal-alias resolution  PortalAliasResolutionMiddleware
+    //    8. authorization            UseAuthorization()
     //    9. controllers              MapControllers()
-    //   10. health checks            MapHealthChecks("/health") liveness
-    //                                MapHealthChecks("/health/ready") readiness
+    //   10. health checks            MapHealthChecks("/health")      liveness, the probed one
+    //                                MapHealthChecks("/health/ready")  readiness
+    //                                MapHealthChecks("/health/live")   bare liveness
     //
     // Extensions/ApplicationBuilderExtensions.cs argues every position at length and is
-    // the place to read for the reasoning; only one consequence belongs here, because it
-    // reaches outside the pipeline. Stage 10 is ANONYMOUS AND MUST REMAIN SO: the image's
-    // HEALTHCHECK probes it with wget before any credential exists in the system, and the
-    // front-end service is held back by "condition: service_healthy" until it answers, so
-    // requiring authorisation there would stop the deployment rather than secure it.
+    // the place to read for the reasoning; two consequences belong here, because both
+    // reach outside the pipeline.
+    //
+    // Stage 10 is ANONYMOUS AND MUST REMAIN SO, and the path the artefacts probe is
+    // "/health": the image's HEALTHCHECK reads it with wget before any credential exists
+    // in the system, and the front-end service is held back by
+    // "condition: service_healthy" until it answers, so requiring authorisation there
+    // would stop the deployment rather than secure it. "/health" is the LIVENESS view and
+    // deliberately excludes the ready-tagged database probe, so a starting container is
+    // not held back by an external store the compose topology does not even declare.
+    //
+    // Stages 7 and 8 are in that order deliberately, and AAP 0.5.1.4's stage list has
+    // them the other way round. The plan assumed ONE portal-alias stage; the
+    // implementation needs two, because rewriting the path base for a child portal has to
+    // precede routing while deciding whether an endpoint requires a tenant has to follow
+    // it. Once split, the refusal cannot sit behind authorisation: a tenant-scoped policy
+    // reconciles the caller's portal against the ARRIVAL portal, and behind authorisation
+    // those policies were evaluated with no arrival portal at all. The divergence is
+    // deliberate, security-motivated and recorded in MIGRATION_NOTES.md.
     //
     // Five further stages are interleaved there and none displaces a numbered one - HSTS
-    // and HTTPS redirection, a tenant path-base stage, the credential rate limiter and
-    // the documentation console. No URL or port is set anywhere: the container supplies
-    // ASPNETCORE_URLS=http://+:8080 and runs unprivileged, so binding is its decision.
+    // and HTTPS redirection, the tenant path-base stage, the credential cache-control
+    // marker, the credential rate limiter and the documentation console. No URL or port
+    // is set anywhere: the container supplies ASPNETCORE_URLS=http://+:8080 and runs
+    // unprivileged, so binding is its decision.
     //
     // MIGRATION: stage 1 is net-new behaviour rather than a port. The legacy exception
     // plumbing lived in an HTTP module and an error page, both excluded, and there

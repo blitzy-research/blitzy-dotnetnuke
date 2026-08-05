@@ -1,3 +1,4 @@
+using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Enums;
 using FluentAssertions;
@@ -7,9 +8,18 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Security;
 
 /// <summary>
-/// Verifies that refresh-token state is durable SQL data and that rotation, replay and revocation
-/// remain atomic across independently resolved service scopes.
+/// Verifies that refresh-token state is shared by every service scope of one host and that rotation,
+/// replay and revocation remain atomic across independently resolved scopes.
 /// </summary>
+/// <remarks>
+/// The store is a SINGLETON holding its own state, so what these facts assert is exactly what the
+/// registration promises: two scopes resolve one store, and a token issued through either is known to the
+/// other. Two earlier facts read and wrote <c>[DnnMigration].[RefreshTokens]</c> directly; that table was
+/// removed because AAP rule T4 forbids adding an object to the existing DotNetNuke schema, and provisioning
+/// it here was what hid the resulting login failure. Their assertions survive in a form that does not
+/// require one: cross-scope identity is asserted through the contract, and the clock-dependent replay
+/// window is asserted in the unit suite, where the clock can be moved.
+/// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class RefreshTokenStoreTests
@@ -23,9 +33,18 @@ public sealed class RefreshTokenStoreTests
     /// <param name="fixture">The shared composed host and database.</param>
     public RefreshTokenStoreTests(ApiTestFixture fixture) => _fixture = fixture;
 
-    /// <summary>State issued in one scope is redeemable from a fresh scope and stores no raw token column.</summary>
+    /// <summary>
+    /// State issued in one scope is redeemable from a fresh scope, and the raw token is returned exactly
+    /// once and never handed back.
+    /// </summary>
+    /// <remarks>
+    /// The second half is what the removed column assertion was really testing - that nothing gives a raw
+    /// token back after issue - and the contract can state it directly: an inspection reports the subject
+    /// and the expiry and carries no token of any kind, so there is nowhere for one to be echoed from.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task Issue_StateSurvivesAFreshScopeAndPersistsDigestOnly()
+    public async Task Issue_StateSurvivesAFreshScopeAndNeverReturnsTheTokenAgain()
     {
         RefreshTokenIssueResult issued;
         await using (AsyncServiceScope scope = _fixture.Services.CreateAsyncScope())
@@ -46,25 +65,53 @@ public sealed class RefreshTokenStoreTests
 
             inspection.Outcome.Should().Be(RefreshTokenOutcome.Succeeded);
             inspection.Subject!.UserId.Should().Be(920_001);
+
+            typeof(RefreshTokenInspection)
+                .GetProperties()
+                .Select(property => property.Name)
+                .Should()
+                .NotContain(
+                    "RefreshToken",
+                    "an inspection must not be able to hand a raw refresh token back to a caller");
         }
 
-        int rawColumns = await _fixture.Database.ScalarAsync<int>(
-            """
-            SELECT COUNT(*)
-            FROM [sys].[columns]
-            WHERE [object_id] = OBJECT_ID(N'[DnnMigration].[RefreshTokens]')
-              AND [name] IN (N'RefreshToken', N'RawToken', N'AccessToken', N'Password', N'Secret');
-            """);
-        rawColumns.Should().Be(0);
+        await using (AsyncServiceScope scope = _fixture.Services.CreateAsyncScope())
+        {
+            // The two scopes above resolve ONE store, so an unknown token is unknown to all of them. This is
+            // the negative control for cross-scope identity: it fails if each scope were given its own store,
+            // because then the token issued in the first scope would also have been unknown in the second.
+            RefreshTokenInspection unknown = await scope.ServiceProvider
+                .GetRequiredService<IRefreshTokenStore>()
+                .InspectAsync("not-a-token-this-store-ever-issued", ClientA);
 
-        int rows = await _fixture.Database.ScalarAsync<int>(
-            """
-            SELECT COUNT(*)
-            FROM [DnnMigration].[RefreshTokens]
-            WHERE [UserId] = @userId AND DATALENGTH([TokenDigest]) = 32;
-            """,
-            new Dictionary<string, object?> { ["userId"] = 920_001 });
-        rows.Should().Be(1);
+            unknown.Outcome.Should().Be(RefreshTokenOutcome.Unknown);
+        }
+    }
+
+    /// <summary>
+    /// Every scope of one host resolves the SAME store instance, which is the registration AAP section 0.4.3
+    /// requires.
+    /// </summary>
+    /// <remarks>
+    /// Asserted on the resolved instances rather than on the service descriptor, because a descriptor can be
+    /// correct while a second registration against the abstraction quietly supplies a different object.
+    /// </remarks>
+    [Fact]
+    public void Store_IsOneSingletonSharedByEveryScope()
+    {
+        using IServiceScope first = _fixture.Services.CreateScope();
+        using IServiceScope second = _fixture.Services.CreateScope();
+
+        IRefreshTokenStore fromFirst = first.ServiceProvider.GetRequiredService<IRefreshTokenStore>();
+        IRefreshTokenStore fromSecond = second.ServiceProvider.GetRequiredService<IRefreshTokenStore>();
+
+        fromSecond.Should().BeSameAs(
+            fromFirst,
+            "refresh state is the instance, so two instances would lose families between requests");
+
+        _fixture.Services.GetRequiredService<ITokenService>().Should().BeSameAs(
+            first.ServiceProvider.GetRequiredService<ITokenService>(),
+            "the token service is a singleton alongside the store it coordinates");
     }
 
     /// <summary>
@@ -170,55 +217,17 @@ public sealed class RefreshTokenStoreTests
         inspection.Outcome.Should().Be(RefreshTokenOutcome.Revoked);
     }
 
-    /// <summary>
-    /// A consumed generation remains a theft signal after its own sliding expiry and before the family
-    /// ceiling.
-    /// </summary>
+    // MIGRATION: the fact that a CONSUMED generation stays a theft signal after its own sliding expiry and
+    // before the family ceiling lived here, and it forced that state by issuing an UPDATE against
+    // [DnnMigration].[RefreshTokens]. With no such table there is nothing to update, so the fact moved to
+    // DnnMigration.UnitTests/Security/RefreshTokenStoreBehaviorTests, where a controllable clock reaches the
+    // same state through the contract instead of behind it. Nothing was dropped: the assertion is stronger
+    // there, because it also proves the surviving successor is revoked rather than merely refused.
+
+    /// <summary>Family revocation performed in one scope is observed from another scope.</summary>
+    /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task Rotate_SpentGenerationPastSlidingExpiryStillRevokesTheFamily()
-    {
-        const int UserId = 920_006;
-        string first = await IssueAsync(UserId);
-        string successor;
-
-        await using (AsyncServiceScope scope = _fixture.Services.CreateAsyncScope())
-        {
-            RefreshTokenRotationResult rotated = await scope.ServiceProvider
-                .GetRequiredService<IRefreshTokenStore>()
-                .RotateAsync(first, ClientA);
-            rotated.Outcome.Should().Be(RefreshTokenOutcome.Succeeded);
-            successor = rotated.RefreshToken!;
-        }
-
-        int changed = await _fixture.Database.ExecuteAsync(
-            """
-            UPDATE [DnnMigration].[RefreshTokens]
-            SET [ExpiresAtUtc] = [CreatedAtUtc]
-            WHERE [UserId] = @userId
-              AND [Generation] = 0
-              AND [ConsumedAtUtc] IS NOT NULL;
-            """,
-            new Dictionary<string, object?> { ["userId"] = UserId });
-        changed.Should().Be(1);
-
-        await using (AsyncServiceScope replayScope = _fixture.Services.CreateAsyncScope())
-        {
-            RefreshTokenRotationResult replay = await replayScope.ServiceProvider
-                .GetRequiredService<IRefreshTokenStore>()
-                .RotateAsync(first, ClientB);
-            replay.Outcome.Should().Be(RefreshTokenOutcome.AlreadyUsed);
-        }
-
-        await using AsyncServiceScope verificationScope = _fixture.Services.CreateAsyncScope();
-        RefreshTokenInspection inspection = await verificationScope.ServiceProvider
-            .GetRequiredService<IRefreshTokenStore>()
-            .InspectAsync(successor, ClientA);
-        inspection.Outcome.Should().Be(RefreshTokenOutcome.Revoked);
-    }
-
-    /// <summary>Family revocation written in one scope is observed from another scope.</summary>
-    [Fact]
-    public async Task Revoke_StateIsDurableAcrossScopes()
+    public async Task Revoke_StateIsSharedAcrossScopes()
     {
         string token = await IssueAsync(920_005);
 

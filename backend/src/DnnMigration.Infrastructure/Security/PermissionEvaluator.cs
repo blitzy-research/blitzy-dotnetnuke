@@ -1,10 +1,8 @@
 using DnnMigration.Application.Abstractions;
-using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
-using Microsoft.Extensions.Options;
 
 // MIGRATION: no interface is declared in this file, and that is a decision rather than an omission.
 // The public abstraction this type implements already exists and is already consumed:
@@ -186,22 +184,12 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
 
     private readonly ITabRepository _tabs;
 
-    private readonly string _allUsersRoleName;
-
-    private readonly string _unauthenticatedRoleName;
-
     /// <summary>Initialises a new instance of the <see cref="PermissionEvaluator"/> class.</summary>
     /// <param name="permissions">Reads the permission catalogue and the recorded grants.</param>
     /// <param name="roles">Resolves role names to identifiers within one portal.</param>
     /// <param name="modules">Establishes which portal and definition own a module under evaluation.</param>
     /// <param name="tabs">Establishes which portal owns a page under evaluation.</param>
-    /// <param name="portalOptions">Supplies the two built-in role display names.</param>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">
-    /// Either built-in role name is blank. Both are load-bearing: they are the names by which a caller
-    /// declares that it stands for every user or for an anonymous one, so a blank value would silently
-    /// stop matching rather than fail.
-    /// </exception>
     /// <remarks>
     /// <para>
     /// MIGRATION: five collaborators, and each earns its place. <see cref="IPermissionRepository"/> and
@@ -213,12 +201,13 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// that bounds its catalogue.
     /// </para>
     /// <para>
-    /// MIGRATION: <see cref="PortalOptions"/> replaces the excluded static role-name constants
-    /// <c>glbRoleAllUsersName</c> and <c>glbRoleUnauthUserName</c>. They are configurable rather than
-    /// compiled in because the legacy comparison matched a persisted display name as a string, so an
-    /// installation that renamed either role would silently stop matching a compiled-in literal. Both
-    /// values are copied verbatim - never trimmed, folded or localised - because the name in the roles
-    /// table is the value that must match.
+    /// MIGRATION: <see cref="SpecialRoleNames"/> replaces the excluded static role-name constants
+    /// <c>glbRoleAllUsersName</c> and <c>glbRoleUnauthUserName</c>, and it replaces them as CONSTANTS, which
+    /// is what AAP sections 0.2.2.1 and 0.7.6 specify. An earlier revision read them from
+    /// <c>PortalOptions</c>, where a deployment could change which stored role receives every-caller or
+    /// anonymous-caller semantics - an authorization boundary expressed as a configuration string, and one
+    /// this type would have applied without question. Both values are used verbatim, never trimmed, folded
+    /// or localised, because the name in the roles table is the value that must match.
     /// </para>
     /// <para>
     /// Nothing else is injected. No database context, no cache, no clock, no HTTP or request accessor, no
@@ -230,37 +219,12 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
         IPermissionRepository permissions,
         IRoleRepository roles,
         IModuleRepository modules,
-        ITabRepository tabs,
-        IOptions<PortalOptions> portalOptions)
+        ITabRepository tabs)
     {
-        ArgumentNullException.ThrowIfNull(portalOptions);
-
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
-
-        PortalOptions options = portalOptions.Value
-            ?? throw new ArgumentNullException(nameof(portalOptions));
-
-        if (string.IsNullOrWhiteSpace(options.AllUsersRoleName))
-        {
-            throw new ArgumentException(
-                "PortalOptions.AllUsersRoleName is blank. It is the name by which a caller declares that "
-                + "it stands for every user, so a blank value would quietly match nothing.",
-                nameof(portalOptions));
-        }
-
-        if (string.IsNullOrWhiteSpace(options.UnauthenticatedRoleName))
-        {
-            throw new ArgumentException(
-                "PortalOptions.UnauthenticatedRoleName is blank. It is the name by which an anonymous "
-                + "caller is recognised, so a blank value would quietly match nothing.",
-                nameof(portalOptions));
-        }
-
-        _allUsersRoleName = options.AllUsersRoleName;
-        _unauthenticatedRoleName = options.UnauthenticatedRoleName;
     }
 
     /// <inheritdoc />
@@ -862,11 +826,11 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             }
         }
 
-        declared.Add(_allUsersRoleName);
+        declared.Add(SpecialRoleNames.AllUsers);
 
         if (userId is null)
         {
-            declared.Add(_unauthenticatedRoleName);
+            declared.Add(SpecialRoleNames.Unauthenticated);
         }
 
         HashSet<int> roleIds = new();

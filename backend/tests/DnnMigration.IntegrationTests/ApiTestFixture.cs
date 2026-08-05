@@ -732,18 +732,20 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         ["LegacyCredentials__ValidationAlgorithm"] = "SHA1",
         ["Cors__AllowedOrigins__0"] = AllowedOrigin,
 
-        // SEC-006: THE STATIC HOST BOUNDARY IS WIDENED HERE, DELIBERATELY AND VISIBLY, AND ONLY HERE.
-        // appsettings.json ships AllowedHosts as the three loopback names an unconfigured instance actually
-        // answers on, so a deployment that serves a real host name has to say so. This suite cannot inherit
-        // that list: it invents alias host names at run time - "alias-<suffix>.local", a deliberately
-        // unconfigured "no-such-tenant.example", and a one-character truncation of the seeded alias used to
-        // prove that a substring reaches no tenant - none of which can be enumerated in a file written before
-        // the run. Widening it to every host is what lets those facts address the hosts they need to.
+        // SEC-006: STATED EXPLICITLY RATHER THAN INHERITED, THOUGH IT NOW MATCHES THE SHIPPED VALUE.
+        // appsettings.json ships AllowedHosts as "*" because exact PortalAlias resolution is the authority
+        // for which hosts identify a tenant - see the host-filtering entry in MIGRATION_NOTES.md for why two
+        // independent allow-lists for one question is the defect and not the control. This suite needs that
+        // value regardless of what the shipped file says, because it invents alias host names at run time -
+        // "alias-<suffix>.local", a deliberately unconfigured "no-such-tenant.example", and a one-character
+        // truncation of the seeded alias used to prove that a substring reaches no tenant - none of which can
+        // be enumerated in a file written before the run.
         //
-        // The override belongs in the suite rather than in the shipped file, and the direction matters: a
-        // suite that had to widen the boundary is a suite proving the shipped boundary is narrow. The narrow
-        // list is itself asserted against by the host-filtering facts in TenantResolutionTests, which build
-        // their own host carrying a restricted list rather than relying on this one.
+        // It is written out here rather than left to inheritance so the value the suite runs under is visible
+        // in the suite. The MECHANISM is still proved to work: the host-filtering facts in
+        // TenantResolutionTests build their own host carrying an explicit restricted list, which is how a
+        // deployment-scoped boundary is configured (docker/docker-compose.tls.yml does exactly that), and
+        // assert that an unconfigured name is refused under it.
         ["AllowedHosts"] = "*",
         ["RateLimiting__Authentication__PermitLimit"] = PermissiveAuthenticationRateLimit,
         ["RateLimiting__Authentication__WindowSeconds"] = "60",

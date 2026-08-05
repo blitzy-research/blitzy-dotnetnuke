@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Http;
 
 namespace DnnMigration.Api.Middleware;
@@ -34,6 +36,23 @@ namespace DnnMigration.Api.Middleware;
 /// </remarks>
 internal static class TenantAddress
 {
+    /// <summary>
+    /// Longest host candidate that may appear in a log entry.
+    /// </summary>
+    /// <remarks>
+    /// A host name's own maximum is 253 characters, so this is shorter than a legitimate one could be. That
+    /// is deliberate: the value exists to identify which alias an operator must add, an operator recognises
+    /// it long before 63 characters, and a bound the caller cannot exceed is worth more here than the
+    /// ability to reproduce an unusually long name in full.
+    /// </remarks>
+    private const int MaximumLoggedHostLength = 63;
+
+    /// <summary>Bytes of the address digest that are recorded, giving a 16-character property.</summary>
+    private const int FingerprintByteLength = 8;
+
+    /// <summary>Recorded in place of a host candidate or fingerprint that cannot be produced.</summary>
+    private const string AbsentHostMarker = "(absent)";
+
     /// <summary>
     /// Builds the address a tenant is resolved from, for the current request.
     /// </summary>
@@ -78,6 +97,98 @@ internal static class TenantAddress
         // have sent is dropped, because an alias is never stored with one and "host/child/" and
         // "host/child" address the same tenant.
         return string.Concat(host, path.TrimEnd('/'));
+    }
+
+    /// <summary>
+    /// Reduces an address to the bounded, printable host candidate that may be recorded in a log.
+    /// </summary>
+    /// <param name="address">The address <see cref="Of(HttpContext)"/> produced.</param>
+    /// <returns>
+    /// The host portion, stripped to printable US-ASCII and truncated to
+    /// <see cref="MaximumLoggedHostLength"/> characters, or <c>(absent)</c> when nothing usable remains.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// SEC-B4: THE PATH IS DISCARDED HERE, WHICH IS THE WHOLE PURPOSE. An unresolved address is
+    /// caller-controlled, and the address this type builds deliberately includes the request's FULL path so
+    /// that a child portal can be matched. Recording that in a diagnostic entry let a caller push arbitrary
+    /// text - a mistyped credential, a token pasted into a URL, an e-mail address - into the production log
+    /// simply by addressing the installation from a host name it does not serve. The host candidate is the
+    /// one fact an operator needs in order to add or correct an alias row, so it is what survives.
+    /// </para>
+    /// <para>
+    /// Three properties make the survivor safe to keep. It is TRUNCATED, so no caller can lengthen a log
+    /// line at will. It is stripped to PRINTABLE US-ASCII, which removes carriage return and line feed in
+    /// one test and with them the ability to forge a log line, and also removes anything a terminal would
+    /// interpret. And a value that reduces to nothing is reported as a fixed marker rather than as an empty
+    /// property, so an absent host and a host of blanks read alike.
+    /// </para>
+    /// </remarks>
+    public static string HostCandidateOf(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return AbsentHostMarker;
+        }
+
+        int separator = address.IndexOf('/', StringComparison.Ordinal);
+        ReadOnlySpan<char> host = separator < 0 ? address : address.AsSpan(0, separator);
+
+        var sanitised = new StringBuilder(Math.Min(host.Length, MaximumLoggedHostLength));
+
+        foreach (char character in host)
+        {
+            if (sanitised.Length == MaximumLoggedHostLength)
+            {
+                break;
+            }
+
+            // Printable US-ASCII only: space through tilde. Every control character, every newline and
+            // every non-ASCII sequence is dropped rather than escaped, because an escaped value still
+            // occupies the log and still has to be read by whoever is diagnosing the alias.
+            if (character is >= ' ' and <= '~')
+            {
+                sanitised.Append(character);
+            }
+        }
+
+        string candidate = sanitised.ToString().Trim();
+
+        return candidate.Length == 0 ? AbsentHostMarker : candidate;
+    }
+
+    /// <summary>
+    /// Produces a short, stable fingerprint of a whole address, for correlating repeated failures without
+    /// retaining the address.
+    /// </summary>
+    /// <param name="address">The address <see cref="Of(HttpContext)"/> produced.</param>
+    /// <returns>A lower-case hexadecimal digest prefix, or <c>(absent)</c> for a blank address.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is what replaces the raw address in a diagnostic entry. Two failures against the same full
+    /// address share a fingerprint, so an operator can still see that one address is failing repeatedly
+    /// rather than many addresses failing once - which is the question the raw value was there to answer -
+    /// while the text itself, including the request path, is not retained anywhere.
+    /// </para>
+    /// <para>
+    /// A digest PREFIX rather than the whole hash, because the value is a correlation key and not a security
+    /// claim: nothing authenticates or authorises on it, so 64 bits of it is ample to distinguish the
+    /// addresses one installation sees, and a shorter property keeps the log line readable. The comparison
+    /// is case-insensitive at the source - host names are matched case-insensitively - so the value is
+    /// lower-cased before hashing, and a host differing only in case fingerprints identically.
+    /// </para>
+    /// </remarks>
+    public static string FingerprintOf(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return AbsentHostMarker;
+        }
+
+        byte[] digest = SHA256.HashData(
+            Encoding.UTF8.GetBytes(address.ToLowerInvariant()));
+
+        return Convert.ToHexString(digest.AsSpan(0, FingerprintByteLength)).ToLowerInvariant();
     }
 
     /// <summary>

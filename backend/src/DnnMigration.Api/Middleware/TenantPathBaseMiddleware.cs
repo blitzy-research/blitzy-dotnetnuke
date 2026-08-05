@@ -164,11 +164,15 @@ internal sealed class TenantPathBaseMiddleware
         context.Request.PathBase = originalPathBase.Add(tenantPath);
         context.Request.Path = remainder;
 
+        // SEC-B4: THE REBASED PATH IS NOT RECORDED. Both facts here are server-authored - the portal
+        // identifier comes from the resolved snapshot and the tenant path from the stored alias row - whereas
+        // the remainder is the caller's own text and would put an arbitrary path into the log on every child
+        // request. The request envelope records the matched ROUTE TEMPLATE for exactly that reason, and it is
+        // the value an operator should read; duplicating the raw path here would defeat it.
         _logger.LogDebug(
-            "Request rebased for portal {PortalId} beneath {TenantPath}; the routable path is {RoutablePath}.",
+            "Request rebased for portal {PortalId} beneath {TenantPath}.",
             portalContext.Current.PortalId,
-            tenantPath.Value,
-            remainder.HasValue ? remainder.Value : "/");
+            tenantPath.Value);
 
         try
         {

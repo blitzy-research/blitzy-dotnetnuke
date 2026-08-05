@@ -146,21 +146,62 @@ public static class ServiceCollectionExtensions
     /// </para>
     /// <para>
     /// Blank entries are ignored, so a section left as an empty string by a deployment
-    /// template does not read as trust. The values themselves are parsed and validated
-    /// by <see cref="AddForwardedHeaders"/>, which refuses malformed ones at startup;
-    /// this member only answers whether any were declared.
+    /// template does not read as trust. The remaining values are parsed and validated by
+    /// <see cref="AddForwardedHeaders"/>, which refuses malformed ones at startup; this member only
+    /// answers whether any were declared.
+    /// </para>
+    /// <para>
+    /// SEC: BOTH MEMBERS READ THE SAME NORMALISED LIST, THROUGH <see cref="TrustedEntries"/>, AND
+    /// THEY USED NOT TO. This one filtered blank entries while <see cref="AddForwardedHeaders"/>
+    /// parsed every entry it found and threw on a blank one, so a deployment template that left an
+    /// entry as an empty string produced one of two opposite outcomes depending on which member
+    /// looked: this one said "no trusted proxy configured" and the pipeline stage was never
+    /// registered, while the registration refused to start the host at all. One reading of one
+    /// configured value cannot mean two things, so trimming and blank-filtering happen exactly once,
+    /// here, and both members consume the result.
     /// </para>
     /// </remarks>
     public static bool HasTrustedProxies(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        return Declared(KnownProxiesSectionName) || Declared(KnownNetworksSectionName);
-
-        bool Declared(string sectionName) =>
-            (configuration.GetSection(sectionName).Get<string[]>() ?? [])
-                .Any(entry => !string.IsNullOrWhiteSpace(entry));
+        return TrustedEntries(configuration, KnownProxiesSectionName).Count != 0
+            || TrustedEntries(configuration, KnownNetworksSectionName).Count != 0;
     }
+
+    /// <summary>
+    /// Reads one trusted-hop section into the normalised entries every consumer must agree on.
+    /// </summary>
+    /// <param name="configuration">The application's configuration.</param>
+    /// <param name="sectionName">
+    /// <see cref="KnownProxiesSectionName"/> or <see cref="KnownNetworksSectionName"/>.
+    /// </param>
+    /// <returns>
+    /// The declared entries, trimmed, with every blank or whitespace-only entry removed. Never
+    /// <see langword="null"/>; empty when the section is absent or declares nothing usable.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Trimming is part of the normalisation rather than a courtesy. A compose file, an environment
+    /// variable and a JSON array can each deliver surrounding whitespace, and an address that fails to
+    /// parse for that reason would stop the host with a message about a value an operator would read as
+    /// correct.
+    /// </para>
+    /// <para>
+    /// A blank entry is DROPPED rather than refused, and the direction matters: a deployment template
+    /// that ships an empty entry is a template that has not configured a trusted hop, which is the safe
+    /// reading. Refusing it would stop a host whose operator declared no trust at all, while accepting it
+    /// as trust would be strictly worse - both are avoided by treating it as absent. A NON-blank entry
+    /// that is not an address or a network is still refused loudly by the parsers below, because that is
+    /// a value an operator meant and got wrong.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<string> TrustedEntries(
+        IConfiguration configuration,
+        string sectionName) =>
+        [.. (configuration.GetSection(sectionName).Get<string[]>() ?? [])
+            .Where(entry => !string.IsNullOrWhiteSpace(entry))
+            .Select(entry => entry.Trim())];
 
 
     // MIGRATION: TWO KEY NAMES AND TWO REGISTRATIONS FOR ONE REDIRECT PORT, WITHDRAWN A SECOND TIME. A
@@ -680,11 +721,14 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static void AddForwardedHeaders(IServiceCollection services, IConfiguration configuration)
     {
-        string[] knownProxies = configuration.GetSection(KnownProxiesSectionName).Get<string[]>() ?? [];
-        string[] knownNetworks = configuration.GetSection(KnownNetworksSectionName).Get<string[]>() ?? [];
+        // The SAME normalised reading HasTrustedProxies uses, so the two cannot disagree about whether a
+        // section declares anything. See the remarks on TrustedEntries for why a blank entry is absent
+        // rather than a fault, and why a malformed non-blank entry still stops the host.
+        IReadOnlyList<string> knownProxies = TrustedEntries(configuration, KnownProxiesSectionName);
+        IReadOnlyList<string> knownNetworks = TrustedEntries(configuration, KnownNetworksSectionName);
 
-        IPAddress[] proxies = knownProxies.Select(ParseProxyAddress).ToArray();
-        (IPAddress Prefix, int PrefixLength)[] networks = knownNetworks.Select(ParseProxyNetwork).ToArray();
+        IPAddress[] proxies = [.. knownProxies.Select(ParseProxyAddress)];
+        (IPAddress Prefix, int PrefixLength)[] networks = [.. knownNetworks.Select(ParseProxyNetwork)];
 
         services.Configure<ForwardedHeadersOptions>(options =>
         {
@@ -1009,15 +1053,12 @@ public static class ServiceCollectionExtensions
                     $"'{section}:{nameof(PortalOptions.HomeDirectoryFormat)}' does not contain the placeholder '{PortalOptions.HomeDirectoryPortalPlaceholder}'. Without it every portal would resolve to the same directory and tenants would share their files.");
             }
 
-            ValidateRoleName(nameof(PortalOptions.UnauthenticatedRoleName), options.UnauthenticatedRoleName, section, failures);
-            ValidateRoleName(nameof(PortalOptions.AllUsersRoleName), options.AllUsersRoleName, section, failures);
-
-            if (!string.IsNullOrWhiteSpace(options.UnauthenticatedRoleName)
-                && string.Equals(options.UnauthenticatedRoleName, options.AllUsersRoleName, StringComparison.OrdinalIgnoreCase))
-            {
-                failures.Add(
-                    $"'{section}:{nameof(PortalOptions.UnauthenticatedRoleName)}' and '{section}:{nameof(PortalOptions.AllUsersRoleName)}' name the same role. They denote two different audiences - callers who have not signed in, and every caller - so conflating them would grant one the other's access.");
-            }
+            // MIGRATION: three role-name rules used to be enforced here - blank, over-long, and the two names
+            // colliding. All three are gone because the settings are gone: the special role names are now
+            // the immutable domain constants DnnMigration.Domain.Common.SpecialRoleNames.AllUsers and
+            // .Unauthenticated, so no deployment value exists to validate and no deployment value can move
+            // an authorization audience onto a different row of the Roles table. Nothing in the Portal
+            // section may reintroduce them.
 
             return failures.Count == 0
                 ? ValidateOptionsResult.Success
@@ -1077,28 +1118,6 @@ public static class ServiceCollectionExtensions
             {
                 failures.Add(
                     $"'{section}:{key}' contains a directory separator; it must name a single file.");
-            }
-        }
-
-        /// <summary>
-        /// Checks a configured role name.
-        /// </summary>
-        /// <param name="key">The setting's name, used in messages.</param>
-        /// <param name="value">The configured value.</param>
-        /// <param name="section">The section name, used in messages.</param>
-        /// <param name="failures">Collects one message per broken rule.</param>
-        private static void ValidateRoleName(string key, string value, string section, List<string> failures)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                failures.Add($"'{section}:{key}' must not be blank.");
-                return;
-            }
-
-            if (value.Length > PortalOptions.MaximumRoleNameLength)
-            {
-                failures.Add(
-                    $"'{section}:{key}' is {value.Length} characters long; the role name column stores at most {PortalOptions.MaximumRoleNameLength}, so a longer value could not be matched against stored data.");
             }
         }
     }

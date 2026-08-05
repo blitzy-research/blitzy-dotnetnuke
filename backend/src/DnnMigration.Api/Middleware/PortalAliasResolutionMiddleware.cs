@@ -1,6 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
 using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
@@ -40,11 +43,12 @@ namespace DnnMigration.Api.Middleware;
 /// </para>
 /// <para>
 /// THE PATH SEGMENT THAT IDENTIFIED THE TENANT IS REMOVED FROM THE ROUTABLE PATH BEFORE ROUTING RUNS, by the
-/// sibling path-base stage. It has to be: this stage runs after routing, by mandated order, and a child's
-/// request path would otherwise reach routing with the tenant's own segment still on the front and match no
-/// route at all. Resolving the tenant correctly and then answering 404 for every request beneath it would be
-/// no better than not resolving it. The two stages share both the address helper and the exemption list, so
-/// neither can resolve a tenant the other would have exempted.
+/// sibling path-base stage. It has to be: this stage runs after routing, because deciding whether an endpoint
+/// needs a tenant requires the matched endpoint's metadata, and a child's request path would otherwise reach
+/// routing with the tenant's own segment still on the front and match no route at all. Resolving the tenant
+/// correctly and then answering 404 for every request beneath it would be no better than not resolving it.
+/// The two stages share both the address helper and the exemption list, so neither can resolve a tenant the
+/// other would have exempted.
 /// </para>
 /// <para>
 /// FAILING TO RESOLVE NEVER INVENTS A TENANT, AND NOW REFUSES THE ENDPOINTS THAT DEPEND ON ONE. There is no
@@ -58,6 +62,15 @@ namespace DnnMigration.Api.Middleware;
 /// have run with none.
 /// </para>
 /// <para>
+/// SEC-B4: THIS STAGE RUNS BETWEEN AUTHENTICATION AND AUTHORISATION, NOT AFTER AUTHORISATION. It was
+/// registered after <c>UseAuthorization</c>, which meant every tenant-scoped policy - each of which
+/// reconciles the caller's portal, the route's portal and the ARRIVAL portal - was evaluated on requests
+/// that had no arrival portal at all, silently degrading a three-sided check to a two-sided one exactly
+/// where a host name resolved to nothing. Enforcing before authorisation removes that state from every
+/// policy's view. The anti-enumeration property the old position provided is preserved deliberately rather
+/// than lost: see <c>AuthenticationRefusesFirst</c>.
+/// </para>
+/// <para>
 /// A BLANKET REFUSAL IS STILL WRONG, so the refusal is scoped by how the endpoint names its tenant. A route
 /// carrying a <c>portalId</c> segment names it in the route and is served: refusing those would prevent a host
 /// account from administering any portal via a management host name that is deliberately not an alias, and
@@ -68,13 +81,14 @@ namespace DnnMigration.Api.Middleware;
 /// Everything else is refused, so an endpoint added later that forgets the question fails closed.
 /// </para>
 /// <para>
-/// THE REFUSAL DISCLOSES NOTHING AND LOCKS NOBODY OUT OF SIGNING IN. It is written only where a request has
-/// already passed authorisation - this component is ordered after the authorisation middleware, which
-/// short-circuits an unauthenticated or unauthorised caller before reaching here - so an anonymous caller
-/// cannot use the status code to enumerate which host names the installation serves; it receives its 401
-/// either way. The sign-in endpoint carries the tenant-optional mark and stays reachable from a host that has
-/// not been configured yet, which is what lets an operator obtain a session and repair the configuration. The
-/// body names neither the host nor which of the three resolution failures occurred.
+/// THE REFUSAL DISCLOSES NOTHING AND LOCKS NOBODY OUT OF SIGNING IN. It is withheld from a caller that
+/// authorisation is certain to turn away for want of authentication - the application registers a fallback
+/// policy demanding an authenticated user, so an anonymous caller on any endpoint that does not allow
+/// anonymous access receives its 401 from every host name alike and cannot use the status code to enumerate
+/// which host names the installation serves. The sign-in endpoint carries the tenant-optional mark and stays
+/// reachable from a host that has not been configured yet, which is what lets an operator obtain a session
+/// and repair the configuration. The body names neither the host nor which of the three resolution failures
+/// occurred.
 /// </para>
 /// <para>
 /// TWO CLASSES OF PATH ARE EXEMPT, and the exemptions are as load-bearing as the resolution. The container
@@ -86,12 +100,11 @@ namespace DnnMigration.Api.Middleware;
 /// that reads tenant data, and no portal-scoped endpoint is exempt.
 /// </para>
 /// <para>
-/// RESOLUTION IS PERFORMED THROUGH AN IDEMPOTENT ENTRY POINT, so this middleware and the portal
-/// administrator authorisation handler can both insist on a resolved tenant without either depending on
-/// having run first. That matters because the mandated pipeline order places authorisation ahead of this
-/// middleware while the security property required is that no protected request is authorised without a
-/// resolved tenant; whichever of the two runs first performs the work, and the other observes the
-/// identical outcome rather than resolving again.
+/// RESOLUTION IS PERFORMED THROUGH AN IDEMPOTENT ENTRY POINT, so this middleware, the pre-routing path-base
+/// stage and the portal administrator authorisation handler can all insist on a resolved tenant without any
+/// of them depending on having run first. In the composed pipeline the path-base stage resolves first, so
+/// the call here ordinarily observes that outcome rather than reading the store again; the idempotence is
+/// what makes the ordering a matter of correctness rather than of luck.
 /// </para>
 /// </remarks>
 public sealed class PortalAliasResolutionMiddleware
@@ -266,15 +279,12 @@ public sealed class PortalAliasResolutionMiddleware
 
         if (!outcome.IsSuccess)
         {
-            // SEC-030: THE DIAGNOSIS IS NOT WRITTEN HERE, AND THAT IS THE FIX. This stage is ordered after
-            // authorisation by the mandated pipeline order (AAP 0.5.1.4), so any request that authorisation
-            // refuses never reaches it - and an unresolvable host is exactly the condition most likely to
-            // cause that refusal. Diagnosing it from here therefore lost the entry precisely when an operator
-            // needed it. TenantPathBaseMiddleware, which runs before routing and resolves the tenant for every
-            // request, writes it instead: the population and the diagnosis are both before authorisation, and
-            // only the endpoint-specific REFUSAL below remains after routing, because it needs the matched
-            // endpoint's metadata to know whether this endpoint requires a tenant at all.
-            if (RequiresResolvedTenant(context))
+            // SEC-030: THE DIAGNOSIS IS NOT WRITTEN HERE. TenantPathBaseMiddleware, which runs before routing
+            // and resolves the tenant for every request, writes it instead, so the entry exists whatever this
+            // stage or authorisation goes on to do with the request. Only the endpoint-specific REFUSAL lives
+            // here, because it needs the matched endpoint's metadata to know whether this endpoint requires a
+            // tenant at all.
+            if (RequiresResolvedTenant(context) && !AuthenticationRefusesFirst(context))
             {
                 await WriteTenantUnresolvedAsync(context, problemDetailsFactory).ConfigureAwait(false);
                 return;
@@ -325,6 +335,52 @@ public sealed class PortalAliasResolutionMiddleware
         }
 
         return endpoint.Metadata.GetMetadata<TenantOptionalAttribute>() is null;
+    }
+
+    /// <summary>
+    /// Determines whether authorisation will refuse this request anyway, for want of an authenticated
+    /// caller, so that the tenant refusal must stay silent and let it.
+    /// </summary>
+    /// <param name="context">The current request.</param>
+    /// <returns>
+    /// <see langword="true"/> when the caller is unauthenticated and the matched endpoint is not marked to
+    /// allow anonymous access.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// SEC-B4: THIS IS WHAT KEEPS THE ANTI-ENUMERATION PROPERTY WHILE THE STAGE MOVES AHEAD OF
+    /// AUTHORISATION. The stage used to run AFTER the authorisation middleware, and one security property
+    /// depended on exactly that: an anonymous caller was turned away with 401 before it could reach a
+    /// tenant refusal, so it could not tell a configured host name from an unconfigured one by reading the
+    /// status code. Moving the stage in front of authorisation - which the tenant-isolation property
+    /// requires, because a policy must never reconcile against an arrival portal that does not exist -
+    /// would have handed that anonymous caller a 403 from the unconfigured host and a 401 from the
+    /// configured one, which is an enumeration oracle for the installation's alias table.
+    /// </para>
+    /// <para>
+    /// WHY THE TEST IS SOUND RATHER THAN OPTIMISTIC. The application registers a FALLBACK authorisation
+    /// policy of <c>RequireAuthenticatedUser</c> (<c>AuthenticationExtensions.AddApiAuthorization</c>), so
+    /// every endpoint that does not carry <see cref="IAllowAnonymous"/> is guaranteed to be refused for an
+    /// unauthenticated caller whether or not it declares a policy of its own. Deferring to authorisation in
+    /// exactly that case therefore changes nothing about WHETHER the request is refused - only about which
+    /// stage refuses it and with which status - and it is the status that carried the disclosure.
+    /// </para>
+    /// <para>
+    /// Nothing else is deferred. An AUTHENTICATED caller is refused here, before any policy runs, which is
+    /// the case the move was made for; and an endpoint that genuinely allows anonymous access is refused
+    /// here too, because authorisation would not stop it and it would otherwise execute with no tenant.
+    /// </para>
+    /// </remarks>
+    private static bool AuthenticationRefusesFirst(HttpContext context)
+    {
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            return false;
+        }
+
+        Endpoint? endpoint = context.GetEndpoint();
+
+        return endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is null;
     }
 
     /// <summary>
@@ -425,6 +481,11 @@ public sealed class PortalAliasResolutionMiddleware
     /// unauthenticated caller enumerate which host names this installation is configured for. The operator
     /// who needs the distinction reads it here.
     /// </para>
+    /// <para>
+    /// AND WHAT REACHES THE LOG IS BOUNDED. The entry records a sanitised host candidate and a digest of the
+    /// full address, never the address itself, because the address includes the caller's own request path.
+    /// The reason message is authored text from the resolution layer and carries no caller input at all.
+    /// </para>
     /// </remarks>
     /// <param name="logger">
     /// The logger of the stage that observed the failure. SEC-030: the observing stage supplies its own logger
@@ -434,15 +495,33 @@ public sealed class PortalAliasResolutionMiddleware
     /// while letting the log entry carry the category of whichever stage actually saw it.
     /// </param>
     /// <param name="address">
-    /// The host name and path that failed to resolve, for the log only. The path is included because a child
-    /// portal is identified by it, so an operator diagnosing an unreachable child needs to see the whole
-    /// address that was probed rather than only its host.
+    /// The address that failed to resolve. It is NOT logged as supplied: only the bounded host candidate and
+    /// a fingerprint of the whole value are recorded. See the remarks for why.
     /// </param>
     /// <param name="outcome">The failed resolution outcome.</param>
     internal static void LogUnresolved(ILogger logger, string address, Result outcome)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(outcome);
+
+        // SEC-B4: THE RAW ADDRESS IS NOT RECORDED, AND THAT IS THE FIX. This entry used to log the whole
+        // address - the host name followed by the request's FULL path - at warning or error level, on a
+        // path that runs before routing and therefore for every request. An unknown host name is
+        // caller-controlled, so a caller could pick any host it liked and then force arbitrary path text
+        // into the production log with it: a mistyped credential, a bearer token pasted into a URL, an
+        // e-mail address or any other personal data that happens to sit in a path segment. That bypassed
+        // the request envelope's own protection, which records the ROUTE TEMPLATE rather than the path for
+        // exactly this reason, and it contradicted the requirement that structured logging exclude
+        // sensitive data.
+        //
+        // What replaces it keeps the diagnosis and drops the exposure. The HOST CANDIDATE is bounded and
+        // stripped to printable US-ASCII, which is the one fact an operator needs in order to add or
+        // correct an alias row, and it cannot carry a control character or an unbounded body. The
+        // FINGERPRINT is a short digest of the whole address, so repeated failures against the same full
+        // address are still recognisable as one problem - and a child portal's path, which is the part an
+        // operator would have wanted the address for, is identified by its digest rather than reproduced.
+        string aliasCandidate = TenantAddress.HostCandidateOf(address);
+        string fingerprint = TenantAddress.FingerprintOf(address);
 
         string reasonCode = outcome.Reason?.Code ?? "PORTAL_ALIAS_UNRESOLVED";
 
@@ -451,26 +530,26 @@ public sealed class PortalAliasResolutionMiddleware
             IPortalContextHolder.NotFoundReasonCode,
             StringComparison.Ordinal);
 
-        // Structured, so the host name is a queryable property rather than text spliced into a message.
-        // A Host header is routing information rather than personal data, and it is the one fact an
-        // operator needs in order to correct the alias configuration.
+        // Structured, so each fact is a queryable property rather than text spliced into a message.
         if (unknownHost)
         {
             logger.LogWarning(
-                "The host name {RequestHost} does not identify a configured portal, so this request " +
-                "continues with no tenant. Reason code {ReasonCode}.",
-                address,
+                "The host name {AliasCandidate} does not identify a configured portal, so this request " +
+                "continues with no tenant. Address fingerprint {AddressFingerprint}. Reason code {ReasonCode}.",
+                aliasCandidate,
+                fingerprint,
                 reasonCode);
 
             return;
         }
 
         logger.LogError(
-            "The tenant for host name {RequestHost} could not be resolved, so this request continues with " +
-            "no tenant. Reason code {ReasonCode}. Detail: {ReasonMessage}. This is an installation " +
-            "configuration defect and every request to this host will be unable to reach tenant-scoped " +
-            "endpoints until it is corrected.",
-            address,
+            "The tenant for host name {AliasCandidate} could not be resolved, so this request continues " +
+            "with no tenant. Address fingerprint {AddressFingerprint}. Reason code {ReasonCode}. Detail: " +
+            "{ReasonMessage}. This is an installation configuration defect and every request to this host " +
+            "will be unable to reach tenant-scoped endpoints until it is corrected.",
+            aliasCandidate,
+            fingerprint,
             reasonCode,
             outcome.Reason?.Message ?? "none reported");
     }

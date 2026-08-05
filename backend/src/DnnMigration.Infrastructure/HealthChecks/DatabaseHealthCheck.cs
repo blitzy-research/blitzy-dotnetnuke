@@ -11,13 +11,18 @@ namespace DnnMigration.Infrastructure.HealthChecks;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Three unauthenticated callers depend on the answer. The API image declares a <c>HEALTHCHECK</c> that
-/// probes <c>/health/ready</c> with <c>wget --spider</c>, because the Alpine runtime ships no
-/// <c>curl</c>; compose makes the frontend service's <c>depends_on</c> conditional on the API becoming
-/// ready; and the end-to-end validation gate probes the same readiness path. None carries a credential,
-/// which is why the endpoint that surfaces this check is anonymous and why this type takes no dependency
-/// on a caller identity, a resolved tenant, or an ambient request of any kind. It answers correctly when
-/// invoked outside a request altogether.
+/// WHICH PROBE ACTUALLY READS THIS CHECK, STATED PRECISELY. This check is registered with the <c>ready</c>
+/// tag, so it is surfaced by the API layer's <c>/health/ready</c> view and by that view ALONE. The three
+/// probes the deployment artefacts declare - the API image's <c>HEALTHCHECK</c>, the compose api health
+/// check that the frontend service's <c>depends_on</c> waits on, and the end-to-end validation gate - all
+/// read <c>/health</c>, which is the LIVENESS view and excludes every ready-tagged check by predicate.
+/// That is deliberate and is the arrangement this file's completion note below describes: the store is
+/// external and may legitimately be unreachable while the process starts, so holding the container
+/// unhealthy on it would hold the whole topology back. <c>/health/ready</c> is offered for an orchestrator
+/// that gates TRAFFIC on the store; nothing in this repository probes it. Every one of those callers is
+/// unauthenticated, which is why the endpoints that surface this check are anonymous and why this type
+/// takes no dependency on a caller identity, a resolved tenant, or an ambient request of any kind. It
+/// answers correctly when invoked outside a request altogether.
 /// </para>
 /// <para>
 /// <strong>Connectivity only, and deliberately so.</strong> Opening a connection is the whole probe: no

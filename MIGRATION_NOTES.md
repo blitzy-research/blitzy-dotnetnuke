@@ -416,10 +416,14 @@ held in the **memory of a single process**. Therefore:
   issued it. Running two or more API replicas without sticky routing produces
   refresh failures that look intermittent and are not.
 - **Retention is bounded by the configured lifetime, not by process lifetime.**
-  An expired family is **removed in full** - its token records, the family entry
-  and its entry in the per-user index - and the consumed-token digests kept for
-  replay detection are bounded to the replay-detection window rather than
-  accumulating for the life of the process. Nothing grows without limit.
+  A family past its absolute ceiling is **removed in full**, every generation of
+  it, on the next issue or rotation. A consumed generation is kept until that
+  ceiling and not beyond, because until then its digest is the signal that
+  detects a replay. A second, absolute bound sits behind the first: the store
+  tracks at most 100,000 generations and, if that ceiling were ever reached,
+  evicts the families nearest their absolute expiry first. Nothing grows without
+  limit, and no request fails because of either bound - the only cost is that the
+  oldest refresh families stop refreshing.
 
 **Why it is built this way.** A durable store would need a table, and the
 governing constraint of this migration is that the existing SQL Server schema is
@@ -928,22 +932,21 @@ policy and had none.
   publishes the API port to the public internet should stop doing so - the proxy is
   the only intended path - because a directly reachable caller appears as the
   bridge gateway and would then fall inside the trusted range.
-- **HTTPS redirection is enforced in production, with two named exemptions, and
+- **HTTPS redirection is enforced in production, with ONE named exemption, and
   HSTS is on outside development.** The redirect is branched rather than blanket:
-  it is withheld from the anonymous `/health` endpoint, which answers a container
-  health probe over plain HTTP before any credential exists and which the compose
-  topology waits on before starting the frontend, and from a loopback-addressed
-  request, which never traverses a network and so has nothing for a redirect to
-  protect - the same carve-out the framework's own strict transport security makes
-  by default. Every other request, meaning every request addressed by a real host
-  name, must arrive over HTTPS or be redirected until it does; that is what makes a
-  directly reachable plain-HTTP API port unusable for credentials rather than
-  merely discouraged. The target port is configured (`Https:Port`, default 443)
-  because the redirection stage otherwise cannot build a target authority and
-  **logs once and forwards the request unchanged** - a transport control that
-  silently does nothing. The status code is the framework default 307 rather than a
-  permanent redirect, so a deployment that has to answer over plain HTTP again
-  during a certificate replacement is not left unreachable by cached answers.
+  it is withheld from the three anonymous health paths, matched by exact equality,
+  because they answer a container health probe over plain HTTP before any credential
+  exists and the compose topology waits on that probe before starting the frontend.
+  Every other request must arrive over HTTPS or be redirected until it does; that is
+  what makes a directly reachable plain-HTTP API port unusable for credentials rather
+  than merely discouraged. A second exemption existed for a "loopback-addressed"
+  request and has been **withdrawn**: it was decided from `Request.Host`, a value the
+  caller sends, so a remote client could send `Host: localhost` and exempt itself. It
+  is not re-derived from the connection endpoint either, because no delivered topology
+  needs it - see the transport-policy remediation section for the measurement. The
+  target port is configured (`Https:RedirectPort`, default 443) because the
+  redirection stage otherwise cannot build a target authority and **logs once and
+  forwards the request unchanged** - a transport control that silently does nothing.
 - **Transport security that is switched off outside development is announced at
   startup.** A deployment serving production traffic with neither redirection here
   nor a TLS-terminating proxy in front carries credentials in clear text while every
@@ -953,14 +956,16 @@ policy and had none.
 
 **Operational consequence.** Browser traffic is HTTPS-only, and a deployment
 reached at a real host name **must** provide TLS at the edge - either by fronting
-the SPA container with a TLS-terminating ingress, or by mounting a server fragment
-into `/etc/nginx/transport-policy/` that adds a TLS listener and certificate paths
-to the shipped nginx server. Without either, every browser request is answered
-with a redirect the browser cannot satisfy, which is the intended loud failure
-rather than a silent downgrade to clear text. Certificates are never committed and
-never baked into an image. A deployment that terminates TLS *at the API* instead
-must additionally keep the health endpoint reachable over plain HTTP, which the
-pipeline's exemption already guarantees. A deployment that serves the SPA from a
+the SPA container with a TLS-terminating ingress, or by mounting a complete server
+block into `/etc/nginx/tls/`, which is what `docker/nginx.tls.conf` is and what
+`docker/docker-compose.tls.yml` mounts. The shipped `docker/nginx.conf` itself
+decides no transport policy at all and declares no redirect, so an unprotected
+deployment fails by serving cleartext rather than by redirecting; the API's own
+stage is what refuses cleartext once `Https:RedirectEnabled` is set, which the TLS
+overlay sets. Certificates are never committed and never baked into an image. A
+deployment that terminates TLS *at the API* instead must additionally keep the
+health endpoints reachable over plain HTTP, which the pipeline's exemption already
+guarantees. A deployment that serves the SPA from a
 different origin than the API must add that origin to the allowed list. The base
 configuration file names exactly one origin, the local development origin
 `http://localhost:4200`, and no other; the shipped container topology overrides
@@ -1221,9 +1226,10 @@ which needs a templated index document this image does not serve. Inline style
 cannot execute script, so the exception does not weaken the script directive.
 
 **`upgrade-insecure-requests` is deliberately absent.** It would rewrite every
-subresource request of a plain-HTTP document to HTTPS, which on the exempted
-loopback path means rewriting them to a port nothing is listening on. The redirect
-described above is the right tool for that job and already applies.
+subresource request of a plain-HTTP document to HTTPS, which on the cleartext base
+topology the acceptance gate probes means rewriting them to a port nothing is
+listening on. A deployment that terminates TLS through the overlay serves no
+plain-HTTP document for it to upgrade.
 
 **Verified, not assumed.** The policy was checked against the real bundle in a
 browser: it is delivered in enforcing mode, the console is silent, and every module
@@ -1575,13 +1581,24 @@ comment. Adding a dependency therefore requires declaring its pattern in the sam
 commit - intended friction, because that is the moment a new package identity gets
 reviewed.
 
-**The production restore now carries the same controls.**
-`docker/api.Dockerfile` copies `NuGet.Config`, all six manifests and all six
-`packages.lock.json` files before its restore layer, and runs the solution-wide
-restore with the repository configuration and locked mode explicitly selected.
-The later publish still suppresses restore. A package identity outside the
-source map, a changed transitive version or a manifest/lock mismatch therefore
-fails the container build instead of silently changing the production graph.
+**The production restore still carries the locked-mode control, and it no longer
+restates it.** `docker/api.Dockerfile` copies the whole `backend/` tree — which
+includes all six manifests and all six `packages.lock.json` files — and then runs a
+bare solution-wide `dotnet restore`. It needs no flags of its own:
+`Directory.Build.props` sets `RestorePackagesWithLockFile` and `RestoreLockedMode`
+for every project, so a changed transitive version or a manifest/lock mismatch still
+fails the container build. The later publish still suppresses restore.
+
+An earlier revision of that file also copied this `NuGet.Config` and passed
+`--configfile NuGet.Config --locked-mode` explicitly. Both were withdrawn as part of
+returning the Dockerfile to its preserved-example form: the flags restated a policy
+the props file already enforces, and every identity in the reviewed graph resolves
+from the same public source the image uses by default. The source-mapping control
+above therefore governs developer and CI restores, where a new identity is
+introduced and reviewed; the image's restore is governed by the lock files, which is
+the control that matters once the graph is already fixed. Verified by execution:
+`docker compose build` restores clean and the API image builds with no lock-file
+warning and no `NU1004`.
 
 **Target behaviour - advisories are deliberately not build gates.** Neither the
 npm nor the NuGet audit is wired into the build, and the reason is specific rather
@@ -2924,14 +2941,22 @@ misbehaved on:
   place every portal's content outside the application at once. A format string
   without the placeholder would give every portal lacking a stored home directory
   the same directory, so tenants would share one.
-- **`PortalOptions.UnauthenticatedRoleName` and `AllUsersRoleName`** must each be
-  present, no longer than the 50 characters `Roles.RoleName` stores
+- **The two special role names are no longer settings and therefore no longer
+  validated here.** `PortalOptions.UnauthenticatedRoleName` and `AllUsersRoleName`
+  were bound from `Portal:UnauthenticatedRoleName` and `Portal:AllUsersRoleName`
+  and validated for presence, for the 50-character `Roles.RoleName` width
   (`01.00.00.SqlDataProvider:L117`, carried unchanged through both rebuilds at
-  `01.00.04:L1324` and `01.00.05:L2750`), and different from each other. The
-  legacy lookup matches a role by comparing this display name as a string, so an
-  over-long name could never match a stored row, and the legacy
-  role-name-to-role-id switch reads both arms of the pair, so collapsing them
-  would resolve one role's identifier for the other.
+  `01.00.04:L1324` and `01.00.05:L2750`) and for collision with each other. All
+  three checks are withdrawn together with the settings, because validation was
+  the wrong remedy: a *well-formed* configured value that named a different row of
+  the `Roles` table moved every-caller or anonymous-caller semantics onto a role an
+  administrator had created for some other purpose, and no start-up check can
+  detect that. They are now the immutable constants
+  `DnnMigration.Domain.Common.SpecialRoleNames.AllUsers` and `.Unauthenticated`,
+  which AAP sections 0.2.2.1 and 0.7.6 specify as the replacement for the excluded
+  `Globals` module's role-name constants, with the column width published beside
+  them as `SpecialRoleNames.RoleNameMaximumLength`. Changing either value is a
+  reviewed source change, not a deployment setting.
 - **`PasswordPolicyOptions`** rejects a minimum length below one, a negative
   non-alphanumeric minimum, a policy demanding more non-alphanumeric characters
   than the password has characters, and a strength pattern that does not parse.
@@ -3211,12 +3236,20 @@ rather than merely unconfigured.
 
 **The `Https` section carries two keys, and they are useless apart.**
 `Https:RedirectEnabled` decides whether the pipeline installs the redirection stage, and
-`Https:Port` (default 443) is the port that stage redirects to. The stage resolves its target port
+`Https:RedirectPort` (default 443) is the port that stage redirects to. The stage resolves its target port
 from these options, then from the host's own configuration, then from a single HTTPS address the
 server is listening on - and this process listens on plain HTTP only, so the last of those can
 never succeed. When none of them yields a port the stage logs once and forwards the request
-unchanged, so without `Https:Port` a deployment could switch redirection on, see no error, and
-still serve every request in clear text. 443 is also the only value for which the framework builds
+unchanged, so without `Https:RedirectPort` a deployment could switch redirection on, see no error,
+and still serve every request in clear text.
+
+There is exactly **one** spelling of that key, and there was briefly a second. The deployment
+artefacts set `Https__Port`, which binds to nothing at all; the 443 default masked the mismatch for
+the stock topology, so a deployment terminating TLS on any other port had its setting silently
+ignored and every redirect named 443 - a transport control that appeared configured and was not.
+`docker/docker-compose.tls.yml` and `docker/nginx.tls.conf.example` now both spell it
+`Https__RedirectPort`, and no artefact in the repository mentions `Https__Port` except to say it
+binds to nothing. 443 is also the only value for which the framework builds
 an authority with no port at all (`https://host/path` rather than `https://host:443/path`), so the
 redirect a browser follows is the address an operator published.
 
@@ -3399,25 +3432,37 @@ left false, browser credentials and bearer tokens cross a network in clear text;
 branch, the container's own health probe is answered with a redirect and the whole deployment stops
 coming up. Both are avoided at once. `Extensions/ApplicationBuilderExtensions.cs` installs the
 redirection stage behind `UseWhen(TransportSecurityApplies, …)`, and that predicate withholds the
-redirect from exactly two classes of request: the anonymous `/health` endpoint, and a
-loopback-addressed request. The compose health check uses
-`wget --spider http://127.0.0.1:8080/health` over plain HTTP, and the frontend service declares
-`depends_on: condition: service_healthy`, so answering that probe with a 307 would leave the API
-permanently unhealthy and the frontend permanently unstarted. The loopback exemption is the same
-carve-out the framework's own strict transport security makes by default - such a request never
-leaves the machine that issued it - and it is also what keeps the shipped topology usable, because
-nginx forwards the browser's own host, which on that topology is a loopback address.
+redirect from ONE class of request: the three anonymous health paths, matched by exact equality. The
+compose health check uses `wget --spider http://127.0.0.1:8080/health` over plain HTTP, and the
+frontend service declares `depends_on: condition: service_healthy`, so answering that probe with a
+redirect would leave the API permanently unhealthy and the frontend permanently unstarted.
 
-Verified end to end in the running containers: `docker compose up -d` reported both services
-`healthy`; `curl -f http://localhost:8080/health` and `curl -f http://localhost:4200` both returned
-200; signing in through the proxy at `http://localhost:4200/api/v1/auth/login` returned 200 with an
-access token and `GET /api/v1/auth/me` resolved the tenant; and the same API addressed directly
-with a public host name over plain HTTP was answered `307 Location: https://…`, which is the
-plain-HTTP bypass being closed. On the Kestrel host the near-miss path `/healthz` was still
-enforced, confirming the exemption is an equality test rather than a prefix test, and an untrusted
+**Correction: the loopback exemption is gone, and it was a spoofable bypass.** An earlier revision
+of this predicate also withheld the redirect from a "loopback-addressed" request, and classified one
+by reading `context.Request.Host` - the authority the CALLER sends. A remote client reaching a
+published listener could therefore send `Host: localhost`, be exempted from transport enforcement
+and be served over cleartext; the same mistake was repeated in `docker/nginx.conf`, which decided
+the same thing from `$host`. Both are removed. The exemption is not re-derived from the connection
+endpoint either, because nothing that ships needs it: `docker/docker-compose.yml` sets
+`Https__RedirectEnabled=false` for a topology that is cleartext behind a proxy end to end,
+`docker/docker-compose.tls.yml` turns enforcement on while its proxy forwards
+`X-Forwarded-Proto: https` from a named hop so the request is already secure, and the container's own
+probe is a health path. An operator addressing this process over plain HTTP on a TLS-mode deployment
+now receives the redirect, which is the honest answer.
+
+Verified end to end in the running containers, after the correction: `docker compose up -d` reported
+both services `healthy`; `curl -f http://localhost:8080/health` and `curl -f http://localhost:4200`
+both returned 200; signing in through the proxy at `http://localhost:4200/api/v1/auth/login`
+returned 200 with an access token. With enforcement switched on for the api service, a request
+through the proxy was answered `308 Location: https://localhost:8443/…`; the SAME request carrying a
+spoofed `X-Forwarded-Proto: https` was **still** answered 308, because the proxy overwrites that
+header with its own `$scheme`; a request addressed directly to the API with a spoofed
+`Host: localhost` was **still** answered 308; and `/health` continued to answer 200 throughout, so
+the container stayed healthy. On the Kestrel host `/health`, `/health/ready`, `/health/live` and
+`/health/` were all served unredirected while the near-miss path `/healthz` was redirected,
+confirming the exemption is an equality test rather than a prefix test, and an untrusted
 `X-Forwarded-Proto: https` was ignored rather than believed. Strict transport security needs no key
-of its own, since that stage ignores requests that did not arrive over HTTPS and ignores loopback
-hosts.
+of its own, since that stage only ever adds a header and only on a request that arrived over HTTPS.
 
 **Why this overlay names NO trusted proxy, and where the trust is named instead.** The
 forwarded-header stage trusts nothing a deployment has not named
@@ -3450,7 +3495,7 @@ production overlay is not the place to accumulate inert re-assertions. No `Proxy
 here, for the reason given above: the trusted hop is named by the topology that operates it. No
 `Kestrel`, `Urls` or port key appears either: the image fixes `ASPNETCORE_URLS=http://+:8080` and
 runs as the unprivileged `appuser`, which cannot bind a port below 1024, and request limits are set
-in code rather than configuration. `Https:Port` IS declared, and it is the one addition to the base:
+in code rather than configuration. `Https:RedirectPort` IS declared, and it is the one addition to the base:
 the redirect stage needs a target authority, and 443 is the port the edge terminates TLS on.
 
 **And nothing here can touch the schema.** No `EnsureCreated`, `AutoMigrate`,
@@ -3475,8 +3520,9 @@ instance - and the commented alternative at `:L30` is `Server=(local);Database=D
 The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
 no setting existed to relax.
 
-**Target behaviour.** `Microsoft.Data.SqlClient` 6.1.6, which `DnnMigration.Infrastructure` pins,
-defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
+**Target behaviour.** `Microsoft.Data.SqlClient`, which `DnnMigration.Infrastructure` pins at the
+version AAP section 0.6.1 names, defaults `Encrypt` to `True` from its 4.0 release onwards, so the
+client validates the server certificate unless told otherwise.
 A developer running SQL Server locally with a self-signed certificate may add
 `TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
 only place it is acceptable. It must never appear in a production connection string, where it
@@ -3515,9 +3561,9 @@ rewriting that frozen gate:
 - nginx terminates TLS 1.2 or 1.3, redirects browser traffic for the deployment host from port 80
   to 443, mounts the certificate and key read-only, and publishes the SPA on ports 80 and 443;
 - the API's host port is withdrawn, leaving Kestrel reachable only on the compose network;
-- `Https__RedirectEnabled=true` and `Https__Port=443` protect any browser-facing request that
-  reaches Kestrel without the proxy, while `/health` remains exempt so the loopback container
-  probe still works;
+- `Https__RedirectEnabled=true` and `Https__RedirectPort=443` protect any browser-facing request that
+  reaches Kestrel without the proxy, while the three health paths remain exempt so the container
+  probe still works over plain HTTP;
 - `Proxy__KnownNetworks__0=172.16.0.0/12` makes forwarded protocol and client-address headers
   authoritative only when they came from the compose network. With no configured trusted proxy
   or network, forwarded headers are not processed at all.
@@ -3568,12 +3614,27 @@ Login, refresh and sign-out remain under the credential window and process-wide 
 so polling the current-user projection cannot lock legitimate clients out of signing in and a
 credential flood cannot consume the projection's own read allowance.
 
-### Host filtering is restrictive by default
+### Host filtering: one authority, and it is PortalAlias
 
-The shipped `AllowedHosts` value is exactly `localhost;127.0.0.1;[::1]`. That is suitable for the
-validation topology and refuses an unrecognised host before tenant resolution. A deployment serving
-a real DNS name must add that exact name, as the TLS overlay demonstrates; failing to do so produces
-an intentional HTTP 400 rather than silently accepting an arbitrary Host header.
+**This entry supersedes an earlier one that made the shipped `AllowedHosts` value
+`localhost;127.0.0.1;[::1]`.** That arrangement created two independent allow-lists for the same
+question, and the static one ran first. ASP.NET Core's host-filtering middleware executes before any
+application middleware, so an alias an administrator added through the API - the dynamic boundary that
+tenancy actually depends on - was answered with `400 Bad Request` before `PortalAliasResolutionMiddleware`
+ever saw it. Making a newly administered portal reachable required a separate configuration edit and a
+restart, which is not a boundary; it is a way for the two lists to disagree.
+
+The shipped value is now `*`, and **exact `PortalAlias` resolution is the authority**. That is not a
+weakening, because the static list never granted anything: an unmatched host still reaches no tenant, and
+every tenant-scoped endpoint refuses a request with no resolved tenant. What changes is where the refusal
+comes from - the alias store an operator actually administers, rather than a file written before the
+aliases existed.
+
+Host filtering remains available and remains the right tool for a **deployment-scoped** list, where the
+set of names is genuinely known in advance: `docker/docker-compose.tls.yml` sets an explicit
+`AllowedHosts` for exactly that reason, and the integration suite proves the mechanism still refuses an
+unconfigured name when a deployment configures it. A deployment that wants a second, static boundary sets
+one there; the shipped default no longer imposes one that contradicts the alias store.
 
 ### Administrative module definitions and generic settings are separate privilege surfaces
 
@@ -3637,19 +3698,22 @@ change between validation and commit.
 
 ### Legacy credential, refresh-token and audit corrections remain authoritative
 
-The existing sections **Security correction: legacy credential cut-over, durable refresh state and
-minimal claims** and **Security correction: minimised audit data, structured metadata and delivery
-health** remain part of this document unchanged. They are the authoritative record for bounded
-legacy verification with immediate BCrypt replacement, SQL-backed refresh rotation, minimal access
-token claims, audit-data minimisation, structured metadata and degraded audit-pipeline health.
+The existing sections **Security correction: legacy credential cut-over, refresh state and minimal
+claims** and **Security correction: minimised audit data, structured metadata and delivery health**
+remain part of this document. They are the authoritative record for bounded legacy verification with
+immediate BCrypt replacement, minimal access token claims, audit-data minimisation, structured
+metadata and degraded audit-pipeline health. The one claim that does **not** survive is SQL-backed
+refresh rotation: see “Refresh-token state is process-local, because the existing schema is
+immutable” below, which withdraws it and states what replaced it.
 
 ### Reproducible restore and current dependency verification
 
 Every backend project now owns a committed `packages.lock.json`, including the package-free Domain
 project. `Directory.Build.props` enables lock-file generation and locked mode globally.
-`docker/api.Dockerfile` copies the repository `NuGet.Config`, all six manifests and all six lock
-files before restoring with the explicit repository configuration and locked mode. A clean
-solution restore and the API image restore both succeeded in locked mode.
+`docker/api.Dockerfile` copies the whole `backend/` tree — every manifest and every lock file with
+it — and then restores; locked mode arrives from the props file rather than from a command-line
+flag, which is why the flag was withdrawn when that file was returned to its preserved-example
+form. A clean solution restore and the API image restore both succeeded in locked mode.
 
 The authoritative NuGet checks were rerun on **August 5, 2026** against nuget.org with transitive
 packages included:
@@ -3662,8 +3726,21 @@ packages included:
   framework-major lines outside the frozen net8.0 plan. An outdated result without an advisory or
   deprecation is not silently treated as compatible with the AAP's exact version pins.
 
-The runtime-relevant deprecated graph was removed by moving `Microsoft.Data.SqlClient` from 5.2.3
-to 6.1.6 and pinning `System.Collections.Immutable` 8.0.0. The container test harness moved from
+**A previous revision of this section recorded a dependency change that has since been withdrawn, and
+the withdrawal is the correction.** It moved `Microsoft.Data.SqlClient` from 5.2.3 to 6.1.6 and added a
+direct `System.Collections.Immutable` 8.0.0 pin in order to lift a deprecated build-time graph. Both
+were outside the frozen inventory in AAP section 0.6.1, which pins the client at **5.2.3** and lists
+neither of those identities; a project that raises a pinned major version or adds an identity on its
+own is no longer building the graph that was reviewed. The client is back at 5.2.3, the
+`System.Collections.Immutable` pin is gone and the identity resolves transitively at 6.0.0 as a
+build-time Roslyn asset of the EF Core design package, and `System.IdentityModel.Tokens.Jwt` 7.7.3 -
+also declared directly and also outside the inventory - now arrives through the inventory's own
+`Microsoft.AspNetCore.Authentication.JwtBearer` 8.0.29, which resolves the identical 7.7.3 band the
+Api project resolves. Re-verified after the change: locked-mode restore succeeded, a no-cache restore
+with NuGet auditing at `all`/`low` produced **zero** warnings, `dotnet list package --vulnerable
+--include-transitive` reported no vulnerable package in any of the six projects, and the Release build
+with warnings promoted to errors produced zero warnings and zero errors. Deprecation is therefore an
+inventory decision to be taken in the plan and not in a manifest. The container test harness moved from
 `Testcontainers.MsSql` 3.10.0 to 4.13.0; its new `BouncyCastle.Cryptography` transitive identity is
 explicitly source-mapped. The obsolete parameterless `MsSqlBuilder` call was replaced with
 `new MsSqlBuilder(ContainerImage)`. The full 841-test integration suite passed both against the
@@ -3751,7 +3828,7 @@ and changes the named `audit-pipeline` health check to `Degraded`. The anonymous
 named status but not the exception or counter data. A restart clears the process-local count; the external
 monitoring system must retain and alert on the degraded observation across restarts.
 
-## Security correction: legacy credential cut-over, durable refresh state and minimal claims
+## Security correction: legacy credential cut-over, refresh state and minimal claims
 
 ### Republished machine-key material has been removed
 
@@ -3797,25 +3874,46 @@ source comment that repeated it. The primary AAP 0.7.5.5 path now exists:
 The migration secret is supplied only by an environment-backed secret while legacy rows remain.
 After cut-over, disable the verifier, remove that secret and reset any residual legacy credentials.
 
-### Refresh-token state is durable, shared and consumed only after fallible reads
+### Refresh-token state is process-local, because the existing schema is immutable
 
-The process-local singleton store has been removed. `IRefreshTokenStore` and `ITokenService` are
-scoped asynchronous services backed by the additive application-owned table
-`DnnMigration.RefreshTokens`. Production applies
-`backend/src/DnnMigration.Infrastructure/Persistence/Scripts/CreateRefreshTokenStore.sql`
-explicitly; application startup and EF migrations do not create or alter any legacy object.
+**This entry supersedes an earlier one that described refresh state as durable and shared.** That
+arrangement stored token digests in an additive application-owned table `DnnMigration.RefreshTokens`,
+provisioned by an operator-run script under `Infrastructure/Persistence/Scripts`. It is withdrawn, and the
+script is deleted, for two reasons that compound each other:
 
-Only SHA-256 token and client-binding digests are stored. Issue, inspect, rotation and revocation
-are shared across restarts and replicas. Rotation runs under a serializable transaction with update
-locks; a bounded five-second same-client retry is classified as concurrent use without revoking the
-account, while a replay from another client revokes every family for that account. Spent
-fingerprints remain until the family's absolute expiry rather than being trimmed to a generation
-count, and expired cleanup is bounded to 500 rows per operation.
+- **AAP rule T4 makes the existing DotNetNuke schema immutable.** No `CREATE`, `ALTER` or `DROP` may reach a
+  production database from this migration. A new table plus a new schema, however additive, is exactly that.
+- **It made authentication impossible on the database this API is mandated to run on.** Every successful
+  credential verification calls `IRefreshTokenStore.IssueAsync` before any token pair is returned, so against
+  an unaltered DotNetNuke database login answered `TOKEN_STORE_UNAVAILABLE` and no caller could ever sign in.
+  The integration suite did not catch it because the suite provisioned the missing table itself.
 
-`AuthService.RefreshAsync` first performs a non-consuming inspection, then completes every tenant,
-account, credential-state, advisory and profile read, and only then requests the atomic rotation.
-A dependency failure therefore cannot consume the caller's usable token without returning its
-successor.
+`IRefreshTokenStore` and `ITokenService` are therefore registered as **singletons**, which is what AAP
+section 0.4.3 specifies for the token service, and the store holds its own state. The database context the
+SQL implementation captured only in order to read a connection string is gone with the SQL, which is what
+removed the captive-dependency problem that had forced the scoped registrations in the first place.
+
+Every observable semantic is preserved. Only SHA-256 token and client-binding digests are held; a raw
+refresh token is returned once and retained nowhere. Each read-modify-write runs inside one monitor, which
+gives the same all-or-nothing guarantee the serializable transaction with update locks gave: two exchanges
+racing on one token still produce exactly one successor. A bounded five-second same-client retry is
+classified as concurrent use without revoking the account, while a replay from another client revokes every
+family for that account. Spent fingerprints remain a theft signal until the family's absolute expiry rather
+than being trimmed to a generation count. Expired families are reclaimed on issue and on rotation.
+
+**Two operational consequences, stated rather than hidden.** Refresh state does not survive a process
+restart and is not shared between replicas, so a restart or a load-balanced second instance makes a caller
+sign in again instead of refreshing; an access token already issued stays valid until its stamped expiry, so
+the cost is bounded to the refresh path. A deployment that needs cross-process refresh continuity supplies
+its own shared implementation of `IRefreshTokenStore` — a cache or an external store it already owns — rather
+than adding a table to the DotNetNuke schema. Separately, the store bounds itself to 100,000 tracked
+generations and evicts the families nearest their absolute ceiling first, so a caller holding valid
+credentials cannot grow process memory without limit; the eviction cost is that the oldest refresh families
+stop refreshing, never that a request fails.
+
+`AuthService.RefreshAsync` still performs a non-consuming inspection first, then completes every tenant,
+account, credential-state, advisory and profile read, and only then requests the atomic rotation. A
+dependency failure therefore cannot consume the caller's usable token without returning its successor.
 
 ### Access tokens carry identity, not mutable authority
 
@@ -4204,18 +4302,20 @@ required-variable form, would have made the base topology refuse to start unless
 certificates it does not need. TLS is now activated one way — `docker compose -f
 docker/docker-compose.yml -f docker/docker-compose.tls.yml` — and the header comments, the README
 verification commands and the mount path named in `nginx.conf` were each corrected to the measured
-behaviour: `http://localhost:4200` and `http://localhost:8080/health` both answer 200, not a redirect,
-because both address a loopback authority that every transport stage here exempts.
+behaviour: `http://localhost:4200` and `http://localhost:8080/health` both answer 200, not a redirect -
+the first because the base proxy declares no redirect at all, and the second because the health paths
+are the one exemption the API's transport stage makes.
 
-**The two transport edges return different redirect codes, deliberately.** The proxy answers a
-plain-HTTP request for a non-loopback host with 307 and the API's own transport stage answers with 308;
-a comment in the proxy configuration claimed the two agreed, which was never true. Both codes preserve
-the method and the body, so the difference is cacheability alone, and the two edges do not face the same
-caller: the proxy's answer is cached by real browsers and by every intermediary on the path, where
-reversibility during a certificate replacement is worth having, while the API's stage is a
-defence-in-depth backstop on the private container network that no browser addresses, where permanence
-is the honest description of a perimeter that terminates TLS and carries no cache blast radius. The
-claim of agreement is removed and the reason for the split is stated at both edges.
+**There is now exactly one browser-facing redirect, and it lives in the TLS overlay.** An earlier
+arrangement had both edges redirecting - the base proxy with 307 for what it judged a non-loopback host,
+the API with 308 - and a comment claiming the two agreed, which was never true. That is superseded: the
+base `docker/nginx.conf` declares no redirect at all, because the only facts available to it there are
+supplied by the caller. `docker/nginx.tls.conf`, the block a deployment mounts to terminate TLS, answers
+a plain-HTTP request for its OWN `server_name` with 307 - reversible, because a browser and every
+intermediary on the path cache that answer and a certificate replacement must not leave them stranded -
+and the API's own stage answers 308 as a defence-in-depth backstop on the private container network that
+no browser addresses, where permanence is the honest description of a perimeter that terminates TLS and
+carries no cache blast radius. The reason for the difference is stated at both edges.
 
 **The TLS overlay was activated and measured, and three further disagreements only appear when it is.**
 The overlay is the one supported way to terminate TLS in the front-end container, so it was brought up
@@ -5785,22 +5885,23 @@ commit one, even for convenience, is the whole point of moving away from it.
 health check probes the API over plain HTTP on the internal network, so the API listens on plain
 HTTP by design. `UseForwardedHeaders` is installed so the application sees the original scheme and
 caller address from the headers the proxy sends, and from trusted hops only. HTTPS redirection is
-then enforced on top of that in the production overlay, branched so that the plain-HTTP health
-probe and any loopback-addressed request are never answered with a redirect - the two cases in
-which a redirect would break the deployment rather than protect it.
+then enforced on top of that in the production overlay, branched so that the three plain-HTTP
+health paths are never answered with a redirect - the one case in which a redirect would break the
+deployment rather than protect it. There is no second, host-derived exemption: the one that existed
+read `Request.Host` and could therefore be switched off by the caller it was meant to constrain.
 
-**Note on the portal-alias resolution stage.** Its position in the pipeline is documented and
-deliberately left empty rather than filled with a stub, because the stage is not yet part of the
-solution. The consequence is explicit: the scoped `IPortalContext` registration throws with a
-message naming the missing stage and the request-item key it must publish under, so an endpoint
-that depends on a portal fails immediately and says why - instead of quietly serving one tenant's
-data against another tenant's context.
+**Note on the portal-alias resolution stage.** It is registered between `UseAuthentication` and
+`UseAuthorization`, and the pre-routing `TenantPathBaseMiddleware` performs the path-base rewrite
+and the diagnosis. An earlier note here recorded the stage as documented-but-absent, with the
+scoped `IPortalContext` registration throwing to say so; that is long superseded - the stage,
+the holder and the refusal all exist, and their behaviour is set out under the tenant-resolution
+headings.
 
-**Note on the permission policies.** The four permission policy names remain in the catalogue but
-are deliberately NOT registered, because the handler that consults the module and tab permission
-triads is not yet part of the solution. A policy registered with no handler able to satisfy it
-denies every request that uses it while the registration still reads as legitimate; an absent
-policy fails loudly at start-up the moment an endpoint names it, which is far easier to diagnose.
+**Note on the permission policies.** The four permission policy names are registered, each with
+the `PermissionAuthorizationHandler` that consults the module and tab permission triads, and the
+two view policies deliberately admit an unauthenticated caller while the two edit policies demand
+an authenticated one. An earlier note here recorded them as catalogued-but-unregistered on the
+grounds that no handler existed yet; that is superseded.
 
 
 ## Front-end shell, routing and test harness
@@ -6223,9 +6324,10 @@ one outcome the legacy code could not produce, because it never had a
 tenant-agnostic place to read the name from.
 
 **A related dead end, recorded so it is not retried.** The value is also not
-available from the bound portal options: those carry `AdminTemplateFileName`,
-`HomeDirectoryFormat`, `UnauthenticatedRoleName` and `AllUsersRoleName`, and no
-administration role of any kind. A registration written against that description
+available from the bound portal options: those carry `AdminTemplateFileName` and
+`HomeDirectoryFormat`, and no administration role of any kind. (They also once
+carried the two special role names; those are now domain constants, and the
+administration role was never among them either way.) A registration written against that description
 could not compile, so the compiler happens to catch this particular mistake —
 whereas it cannot catch a fixed role name, which compiles perfectly and
 mis-authorises quietly.
@@ -6489,11 +6591,32 @@ and `Website/Default.aspx.vb` then ran a 700-line Web Forms page lifecycle on to
 **Target behaviour.** One explicit pipeline, composed in
 `backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs` and mapped as stages 1-10 in
 `backend/src/DnnMigration.Api/Program.cs`: exception handler, correlation id, request logging, routing,
-CORS, authentication, authorization, portal-alias resolution, controllers, health checks. Five further
-stages are interleaved without displacing any of the ten — HSTS and HTTPS redirection under guards, a
-tenant path-base stage before routing, the credential rate limiter after CORS, and the documentation
-console between authentication and authorisation. There is no assembly probing, because .NET 8 has no
-equivalent and needs none.
+CORS, authentication, **portal-alias resolution, authorization**, controllers, health checks. Five
+further stages are interleaved without displacing any of the ten — HSTS and HTTPS redirection under
+guards, a tenant path-base stage before routing, the credential cache-control marker and the
+credential rate limiter after routing, and the documentation console between authentication and the
+tenant stage. There is no assembly probing, because .NET 8 has no equivalent and needs none.
+
+**Deliberate divergence from AAP 0.5.1.4's stage list, recorded rather than absorbed.** That list
+places portal-alias resolution AFTER authorization, and this pipeline places it BEFORE. The plan
+assumed one portal-alias stage; the implementation necessarily has two, because rewriting the path
+base for a child portal has to happen before routing while deciding whether a particular endpoint
+requires a tenant needs the matched endpoint's metadata and therefore has to happen after it. Once
+the concern is split, the refusal cannot sit behind authorization: every tenant-scoped policy
+reconciles three identities — the caller's portal, the route's portal and the ARRIVAL portal — and
+with the refusal behind authorization those policies were evaluated on requests that had no arrival
+portal at all, silently degrading a three-sided check to a two-sided one exactly where a caller had
+addressed the installation from a host name it does not serve. No other named stage moves.
+
+**And the property the old position provided is preserved deliberately.** With the refusal behind
+authorization, an anonymous caller was turned away with 401 before it could observe a tenant refusal,
+so it could not tell a configured host name from an unconfigured one by reading a status code. Moving
+the stage forward would have handed that caller 403 from an unconfigured host and 401 from a
+configured one — an enumeration oracle for the alias table. The refusal is therefore withheld when the
+caller is unauthenticated AND the matched endpoint carries no `AllowAnonymous` marker, which is sound
+rather than optimistic: the application registers a fallback policy of `RequireAuthenticatedUser`, so
+such a caller is guaranteed the same 401 from every host. An authenticated caller, and an endpoint
+that genuinely allows anonymous access, are still refused before any policy runs.
 
 **Why the difference is deliberate.** Only three of the fifteen legacy entries describe a responsibility
 this API still has, and each is met natively rather than ported: exception handling by
@@ -6594,30 +6717,42 @@ report unhealthy with their fixed descriptions, and a pre-cancelled token propag
 **Annotated in code at.**
 `backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`.
 
-### HTTPS redirection is enforced in-process, exempting only the health endpoint and loopback addresses
+### HTTPS redirection is enforced in-process, exempting only the three health paths
 
 **Legacy behaviour.** Transport security was configured at the web server.
 
 **Target behaviour.** The host performs in-process HTTPS redirection wherever
 `Https:RedirectEnabled` is set — which the production overlay does — for every request
-except the anonymous `/health` endpoint and any request addressed to a loopback host.
+except the three anonymous health paths, `/health`, `/health/ready` and `/health/live`,
+matched by exact equality.
 
 **Why the difference is deliberate.** TLS terminates at the browser-facing edge in the
 delivered topology, so the API receives plain HTTP on its container port by design, and
 that is exactly why the API cannot simply trust its own connection: the scheme the
-browser used arrives as a forwarded header. Enforcing here as well as at the edge is
-what closes the plain-HTTP path to a directly reachable API port, so a caller that
-bypasses the proxy cannot send a credential or a bearer token in clear text. The two
-exemptions are what make enforcement safe rather than destructive. Redirecting the
-health endpoint would answer the container's own probe — which calls
-`http://127.0.0.1:8080/health` — with a redirect to a port nothing listens on, making
-the container permanently unhealthy and, through the compose dependency condition,
-preventing the front end from ever starting; no compiler, analyser or unit test reports
-that. Redirecting a loopback-addressed request would protect nothing, because such a
-request never leaves the machine that issued it, and it is the same carve-out the
-framework's own strict transport security makes by default. The redirect target port is
-configured rather than discovered, because the stage otherwise logs once and forwards
-the request unchanged — a transport control that silently does nothing.
+browser used arrives as a forwarded header, honoured only from a named hop. Enforcing
+here as well as at the edge is what closes the plain-HTTP path to a directly reachable
+API port, so a caller that bypasses the proxy cannot send a credential or a bearer token
+in clear text. The health exemption is what makes enforcement safe rather than
+destructive: redirecting the health endpoint would answer the container's own probe —
+which calls `http://127.0.0.1:8080/health` — with a redirect to a port nothing listens
+on, making the container permanently unhealthy and, through the compose dependency
+condition, preventing the front end from ever starting; no compiler, analyser or unit
+test reports that. The redirect target port is configured rather than discovered, because
+the stage otherwise logs once and forwards the request unchanged — a transport control
+that silently does nothing.
+
+**Correction: there was a second exemption, and it was a bypass.** The predicate also
+withheld the redirect from a request it judged "loopback-addressed", and it judged that
+by reading `Request.Host` — a value the caller sends. A remote client could send
+`Host: localhost` to a published listener and be served over cleartext, which is the
+precise control this stage exists to apply; `docker/nginx.conf` repeated the mistake from
+`$host`. The exemption is removed rather than re-derived from the connection endpoint,
+because nothing in the delivered topologies needs it (see the transport-policy note for
+the base and TLS compose files), and the path is now the only input the predicate reads —
+a path this process parses rather than a claim it is handed. Measured after the change:
+`/health`, `/health/ready`, `/health/live` and `/health/` are served unredirected while
+`/healthz` is redirected, and both `Host: localhost` and `Host: 127.0.0.1` receive
+`308` over cleartext.
 
 ### The forwarded-for header IS honoured, from named hops only, and the forwarded host is not
 
@@ -7165,8 +7300,17 @@ image verbatim would deliver a topology that starts, reports healthy and then fa
 store-backed request.
 
 **Verified outcome.** Both images build, the API reaches SQL Server, `/health/ready` reports
-healthy, compose starts the frontend, the HTTP ingress redirects to TLS and the HTTPS SPA
-loads successfully.
+healthy, compose starts the frontend, and a sign-in through the proxy returns 200 with an
+access token.
+
+**Re-measured when the rest of this file's additions were withdrawn.** Four other additions
+to `docker/api.Dockerfile` were removed to return it to its preserved form; this pair was
+kept, and kept only because the alternative was measured rather than assumed. A no-ICU build
+of the same image answers `/health` 200 but `/health/ready` **503** and sign-in **500**, with
+`System.NotSupportedException: Globalization Invariant Mode is not supported` raised from
+`Microsoft.Data.SqlClient.SqlConnection.TryOpen`. See the review-remediation section
+"The API image returned to its preserved form, with one measured exception" for the full
+comparison and for what was withdrawn.
 
 ## Test environment
 
@@ -10607,9 +10751,11 @@ it selects - 2.1.12 is the first unaffected 2.1.x. The integration test project 
 pins `SQLitePCLRaw.bundle_e_sqlite3` to 2.1.12. The bundle is pinned rather than
 `lib.e_sqlite3` alone so that core, provider and lib all move together and the native family
 cannot skew across versions. This is the same manoeuvre the approved dependency set already
-performs for `Microsoft.Data.SqlClient` 6.1.6, and for the same reason: a transitive package
-resolves to a version with a known problem, and a direct reference is the only mechanism
-that moves it.
+performs for `Microsoft.Data.SqlClient`, and for the same reason: a transitive package resolves
+to a version other than the one the plan pins, and a direct reference is the only mechanism
+that moves it. Note the difference in authority, because it is the whole point - the client's
+direct pin exists because AAP section 0.6.1 names that exact version, not because this project
+chose to raise it.
 
 That project's own comment previously forbade exactly this pin, on the grounds that a direct
 `PackageReference` wins version resolution outright and so moves the native provider off the
@@ -11846,8 +11992,9 @@ instance - and the commented alternative at `:L30` is `Server=(local);Database=D
 The .NET Framework 2.0 SQL client did not encrypt by default, so no certificate was validated and
 no setting existed to relax.
 
-**Target behaviour.** `Microsoft.Data.SqlClient` 6.1.6, which `DnnMigration.Infrastructure` pins,
-defaults `Encrypt` to `True`, so the client validates the server certificate unless told otherwise.
+**Target behaviour.** `Microsoft.Data.SqlClient`, which `DnnMigration.Infrastructure` pins at the
+version AAP section 0.6.1 names, defaults `Encrypt` to `True` from its 4.0 release onwards, so the
+client validates the server certificate unless told otherwise.
 A developer running SQL Server locally with a self-signed certificate may add
 `TrustServerCertificate=True` to the `ConnectionStrings__Default` value they export, and that is the
 only place it is acceptable. It must never appear in a production connection string, where it
@@ -12692,3 +12839,220 @@ document and that no `204` carries a body. The client's mirroring declaration is
 documented as producerless in the same terms. Both sides are consistent and the
 declaration is retained as documentation of an arity the server declares, so no code
 changed.
+
+
+## Review remediation: the transport policy stopped reading anything the caller sends
+
+**What was wrong.** Two edges enforced HTTPS, and both decided *whether to enforce it*
+from values the caller supplies. `docker/nginx.conf` mapped `$http_x_forwarded_proto`
+into an `$edge_scheme` variable and mapped `$host` into a `$loopback_addressed`
+variable, then combined the two into `$enforce_https` and answered a plain-HTTP request
+with `return 307` unless either flag stood the policy down - so a plain-HTTP client
+could send `X-Forwarded-Proto: https`, or `Host: localhost`, and be served the
+application over cleartext from a published listener. The same file then forwarded
+`X-Forwarded-Proto $edge_scheme` to the API, so a spoofed header propagated one hop
+further, and the API's own `TransportSecurityApplies` predicate repeated the Host-based
+exemption independently.
+
+**What it is now.** `docker/nginx.conf` decides nothing about transport. All three maps
+and the redirect are removed, the unused server-level `/etc/nginx/transport-policy/`
+include is removed with them, `X-Forwarded-Proto` is set from `$scheme` - the scheme of
+the listener that actually accepted the request - and strict transport security and the
+content security policy are keyed on `$scheme` too. The API's predicate reads only the
+request path and exempts the three published health paths by exact equality.
+
+**Where the policy lives instead.** In the layer that holds the facts. TLS terminates
+either in an ingress in front of the front-end container or in the complete server block
+mounted at `/etc/nginx/tls/`, which `docker/nginx.tls.conf` provides: it owns
+`listen 443 ssl` for the deployment's own `server_name`, redirects that name's port 80
+to it, and forwards `X-Forwarded-Proto $scheme` from its own listener.
+`docker/docker-compose.tls.yml` mounts it, publishes 443, names the hop in
+`Proxy__KnownProxies__0` so the API believes the forwarded scheme, and sets
+`Https__RedirectEnabled=true` so the API refuses cleartext for anything reaching it
+without the proxy.
+
+**Measured in the running containers.** With enforcement on: a request through the proxy
+was answered `308 Location: https://localhost:8443/...`; the same request carrying
+`X-Forwarded-Proto: https` was **still** answered 308; a request straight to the API
+carrying `Host: localhost` was **still** answered 308; and `/health` continued to answer
+200 so the container stayed healthy. `nginx -t` reports the restored configuration
+syntactically valid, `docker compose build` succeeds, and `docker compose up -d` brings
+both services to `healthy` with `curl -f http://localhost:8080/health` and
+`curl -f http://localhost:4200` both returning 200 and a sign-in through the proxy
+returning 200.
+
+**Annotated in code at.** `docker/nginx.conf`,
+`backend/src/DnnMigration.Api/Extensions/ApplicationBuilderExtensions.cs`.
+
+
+## Review remediation: neither log edge retains caller-supplied text any more
+
+**What was wrong.** Two paths deposited attacker-controlled strings into logs whose
+retention and access are outside this application's control, which contradicts the
+requirement that structured logging exclude sensitive data.
+
+- The nginx access format recorded the original request path, the raw `User-Agent`, the
+  raw `X-Forwarded-For` and the raw `X-Correlation-Id`, and the error log sat at `warn`,
+  where nginx writes whole request lines - query strings included - for routine
+  client-side conditions.
+- The tenant diagnosis wrote its `address` argument, which is the Host followed by the
+  request's FULL path, at warning or error level from a stage that runs before routing.
+  An unknown Host is chosen by the caller, so a caller could pick any host and force
+  arbitrary path text into the production log with it: a mistyped credential, a token
+  pasted into a URL, an e-mail address or any other personal value that happens to sit
+  in a path segment. That bypassed the request envelope's own protection, which records
+  the matched route template precisely so the path never reaches a log.
+
+**What it is now.** The nginx format records only what nginx itself authored -
+`$remote_addr`, `$time_local`, `$request_method`, `$status`, `$body_bytes_sent` and
+`$request_time` - and the error log is raised to `error`, so only a genuine server-side
+fault deposits a request line. The tenant diagnosis records a **bounded host candidate**
+(the host portion only, stripped to printable US-ASCII so no control character can forge
+a log line, truncated, and reported as `(absent)` when nothing usable remains) plus a
+**16-character fingerprint** of the whole address, so repeated failures against one full
+address are still recognisable as one problem while the text - including any path - is
+not retained. The rebase entry no longer carries the caller's routable path either; both
+values it keeps are server-authored.
+
+**What was deliberately NOT changed, because it was already right.** The API's
+correlation identifier is validated before it is trusted - non-blank, at most 128
+characters, printable US-ASCII only - and a value failing any of those is replaced by a
+server-generated one, so the identifier in a log is always one this application vouches
+for. The request envelope already recorded the route template rather than the path.
+
+**Measured.** A request from an unconfigured host carrying the path segment
+`victim.user%40example.com-Password1` produced, in a Production-environment run, no
+occurrence of `victim.user` or `Password1` anywhere in the log; the only entries were the
+sanitised warnings carrying `AliasCandidate=no-such-tenant.example` and a hex
+fingerprint. The nginx access log from the running container reads
+`172.28.0.1 [05/Aug/2026:14:10:24 +0000] "POST" 200 728 2.423` - method, status, size and
+duration, and nothing else. Both are pinned by integration facts.
+
+**Annotated in code at.** `docker/nginx.conf`,
+`backend/src/DnnMigration.Api/Middleware/PortalAliasResolutionMiddleware.cs`,
+`backend/src/DnnMigration.Api/Middleware/TenantAddress.cs`,
+`backend/src/DnnMigration.Api/Middleware/TenantPathBaseMiddleware.cs`.
+
+
+## Review remediation: the API image returned to its preserved form, with one measured exception
+
+**What was wrong.** AAP 0.9.3 permits one substitution in the supplied container
+examples - the project-name placeholder - and `docker/api.Dockerfile` had accumulated
+five additions beyond it: a copy of the repository `NuGet.Config`, six per-project
+`packages.lock.json` COPY instructions with a manifest-first layer split,
+`dotnet restore --configfile NuGet.Config --locked-mode`, an
+`apk add --no-cache icu-libs icu-data-full` layer paired with
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false`, and `chown -R appuser:appuser /app`.
+
+**Four are withdrawn, and nothing is lost.** The build stage is now
+`COPY backend/ ./` followed by a bare `dotnet restore` and a `--no-restore` publish.
+Determinism survives because `backend/Directory.Build.props` sets
+`RestorePackagesWithLockFile` and `RestoreLockedMode` for all six projects and the single
+COPY brings every lock file, so the image restore is still hash-verified and still fails
+on graph drift - the flags were restating a policy already in force. The feed survives
+because every identity in the reviewed graph resolves from the image's own default public
+source. The `chown` was never load-bearing: a publish copied as root arrives
+world-readable, the process only reads its assemblies, and the data-protection key ring
+lives under the account's home directory rather than `/app` - measured in the running
+container, which reports `uid=1000(appuser)` against a root-owned `/app` and reads its own
+assembly without difficulty. The layer split affected build-cache efficiency only.
+
+**The fifth is retained, on measured evidence, and this is the one deviation.** A
+no-ICU variant of the image was built and run against the same SQL Server instance. It
+answered `/health` 200 - and `/health/ready` **503** and sign-in **500**, with the
+container log carrying
+`System.NotSupportedException: Globalization Invariant Mode is not supported` thrown from
+`Microsoft.Data.SqlClient.SqlConnection.TryOpen`. The Alpine runtime base sets
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true` because musl ships no ICU, and the SQL client
+refuses to open a connection in that mode; turning the flag off without installing ICU is
+worse still, because the runtime then fails fast at start-up. Only the third state -
+invariant mode off with ICU present - is deployable, and the shipped image measures
+`/health` 200, `/health/ready` 200 and sign-in 200. Removing the pair would ship a
+container that builds, reports healthy and cannot serve a single store-backed request,
+which satisfies no requirement of this migration and would make the working-container
+deliverable of AAP 0.9.8 unachievable. The two instructions are a pair and neither may be
+kept alone.
+
+**Annotated in code at.** `docker/api.Dockerfile`, `docker/frontend.Dockerfile`.
+
+
+## Review remediation: a placeholder or incomplete connection string is refused at start-up
+
+**What was wrong.** `docker/.env.example` shipped an ACTIVE `DB_CONNECTION_STRING` whose
+user id and password were both `CHANGE_ME`, and nothing rejected it: start-up checked only
+that the value was non-blank. The container's liveness probe deliberately excludes the
+database, so an operator following the template got an API container reporting **healthy**,
+a front end released behind it by `condition: service_healthy`, and a total failure of
+every database-backed request and every sign-in. The signing key already had an equivalent
+guard; the connection string did not, and the asymmetry was the defect.
+
+**What it is now.** `Infrastructure/DependencyInjection.cs` applies four rules while the
+host is being built, and each rejects a value that would otherwise fail on the first
+request instead. The value must be non-blank. It must PARSE as a SQL Server connection
+string - a malformed keyword list is a configuration error, not a connection error. It must
+name a server and a database, because this API maps onto an existing DotNetNuke database
+and cannot select one for itself. It must name a way to authenticate: integrated security,
+an explicit `Authentication` method, or a user id together with a password - a user id with
+no password being the shape a half-edited template leaves behind. And no value it carries
+may be one of fifteen documented placeholder fragments, matched case-insensitively by
+containment over the parsed VALUES only, so a keyword that legitimately contains such a
+sequence cannot trip the check. `docker/.env.example` now ships the variable EMPTY with every
+example shape commented out.
+
+**No message reproduces any part of the value.** A connection string carries a credential,
+so each failure names the KEY and the RULE and nothing else, and the parser's own exception
+is caught and REPLACED rather than chained, because the builder's message quotes the
+fragment it could not parse.
+
+**One measurement worth recording.** The authentication test uses the builder's typed
+properties, never its untyped indexer: `TryGetValue("Authentication", ...)` answers for
+every keyword the builder RECOGNISES rather than for the ones a connection string actually
+supplied, and it yields the enumeration's non-empty default text - so read that way, a
+connection string with no credential at all appeared to declare an authentication method.
+The typed property has a distinguished "not specified" member, which is the only reliable
+test. `SqlConnectionStringBuilder` also exposes no access-token property, so that mechanism
+is not testable here and is not claimed.
+
+**Measured.** Against the live instance: a real connection string starts the host and
+`/health` answers 200; the legacy `CHANGE_ME` template value, an empty value, a value with
+no authentication clause, a value with no catalogue and a malformed value each abort
+start-up with a distinct sanitised message, and in every case the supplied value appears
+nowhere in stdout or stderr. Eighteen unit facts pin the rules.
+
+**The residual case, stated rather than hidden.** A structurally valid connection string
+naming a database that is merely UNREACHABLE still produces a container that is
+liveness-healthy and readiness-unhealthy. That is by design: the compose topology declares
+no database service, so gating container health on an external store would hold the whole
+deployment back for a reason unrelated to whether the API can answer. An orchestrator that
+owns the database as well should point its own readiness probe at `/health/ready`, which is
+documented in `docker/docker-compose.yml` beside the liveness probe.
+
+**Annotated in code at.** `backend/src/DnnMigration.Infrastructure/DependencyInjection.cs`,
+`docker/.env.example`, `docker/docker-compose.yml`.
+
+
+## Review remediation: one certificate variable, and the two nothing read are withdrawn
+
+**What was wrong.** `docker/.env.example` marked `TLS_CERTIFICATE_PATH` and
+`TLS_PRIVATE_KEY_PATH` as **required** and described them as arriving in the front-end
+container at `/run/secrets/tls_certificate` and `/run/secrets/tls_private_key`. Nothing
+consumed either name - not the base compose file, not the TLS overlay, not either
+Dockerfile, not any nginx configuration - and those secret mounts exist in no delivered
+artefact. Meanwhile the variable the overlay actually reads,
+`TLS_CERTIFICATE_DIRECTORY`, appeared only as a commented entry further down the file. An
+operator following the template supplied two inert absolute paths and could omit the one
+value the overlay needs.
+
+**What it is now.** The dead pair is gone, replaced by a withdrawal notice that says
+plainly that the two names never did anything - left in place deliberately, because an
+operator upgrading from an earlier copy of the template has those lines in a live `.env`
+file. `TLS_CERTIFICATE_DIRECTORY` is promoted to the single documented certificate
+contract, headed as required when the overlay is used, with the consequence of relying on
+the `./certificates` fallback stated: nginx fails to start for want of a certificate. The
+chain is coherent end to end - `${TLS_CERTIFICATE_DIRECTORY:-./certificates}` is mounted
+read-only at `/etc/nginx/tls/certificates`, and `docker/nginx.tls.conf` reads
+`fullchain.pem` and `privkey.pem` from exactly there. The same file's redirect-port entry
+uses the one spelling the application reads, `Https__RedirectPort`.
+
+**Annotated in code at.** `docker/.env.example`, `docker/docker-compose.tls.yml`,
+`docker/nginx.tls.conf`, `docker/nginx.tls.conf.example`.

@@ -64,7 +64,14 @@ services:
       # than served. The health endpoint is exempt in the pipeline itself, so the
       # container probe still succeeds over plain HTTP on the loopback address.
       Https__RedirectEnabled: "true"
-      Https__Port: "443"
+      # Https__RedirectPort, and the spelling is load-bearing. The application reads
+      # Https:RedirectPort - published as the constant
+      # ApplicationBuilderExtensions.HttpsRedirectPortSectionName and validated at start-up by
+      # ServiceCollectionExtensions.AddTransportSecurity - so an Https__Port entry here binds to
+      # nothing at all. It stayed invisible only because the base settings default the port to 443
+      # and this overlay publishes 443: any deployment terminating TLS on another port had its
+      # setting silently ignored and every redirect named 443. One spelling, everywhere.
+      Https__RedirectPort: "443"
       # Trusted-proxy configuration is deliberately NOT restated here. The base
       # compose file already names the front-end container's exact address in
       # Proxy__KnownProxies__0, which is the narrowest trust that works and the

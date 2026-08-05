@@ -106,6 +106,30 @@ services:
     # container can reach a SQL Server running on the host. Verified required.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # THE PROBE IS THE LIVENESS VIEW, /health, AND IT STAYS THERE. AAP 0.9.3
+    # supplies this file and AAP 0.9.4 gate 7 probes that exact path, and the API
+    # deliberately excludes the ready-tagged database check from it: this topology
+    # declares no database service, so the store is EXTERNAL and may legitimately
+    # be unreachable while the process starts. A probe that depended on it would
+    # report the container unhealthy for a reason unrelated to whether it can
+    # answer, and `condition: service_healthy` below would hold the front end back
+    # for ever.
+    #
+    # WHAT CLOSES THE GAP THAT ARRANGEMENT USED TO LEAVE. A misconfigured
+    # DB_CONNECTION_STRING used to produce a container that reported HEALTHY while
+    # every store-backed request and every sign-in failed, because the liveness view
+    # answers without touching the store. That is now impossible for the case that
+    # actually happened: the API REFUSES TO START on a connection string that is
+    # blank, unparseable, structurally incomplete or still carrying a deployment
+    # placeholder (Infrastructure/DependencyInjection.cs), so such a container never
+    # becomes healthy and the front end is never released behind it.
+    #
+    # A structurally valid connection string naming a database that is merely
+    # UNREACHABLE remains a liveness-visible-healthy, readiness-unhealthy state, by
+    # design. An orchestrator that owns the database as well should point its own
+    # READINESS probe at /health/ready - the database-aware view - and keep this
+    # liveness probe as it is; compose has no separate readiness concept, which is
+    # why the distinction is documented here rather than expressed in this file.
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1"]
       interval: 10s

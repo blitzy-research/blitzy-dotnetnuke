@@ -54,9 +54,11 @@
 #      a TLS deployment removes that line.
 #
 #   4. If the published TLS port is not 443, tell the API which port its own
-#      redirects should name, because that port is the one a browser reaches:
+#      redirects should name, because that port is the one a browser reaches. The key
+#      is Https__RedirectPort - the environment spelling of Https:RedirectPort, which
+#      is what the application actually reads; an Https__Port entry binds to nothing:
 #
-#        Https__Port: "4443"
+#        Https__RedirectPort: "4443"
 #
 #   5. Point the browser at https://<host>:4443/. The security headers, the SPA
 #      fallback and the /api/ proxy are all inherited from the http block in

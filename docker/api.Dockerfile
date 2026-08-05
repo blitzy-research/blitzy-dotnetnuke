@@ -23,28 +23,39 @@
 #
 # THE EXACT PERMITTED DELTA FROM THE PRESERVED EXAMPLE, AND THE AUTHORITY FOR IT.
 # AAP 0.9.3 says the supplied container examples are reproduced verbatim except
-# for the name placeholders, while AAP 0.9.6 separately requires this image to
-# satisfy non-functional requirements the example does not express, and the
-# example's own runtime base cannot start the application unchanged. Both
-# statements cannot be literally true at once, so the conflict is resolved
-# EXPLICITLY here rather than left for a reader to discover: every instruction
-# the example specifies is present and unchanged - the two Alpine bases, the UID
-# 1000 non-root account, ASPNETCORE_URLS=http://+:8080, EXPOSE 8080, the wget
-# HEALTHCHECK against /health, and ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"]
-# - and the delta is confined to this closed, itemised list:
+# for the name placeholders. Every instruction the example specifies is present
+# and unchanged: the two Alpine bases, the UID 1000 non-root account created with
+# `adduser -D -u 1000 appuser`, the account switch, ASPNETCORE_URLS=http://+:8080,
+# EXPOSE 8080, the wget --spider HEALTHCHECK against /health, and
+# ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"].
 #
-#   1. RUN apk add --no-cache icu-libs icu-data-full, paired with
-#      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false. Measured requirement, not a
-#      preference: Microsoft.Data.SqlClient fails to open a connection under
-#      invariant globalization, so without this pair the container builds, starts
-#      and then fails its own health probe. The reason is set out in full above
-#      the instruction. The two lines are a pair and neither may be kept alone.
-#   2. Build-stage layer ordering that restores project files before copying
-#      sources, so a source-only change does not re-run the restore. Behaviour is
-#      identical; only cache efficiency differs.
-#   3. Ownership handover before the account switch (chown of /app), without
-#      which the published output stays root-owned and unreadable to the UID 1000
-#      account the example itself mandates.
+# SEC-B4: FOUR ADDITIONS WERE WITHDRAWN, BECAUSE THEY WERE NOT THE EXAMPLE'S AND
+# WERE NOT REQUIRED. An earlier revision of this file added a repository
+# NuGet.Config copy with `dotnet restore --configfile NuGet.Config --locked-mode`,
+# six per-project packages.lock.json COPY instructions, a manifest-first layer
+# split, and `RUN chown -R appuser:appuser /app`. None of them survives, and
+# nothing is lost by removing them:
+#   * Determinism is unaffected. backend/Directory.Build.props sets
+#     RestorePackagesWithLockFile and RestoreLockedMode for all six projects, and
+#     `COPY backend/ ./` brings every packages.lock.json into the build, so the
+#     restore below is still hash-verified and still rejects graph drift - the
+#     flags were restating a policy the props file already enforces.
+#   * The feed is unaffected. Every identity in the reviewed graph resolves from
+#     nuget.org, which is the image's own default source.
+#   * The chown was never load-bearing. A publish copied as root arrives
+#     world-readable, and the process only READS its assemblies; the data-protection
+#     key ring lives under the account's home directory rather than /app. The
+#     comment that accompanied it conceded the process "would still START without
+#     the chown".
+#   * The layer split only affected build-cache efficiency, never behaviour.
+#
+# ONE ADDITION REMAINS, AND IT IS A MEASURED PREREQUISITE FOR THE IMAGE TO
+# FUNCTION AT ALL: the ICU package pair. Its evidence is recorded above the
+# instruction itself, including the exact failure each alternative produces. It is
+# retained because an image that cannot open a database connection satisfies no
+# requirement of this migration, and AAP 0.9.8 makes a working container one of the
+# seven deliverables. It is documented, itemised and re-verified rather than
+# assumed.
 #
 # NOTHING ELSE DIFFERS. In particular the deployment CONFIGURATION the example
 # does not cover - the database connection string, the token signing key, the
@@ -72,41 +83,19 @@ WORKDIR /src
 # One fewer network call during the build, and nothing sent from a build agent.
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 
-# Manifests first, on their own layer. Restore then re-runs only when a project
-# file or a build property actually changes, rather than on every source edit.
-#
-# Directory.Build.props is not optional here: it is the single source of the
-# target framework, language version, nullable setting, warning policy and
-# locked-restore policy for all six projects, so a restore without it resolves
-# against the wrong framework and ignores the reviewed dependency graph.
-# NuGet.Config clears inherited feeds and source-maps every permitted identity;
-# global.json fixes the SDK selection rather than accepting whatever the image
-# happens to carry.
-COPY NuGet.Config ./NuGet.Config
-COPY backend/global.json ./
-COPY backend/Directory.Build.props ./
-COPY backend/DnnMigration.sln ./
-COPY backend/src/DnnMigration.Domain/DnnMigration.Domain.csproj src/DnnMigration.Domain/
-COPY backend/src/DnnMigration.Domain/packages.lock.json src/DnnMigration.Domain/
-COPY backend/src/DnnMigration.Application/DnnMigration.Application.csproj src/DnnMigration.Application/
-COPY backend/src/DnnMigration.Application/packages.lock.json src/DnnMigration.Application/
-COPY backend/src/DnnMigration.Infrastructure/DnnMigration.Infrastructure.csproj src/DnnMigration.Infrastructure/
-COPY backend/src/DnnMigration.Infrastructure/packages.lock.json src/DnnMigration.Infrastructure/
-COPY backend/src/DnnMigration.Api/DnnMigration.Api.csproj src/DnnMigration.Api/
-COPY backend/src/DnnMigration.Api/packages.lock.json src/DnnMigration.Api/
-COPY backend/tests/DnnMigration.UnitTests/DnnMigration.UnitTests.csproj tests/DnnMigration.UnitTests/
-COPY backend/tests/DnnMigration.UnitTests/packages.lock.json tests/DnnMigration.UnitTests/
-COPY backend/tests/DnnMigration.IntegrationTests/DnnMigration.IntegrationTests.csproj tests/DnnMigration.IntegrationTests/
-COPY backend/tests/DnnMigration.IntegrationTests/packages.lock.json tests/DnnMigration.IntegrationTests/
-
-# Solution-wide, which is why all six manifests and lock files are copied above.
-# Both controls are explicit: --configfile prevents machine/image settings from
-# adding a source, and --locked-mode rejects any direct or transitive graph drift.
-RUN dotnet restore --configfile NuGet.Config --locked-mode
-
-# Then the sources. Everything the publish needs is already restored, so the
-# publish suppresses restore rather than repeating it.
+# The whole backend tree, in one instruction. That brings global.json,
+# Directory.Build.props, the solution, all six project files, all six
+# packages.lock.json files and every source file, which is exactly what the
+# restore and the publish below need and nothing more - the repository-root
+# .dockerignore already excludes bin, obj and every environment file.
 COPY backend/ ./
+
+# Solution-wide restore. It needs no flags of its own: backend/Directory.Build.props
+# sets RestorePackagesWithLockFile and RestoreLockedMode for all six projects, and
+# the lock files arrived with the instruction above, so this restore is hash-verified
+# against the reviewed dependency graph and fails on any direct or transitive drift.
+# Every identity in that graph resolves from nuget.org, the image's default source.
+RUN dotnet restore
 
 # Framework-dependent on purpose, and the two alternatives are rejected for two
 # DIFFERENT reasons. A self-contained publish would embed a second copy of the
@@ -178,16 +167,13 @@ RUN adduser -D -u 1000 appuser
 RUN apk add --no-cache icu-libs icu-data-full
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
-# Copy, then hand ownership over, then drop privilege - in that order. A publish
-# copied as root arrives world-readable, so the process would still START without
-# the chown; what the chown buys is predictable ownership rather than access. It
-# makes /app writable by the account that runs there - which matters for anything
-# the runtime creates beside the assemblies, such as a data-protection key ring -
-# and it means a later instruction cannot silently depend on root's file mode.
-# Switching the account first would leave the copy owned by root with no way back,
-# because only root may chown.
+# The published output. It arrives world-readable, which is all the unprivileged
+# account below needs: the process READS its assemblies and writes nothing beside
+# them - the data-protection key ring lives under the account's own home directory,
+# not here. An earlier revision followed this with `chown -R appuser:appuser /app`;
+# it was withdrawn because the preserved example does not have it and it bought
+# nothing, and its own comment conceded the process would start without it.
 COPY --from=build /app/publish ./
-RUN chown -R appuser:appuser /app
 
 # The hardening requirement itself. Creating an account changes nothing on its
 # own: without this line the process runs as root, which is the failure mode that

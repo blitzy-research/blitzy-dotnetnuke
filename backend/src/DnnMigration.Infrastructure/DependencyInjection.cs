@@ -53,6 +53,7 @@ using DnnMigration.Infrastructure.Persistence;
 using DnnMigration.Infrastructure.Repositories;
 using DnnMigration.Infrastructure.Security;
 using DnnMigration.Infrastructure.Services;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -178,10 +179,16 @@ public static class DependencyInjection
         return services;
     }
 
-    /// <summary>Reads the connection string, failing fast when it is absent.</summary>
+    /// <summary>
+    /// Reads the connection string, failing fast when it is absent, unusable, or still carrying a
+    /// documented placeholder.
+    /// </summary>
     /// <param name="configuration">The host configuration.</param>
     /// <returns>The configured connection string.</returns>
-    /// <exception cref="InvalidOperationException">No connection string is configured.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// No connection string is configured, it is not parseable, it does not name both a server and a
+    /// database, it names no way to authenticate, or any of its values is a documented placeholder.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// MIGRATION: the legacy name was <c>SiteSqlServer</c>, declared twice as a connection string and
@@ -193,24 +200,197 @@ public static class DependencyInjection
     /// in the layer that owns configuration.
     /// </para>
     /// <para>
-    /// The message names the key in both its configuration and its environment-variable spelling, and
-    /// never echoes a value: a connection string carries a password, so it must not reach a log, an
-    /// exception message or a health-check response.
+    /// <strong>NON-BLANK IS NOT THE SAME AS USABLE, AND CHECKING ONLY FOR BLANK LET A DOCUMENTED
+    /// PLACEHOLDER THROUGH.</strong> <c>docker/.env.example</c> shipped an ACTIVE
+    /// <c>DB_CONNECTION_STRING</c> whose user id and password were both <c>CHANGE_ME</c>. An operator
+    /// following the template got a value this method accepted, a process that started, a
+    /// <c>/health</c> liveness probe that answered 200 - the probe deliberately excludes the database,
+    /// so that a starting container is not held back by an external store - and therefore a compose
+    /// topology that released the front end while every database-backed request and every sign-in
+    /// failed. The signing key had the equivalent guard already; the connection string did not, and the
+    /// asymmetry was the defect. It is closed here, at start-up, which is the only place the failure is
+    /// cheap: the host refuses to build, the container never reports healthy, and the front end is
+    /// never released behind a dependency that cannot work.
+    /// </para>
+    /// <para>
+    /// Four rules, and each rejects a value that would otherwise fail on the first request instead.
+    /// The value must PARSE - a malformed keyword list is a configuration error, not a connection
+    /// error. It must name a SERVER and a DATABASE, because a connection string missing either can
+    /// never reach the existing DotNetNuke schema this API maps onto. It must name a way to
+    /// AUTHENTICATE: integrated security, an explicit authentication method, or a user id together
+    /// with a password. And no value it carries may be a documented PLACEHOLDER.
+    /// </para>
+    /// <para>
+    /// <strong>No message echoes any part of the value.</strong> A connection string carries a
+    /// password, so nothing here - not the failure text, not the placeholder that matched, not the
+    /// parser's own exception - may reach a log, an exception message or a health-check response. Every
+    /// message below names the KEY and the RULE and nothing else, and the parse failure is caught and
+    /// replaced rather than allowed to propagate, because <c>ArgumentException</c> from the builder
+    /// carries the offending fragment.
     /// </para>
     /// </remarks>
     private static string ReadConnectionString(IConfiguration configuration)
     {
+        const string KeyDescription =
+            "Supply it as 'ConnectionStrings:Default' in configuration, or as the environment "
+            + "variable 'ConnectionStrings__Default' in a container.";
+
         string? connectionString = configuration.GetConnectionString("Default");
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
-                "No database connection string is configured. Supply it as "
-                + "'ConnectionStrings:Default' in configuration, or as the environment "
-                + "variable 'ConnectionStrings__Default' in a container.");
+                "No database connection string is configured. " + KeyDescription);
+        }
+
+        SqlConnectionStringBuilder builder;
+        try
+        {
+            builder = new SqlConnectionStringBuilder(connectionString);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException)
+        {
+            // Deliberately not chained as an inner exception: the builder's own message quotes the
+            // fragment it could not parse, which for a connection string may be the credential.
+            throw new InvalidOperationException(
+                "The configured database connection string is not a valid SQL Server connection "
+                + "string. " + KeyDescription
+                + " The value is not reproduced here because it carries a credential.");
+        }
+
+        if (ContainsPlaceholder(builder))
+        {
+            throw new InvalidOperationException(
+                "The configured database connection string still carries a placeholder value from a "
+                + "deployment template, so it cannot reach a database. Replace every placeholder with "
+                + "the real server, database and credential before starting the API. " + KeyDescription);
+        }
+
+        if (string.IsNullOrWhiteSpace(builder.DataSource))
+        {
+            throw new InvalidOperationException(
+                "The configured database connection string names no server. " + KeyDescription);
+        }
+
+        if (string.IsNullOrWhiteSpace(builder.InitialCatalog))
+        {
+            throw new InvalidOperationException(
+                "The configured database connection string names no database. This API maps onto an "
+                + "existing DotNetNuke database and cannot select one for itself. " + KeyDescription);
+        }
+
+        if (!DeclaresAuthentication(builder))
+        {
+            throw new InvalidOperationException(
+                "The configured database connection string names no way to authenticate. Supply "
+                + "integrated security, an authentication method, or a user id together with a "
+                + "password. " + KeyDescription);
         }
 
         return connectionString;
+    }
+
+    /// <summary>
+    /// Reports whether a parsed connection string names a way to authenticate.
+    /// </summary>
+    /// <param name="builder">The parsed connection string.</param>
+    /// <returns><see langword="true"/> when some authentication mechanism is declared.</returns>
+    /// <remarks>
+    /// <para>
+    /// Three mechanisms are accepted, and the breadth is deliberate: refusing a legitimate one would
+    /// stop a deployment that is correctly configured, which is a worse failure than the one this
+    /// method exists to catch. Integrated security and a managed-identity, service-principal or
+    /// interactive <c>Authentication</c> keyword each need no credential in the connection string at
+    /// all, and SQL authentication needs a user id AND a password, because a user id with no password is
+    /// the shape a half-edited template leaves behind. An access token is not tested for, because it is
+    /// not a connection-string keyword: it is supplied on the connection object itself, out of band,
+    /// which this layer does not do.
+    /// </para>
+    /// <para>
+    /// Both keyword reads go through the builder's TYPED properties, and the untyped indexer is
+    /// deliberately avoided. <c>TryGetValue</c> and <c>ContainsKey</c> answer for every keyword the
+    /// builder RECOGNISES rather than for the ones a connection string actually supplied, so
+    /// <c>TryGetValue("Authentication", ...)</c> succeeds on a string that never mentioned it and yields
+    /// the enumeration's default - whose text is non-empty. Measured, not assumed: reading it that way
+    /// made a connection string with no credential at all appear to declare an authentication method.
+    /// The typed property has a distinguished "not specified" member, which is the only reliable test.
+    /// </para>
+    /// </remarks>
+    private static bool DeclaresAuthentication(SqlConnectionStringBuilder builder)
+    {
+        if (builder.IntegratedSecurity)
+        {
+            return true;
+        }
+
+        if (builder.Authentication != SqlAuthenticationMethod.NotSpecified)
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(builder.UserID)
+            && !string.IsNullOrWhiteSpace(builder.Password);
+    }
+
+    /// <summary>
+    /// Reports whether any value in a parsed connection string is a documented placeholder.
+    /// </summary>
+    /// <param name="builder">The parsed connection string.</param>
+    /// <returns><see langword="true"/> when a placeholder fragment appears in any value.</returns>
+    /// <remarks>
+    /// <para>
+    /// Only VALUES are examined, never keywords, so a keyword that legitimately contains one of these
+    /// sequences cannot trip the check. Matching is by containment and case-insensitive, for the same
+    /// reason the signing-key guard matches that way: equality would be defeated by a placeholder
+    /// padded out into something that looks like a real value, which is the most likely way one
+    /// reaches production.
+    /// </para>
+    /// <para>
+    /// The fragments are the ones a deployment template can plausibly ship, and
+    /// <c>docker/.env.example</c> is now written so that it ships none of them in an active line. A
+    /// real server name, database name or password containing one of these sequences would be refused;
+    /// that is an acceptable and easily corrected outcome, and it is strictly better than accepting a
+    /// template value that cannot connect.
+    /// </para>
+    /// </remarks>
+    private static bool ContainsPlaceholder(SqlConnectionStringBuilder builder)
+    {
+        string[] forbidden =
+        [
+            "change_me",
+            "change-me",
+            "changeme",
+            "replace_me",
+            "replace-me",
+            "replaceme",
+            "your-server",
+            "your_server",
+            "yourserver",
+            "your-password",
+            "your_password",
+            "yourpassword",
+            "placeholder",
+            "todo",
+            "xxxxx",
+        ];
+
+        foreach (object? value in builder.Values)
+        {
+            if (value?.ToString() is not string text || text.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (string fragment in forbidden)
+            {
+                if (text.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Registers the context and the unit of work.</summary>
@@ -383,9 +563,19 @@ public static class DependencyInjection
     /// </para>
     /// <para>
     /// The password hasher and migration verifier are singletons because they hold only immutable
-    /// configuration. The refresh-token store and token service are scoped because the store performs
-    /// durable SQL I/O through the request's configured database boundary; its state lives in SQL, not in
-    /// the service instance, so no session is lost when the scope ends.
+    /// configuration.
+    /// </para>
+    /// <para>
+    /// THE REFRESH-TOKEN STORE AND THE TOKEN SERVICE ARE SINGLETONS, WHICH IS WHAT AAP SECTION 0.4.3
+    /// REQUIRES, AND THE TWO FACTS ARE INSEPARABLE. An earlier revision registered both as SCOPED, and not
+    /// by choice: the store persisted refresh families into a target-owned
+    /// <c>[DnnMigration].[RefreshTokens]</c> table and therefore took the request's database context to
+    /// reach a connection string, which is a scoped dependency a singleton may not capture. That table does
+    /// not exist in the unaltered DotNetNuke schema this API maps onto, so rule T4 forbade creating it and
+    /// login - which issues a refresh token before returning any token pair - could not complete at all.
+    /// Removing the SQL persistence removed the scoped dependency with it, so the store now holds its own
+    /// state, needs no database object, and can be the singleton the plan specifies. The store's own remarks
+    /// record the operational consequence of process-local refresh state.
     /// </para>
     /// </remarks>
     private static void AddSecurity(
@@ -398,17 +588,18 @@ public static class DependencyInjection
         services.AddSingleton<IOptions<LegacyCredentialOptions>>(
             Options.Create(legacyCredentialOptions));
         services.AddSingleton<ILegacyCredentialVerifier, LegacyCredentialVerifier>();
-        services.AddScoped<RefreshTokenStore>();
+        services.AddSingleton<RefreshTokenStore>();
 
         // Resolved through the concrete registration above rather than registered against the
         // implementation type, so both service types share the one instance and the token families
         // cannot be duplicated. Registering the abstraction independently would give the token service
         // one store and anything resolving the abstraction a second, empty one - a refresh token issued
-        // through the first would then be unknown to the second.
-        services.AddScoped<IRefreshTokenStore>(
+        // through the first would then be unknown to the second. With a process-local store that is no
+        // longer merely wasteful, it is a correctness failure, because the state is the instance.
+        services.AddSingleton<IRefreshTokenStore>(
             provider => provider.GetRequiredService<RefreshTokenStore>());
 
-        services.AddScoped<ITokenService, JwtTokenService>();
+        services.AddSingleton<ITokenService, JwtTokenService>();
     }
 
     /// <summary>Reads and validates the migration-only legacy credential settings.</summary>

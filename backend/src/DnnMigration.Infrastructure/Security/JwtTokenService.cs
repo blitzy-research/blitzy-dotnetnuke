@@ -15,14 +15,15 @@ using Microsoft.IdentityModel.Tokens;
 namespace DnnMigration.Infrastructure.Security;
 
 /// <summary>
-/// Mints minimal signed access tokens and coordinates durable refresh-token issue, rotation and
-/// revocation.
+/// Mints minimal signed access tokens and coordinates refresh-token issue, rotation and revocation.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: the legacy forms-authentication cookie is replaced by a short-lived bearer token and
-/// a durable, single-use refresh family. Logout revokes the refresh family; an already-issued access
-/// token remains valid until its stamped expiry and is discarded by the client.
+/// MIGRATION: the legacy forms-authentication cookie is replaced by a short-lived bearer token and a
+/// single-use refresh family held by <see cref="IRefreshTokenStore"/>. Logout revokes the refresh family;
+/// an already-issued access token remains valid until its stamped expiry and is discarded by the client.
+/// Token issuance depends on no database object of its own, so it cannot be blocked by a schema this
+/// migration is forbidden to alter.
 /// </para>
 /// <para>
 /// Access tokens deliberately contain only subject, tenant, token identifier, issuer, audience and
@@ -51,7 +52,7 @@ internal sealed class JwtTokenService : ITokenService
     private readonly JwtSecurityTokenHandler _handler = new();
 
     /// <summary>Initialises a new instance of the <see cref="JwtTokenService"/> class.</summary>
-    /// <param name="refreshTokens">The durable refresh-token store.</param>
+    /// <param name="refreshTokens">The refresh-token store.</param>
     /// <param name="clock">UTC clock used for issued-at, not-before and expiry.</param>
     /// <param name="jwtOptions">The bound JWT configuration.</param>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>

@@ -120,19 +120,6 @@ public sealed class PortalOptions
     public const string HomeDirectoryPortalPlaceholder = "{0}";
 
     /// <summary>
-    /// Longest acceptable <see cref="UnauthenticatedRoleName"/> or
-    /// <see cref="AllUsersRoleName"/> value: 50 characters.
-    /// </summary>
-    /// <remarks>
-    /// Not a preference. The terminal legacy schema declares
-    /// <c>Roles.RoleName nvarchar(50) NOT NULL</c>, so a longer configured name
-    /// cannot round-trip: it is either rejected by the database or truncated,
-    /// and a truncated role name silently stops matching the role it was meant
-    /// to denote.
-    /// </remarks>
-    public const int MaximumRoleNameLength = 50;
-
-    /// <summary>
     /// Longest acceptable <see cref="AdminTemplateFileName"/> or
     /// <see cref="HomeDirectoryFormat"/> value: 260 characters.
     /// </summary>
@@ -242,78 +229,16 @@ public sealed class PortalOptions
     /// </example>
     public string HomeDirectoryFormat { get; set; } = "Portals/{0}";
 
-    /// <summary>
-    /// Display name of the built-in role standing for callers who are not authenticated.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Legacy default preserved exactly: <c>Unauthenticated Users</c>. Declared as
-    /// <c>glbRoleUnauthUserName</c> at
-    /// <c>Library/Components/Shared/Globals.vb:L102</c>. The path matters, because the
-    /// migration plan elsewhere refers to <c>Library/Components/Common/Globals.vb</c>, which
-    /// does not exist in this repository; the module lives under <c>Shared</c>.
-    /// </para>
-    /// <para>
-    /// Read by in-scope legacy code at <c>PortalController.vb:L557</c>,
-    /// <c>ModuleController.vb:L356</c>, <c>TabController.vb:L903</c> and
-    /// <c>PortalSecurity.vb:L108</c> and <c>L124</c>. This property is the replacement for
-    /// that excluded static constant.
-    /// </para>
-    /// <para>
-    /// It is configurable rather than a fixed constant because the legacy value is a display
-    /// name that is also persisted as a row in the <c>Roles</c> table, and the legacy lookup
-    /// matches roles by comparing that name as a string. An installation that renamed the
-    /// role would silently stop matching if the name were compiled in, so preserving the
-    /// legacy comparison faithfully requires the name to be overridable.
-    /// </para>
-    /// </remarks>
-    public string UnauthenticatedRoleName { get; set; } = "Unauthenticated Users";
-
-    /// <summary>
-    /// Display name of the built-in role standing for every caller, authenticated or not.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Legacy default preserved exactly: <c>All Users</c>. Declared as
-    /// <c>glbRoleAllUsersName</c> at <c>Library/Components/Shared/Globals.vb:L100</c>. Read by
-    /// in-scope legacy code at <c>PortalController.vb:L555</c>,
-    /// <c>ModuleController.vb:L354</c>, <c>TabController.vb:L901</c>,
-    /// <c>UserInfo.vb:L330</c> and <c>PortalSecurity.vb:L125</c>.
-    /// </para>
-    /// <para>
-    /// This property's presence needs justifying, because the migration plan names only the
-    /// unauthenticated role when it describes what replaces the excluded static module.
-    /// Measurement settles the question. Across the five in-scope legacy trees the two special
-    /// role names have exactly ten read sites between them, and six of those ten are paired
-    /// arms of one and the same construct: the role-name-to-role-id switch appears three
-    /// times, identical in shape, at <c>PortalController.vb:L555</c> and <c>L557</c>, at
-    /// <c>ModuleController.vb:L354</c> and <c>L356</c>, and at <c>TabController.vb:L901</c>
-    /// and <c>L903</c>, and every one of the three reads both names. The role test at
-    /// <c>PortalSecurity.vb:L124</c> and <c>L125</c> likewise reads both within a single
-    /// expression. Migrated code porting that switch cannot function with only one of the
-    /// pair, so this property meets the same "only when a service genuinely reads it" test as
-    /// the other three.
-    /// </para>
-    /// <para>
-    /// Configurable for the same reason as the unauthenticated role name: it is a display name
-    /// persisted in the <c>Roles</c> table and matched by string comparison.
-    /// </para>
-    /// </remarks>
-    public string AllUsersRoleName { get; set; } = "All Users";
-
-    /// <summary>
-    /// Width of the <c>Roles.RoleName</c> column, which bounds both role-name settings.
-    /// </summary>
-    /// <remarks>
-    /// Measured as <c>[RoleName] [nvarchar] (50) NOT NULL</c> at
-    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L117</c> and
-    /// carried forward unchanged by both table rebuilds (<c>01.00.04:L1324</c> and
-    /// <c>01.00.05:L2750</c>), with no later altering statement in any of the 88 scripts. Because
-    /// the legacy lookup matches a role by comparing this display name as a string, a configured
-    /// name longer than the column could never match a stored row, so the width is a genuine
-    /// constraint on the setting rather than a formatting preference.
-    /// </remarks>
-    private const int RoleNameMaximumLength = 50;
+    // MIGRATION: THE TWO SPECIAL ROLE NAMES USED TO BE SETTINGS HERE, AND THEY ARE NOT SETTINGS.
+    // UnauthenticatedRoleName and AllUsersRoleName were bound from Portal:UnauthenticatedRoleName and
+    // Portal:AllUsersRoleName, which let a deployment decide which stored role receives anonymous-caller
+    // and every-caller semantics - an authorization boundary expressed as a configuration string. They are
+    // now DnnMigration.Domain.Common.SpecialRoleNames.Unauthenticated and .AllUsers, immutable constants in
+    // the layer AAP sections 0.2.2.1 and 0.7.6 name for the replacement of the excluded Globals module.
+    // The column bound they were validated against is published there too, as
+    // SpecialRoleNames.RoleNameMaximumLength. Nothing in this type replaces them, and no key in the Portal
+    // section may reintroduce them: a value that changes who "All Users" means is a source change under
+    // review, not a deployment knob.
 
     /// <summary>
     /// Reports every way in which the values bound onto this instance are unusable, so that a
@@ -394,54 +319,11 @@ public sealed class PortalOptions
             }
         }
 
-        ValidateRoleName(nameof(UnauthenticatedRoleName), UnauthenticatedRoleName, failures);
-        ValidateRoleName(nameof(AllUsersRoleName), AllUsersRoleName, failures);
-
-        if (!string.IsNullOrWhiteSpace(UnauthenticatedRoleName)
-            && string.Equals(UnauthenticatedRoleName, AllUsersRoleName, StringComparison.OrdinalIgnoreCase))
-        {
-            failures.Add(
-                $"{SectionName}:{nameof(UnauthenticatedRoleName)} and "
-                + $"{SectionName}:{nameof(AllUsersRoleName)} are both '{UnauthenticatedRoleName}'. "
-                + "They name two different rows in the Roles table, and the legacy "
-                + "role-name-to-role-id switch reads both arms of the pair, so collapsing them "
-                + "would resolve one role's identifier for the other.");
-        }
-
+        // No role-name validation, and none is missing. The two special role names are compiled-in domain
+        // constants rather than settings, so there is no configured value to check for emptiness, for width
+        // against the Roles.RoleName column, or for collision with its partner. Removing the settings
+        // removed all three failure modes rather than continuing to guard against them.
         return failures;
-    }
-
-    /// <summary>
-    /// Adds a failure when a role-name setting is absent or wider than the column that stores it.
-    /// </summary>
-    /// <param name="settingName">Name of the setting being checked, for the message.</param>
-    /// <param name="value">The configured value.</param>
-    /// <param name="failures">The collection failures are appended to.</param>
-    private static void ValidateRoleName(
-        string settingName,
-        string value,
-        List<string> failures)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            failures.Add(
-                $"{SectionName}:{settingName} is not set. The value is matched against a role's "
-                + "stored display name, so an empty value matches no role and every permission "
-                + "check that depends on it silently fails to resolve.");
-            return;
-        }
-
-        if (value.Length > RoleNameMaximumLength)
-        {
-            // Every number reaches the message through an invariant conversion first, so the
-            // concatenation below interpolates strings only and cannot pick up a culture.
-            string actual = FormattableString.Invariant($"{value.Length}");
-            string allowed = FormattableString.Invariant($"{RoleNameMaximumLength}");
-
-            failures.Add(
-                $"{SectionName}:{settingName} is {actual} characters long, and the Roles.RoleName "
-                + $"column stores {allowed}. A longer name could never match a stored row.");
-        }
     }
 
     /// <summary>

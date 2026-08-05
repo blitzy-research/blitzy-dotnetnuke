@@ -59,21 +59,25 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
 
     <!--
-      Explicit direct pin: EF Core 8 permits an older 5.x client, whose identity
-      chain now contains deprecated authentication and JSON packages. The 6.1.6
-      line is the newest stable 6.x release verified against this net8.0
-      solution; keeping the pin direct prevents a future EF patch from
-      reintroducing the deprecated graph.
-    -->
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.6" />
+      EXPLICIT DIRECT PIN AT THE VERSION THE FROZEN DEPENDENCY INVENTORY NAMES.
+      AAP section 0.6.1 pins Microsoft.Data.SqlClient at 5.2.3 and says why the
+      pin is direct rather than transitive: without it the SQL Server provider
+      resolves 5.1.7 through EF Core, and the pin was verified to change the
+      resolved graph.
 
-    <!--
-      EF Core Design 8.x still resolves Roslyn assets that request
-      System.Collections.Immutable 6.0.0, which NuGet now marks deprecated.
-      Pinning the .NET 8 band lifts that build-time graph without changing the
-      framework target or any runtime API used by this project.
+      A previous revision raised this to 6.1.6 on the argument that the 5.x
+      identity chain carries deprecated authentication and JSON packages. That
+      argument is not this project's to make. The inventory is FROZEN - it is the
+      agreed dependency graph, verified by a clean restore and a Release build
+      with warnings promoted to errors - and a project that raises a pinned major
+      version on its own is no longer building the graph that was reviewed.
+      Raising it is a two-step, review-visible operation: change the inventory,
+      then change this line. Restoring it here also restores the exact resolved
+      graph the lock files below assert, and the restore was re-verified to
+      produce zero warnings, so no advisory is promoted to an error by the
+      warnings-as-errors policy.
     -->
-    <PackageReference Include="System.Collections.Immutable" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
 
     <!--
       One-way password hashing, replacing a reversibly-encrypted credential store
@@ -114,20 +118,34 @@
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
 
     <!--
-      Access-token signing for JwtTokenService. This is the token-handling library
-      only, not the ASP.NET Core authentication middleware: nothing here touches
-      the request pipeline, which is why a class library may reference it.
+      ACCESS-TOKEN SIGNING FOR JwtTokenService, THROUGH THE ONE JWT IDENTITY THE
+      FROZEN INVENTORY NAMES. AAP section 0.4.1.1 assigns "EF Core, BCrypt, JWT
+      packages" to this project, and section 0.6.1 lists exactly one JWT package:
+      Microsoft.AspNetCore.Authentication.JwtBearer 8.0.29. This is that package.
 
-      The 7.7.3 pin is not arbitrary and must not be raised independently. The
-      Api project's Microsoft.AspNetCore.Authentication.JwtBearer 8.0.29 resolves
-      Microsoft.IdentityModel.Protocols.OpenIdConnect 7.7.3, which pulls
-      Microsoft.IdentityModel.Tokens 7.7.3 — the very assembly this package also
-      depends on. Pinning the same 7.7.3 band means the token this project signs
-      and the token Api validates are handled by one loaded assembly version
-      rather than two, so a signature that verifies in a unit test also verifies
-      on the request path. Bump both together or neither.
+      A previous revision instead declared System.IdentityModel.Tokens.Jwt 7.7.3
+      directly - an identity the inventory does not contain - on the argument that
+      a class library should reference the token library alone. The version
+      reasoning in that argument was sound and is preserved here, because it is
+      exactly what this reference delivers: JwtBearer 8.0.29 resolves
+      Microsoft.IdentityModel.Protocols.OpenIdConnect 7.7.3, which brings
+      System.IdentityModel.Tokens.Jwt 7.7.3 and Microsoft.IdentityModel.Tokens
+      7.7.3 - the same band the Api project's own JwtBearer reference resolves. So
+      the assembly that signs a token here and the assembly that validates it on
+      the request path are one loaded version, and a signature that verifies in a
+      unit test verifies in production. The alternative - letting the token library
+      arrive as an untracked transitive of the data provider - would compile
+      against the 6.35.0 band while running against 7.7.3, which is precisely the
+      split the earlier note set out to prevent.
+
+      The cost is stated rather than glossed: this reference brings a framework
+      reference to Microsoft.AspNetCore.App with it. Nothing in this project
+      touches the request pipeline and nothing may start doing so - authentication
+      handlers, middleware and endpoint plumbing belong to the Api layer, and the
+      Domain project remains free of every package. Bump this and the Api's
+      JwtBearer reference together or neither.
     -->
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.7.3" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.29" />
 
   </ItemGroup>
 
