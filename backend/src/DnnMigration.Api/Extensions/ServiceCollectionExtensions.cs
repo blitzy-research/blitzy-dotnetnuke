@@ -442,7 +442,22 @@ public static class ServiceCollectionExtensions
     private static void AddControllerServices(IServiceCollection services)
     {
         services
-            .AddControllers(options => options.Filters.Add<FluentValidationActionFilter>())
+            .AddControllers(options =>
+            {
+                options.Filters.Add<FluentValidationActionFilter>();
+
+                // Labels every controller-produced problem document application/problem+json. Registered
+                // globally rather than per controller because the guarantee is about the API's error
+                // surface as a whole: one controller left out would emit the same document under a
+                // different media type, which is the drift the filter exists to remove.
+                //
+                // THE ORDER IS NOT DECORATION. Every controller carries [Produces("application/json")],
+                // which is itself a result filter that clears and reassigns the result's content types,
+                // and at equal order a controller-scoped filter runs AFTER a global one - so at the
+                // default order this filter's work was overwritten on every response and the media type
+                // never changed. Registering above the default makes it the last writer.
+                options.Filters.Add<ProblemDetailsContentTypeFilter>(order: 1);
+            })
             .AddJsonOptions(options =>
             {
                 // THE APPLICATION'S OWN ENUMERATION CONVERTERS ARE ADDED FIRST, AND THE ORDER

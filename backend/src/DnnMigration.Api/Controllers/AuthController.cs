@@ -214,6 +214,22 @@ public sealed class AuthController : ControllerBase
     /// disappears as an argument and becomes what the window above partitions on, which is the one use the
     /// legacy code had for it. And the status argument disappears because the outcome is now the return value.
     /// </para>
+    /// <para>
+    /// THE IDENTITY ON THIS RESPONSE IS AUTHORITY-MINIMISED, AND ITS EMPTY ROLE AND PERMISSION COLLECTIONS ARE
+    /// DELIBERATE RATHER THAN UNPOPULATED. <c>user.roles</c> and <c>user.permissions</c> are always empty here
+    /// and on the refresh response; they are never a report that the account holds none. A client that needs
+    /// the caller's authority reads <c>GET /api/v1/auth/me</c>, which is the one endpoint that resolves it -
+    /// and resolves it as of the moment it is asked, evaluating each assignment's validity window then.
+    /// </para>
+    /// <para>
+    /// The reason is that authority is exactly the kind of fact that must not be cached in a client from a
+    /// credential exchange. A role list handed out at sign-in is a snapshot that stops being true the moment an
+    /// assignment is withdrawn, yet a client holding one has every reason to trust it for the life of the
+    /// session; publishing it here would invite a client to make its own access decisions from a stale copy.
+    /// Enforcement is the server's in every case - the authorisation policies re-read the caller's roles per
+    /// request - so the collections are omitted rather than served stale, and the endpoint that does serve them
+    /// is the one whose answer is fresh by construction.
+    /// </para>
     /// </remarks>
     [HttpPost("login")]
     [EnableRateLimiting(RateLimitingExtensions.AuthenticationPolicyName)]
@@ -317,6 +333,14 @@ public sealed class AuthController : ControllerBase
     /// <para>
     /// Anonymous, because the token in the body is the credential being presented. Rotation, lifetimes and the
     /// retention of superseded generations are decided behind the service; this operation carries none of them.
+    /// </para>
+    /// <para>
+    /// The identity on this response is authority-minimised on exactly the same terms as the sign-in response:
+    /// <c>user.roles</c> and <c>user.permissions</c> are always empty and are never a report that the account
+    /// holds none. <c>GET /api/v1/auth/me</c> is the endpoint that resolves authority, and it resolves it as of
+    /// the moment it is asked. The reasoning is set out on the sign-in operation and applies with more force
+    /// here, since a refresh is precisely where a client would be most tempted to believe a cached role list
+    /// had just been revalidated.
     /// </para>
     /// </remarks>
     [HttpPost("refresh")]

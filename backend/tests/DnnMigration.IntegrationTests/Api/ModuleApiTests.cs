@@ -3635,6 +3635,128 @@ public sealed class ModuleApiTests
         IconFile = "module.gif",
     };
 
+    /// <summary>
+    /// Creation, the single read and the listing all report the SAME definition and package for one
+    /// module, and every one of those five values matches the definition catalogue.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// Three endpoints project these five values, from three different code paths, so nothing but a test
+    /// keeps them in step. The failure this guards against was all three disagreeing at once about one
+    /// module: the creation response named package 0, the single read named the real package but reported
+    /// no package name, description or version, and the listing carried none of the five at all. A
+    /// consumer therefore could not learn which package a module came from without knowing which endpoint
+    /// happened to be truthful.
+    /// </para>
+    /// <para>
+    /// The catalogue is consulted as the independent control, so this asserts agreement with the STORE
+    /// rather than merely agreement among the three projections - three endpoints that agree on a wrong
+    /// value would otherwise pass. A package key of 0 is asserted impossible for the same reason it is
+    /// impossible in the schema: <c>dbo.DesktopModules.DesktopModuleID</c> is a plain <c>IDENTITY</c>, so
+    /// it seeds at 1.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ModuleCatalogueProjections_AgreeAcrossCreationTheSingleReadAndTheListing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        ModuleDetailDto fromCreate = await ReadDetailAsync(created);
+
+        try
+        {
+            using HttpResponseMessage read = await client.GetAsync(
+                ModuleRoute(_fixture.Seed.PortalId, fromCreate.ModuleId));
+
+            read.StatusCode.Should().Be(HttpStatusCode.OK);
+            ModuleDetailDto fromRead = await ReadDetailAsync(read);
+
+            ModuleListItemDto fromList = (await ListModulesAsync(client, includeDeleted: false))
+                .Should().ContainSingle(item => item.TabModuleId == fromCreate.TabModuleId)
+                .Subject;
+
+            // The store's own answer, read through the catalogue the tenant is offered.
+            using HttpResponseMessage catalogueResponse = await client.GetAsync(
+                new Uri("/api/v1/module-definitions", UriKind.Relative));
+
+            catalogueResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            IReadOnlyList<ModuleDefinitionDto>? catalogue = await catalogueResponse.Content
+                .ReadEnvelopeAsync<IReadOnlyList<ModuleDefinitionDto>>();
+
+            ModuleDefinitionDto definition = catalogue
+                .Should().NotBeNull().And.Subject
+                .Should().ContainSingle(entry => entry.ModuleDefId == request.ModuleDefId)
+                .Subject;
+
+            definition.DesktopModuleId.Should().Be(
+                _fixture.Seed.DesktopModuleId,
+                "the catalogue is the control, so it must name the package the fixture seeded");
+
+            // The control must itself carry every value, or "all four agree" could be satisfied by all
+            // four being null - which is precisely the defect this test exists to catch.
+            definition.FriendlyName.Should().NotBeNullOrWhiteSpace();
+            definition.ModuleName.Should().NotBeNullOrWhiteSpace();
+            definition.Description.Should().NotBeNullOrWhiteSpace();
+            definition.Version.Should().NotBeNullOrWhiteSpace();
+
+            // Every projection against the control.
+            foreach ((string source, int? packageId, string? friendly, string? name, string? description, string? version) in
+                new (string, int?, string?, string?, string?, string?)[]
+                {
+                    ("creation", fromCreate.DesktopModuleId, fromCreate.FriendlyName, fromCreate.ModuleName, fromCreate.Description, fromCreate.Version),
+                    ("the single read", fromRead.DesktopModuleId, fromRead.FriendlyName, fromRead.ModuleName, fromRead.Description, fromRead.Version),
+                    ("the listing", fromList.DesktopModuleId, fromList.FriendlyName, fromList.ModuleName, fromList.Description, fromList.Version),
+                })
+            {
+                packageId.Should().Be(
+                    _fixture.Seed.DesktopModuleId,
+                    FormattableString.Invariant($"{source} must name the module's real package"));
+
+                packageId.Should().NotBe(
+                    0,
+                    FormattableString.Invariant(
+                        $"{source} must not fabricate a package key; DesktopModuleID seeds at 1"));
+
+                // The remaining four are compared against the CATALOGUE's own answer rather than against
+                // literals, so the control is the store in every case and a fixture change cannot turn a
+                // real disagreement into a passing test.
+                friendly.Should().Be(
+                    definition.FriendlyName,
+                    FormattableString.Invariant($"{source} must carry the definition's display name"));
+
+                name.Should().Be(
+                    definition.ModuleName,
+                    FormattableString.Invariant($"{source} must carry the package's name"));
+
+                description.Should().Be(
+                    definition.Description,
+                    FormattableString.Invariant($"{source} must carry the package's description"));
+
+                version.Should().Be(
+                    definition.Version,
+                    FormattableString.Invariant($"{source} must carry the package's version"));
+            }
+        }
+        finally
+        {
+            using HttpResponseMessage removed = await client.DeleteAsync(
+                ModuleRoute(_fixture.Seed.PortalId, fromCreate.ModuleId));
+
+            removed.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.NotFound);
+        }
+    }
+
     /// <summary>Reads a module representation out of a response, failing the test when it is absent.</summary>
     /// <param name="response">The response to read.</param>
     /// <returns>The representation.</returns>

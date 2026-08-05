@@ -2,9 +2,12 @@ using System.Globalization;
 using System.Text.Json;
 using DnnMigration.Api.Middleware;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -534,6 +537,39 @@ public static class ApplicationBuilderExtensions
                 ServiceCollectionExtensions.KnownNetworksSectionName);
         }
 
+        // Inside the correlation and request-logging scopes opened above, so a refusal the HOST decided is
+        // answered by this application's own handler instead of reaching the framework's exception stage,
+        // which would record it at Error as an unhandled fault whatever status it resolved to. See the
+        // middleware for why an oversized or malformed body is a client error rather than a fault, and why
+        // the payload itself is still produced by the one registered handler. Neither stage between here
+        // and the request-logging registration reads the request body, so nothing this intercepts can
+        // escape upward past it.
+        app.UseMiddleware<TransportRefusalMiddleware>();
+
+        // MIGRATION: A STATUS CODE DECIDED BEFORE AN ENDPOINT WAS REACHED NOW CARRIES A BODY. Routing
+        // itself answers two statuses - 404 for a path matching no route and 405 for a path matching one
+        // whose method it does not accept - and it answers them with the status line alone. A caller
+        // therefore received an EMPTY body from those two while every other refusal in this API carried a
+        // problem document, so a client with one parser for error responses had two cases it could not
+        // parse and no way to tell them apart beyond the status code. This stage supplies the same
+        // document, through the same factory and writer as every other producer, so the taxonomy, the
+        // media type, the trace identifier and the correlation identifier are identical.
+        //
+        // POSITION. Inside the correlation scope, so the identifier this payload carries is the one the
+        // response header carries and the log entry was tagged with; inside the request-logging scope, so
+        // the entry still reports the status the caller received - which this stage does not change, only
+        // describes; and OUTSIDE routing, because a request that matches no endpoint never reaches any
+        // stage placed after it.
+        //
+        // WHAT IT DELIBERATELY DOES NOT TOUCH. The framework's own guard is that a response which already
+        // declares a content type or a length is left alone, which is exactly the boundary wanted here:
+        // every refusal that writes its own document - the authentication challenge, the authorisation
+        // refusal, the remediation refusal, the rate-limit refusal, every controller problem and the
+        // exception handler - sets one, so none of them is re-written or double-written. Successful
+        // responses are outside its range entirely, so the three anonymous health endpoints keep
+        // answering exactly as they did, including their own 503 payload, which carries a content type.
+        app.UseStatusCodePages(WriteStatusOnlyProblemAsync);
+
         // Before routing, and only this stage can be. A child portal is addressed by a
         // path segment beneath a shared host, so the segment that identifies the tenant
         // sits in front of the path the routes were written against; it has to move
@@ -575,6 +611,13 @@ public static class ApplicationBuilderExtensions
         // cache must not keep either. The header is attached through a response callback
         // rather than written here, so it lands whoever writes the response.
         app.UseMiddleware<CredentialCacheControlMiddleware>();
+
+        // Immediately before the cross-origin stage, so that every response the stage can influence
+        // announces the request header its content depends on. The framework's own stage omits that
+        // declaration for a single-origin policy, which is this deployment's configuration - see the
+        // middleware's own remarks for why the omission is unsafe for a shared cache and why the
+        // declaration has to be unconditional.
+        app.UseMiddleware<OriginVaryMiddleware>();
 
         // Before the rate limiter, so that a refusal still carries the cross-origin
         // headers. Without them a browser cannot read the refusal at all: the caller
@@ -951,6 +994,58 @@ public static class ApplicationBuilderExtensions
             report.Status.ToString(),
             report.TotalDuration.TotalMilliseconds,
             probes);
+    }
+
+    /// <summary>
+    /// Writes the standard problem document for a status code that was decided before, or without, an
+    /// endpoint - which in this API means routing's own 404 and 405.
+    /// </summary>
+    /// <param name="context">The status-code context the framework supplies.</param>
+    /// <returns>A task that completes once a payload has been written, or declined.</returns>
+    /// <remarks>
+    /// <para>
+    /// Nothing is authored here. The document is built by the registered
+    /// <see cref="ProblemDetailsFactory"/> and written by the registered
+    /// <see cref="IProblemDetailsService"/> - the same two collaborators every other producer uses - so the
+    /// problem type, the title, the detail, the media type and the <c>traceId</c> and <c>correlationId</c>
+    /// extensions are decided in exactly one place. Supplying wording here instead would be a second
+    /// vocabulary for the two statuses this stage covers, which is the defect it exists to remove.
+    /// </para>
+    /// <para>
+    /// Every argument to the factory beyond the status code is left unspecified deliberately. The
+    /// <c>instance</c> member in particular is NOT derived from the request URL: an unmatched path is
+    /// caller-controlled text, so reflecting it into the payload would echo whatever an unauthenticated
+    /// caller chose to send - including a credential put in the wrong place.
+    /// </para>
+    /// <para>
+    /// The writer's answer is not overridden. When no writer accepts the payload the response keeps the
+    /// status line it already had, which is the behaviour before this stage existed and is a correct
+    /// answer rather than a failure.
+    /// </para>
+    /// </remarks>
+    private static async Task WriteStatusOnlyProblemAsync(StatusCodeContext context)
+    {
+        HttpContext httpContext = context.HttpContext;
+        int statusCode = httpContext.Response.StatusCode;
+
+        ProblemDetailsFactory factory = httpContext.RequestServices
+            .GetRequiredService<ProblemDetailsFactory>();
+        IProblemDetailsService problemDetailsService = httpContext.RequestServices
+            .GetRequiredService<IProblemDetailsService>();
+
+        ProblemDetails problemDetails = factory.CreateProblemDetails(
+            httpContext,
+            statusCode,
+            title: null,
+            type: null,
+            detail: null,
+            instance: null);
+
+        await problemDetailsService.TryWriteAsync(new ProblemDetailsContext
+        {
+            HttpContext = httpContext,
+            ProblemDetails = problemDetails,
+        }).ConfigureAwait(false);
     }
 
     /// <summary>Renders a probe's authored description, or nothing when it has none.</summary>

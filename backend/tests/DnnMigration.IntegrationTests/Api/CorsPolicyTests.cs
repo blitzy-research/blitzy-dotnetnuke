@@ -50,6 +50,12 @@ public sealed class CorsPolicyTests
     /// <summary>An origin no configuration names.</summary>
     private const string UnconfiguredOrigin = "http://not-the-angular-client.example";
 
+    /// <summary>The header declaring which request headers a response's content depends on.</summary>
+    private const string VaryHeader = "Vary";
+
+    /// <summary>The request header the cross-origin decision is a function of.</summary>
+    private const string OriginHeaderName = "Origin";
+
     /// <summary>The header a permitted origin is echoed back in.</summary>
     private const string AllowOriginHeader = "Access-Control-Allow-Origin";
 
@@ -122,6 +128,70 @@ public sealed class CorsPolicyTests
 
         response.Headers.Contains(AllowOriginHeader).Should().BeFalse(
             "an unpermitted origin must be told nothing, not told 'any origin'");
+    }
+
+    /// <summary>
+    /// Every response declares that it may vary by the request's origin - including the ones that carry no
+    /// permission header at all.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THE DECLARATION IS NEEDED. The cross-origin stage writes a permission header for a permitted
+    /// origin and writes nothing for any other, which makes the response a function of a REQUEST HEADER. The
+    /// framework's own stage announces that with <c>Vary: Origin</c> only when the policy names MORE THAN ONE
+    /// origin - and this deployment names exactly one, so in practice no response carried the declaration at
+    /// all. A shared cache is then entitled to replay the variant produced for one origin to another, or the
+    /// no-permission variant to the single-page application, which sees an opaque cross-origin failure it
+    /// cannot diagnose.
+    /// </para>
+    /// <para>
+    /// ALL FOUR CASES ARE ASSERTED, AND THE THIRD IS THE ONE THAT MATTERS MOST. Declaring the dependency only
+    /// where an origin was supplied would leave the response to a request WITHOUT one carrying no
+    /// declaration - so a cache could reuse precisely that variant for a request with one. The variant that
+    /// LACKS the permission header needs the declaration just as much as the variant that has it.
+    /// </para>
+    /// <para>
+    /// Exactly one entry is asserted, not merely presence, because a duplicated header would mean two stages
+    /// were both declaring it and one of them could later be removed in the belief that it was redundant.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task EveryResponse_DeclaresThatItVariesByOrigin()
+    {
+        using (HttpResponseMessage permitted = await SendAsync(HealthRoute, ApiTestFixture.AllowedOrigin))
+        {
+            Values(permitted, AllowOriginHeader).Should().Equal([ApiTestFixture.AllowedOrigin]);
+            Values(permitted, VaryHeader).Should().Equal(
+                [OriginHeaderName],
+                "the permitted variant carries a permission header and must say so");
+        }
+
+        using (HttpResponseMessage refused = await SendAsync(HealthRoute, UnconfiguredOrigin))
+        {
+            refused.Headers.Contains(AllowOriginHeader).Should().BeFalse();
+            Values(refused, VaryHeader).Should().Equal(
+                [OriginHeaderName],
+                "this variant differs from the permitted one precisely by the absent header");
+        }
+
+        using (HttpResponseMessage sameOrigin = await SendAsync(HealthRoute, origin: null))
+        {
+            Values(sameOrigin, VaryHeader).Should().Equal(
+                [OriginHeaderName],
+                "without the declaration here a cache may replay this variant to a cross-origin caller, "
+                + "which is the case the declaration exists for");
+        }
+
+        using (HttpResponseMessage preflight = await PreflightAsync(
+            PortalsRoute,
+            ApiTestFixture.AllowedOrigin,
+            requestedMethod: "GET",
+            requestedHeaders: "authorization"))
+        {
+            Values(preflight, VaryHeader).Should().Equal([OriginHeaderName]);
+        }
     }
 
     /// <summary>A request carrying no origin at all is answered with no cross-origin headers.</summary>

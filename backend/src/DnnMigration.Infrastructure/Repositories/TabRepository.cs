@@ -687,15 +687,43 @@ internal sealed class TabRepository : ITabRepository
     /// path; a page that some other operation has already tracked is left to the change tracker, whose
     /// pending modifications this call must not widen.
     /// </para>
+    /// <para>
+    /// MIGRATION: the attachment ASSIGNS THE STATE and must never call <c>DbSet.Update</c>. That method
+    /// chooses between <c>Added</c> and <c>Modified</c> by asking whether the key "is set", and it reads
+    /// an <see cref="int"/> key of 0 as unset. <c>dbo.Tabs.TabID</c> is declared <c>IDENTITY(0, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L140</c>), so the FIRST page of an installation bears the key 0 -
+    /// which means <c>Update(tab)</c> on a detached page 0 staged an INSERT, duplicated the page under a
+    /// freshly generated key and left the addressed row untouched while still reporting success. For a
+    /// page that is worse than for most rows, because the duplicate joins the portal's page TREE and
+    /// every navigation, ordering and permission read that walks it. Assigning
+    /// <see cref="EntityState.Modified"/> attaches the instance and marks its scalar properties modified
+    /// without consulting the key and without walking the navigation graph.
+    /// </para>
     /// </remarks>
+    // MIGRATION: the detached branch assigns EntityState.Modified DIRECTLY and must never call
+    // DbSet.Update, and that is a correctness requirement of this schema rather than a stylistic
+    // preference. DbSet.Update decides between Added and Modified by asking whether the key "is set",
+    // and it reads a store-generated int key of 0 as unset - it passes
+    // forceStateWhenUnknownKey: EntityState.Added internally. dbo.Tabs.TabID is declared
+    // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L140, DnnSchema.sql:146), so 0 is the real FIRST PAGE of
+    // an installation and never "unset". Update(tab) on a detached page 0 therefore staged an INSERT:
+    // the caller's edit was silently lost, a duplicate page appeared, and because the application layer
+    // recomputes descendant paths from the page it believes it just saved, a sibling's TabPath was
+    // rewritten against the wrong parent. Every read on this repository is AsNoTracking, so the detached
+    // branch is the ORDINARY path and not an edge case. Assigning the state attaches the instance and
+    // marks every property modified without consulting the key at all, which also reproduces the legacy
+    // procedure's write-every-column behaviour exactly. This is the same -1/0 sentinel collision the
+    // migration analysis records: 0 and -1 are VALUES in this schema, never absences.
     public Task UpdateAsync(Tab tab, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tab);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_context.Entry(tab).State is EntityState.Detached)
+        EntityEntry<Tab> entry = _context.Entry(tab);
+
+        if (entry.State is EntityState.Detached)
         {
-            _context.Tabs.Update(tab);
+            entry.State = EntityState.Modified;
         }
 
         return Task.CompletedTask;
@@ -726,7 +754,28 @@ internal sealed class TabRepository : ITabRepository
     /// rather than a persistence operation. Deciding which pages move, to what depth and in what order is
     /// the application layer's work; this member only records the outcome for one page.
     /// </para>
+    /// <para>
+    /// MIGRATION: the attachment ASSIGNS <see cref="EntityState.Unchanged"/> and must never call
+    /// <c>DbSet.Attach</c>. <c>Attach</c> decides between <c>Added</c> and <c>Unchanged</c> exactly as
+    /// <c>Update</c> decides between <c>Added</c> and <c>Modified</c> - by asking whether the key "is
+    /// set" - and it reads an <see cref="int"/> key of 0 as unset. Because <c>dbo.Tabs.TabID</c> is
+    /// <c>IDENTITY(0, 1)</c> (<c>01.00.00.SqlDataProvider:L140</c>), attaching the first page of an
+    /// installation marked it <c>Added</c>, and the four property flags below then had no update to
+    /// narrow: the commit INSERTED a duplicate page instead of renumbering the existing one. This member
+    /// is reached during a REORDER, so the damage was not confined to a caller that edited page 0 - a
+    /// caller renumbering ANY page in the tree passes each of its siblings through here, page 0 among
+    /// them, and the page tree grew by one row on an ordinary edit. Assigning the state attaches the
+    /// instance without consulting the key, after which the four flags produce exactly the four-column
+    /// statement the legacy procedure emitted.
+    /// </para>
     /// </remarks>
+    // MIGRATION: the detached branch assigns EntityState.Unchanged DIRECTLY and must never call
+    // DbSet.Attach, for the same reason UpdateAsync must never call DbSet.Update: Attach also passes
+    // forceStateWhenUnknownKey: EntityState.Added, so attaching a detached page whose TabID is 0 - the
+    // real first page of an installation, because dbo.Tabs.TabID is IDENTITY(0, 1) - staged an INSERT
+    // and then marked four properties modified on a row that was being added rather than updated.
+    // Assigning the state begins tracking without consulting the key, after which the four property
+    // flags below narrow the write to exactly the four columns the legacy procedure set.
     public Task UpdateOrderAsync(Tab tab, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tab);
@@ -736,7 +785,7 @@ internal sealed class TabRepository : ITabRepository
 
         if (entry.State is EntityState.Detached)
         {
-            entry = _context.Tabs.Attach(tab);
+            entry.State = EntityState.Unchanged;
 
             entry.Property(candidate => candidate.TabOrder).IsModified = true;
             entry.Property(candidate => candidate.Level).IsModified = true;

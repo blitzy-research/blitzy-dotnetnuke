@@ -173,8 +173,19 @@ namespace DnnMigration.Application.Mapping;
 public static class UserMappings
 {
     /// <summary>
-    /// The legacy integral sentinel translated to SQL <c>NULL</c> by profile-definition provider methods.
+    /// The legacy integral encoding of a host-level profile-property declaration, published OUTBOUND
+    /// only.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION: this constant is a response-contract encoding and nothing else. It is applied by
+    /// <see cref="ToDto(ProfilePropertyDefinition, int)"/> when the stored scope is SQL <c>NULL</c>,
+    /// because <c>ProfilePropertyDefinitionDto.PortalId</c> deliberately keeps the non-nullable
+    /// <see cref="int"/> and the -1 encoding the legacy class published, and Rule T7 preserves an
+    /// externally observable sentinel at the boundary. It is deliberately NOT applied inbound: the
+    /// create mapper writes the scope it is given, for the reason recorded on
+    /// <see cref="ToNewDefinition(int?, CreateProfilePropertyDefinitionRequest)"/>. Nothing in the
+    /// domain, the repository or the service layer may compare a portal identifier against it.
+    /// </remarks>
     private const int LegacyHostPortalId = -1;
 
     /// <summary>
@@ -349,18 +360,33 @@ public static class UserMappings
         {
             PropertyDefinitionId = definition.PropertyDefinitionId,
 
-            // MIGRATION: the two encodings of "host-level" meet only in this mapping layer.
-            // 03.03.03 lines 77-83 made ProfilePropertyDefinition.PortalID
-            // nullable and migrated the rows holding the legacy -1 with
-            // "SET PortalId = NULL WHERE PortalId = -1", so the entity carries int? and the domain
-            // never restores the sentinel. The contract, by its own deliberate decision recorded on
+            // MIGRATION: the two encodings of "host-level" meet only in this mapping layer, and only
+            // in this direction. 03.03.03 lines 77-83 made ProfilePropertyDefinition.PortalID nullable
+            // and migrated the rows holding the legacy -1 with "SET PortalId = NULL WHERE
+            // PortalId = -1", so the entity carries int? and the domain never restores the sentinel.
+            // The contract, by its own deliberate decision recorded on
             // ProfilePropertyDefinitionDto.PortalId, keeps the non-nullable int and the legacy -1
-            // encoding because -1 is what the legacy class published to its consumers, and
-            // Rule T7 preserves an externally observable sentinel at the boundary rather than
-            // letting serialisation turn it into an absent value. Translating between the two is
-            // therefore a mapping concern, and this is its outbound half. ToNewDefinition applies
-            // the inverse translation on creation because the legacy provider wrapped the same value
-            // with GetNull.
+            // encoding because -1 is what the legacy class published to its consumers, and Rule T7
+            // preserves an externally observable sentinel at the boundary rather than letting
+            // serialisation turn it into an absent value.
+            //
+            // MIGRATION: this is the OUTBOUND half and it has no inbound counterpart. A stored -1 is a
+            // tenant key here, not a host marker, and is published unchanged - dbo.Portals.PortalID is
+            // IDENTITY(-1, 1) (01.00.00.SqlDataProvider:L77), so -1 is the first real tenant of an
+            // installation. Only a SQL NULL scope is encoded as -1 on the way out. The two therefore
+            // read alike in this response member, which is the price of the non-nullable contract and
+            // is accepted rather than concealed: host-level administration is out of scope
+            // (AAP 0.2.2.4), so every read that reaches this projection is scoped to one resolved
+            // tenant and cannot mix the two. ToNewDefinition deliberately performs NO inverse
+            // translation; an earlier revision that did filed a real tenant's declaration into the
+            // host scope, where the tenant's own read could not find it.
+            //
+            // Stated plainly, because it is the price of not treating -1 as absent: a host-level
+            // declaration and a declaration belonging to tenant -1 are published identically in this
+            // member. Nothing in this API can confuse them in practice - every declaration route is
+            // tenant-scoped and a tenant's scope never includes the host rows - so a response carrying
+            // -1 describes a row of the tenant the caller is signed in to, and only such rows are
+            // reachable.
             PortalId = definition.PortalId ?? LegacyHostPortalId,
 
             ModuleDefId = definition.ModuleDefinitionId,
@@ -562,30 +588,58 @@ public static class UserMappings
     /// <summary>
     /// Builds a new profile property definition from a submitted contract.
     /// </summary>
-    /// <param name="portalId">Identifier of the portal the definition belongs to.</param>
+    /// <param name="portalId">
+    /// The scope the definition belongs to: an identifier for a tenant-owned declaration, or
+    /// <see langword="null"/> for a host-level declaration stored with a SQL <c>NULL</c> portal.
+    /// </param>
     /// <param name="request">The submitted definition.</param>
     /// <returns>An unsaved definition.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: this path binds the CREATE request rather than the response projection, and the module
     /// definition key below is the reason the two verbs cannot share one contract. The terminal insert
     /// procedure <c>AddPropertyDefinition</c> (<c>04.06.00:L1101</c>) declares <c>@ModuleDefId</c>; its
     /// update counterpart (<c>04.05.00:L1685</c>) does not declare it and does not write the column, so a
     /// member bound here would have been silently discarded on the other path.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the scope is nullable because the terminal column is, and NOT because a sentinel is
+    /// being decoded. An earlier revision rewrote an incoming -1 into <see langword="null"/> here, which
+    /// reproduced <c>AddPropertyDefinition</c>'s <c>GetNull</c> wrapper (<c>SqlDataProvider.vb:L1021</c>)
+    /// and was wrong in this schema: <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the FIRST REAL TENANT an installation has, and the
+    /// portal identifier reaching this mapper arrives from the resolved tenant route rather than from a
+    /// caller asking for the host scope - host-level administration is out of scope
+    /// (<c>AAP 0.2.2.4</c>). The collapse therefore filed a real tenant's declaration into the host
+    /// scope, from which the same tenant's scoped read could never retrieve it. Every scope is now
+    /// written exactly as it is given, so a create and the read that follows it agree for -1 as they
+    /// already did for every other key.
+    /// </para>
     /// </remarks>
     public static ProfilePropertyDefinition ToNewDefinition(
-        int portalId,
+        int? portalId,
         CreateProfilePropertyDefinitionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var definition = new ProfilePropertyDefinition
         {
-            // MIGRATION: this subsystem is one of the measured places where the collision between a real
-            // portal key and Null.NullInteger is observable. AddPropertyDefinition passed PortalId through
-            // GetNull (SqlDataProvider.vb:L1021), so -1 reached SQL as NULL and created a host-level
-            // declaration. The target performs the same boundary translation explicitly; ordinary portal
-            // identifiers remain unchanged.
-            PortalId = portalId == LegacyHostPortalId ? null : portalId,
+            // MIGRATION: written through unchanged - see the scope note on this method. null is the
+            // SQL-null host scope that 03.03.03.SqlDataProvider:L74-L83 established, and every non-null
+            // value, -1 and 0 included, is an exact tenant key.
+            //
+            // MIGRATION: TRANSLATING THE TENANT IDENTIFIER HERE IS FORBIDDEN, and the reason is measured.
+            // The legacy provider did translate: AddPropertyDefinition passed PortalId through GetNull
+            // (SqlDataProvider.vb:L1021), so a caller naming -1 wrote a SQL NULL and created a HOST-LEVEL
+            // declaration instead of one belonging to that tenant. In dbo.ProfilePropertyDefinition a NULL
+            // PortalID means "host-level, shared by every portal", so reproducing that filed the tenant's
+            // declaration as global and leaked it to every other tenant - while the API's own 201 response
+            // reported portalId -1, describing a row it had not written. AAP 0.5.1.1 states the rule
+            // directly: the portal-identifier wrapper "forbids treating -1 as absent", and preserving
+            // tenant isolation is a stated preservation requirement. Absence therefore has exactly one
+            // representation in this column, a SQL NULL, reachable only from a host-scoped write and never
+            // by spelling a tenant identifier that happens to be negative.
+            PortalId = portalId,
             ModuleDefinitionId = request.ModuleDefId,
 
             // MIGRATION: a definition is born live. IsDeleted is moved by a deletion, never by a

@@ -171,14 +171,21 @@ internal sealed class ModuleRepository : IModuleRepository
     /// <remarks>
     /// Installation-wide and deliberately unfiltered: neither the tenant nor the soft-delete flag is
     /// predicated, matching <c>GetAllModules()</c>, which applied no <c>where</c> clause at all.
-    /// The definition is loaded with each row because the mapping layer names a module through
-    /// <c>Module.ModuleDefinition.FriendlyName</c>, and ordering by the primary key gives every
-    /// caller the same sequence for the same data.
+    /// The definition and the package behind it are loaded with each row because the mapping layer
+    /// reports both - the definition's display name and the package's name, description and version -
+    /// and ordering by the primary key gives every caller the same sequence for the same data.
     /// </remarks>
+    // MIGRATION: the PACKAGE is loaded as well as the definition, on this and every other read below.
+    // Loading only the definition made the module projections report a null package name, description
+    // and version on every response, because those three values live one table further out on
+    // dbo.DesktopModules and the navigation that reaches them was never populated. Two joins onto
+    // already-joined tables is the price of a projection that cannot silently report an absence it
+    // caused itself.
     public async Task<IReadOnlyList<Module>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         return await _dbContext.Modules
             .Include(module => module.ModuleDefinition)
+                .ThenInclude(definition => definition.DesktopModule)
             .OrderBy(module => module.ModuleId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -197,6 +204,7 @@ internal sealed class ModuleRepository : IModuleRepository
     {
         return await _dbContext.Modules
             .Include(module => module.ModuleDefinition)
+                .ThenInclude(definition => definition.DesktopModule)
             .Where(module => module.PortalId == portalId)
             .OrderBy(module => module.ModuleId)
             .ToListAsync(cancellationToken)
@@ -219,6 +227,7 @@ internal sealed class ModuleRepository : IModuleRepository
     {
         return await _dbContext.Modules
             .Include(module => module.ModuleDefinition)
+                .ThenInclude(definition => definition.DesktopModule)
             .Where(module => module.PortalId == portalId && module.AllTabs == allTabs)
             .OrderBy(module => module.ModuleId)
             .ToListAsync(cancellationToken)
@@ -243,6 +252,7 @@ internal sealed class ModuleRepository : IModuleRepository
     {
         return _dbContext.Modules
             .Include(module => module.ModuleDefinition)
+                .ThenInclude(definition => definition.DesktopModule)
             .FirstOrDefaultAsync(module => module.ModuleId == moduleId, cancellationToken);
     }
 
@@ -286,6 +296,7 @@ internal sealed class ModuleRepository : IModuleRepository
 
         return _dbContext.Modules
             .Include(module => module.ModuleDefinition)
+                .ThenInclude(definition => definition.DesktopModule)
             .Where(module => module.PortalId == portalId
                 && module.ModuleDefinition.FriendlyName == friendlyName)
             .OrderBy(module => module.ModuleId)

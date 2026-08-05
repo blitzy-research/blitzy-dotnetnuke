@@ -844,8 +844,8 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>
-    /// A stored frequency character the enumeration does not declare reads back as the documented fallback,
-    /// never as an undefined enumeration value.
+    /// A stored frequency character the enumeration does not declare reads back as that character, and the
+    /// stored byte survives a write to an unrelated column.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <param name="stored">The character to plant in both frequency columns.</param>
@@ -860,19 +860,21 @@ public sealed class DnnDbContextTests
     /// character here.
     /// </para>
     /// <para>
-    /// The consequence of casting such a character blindly is worse than a wrong value, which is why this
-    /// is asserted through the real model rather than over the conversion in isolation. An undefined
-    /// enumeration value materialises without complaint and travels intact to the wire converter, which
-    /// refuses to write a code it does not recognise - so one out-of-vocabulary character in one row turns
-    /// a successful read of an entire result set into a server fault. Resolving to the fallback degrades
-    /// one field instead, and that is what the legacy application did in effect: it compared the raw
-    /// character against the codes it knew and treated anything else as no recurrence.
+    /// THE CONVERSION IS LOSSLESS, AND THIS TEST EXISTS TO PIN THAT RATHER THAN THE NORMALISATION IT
+    /// REPLACED. An earlier revision resolved an unrecognised character to the None member on the reasoning
+    /// that an undefined enumeration value would fail at the wire converter and take a whole result set
+    /// with it. The reasoning was right about the wire and catastrophically wrong about the cost: a role
+    /// update rewrites the column from whatever was materialised, so editing an unrelated field - a
+    /// description - rewrote a stored <c>'4'</c> as <c>'N'</c> and destroyed data AAP Rule T4 makes
+    /// authoritative. The wire half is lossless now too, so the read no longer has to choose between a
+    /// readable response and an intact row, and this test asserts the stored byte after an unrelated write
+    /// rather than merely asserting what the read produced.
     /// </para>
     /// <para>
     /// The lower-case case is included deliberately. SQL Server's default collation is case-insensitive, so
     /// a legacy installation could hold <c>'m'</c> and the dropped constraint would have accepted it - yet
-    /// the legacy application compared with binary semantics and never read it as a month. Resolving it
-    /// here would change behaviour rather than preserve it.
+    /// the legacy application compared with binary semantics and never read it as a month. Up-casing it here
+    /// would change behaviour rather than preserve it, and would rewrite the byte on the next update.
     /// </para>
     /// <para>
     /// BOTH columns are planted and both are asserted, and that pairing is the point rather than
@@ -887,7 +889,7 @@ public sealed class DnnDbContextTests
     [InlineData("0")]
     [InlineData("m")]
     [InlineData("Z")]
-    public async Task Role_WithAnUnrecognisedStoredFrequency_ReadsAsTheFallback(string stored)
+    public async Task Role_WithAnUnrecognisedStoredFrequency_IsCarriedThroughUnchanged(string stored)
     {
         string suffix = Suffix();
         int roleId;
@@ -923,6 +925,8 @@ public sealed class DnnDbContextTests
                 + "WHERE [RoleID] = @roleId",
                 new Dictionary<string, object?> { ["stored"] = stored, ["roleId"] = roleId });
 
+            var carried = (Domain.Enums.BillingFrequency)stored[0];
+
             using (IServiceScope reading = _fixture.Services.CreateScope())
             {
                 IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
@@ -931,14 +935,42 @@ public sealed class DnnDbContextTests
 
                 reread.Should().NotBeNull();
 
-                reread!.BillingFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
-                reread.TrialFrequency.Should().Be(Domain.Enums.BillingFrequency.None);
+                reread!.BillingFrequency.Should().Be(
+                    carried,
+                    "the enumeration is backed by ushort and each member IS its code point, so any stored "
+                    + "character is representable exactly");
+                reread.TrialFrequency.Should().Be(carried);
 
-                Enum.IsDefined(reread.BillingFrequency!.Value).Should().BeTrue(
-                    "an undefined enumeration value reaches the wire and fails there, taking the whole "
-                    + "response with it, so it must not be materialised in the first place");
-                Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeTrue();
+                Enum.IsDefined(reread.BillingFrequency!.Value).Should().BeFalse(
+                    "the character is deliberately outside the declared vocabulary; it is CARRIED rather "
+                    + "than normalised, and both the wire converter and the write path handle it");
+                Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeFalse();
             }
+
+            // THE ASSERTION THE NORMALISING REVISION COULD NOT HAVE PASSED. A role update rewrites both
+            // frequency columns from whatever was materialised, so an edit to something else entirely is
+            // exactly where a lossy read destroys the stored byte.
+            using (IServiceScope editing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = editing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = editing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role? subject = await roles.GetByIdAsync(roleId, _fixture.Seed.PortalId);
+                subject.Should().NotBeNull();
+
+                subject!.Description = FormattableString.Invariant($"Unrelated edit {suffix}");
+
+                await roles.UpdateAsync(subject);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            string storedAfter = await _fixture.Database.ScalarAsync<string>(
+                "SELECT [BillingFrequency] + [TrialFrequency] FROM [dbo].[Roles] WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["roleId"] = roleId });
+
+            storedAfter.Should().Be(
+                stored + stored,
+                "an unrelated edit must leave both legacy characters exactly as the installation stored them");
 
         }
         finally

@@ -573,7 +573,7 @@ public class UserServiceApplicationTests
                 .Callback(() => subject.CallLog.Add("sessions.end"));
 
             subject.Profiles.Setup(profiles => profiles.GetDefinitionsByPortalIdAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => subject.ProfileDeclarations);
             subject.Profiles.Setup(profiles => profiles.GetProfileValuesAsync(
@@ -581,12 +581,12 @@ public class UserServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<UserProfileValue>());
             subject.Profiles.Setup(profiles => profiles.GetProfileValuesAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Array.Empty<UserProfileValue>());
             subject.Profiles.Setup(profiles => profiles.DeleteProfileValuesAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask)

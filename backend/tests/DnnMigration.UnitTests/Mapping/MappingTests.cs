@@ -1139,7 +1139,7 @@ public class MappingTests
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
-        ModuleListItemDto dto = ModuleMappings.ToListItem(module, placement, friendlyName: "Announcements");
+        ModuleListItemDto dto = ModuleMappings.ToListItem(module, placement, AnnouncementsCatalogue);
 
         dto.ModuleId.Should().Be(0, "the module identifier comes from the module row");
         dto.TabModuleId.Should().Be(31, "the placement identifier comes from the placement row");
@@ -1149,6 +1149,12 @@ public class MappingTests
         dto.ModuleDefId.Should().Be(4);
         dto.ModuleTitle.Should().Be("Measured Module");
         dto.FriendlyName.Should().Be("Announcements");
+        dto.DesktopModuleId.Should().Be(
+            3,
+            "the package key comes from the resolved catalogue facts, not from the module row");
+        dto.ModuleName.Should().Be("Announcements");
+        dto.Description.Should().Be("Displays a list of announcements.");
+        dto.Version.Should().Be("04.09.00");
         dto.ModuleOrder.Should().Be(6, "the ordinal within the pane belongs to the placement");
         dto.AllTabs.Should().BeTrue();
         dto.Visibility.Should().Be(ModuleVisibility.Minimized);
@@ -1172,7 +1178,7 @@ public class MappingTests
             DesktopModuleId = 3,
         };
 
-        ModuleMappings.ToListItem(module, FullPlacement(), friendlyName: null)
+        ModuleMappings.ToListItem(module, FullPlacement(), catalogue: null)
             .FriendlyName.Should().Be("Loaded Definition");
     }
 
@@ -1186,9 +1192,15 @@ public class MappingTests
 
         module.ModuleDefinition.Should().BeNull("the fixture deliberately loads no definition");
 
-        ModuleMappings.ToListItem(module, FullPlacement(), friendlyName: null)
-            .FriendlyName.Should().BeNull(
-                "the list projection reports an unresolved name as absent rather than inventing one");
+        ModuleListItemDto unresolved = ModuleMappings.ToListItem(module, FullPlacement(), catalogue: null);
+
+        unresolved.FriendlyName.Should().BeNull(
+            "the list projection reports an unresolved name as absent rather than inventing one");
+        unresolved.DesktopModuleId.Should().BeNull(
+            "an unresolved definition has no package key to report, and zero is not one");
+        unresolved.ModuleName.Should().BeNull();
+        unresolved.Description.Should().BeNull();
+        unresolved.Version.Should().BeNull();
     }
 
     /// <summary>
@@ -1200,7 +1212,7 @@ public class MappingTests
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
-        ModuleDetailDto dto = ModuleMappings.ToDetail(module, placement, friendlyName: "Announcements");
+        ModuleDetailDto dto = ModuleMappings.ToDetail(module, placement, AnnouncementsCatalogue);
 
         dto.ModuleId.Should().Be(0);
         dto.TabModuleId.Should().Be(31);
@@ -1222,13 +1234,15 @@ public class MappingTests
         dto.Visibility.Should().Be(ModuleVisibility.Minimized);
         dto.DisplayTitle.Should().BeFalse();
 
-        dto.DesktopModuleId.Should().Be(
-            0,
-            "the fixture loads no definition, and the package key's stored default is 0 - which is a "
-            + "legitimate value rather than a marker of absence");
-        dto.ModuleName.Should().BeNull("the package projection cannot resolve without a definition");
-        dto.Description.Should().BeNull();
-        dto.Version.Should().BeNull();
+        // MIGRATION: these four are asserted against the RESOLVED facts, not against the module's own
+        // navigations. An earlier reading of the 02.00.00 upgrade script had the package key carrying a
+        // stored default of zero and expected zero here; that default is dropped again by the same script
+        // (02.00.00 line 5243), so no terminal installation has it, and reporting zero named a package
+        // that cannot exist - DesktopModules.DesktopModuleID is a plain IDENTITY seeding at one.
+        dto.DesktopModuleId.Should().Be(3, "the package key comes from the resolved catalogue facts");
+        dto.ModuleName.Should().Be("Announcements");
+        dto.Description.Should().Be("Displays a list of announcements.");
+        dto.Version.Should().Be("04.09.00");
     }
 
     /// <summary>
@@ -1243,7 +1257,7 @@ public class MappingTests
     [Fact]
     public void ModuleToDetail_ReportsAnUnresolvedNameAsAbsent()
     {
-        ModuleMappings.ToDetail(FullModule(), FullPlacement(), friendlyName: null)
+        ModuleMappings.ToDetail(FullModule(), FullPlacement(), catalogue: null)
             .FriendlyName.Should().BeNull(
                 "the fallback chain ends at null, so an unresolved join stays distinguishable from a "
                 + "definition whose name is genuinely blank");
@@ -1283,7 +1297,7 @@ public class MappingTests
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
-        ModuleDetailDto detail = ModuleMappings.ToDetail(module, placement, "Announcements");
+        ModuleDetailDto detail = ModuleMappings.ToDetail(module, placement, AnnouncementsCatalogue);
         ModuleSettingsDto settings = ModuleMappings.ToSettings(module, placement, [], []);
 
         foreach (string appearance in new[]
@@ -2361,19 +2375,31 @@ public class MappingTests
     }
 
     /// <summary>
-    /// A new profile definition translates the legacy host identifier at the persistence boundary, starts
-    /// undeleted, and floors a negative length.
+    /// A new profile definition stores the scope it is given - including the first tenant key an
+    /// installation issues - starts undeleted, and floors a negative length.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// MIGRATION: this test previously supplied a definition key, a foreign tenant and a visibility hint on
     /// the body and asserted that all three were ignored. The create contract carries none of them - the first
     /// two arrive from the route or the store, and the third is not a column on the table at any point in the
-    /// 88-script chain - so the guarantee is structural. The assertions on the tenant and the key are retained
-    /// because they prove the mapper applies the same <c>-1</c>-to-<c>NULL</c> translation as the legacy
-    /// provider and leaves the key unset.
+    /// 88-script chain - so the guarantee is structural.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the scope assertion is INVERTED against an earlier revision, and the inversion is the
+    /// point. The mapper used to rewrite an incoming -1 into a null scope, reproducing
+    /// <c>AddPropertyDefinition</c>'s <c>GetNull</c> wrapper (<c>SqlDataProvider.vb:L1021</c>). That is
+    /// wrong in this schema: <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the FIRST REAL TENANT an installation has, and the
+    /// portal identifier reaching this mapper comes from the resolved tenant route rather than from a
+    /// caller asking for the host scope - host-level administration is out of scope. The collapse
+    /// therefore filed a real tenant's declaration into the host scope, where that tenant's own scoped
+    /// read could never retrieve it. Every scope is now written exactly as given, and the SQL-null host
+    /// scope is expressed by passing a null.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void ProfileDefinitionToNewDefinition_TranslatesHostScopeAndFloorsTheLength()
+    public void ProfileDefinitionToNewDefinition_StoresTheScopeGivenAndFloorsTheLength()
     {
         CreateProfilePropertyDefinitionRequest request = new()
         {
@@ -2391,8 +2417,10 @@ public class MappingTests
 
         ProfilePropertyDefinition definition = UserMappings.ToNewDefinition(portalId: -1, request);
 
-        definition.PortalId.Should().BeNull(
-            "AddPropertyDefinition passed the legacy -1 identifier through GetNull before writing it");
+        definition.PortalId.Should().Be(
+            -1,
+            "-1 is the first key IDENTITY(-1, 1) issues, so the declaration belongs to that tenant and "
+            + "must not be filed into the SQL-null host scope");
         definition.ModuleDefinitionId.Should().Be(4);
         definition.IsDeleted.Should().BeFalse();
         definition.DataType.Should().Be(349);
@@ -2404,7 +2432,9 @@ public class MappingTests
 
         UserMappings.ToNewDefinition(portalId: 0, request).PortalId.Should().Be(
             0,
-            "only the measured host sentinel is translated; an ordinary portal identifier is unchanged");
+            "0 is the first key an ordinary installation issues and is carried through like any other");
+        UserMappings.ToNewDefinition(portalId: null, request).PortalId.Should().BeNull(
+            "the SQL-null host scope is expressed by passing a null and by nothing else");
         definition.ValidationExpression.Should().Be(@"^\d+$");
         definition.ViewOrder.Should().Be(3);
         definition.IsVisible.Should().BeTrue();
@@ -3863,8 +3893,13 @@ public class MappingTests
     /// <para>
     /// MIGRATION: the entity models the host case as null, which is honest about the column, and the
     /// response projects it back to -1, which is what every legacy consumer of this contract expects to
-    /// read. This is the outbound half of the mapping-layer translation; the create mapper applies the
-    /// inverse because the legacy provider passed -1 through <c>GetNull</c> before writing.
+    /// read. That is the ONLY direction the encoding travels. There is deliberately NO inbound
+    /// counterpart: an earlier revision had the create mapper rewrite an incoming -1 into a null scope
+    /// and the repository rewrite a requested -1 into a <c>PortalID IS NULL</c> predicate, which filed and
+    /// then hid a real tenant's declarations, because <c>IDENTITY(-1, 1)</c> makes -1 an installation's
+    /// first tenant. The third assertion below is the consequence and is asserted rather than hidden: a
+    /// stored -1 and a stored null both publish -1 in this response member, so a consumer must read it as
+    /// the scope it asked for and never as a scope discriminator.
     /// </para>
     /// </remarks>
     [Fact]
@@ -3884,10 +3919,13 @@ public class MappingTests
             0,
             "Portals.PortalID is seeded IDENTITY(-1,1), so zero is the first tenant rather than no tenant");
 
-        ProfilePropertyDefinition hostAddressedExplicitly = FullDefinition();
-        hostAddressedExplicitly.PortalId = -1;
+        ProfilePropertyDefinition firstTenant = FullDefinition();
+        firstTenant.PortalId = -1;
 
-        UserMappings.ToDto(hostAddressedExplicitly, 2).PortalId.Should().Be(-1);
+        UserMappings.ToDto(firstTenant, 2).PortalId.Should().Be(
+            -1,
+            "a stored -1 is a tenant key and is published unchanged, which is indistinguishable from the "
+            + "host encoding in this non-nullable response member and is documented as such");
     }
 
     /// <summary>
@@ -4113,10 +4151,10 @@ public class MappingTests
         RoleMappings.ToDetail(role).Should().BeEquivalentTo(RoleMappings.ToDetail(role));
         RoleMappings.ToDto(group).Should().BeEquivalentTo(RoleMappings.ToDto(group));
 
-        ModuleMappings.ToListItem(module, placement, "Announcements").Should()
-            .BeEquivalentTo(ModuleMappings.ToListItem(module, placement, "Announcements"));
-        ModuleMappings.ToDetail(module, placement, "Announcements").Should()
-            .BeEquivalentTo(ModuleMappings.ToDetail(module, placement, "Announcements"));
+        ModuleMappings.ToListItem(module, placement, AnnouncementsCatalogue).Should()
+            .BeEquivalentTo(ModuleMappings.ToListItem(module, placement, AnnouncementsCatalogue));
+        ModuleMappings.ToDetail(module, placement, AnnouncementsCatalogue).Should()
+            .BeEquivalentTo(ModuleMappings.ToDetail(module, placement, AnnouncementsCatalogue));
         ModuleMappings.ToSettings(module, placement, [], []).Should()
             .BeEquivalentTo(ModuleMappings.ToSettings(module, placement, [], []));
         ModuleMappings.ToDto(moduleDefinition, NewDesktopModule("Announcements", 7)).Should()
@@ -4281,6 +4319,21 @@ public class MappingTests
         RsvpCode = "GOLD2026",
         IconFile = "gold.gif",
     };
+
+    /// <summary>
+    /// The catalogue facts a caller resolves for the fixture module's definition and package.
+    /// </summary>
+    /// <remarks>
+    /// Every value differs from every value on the module and placement fixtures, so a projection that
+    /// reads a catalogue member from the wrong row fails rather than coincidentally agreeing. The package
+    /// key is deliberately 3 rather than 0, because 0 is not a key the store can issue.
+    /// </remarks>
+    private static ModuleCatalogueFacts AnnouncementsCatalogue => new(
+        DesktopModuleId: 3,
+        FriendlyName: "Announcements",
+        ModuleName: "Announcements",
+        Description: "Displays a list of announcements.",
+        Version: "04.09.00");
 
     /// <summary>
     /// Builds a module whose every mapped column carries a distinguishable value and whose definition

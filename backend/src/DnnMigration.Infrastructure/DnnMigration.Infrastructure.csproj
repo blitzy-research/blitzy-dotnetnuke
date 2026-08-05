@@ -63,7 +63,9 @@
       AAP section 0.6.1 pins Microsoft.Data.SqlClient at 5.2.3 and says why the
       pin is direct rather than transitive: without it the SQL Server provider
       resolves 5.1.7 through EF Core, and the pin was verified to change the
-      resolved graph.
+      resolved graph. Keeping the reference DIRECT is also what stops a future EF
+      Core patch moving the client underneath the solution - a direct
+      PackageReference wins resolution outright.
 
       A previous revision raised this to 6.1.6 on the argument that the 5.x
       identity chain carries deprecated authentication and JSON packages. That
@@ -76,6 +78,21 @@
       graph the lock files below assert, and the restore was re-verified to
       produce zero warnings, so no advisory is promoted to an error by the
       warnings-as-errors policy.
+
+      The trade-off behind the 6.1.6 attempt is recorded rather than absorbed. It
+      was made to shed identities NuGet's DEPRECATION listing reports inside
+      5.2.3's Entra ID chain (Azure.Identity 1.11.4 and the
+      Microsoft.IdentityModel 6.35.0 family). Deprecation carries no NU
+      diagnostic, so it never failed a build and never could, and the graph it
+      concerns is the interactive/Entra authentication path this solution does not
+      use - every connection string in the delivery authenticates with a SQL
+      login. The VULNERABILITY position is what the warnings-as-errors policy can
+      actually observe, and it is clean: restoring this project's graph with
+      NuGetAudit enabled at mode=all and level=low reports no advisory against
+      5.2.3 or anything it brings in, verified by execution rather than assumed.
+      Should a deployment ever need Entra ID authentication, raise the client
+      version in the inventory deliberately and re-verify this project's audit
+      position in the same change.
     -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
 

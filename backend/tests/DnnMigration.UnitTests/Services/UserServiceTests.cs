@@ -43,7 +43,17 @@ namespace DnnMigration.UnitTests.Services;
 /// </remarks>
 public class UserServiceTests
 {
-    private const int HostPortalId = -1;
+    /// <summary>
+    /// The first key <c>dbo.Portals.PortalID</c> issues, which is a REAL TENANT and not the host scope.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first tenant an installation has. The host
+    /// scope is a SQL <c>NULL</c> portal, which <c>03.03.03.SqlDataProvider:L74-L83</c> established. The
+    /// constant is named for what it is so that no assertion below can be read as treating -1 as an
+    /// absence.
+    /// </remarks>
+    private const int FirstTenantPortalId = -1;
 
     private const int PortalId = 0;
 
@@ -853,12 +863,38 @@ public class UserServiceTests
         paged.Value.PageSize.Should().Be(5);
     }
 
-    /// <summary>Hidden tenant columns are minimised before a user-list row crosses the service boundary.</summary>
+    /// <summary>
+    /// Hidden tenant columns suppress the profile READS a user-list row would otherwise cost, and leave the
+    /// account columns the row already carries exactly as stored.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this asserts the OPPOSITE of an earlier reading of the legacy grid, deliberately. The
+    /// legacy settings decided whether a column was RENDERED (<c>UserModuleBase.vb</c>:L98-L115 reads them
+    /// and the grid omits the column); they never rewrote the value behind it. Overwriting the value is a
+    /// different behaviour and a lossy one - an empty name is indistinguishable from an account that holds
+    /// no name, so a caller cannot tell a minimised row from an incomplete one - and it concealed nothing,
+    /// because the same settings are published verbatim by the membership-settings read. Deciding whether
+    /// to render a column belongs to the client.
+    /// </para>
+    /// <para>
+    /// What the settings still govern is the WORK: address and telephone are profile values costing one
+    /// read per row, and that read is skipped entirely when the tenant hides them, which is what the
+    /// <c>Times.Never()</c> verification at the end measures. Their absence therefore reports "not
+    /// requested" rather than "overwritten", and that distinction is the point of the split.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task ListUsers_HonoursTheTenantColumnVisibilitySettings()
+    public async Task ListUsers_SuppressesTheProfileReadsAndKeepsTheAccountColumnsAsStored()
     {
+        User stored = StoredUser();
+        stored.CreatedDate = new DateTime(2019, 4, 7, 9, 30, 0, DateTimeKind.Utc);
+        stored.LastLoginDate = new DateTime(2024, 11, 2, 16, 45, 0, DateTimeKind.Utc);
+        stored.IsApproved = true;
+
         Harness harness = Harness.Ready();
-        harness.UserPage = PagedResult<User>.Unpaged([StoredUser()]);
+        harness.UserPage = PagedResult<User>.Unpaged([stored]);
         harness.AddMembershipSettingsSource();
         harness.StoredModuleSettings[ModuleId].AddRange(
         [
@@ -880,19 +916,23 @@ public class UserServiceTests
 
         UserListItemDto row = outcome.Value.Items.Should().ContainSingle().Subject;
         row.Username.Should().Be(Username);
-        row.FirstName.Should().BeEmpty();
-        row.LastName.Should().BeEmpty();
-        row.DisplayName.Should().BeEmpty();
-        row.Address.Should().BeNull();
-        row.Telephone.Should().BeNull();
-        row.Email.Should().BeEmpty();
-        row.CreatedDate.Should().BeNull();
-        row.LastLoginDate.Should().BeNull();
-        row.IsApproved.Should().BeFalse();
+
+        // Account columns: projected as stored, whatever the tenant's presentation settings say.
+        row.FirstName.Should().Be("Grace", "a hidden column is not rendered, not emptied");
+        row.LastName.Should().Be("Hopper", "a hidden column is not rendered, not emptied");
+        row.DisplayName.Should().Be("Grace B Hopper", "a hidden column is not rendered, not emptied");
+        row.Email.Should().Be(Email, "a hidden column is not rendered, not emptied");
+        row.CreatedDate.Should().Be(stored.CreatedDate, "a hidden instant is not rendered, not erased");
+        row.LastLoginDate.Should().Be(stored.LastLoginDate, "a hidden instant is not rendered, not erased");
+        row.IsApproved.Should().BeTrue("a hidden flag is not rendered, and must never be reported as false");
+
+        // Profile values: the per-row read is skipped, so absence here means "not requested".
+        row.Address.Should().BeNull("the address read is skipped when the tenant hides the column");
+        row.Telephone.Should().BeNull("the telephone read is skipped when the tenant hides the column");
 
         harness.Profiles.Verify(
             profiles => profiles.GetProfileValuesAsync(
-                It.IsAny<int>(),
+                It.IsAny<int?>(),
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
@@ -3332,7 +3372,7 @@ public class UserServiceTests
 
         outcome.Value.Should().BeFalse("the tenant has switched the gate off");
         harness.Profiles.Verify(
-            p => p.GetDefinitionsByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            p => p.GetDefinitionsByPortalIdAsync(It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "the setting is consulted first and short-circuits");
     }
@@ -4345,40 +4385,85 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The legacy host identifier reaches a SQL-null definition through the same repository scope used by
-    /// the collection read, while a row physically storing the colliding portal key remains outside it.
+    /// The single read passes the tenant it was given straight through, so the first tenant an
+    /// installation has - the one keyed -1 - reads its own declaration and not the host scope's.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: this replaces an assertion that encoded a measured defect. The service used to reach a
+    /// repository that rewrote a requested portal of -1 into a <c>PortalID IS NULL</c> predicate, so a
+    /// declaration physically owned by the tenant keyed -1 read as an absence while the host scope's rows
+    /// were served in its place. Because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), that tenant is a real one, and the scope it names is passed
+    /// through unaltered by every layer.
+    /// </remarks>
     [Fact]
-    public async Task GetProfilePropertyDefinition_UsesTheLegacyHostScopeForTheSingleRead()
+    public async Task GetProfilePropertyDefinition_PassesTheFirstTenantKeyThroughUnaltered()
     {
         Harness harness = Harness.Ready();
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
-        harness.LookupDefinition.PortalId = null;
+        harness.LookupDefinition.PortalId = FirstTenantPortalId;
 
-        Result<ProfilePropertyDefinitionDto?> hostLevel = await harness.Service
-            .GetProfilePropertyDefinitionAsync(HostPortalId, StreetPropertyId, CancellationToken.None);
+        Result<ProfilePropertyDefinitionDto?> tenantOwned = await harness.Service
+            .GetProfilePropertyDefinitionAsync(FirstTenantPortalId, StreetPropertyId, CancellationToken.None);
 
-        hostLevel.Value.Should().NotBeNull();
-        hostLevel.Value!.PortalId.Should().Be(
-            HostPortalId,
-            "the response boundary restores the legacy identifier for a SQL-null host declaration");
+        tenantOwned.Value.Should().NotBeNull(
+            "a tenant numbered -1 must be able to read a declaration it owns");
+        tenantOwned.Value!.PortalId.Should().Be(
+            FirstTenantPortalId,
+            "the stored tenant key is published unchanged");
 
         harness.Profiles.Verify(
             profiles => profiles.GetDefinitionByIdAsync(
-                HostPortalId,
+                FirstTenantPortalId,
                 StreetPropertyId,
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
+        // The host scope is a SQL NULL portal and is a DIFFERENT scope, so the same request must not
+        // reach it. This is the half that fails outright if the sentinel translation is reinstated.
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
-        harness.LookupDefinition.PortalId = HostPortalId;
+        harness.LookupDefinition.PortalId = null;
 
-        Result<ProfilePropertyDefinitionDto?> collidingTenantRow = await harness.Service
-            .GetProfilePropertyDefinitionAsync(HostPortalId, StreetPropertyId, CancellationToken.None);
+        Result<ProfilePropertyDefinitionDto?> hostLevelRow = await harness.Service
+            .GetProfilePropertyDefinitionAsync(FirstTenantPortalId, StreetPropertyId, CancellationToken.None);
 
-        collidingTenantRow.Value.Should().BeNull(
-            "the legacy provider translated -1 to SQL NULL rather than matching a stored -1");
+        hostLevelRow.Value.Should().BeNull(
+            "a tenant-scoped request must not be answered with a host-level declaration");
+    }
+
+    /// <summary>
+    /// Declaring a property against the first tenant an installation has stores that tenant's key rather
+    /// than filing the declaration into the host scope.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// MIGRATION: the create half of the same defect. The mapper used to rewrite an incoming -1 into a
+    /// null scope, reproducing <c>AddPropertyDefinition</c>'s <c>GetNull</c> wrapper
+    /// (<c>SqlDataProvider.vb:L1021</c>). Since <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), that filed a real tenant's declaration where the same
+    /// tenant's scoped read could never find it, so a create and the read after it disagreed. This asserts
+    /// the stored scope on the staged entity, which is the only place the disagreement is visible.
+    /// </remarks>
+    [Fact]
+    public async Task CreateProfilePropertyDefinition_StoresTheFirstTenantKeyRatherThanTheHostScope()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<ProfilePropertyDefinitionDto> created = await harness.Service
+            .CreateProfilePropertyDefinitionAsync(
+                FirstTenantPortalId,
+                DefinitionRequest("Street"),
+                CancellationToken.None);
+
+        created.IsSuccess.Should().BeTrue();
+        harness.AddedDefinitions.Should().ContainSingle();
+        harness.AddedDefinitions[0].PortalId.Should().Be(
+            FirstTenantPortalId,
+            "the tenant key is stored as given and is never collapsed into the SQL-null host scope");
+        created.Value.PortalId.Should().Be(
+            FirstTenantPortalId,
+            "the response reports the scope the declaration was actually filed under");
     }
 
     /// <summary>
@@ -5589,15 +5674,15 @@ public class UserServiceTests
             // includeDeleted argument.
             harness.Profiles
                 .Setup(p => p.GetDefinitionsByPortalIdAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Definitions.ToList());
             harness.Profiles
                 .Setup(p => p.GetDefinitionByIdAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync((int portalId, int propertyDefinitionId, CancellationToken _) =>
+                .ReturnsAsync((int? portalId, int propertyDefinitionId, CancellationToken _) =>
                 {
                     ProfilePropertyDefinition? definition = harness.LookupDefinition;
                     if (definition is null || definition.PropertyDefinitionId != propertyDefinitionId)
@@ -5605,9 +5690,13 @@ public class UserServiceTests
                         return null;
                     }
 
-                    bool inScope = portalId == HostPortalId
-                        ? definition.PortalId is null
-                        : definition.PortalId == portalId;
+                    // MIGRATION: the scope is matched EXACTLY, as the repository now matches it. This
+                    // double previously recognised -1 as a request for the SQL-null host rows, which
+                    // reproduced the defect the repository carried: dbo.Portals.PortalID is
+                    // IDENTITY(-1, 1) (01.00.00.SqlDataProvider:L77), so -1 is the first real tenant of
+                    // an installation and addresses its own rows. null is the host scope and nothing
+                    // else is.
+                    bool inScope = definition.PortalId == portalId;
 
                     return inScope ? definition : null;
                 });
@@ -5618,10 +5707,10 @@ public class UserServiceTests
             // null leaves the name free.
             harness.Profiles
                 .Setup(p => p.GetDefinitionByNameAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<string>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync((int _, string name, CancellationToken _) =>
+                .ReturnsAsync((int? _, string name, CancellationToken _) =>
                     harness.DefinitionNameOwnerId is int owner ? Definition(owner, name) : null);
 
             harness.Profiles
@@ -5632,16 +5721,16 @@ public class UserServiceTests
                         : []);
             harness.Profiles
                 .Setup(p => p.GetProfileValuesAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync((int _, int userId, CancellationToken _) =>
+                .ReturnsAsync((int? _, int userId, CancellationToken _) =>
                     harness.ValuesByUserId.TryGetValue(userId, out List<UserProfileValue>? values)
                         ? values.ToList()
                         : []);
             harness.Profiles
                 .Setup(p => p.DeleteProfileValuesAsync(
-                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);

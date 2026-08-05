@@ -703,9 +703,9 @@ public sealed class ModuleService : IModuleService
 
         // Read once, and only when there is a row to name. A window that lands past the end of the
         // collection projects nothing, so it asks the definition catalogue nothing either.
-        IReadOnlyDictionary<int, string> friendlyNames = window.Count == 0
-            ? new Dictionary<int, string>()
-            : await ReadDefinitionNamesAsync(portalId, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue = window.Count == 0
+            ? new Dictionary<int, ModuleCatalogueFacts>()
+            : await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         var items = new List<ModuleListItemDto>(window.Count);
         foreach (ModulePlacement row in window)
@@ -713,7 +713,7 @@ public sealed class ModuleService : IModuleService
             items.Add(ModuleMappings.ToListItem(
                 row.Module,
                 row.Placement,
-                ResolveFriendlyName(row.Module, friendlyNames)));
+                ResolveCatalogue(row.Module, catalogue)));
         }
 
         // The envelope is handed the figures unaltered: the total is the number of rows in the whole
@@ -968,11 +968,11 @@ public sealed class ModuleService : IModuleService
             return Result<ModuleDetailDto?>.Success(null);
         }
 
-        IReadOnlyDictionary<int, string> friendlyNames =
-            await ReadDefinitionNamesAsync(portalId, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue =
+            await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         return Result<ModuleDetailDto?>.Success(
-            ModuleMappings.ToDetail(module, placement, ResolveFriendlyName(module, friendlyNames)));
+            ModuleMappings.ToDetail(module, placement, ResolveCatalogue(module, catalogue)));
     }
 
     /// <inheritdoc />
@@ -1094,8 +1094,13 @@ public sealed class ModuleService : IModuleService
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         InvalidatePlacements(affectedTabIds);
 
+        // The definition and its package were both resolved above, before anything was staged, so the
+        // creation response projects from the SAME five values a subsequent single read of this module
+        // will project. Reading them off the new entity's navigations instead is what previously made the
+        // creation response report a fabricated package key of zero and no package name at all: a module
+        // just constructed in memory has no navigations loaded, and nothing had populated them.
         return Result<ModuleDetailDto>.Success(
-            ModuleMappings.ToDetail(module, placement, definition.FriendlyName));
+            ModuleMappings.ToDetail(module, placement, ModuleCatalogueFacts.From(definition, package)));
     }
 
     /// <inheritdoc />
@@ -1369,11 +1374,11 @@ public sealed class ModuleService : IModuleService
                 });
         }
 
-        IReadOnlyDictionary<int, string> friendlyNames =
-            await ReadDefinitionNamesAsync(portalId, cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue =
+            await ReadCatalogueFactsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
         ModuleDetailDto detail =
-            ModuleMappings.ToDetail(module, placement, ResolveFriendlyName(module, friendlyNames));
+            ModuleMappings.ToDetail(module, placement, ResolveCatalogue(module, catalogue));
 
         return effects.Count == 0
             ? Result<ModuleDetailDto?>.Success(detail)
@@ -3006,41 +3011,61 @@ public sealed class ModuleService : IModuleService
             .ThenBy(candidate => candidate.TabModuleId);
 
     /// <summary>
-    /// Reads a portal's definition friendly names, keyed by definition identifier.
+    /// Reads a portal's definition and package catalogue facts, keyed by definition identifier.
     /// </summary>
     /// <param name="portalId">The portal whose catalogue is read.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
-    /// <returns>Friendly names by definition identifier.</returns>
-    private async Task<IReadOnlyDictionary<int, string>> ReadDefinitionNamesAsync(
+    /// <returns>Catalogue facts by definition identifier.</returns>
+    /// <remarks>
+    /// <para>
+    /// One read serves a whole page. The definition read already loads each definition's package, so the
+    /// package name, description and version cost nothing beyond the read that resolves the display name.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this read previously returned display names alone, which is why the package name,
+    /// description and version were left to a navigation that no module read populated and consequently
+    /// reported null on every response. Resolving all five values together, from the tenant's own
+    /// catalogue, is what lets the listing, the single read and the creation response project identically.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<int, ModuleCatalogueFacts>> ReadCatalogueFactsAsync(
         int portalId,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<ModuleDefinition> definitions =
             await _definitions.GetModuleDefinitionsByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
-        var names = new Dictionary<int, string>(definitions.Count);
+        var facts = new Dictionary<int, ModuleCatalogueFacts>(definitions.Count);
         foreach (ModuleDefinition definition in definitions)
         {
-            names[definition.ModuleDefinitionId] = definition.FriendlyName;
+            facts[definition.ModuleDefinitionId] = ModuleCatalogueFacts.From(definition);
         }
 
-        return names;
+        return facts;
     }
 
     /// <summary>
-    /// Picks the friendly name to project for a module.
+    /// Picks the catalogue facts to project for a module.
     /// </summary>
     /// <param name="module">The module being projected.</param>
-    /// <param name="friendlyNames">Names read for the portal's catalogue.</param>
-    /// <returns>The definition's friendly name, or <see langword="null"/> when it cannot be resolved.</returns>
+    /// <param name="catalogue">Facts read for the portal's catalogue.</param>
+    /// <returns>
+    /// The facts for the module's definition, resolved from the tenant's catalogue when it holds the
+    /// definition and from the module's own navigations otherwise.
+    /// </returns>
     /// <remarks>
-    /// The module repository documents no eager loading of the definition, which is why the name is
-    /// looked up from the catalogue first and the navigation is only a fallback.
+    /// The catalogue is consulted first because it is portal-scoped and authoritative for what this
+    /// tenant may see, and the navigation is the fallback for a module whose definition the tenant's
+    /// grant no longer covers - a real state, since revoking a package grant does not remove the modules
+    /// already placed from it. Both sources answer with the same five values, so which one answered is
+    /// not observable in the response.
     /// </remarks>
-    private static string? ResolveFriendlyName(Module module, IReadOnlyDictionary<int, string> friendlyNames)
-        => friendlyNames.TryGetValue(module.ModuleDefinitionId, out string? name)
-            ? name
-            : module.ModuleDefinition?.FriendlyName;
+    private static ModuleCatalogueFacts ResolveCatalogue(
+        Module module,
+        IReadOnlyDictionary<int, ModuleCatalogueFacts> catalogue)
+        => catalogue.TryGetValue(module.ModuleDefinitionId, out ModuleCatalogueFacts? facts)
+            ? facts
+            : ModuleCatalogueFacts.FromNavigation(module);
 
     /// <summary>
     /// Projects a portal's available definitions into the catalogue contract.

@@ -151,6 +151,7 @@ public class PortalServiceTests
         var permissions = new Mock<IPermissionRepository>().Object;
         var users = new Mock<IUserRepository>().Object;
         var roles = new Mock<IRoleRepository>().Object;
+        var modules = new Mock<IModuleRepository>().Object;
         var unitOfWork = new Mock<IUnitOfWork>().Object;
         var hostSettings = new Mock<IHostSettingsService>().Object;
         var hasher = new Mock<IPasswordHasher>().Object;
@@ -165,103 +166,109 @@ public class PortalServiceTests
         Assert.Throws<ArgumentNullException>("portals", () =>
         {
             _ = new PortalService(
-                null!, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                null!, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("aliases", () =>
         {
             _ = new PortalService(
-                portals, null!, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                portals, null!, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("tabs", () =>
         {
             _ = new PortalService(
-                portals, aliases, null!, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, null!, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("profiles", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, null!, permissions, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                portals, aliases, tabs, null!, permissions, users, roles, modules, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("permissions", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, null!, users, roles, unitOfWork, hostSettings, hasher, tokens,
+                portals, aliases, tabs, profiles, null!, users, roles, modules, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("users", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, null!, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, null!, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("roles", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, null!, unitOfWork, hostSettings, hasher, tokens,
+                portals, aliases, tabs, profiles, permissions, users, null!, modules, unitOfWork, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
+        });
+        Assert.Throws<ArgumentNullException>("modules", () =>
+        {
+            _ = new PortalService(
+                portals, aliases, tabs, profiles, permissions, users, roles, null!, unitOfWork, hostSettings, hasher,
+                tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("unitOfWork", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, null!, hostSettings, hasher, tokens,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, null!, hostSettings, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("hostSettings", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, null!, hasher, tokens,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, null!, hasher, tokens,
                 clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("passwordHasher", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, null!,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, null!,
                 tokens, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("tokens", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 null!, clock, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("clock", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, null!, cache, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("cache", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, null!, currentUser, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("currentUser", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, null!, audit, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("audit", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, currentUser, null!, portalContext, caching);
         });
         Assert.Throws<ArgumentNullException>("portalContext", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, currentUser, audit, null!, caching);
         });
         Assert.Throws<ArgumentNullException>("caching", () =>
         {
             _ = new PortalService(
-                portals, aliases, tabs, profiles, permissions, users, roles, unitOfWork, hostSettings, hasher,
+                portals, aliases, tabs, profiles, permissions, users, roles, modules, unitOfWork, hostSettings, hasher,
                 tokens, clock, cache, currentUser, audit, portalContext, null!);
         });
     }
@@ -3573,6 +3580,20 @@ public class PortalServiceTests
             Permissions = new Mock<IPermissionRepository>(MockBehavior.Loose);
             Users = new Mock<IUserRepository>(MockBehavior.Loose);
             Roles = new Mock<IRoleRepository>(MockBehavior.Loose);
+
+            // A loose mock is enough: the tenant-removal sweep asks for the tenant's modules and removes
+            // each one, and a loose mock answers the read with an empty list unless a test says otherwise.
+            Modules = new Mock<IModuleRepository>(MockBehavior.Loose);
+            Modules
+                .Setup(modules => modules.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => PortalModules);
+            Modules
+                .Setup(modules => modules.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .Returns((int moduleId, CancellationToken _) =>
+                {
+                    RemovedModuleIds.Add(moduleId);
+                    return Task.CompletedTask;
+                });
             UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
             HostSettings = new Mock<IHostSettingsService>(MockBehavior.Loose);
             PasswordHasher = new Mock<IPasswordHasher>(MockBehavior.Loose);
@@ -3617,6 +3638,7 @@ public class PortalServiceTests
                 Permissions.Object,
                 Users.Object,
                 Roles.Object,
+                Modules.Object,
                 UnitOfWork.Object,
                 HostSettings.Object,
                 PasswordHasher.Object,
@@ -3644,6 +3666,14 @@ public class PortalServiceTests
         public Mock<IUserRepository> Users { get; }
 
         public Mock<IRoleRepository> Roles { get; }
+
+        public Mock<IModuleRepository> Modules { get; }
+
+        /// <summary>Gets the modules the tenant-removal sweep will find.</summary>
+        public List<DnnMigration.Domain.Entities.Module> PortalModules { get; } = [];
+
+        /// <summary>Gets the module identifiers the tenant-removal sweep staged for removal.</summary>
+        public List<int> RemovedModuleIds { get; } = [];
 
         public Mock<IUnitOfWork> UnitOfWork { get; }
 

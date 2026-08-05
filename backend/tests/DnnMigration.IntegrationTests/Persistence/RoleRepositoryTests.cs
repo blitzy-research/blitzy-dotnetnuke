@@ -1384,10 +1384,21 @@ public sealed class RoleRepositoryTests
     /// WITHOUT REPRODUCING ITS SILENCE. An unrecognised code fell through every arm of the legacy
     /// <c>Select Case</c> and left the expiry date exactly as it was - it did not raise, did not clear the
     /// value and did not substitute a default. The target conversion is tolerant in the same direction and
-    /// resolves an unrecognised code to the member whose meaning is "not billed", which is the safe
-    /// reading: a role whose frequency cannot be understood is treated as one that generates no billing
-    /// event rather than one that generates an unpredictable charge. That resolution is asserted below
-    /// rather than assumed, because it is the conversion's decision and this test exists to pin it.
+    /// CARRIES the unrecognised character rather than resolving it to a declared member: the enumeration is
+    /// backed by <c>ushort</c> and each member IS its own code point, so any stored character is
+    /// representable exactly and the write direction casts the identical character back.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an earlier revision normalised an unrecognised code to the member whose meaning is "not
+    /// billed", on the reasoning that a frequency nobody can understand should generate no billing event.
+    /// That reading was defensible in isolation and wrong in context, for two measured reasons. A role
+    /// update rewrites both frequency columns from the materialised value, so editing an unrelated field
+    /// silently rewrote a stored <c>'4'</c> as <c>'N'</c> - destroying data AAP Rule T4 makes authoritative.
+    /// And it was not even behaviour-preserving: the legacy trial test was
+    /// <c>TrialFrequency.ToString() &lt;&gt; "N"</c> (<c>RoleController.vb</c> L521), which an unrecognised
+    /// character SATISFIES, so normalising to None flipped whether the trial governed the derived expiry.
+    /// The preservation is asserted below, in the read-modify-write shape that the normalisation could not
+    /// have survived.
     /// </para>
     /// <para>
     /// Both codes are read through the ordinary repository members, single and listing, so the tolerance is
@@ -1428,18 +1439,22 @@ public sealed class RoleRepositoryTests
             await readingTheRole.Should().NotThrowAsync(
                 "a role carrying an undocumented frequency code must remain readable");
 
+            var carried = (BillingFrequency)storedCode[0];
+
             Role? single = await reader.GetByIdAsync(roleId, portalId);
             single.Should().NotBeNull();
             single!.BillingFrequency.Should().Be(
-                BillingFrequency.None,
-                "an unrecognised code resolves to the member that generates no billing event");
-            single.TrialFrequency.Should().Be(BillingFrequency.None);
+                carried,
+                "an unrecognised code is carried as the character the row holds, not normalised away");
+            single.TrialFrequency.Should().Be(carried);
+            Enum.IsDefined(single.BillingFrequency!.Value).Should().BeFalse(
+                "the shipped codes really are outside the declared vocabulary");
 
             // The listing path materialises the same row through the same conversion, so it must agree.
             (await reader.GetByPortalIdAsync(portalId))
                 .Where(role => role.RoleId == roleId)
                 .Select(role => role.BillingFrequency)
-                .Should().Equal(BillingFrequency.None);
+                .Should().Equal(carried);
 
             // MIGRATION: the resolution is deliberately NOT null. A null frequency means "this role
             // carries no frequency at all", which is what an untouched legacy column means; the seeded
@@ -1449,6 +1464,171 @@ public sealed class RoleRepositoryTests
             (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
                 storedCode,
                 "reading the row does not rewrite it");
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// An edit to something else entirely leaves a stored frequency character the enumeration does not
+    /// declare exactly as the installation stored it.
+    /// </summary>
+    /// <param name="storedBilling">The billing character to plant.</param>
+    /// <param name="storedTrial">The trial character to plant, deliberately different from the billing one.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE ASSERTION THAT DISTINGUISHES A TOLERANT READ FROM A LOSSLESS ONE, and it is the one that
+    /// matters, because a tolerant-but-lossy read passes every test that only reads. A role update writes
+    /// both frequency columns from whatever the read materialised, so a read that resolved an unrecognised
+    /// character to a declared member turned every unrelated edit into a silent, irreversible rewrite of
+    /// authoritative legacy data. AAP Rule T4 makes the existing database authoritative; nothing in this
+    /// migration may edit a column the caller did not ask to change.
+    /// </para>
+    /// <para>
+    /// The two columns are planted with DIFFERENT characters on purpose. A single shared character would
+    /// let a conversion that read one column and wrote both pass, and the two columns are the same store
+    /// type over the same vocabulary bound by the same shared converter instance - so proving they move
+    /// independently is what proves neither is being written from the other.
+    /// </para>
+    /// <para>
+    /// The characters are the ones every installation ships: <c>'4'</c> on the Administrators role and
+    /// <c>'0'</c> on the Registered Users role (<c>01.00.00.SqlDataProvider</c> L7192 and L7194). Only a
+    /// direct statement can plant them, because no code path in the target produces such a character - and
+    /// that is the point: the target never writes one and must never destroy one either.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("4", "0")]
+    [InlineData("0", "4")]
+    public async Task UnrecognisedStoredBillingCode_SurvivesAnUnrelatedUpdate(
+        string storedBilling,
+        string storedTrial)
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"Preserved Coded {Suffix()}"));
+
+        try
+        {
+            int affected = await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Roles] SET [BillingFrequency] = @billing, [TrialFrequency] = @trial "
+                + "WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?>
+                {
+                    ["billing"] = storedBilling,
+                    ["trial"] = storedTrial,
+                    ["roleId"] = roleId,
+                });
+
+            affected.Should().Be(1, "the role this test created is the only row addressed");
+
+            string description = FormattableString.Invariant($"Unrelated edit {Suffix()}");
+
+            using (IServiceScope editing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = editing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = editing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                Role? subject = await roles.GetByIdAsync(roleId, portalId);
+                subject.Should().NotBeNull();
+
+                subject!.BillingFrequency.Should().Be(
+                    (BillingFrequency)storedBilling[0],
+                    "the read carries the stored character rather than normalising it");
+                subject.TrialFrequency.Should().Be((BillingFrequency)storedTrial[0]);
+
+                // The ONLY change. Everything else about the role is left exactly as it was read.
+                subject.Description = description;
+
+                await roles.UpdateAsync(subject);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
+                storedBilling,
+                "an edit to the description must not rewrite the billing frequency");
+            (await ReadStoredTrialFrequencyAsync(roleId)).Should().Be(
+                storedTrial,
+                "nor the trial frequency, and the two must not have been written from one another");
+
+            using IServiceScope verifying = _fixture.Services.CreateScope();
+            IRoleRepository verifier = verifying.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            Role? reread = await verifier.GetByIdAsync(roleId, portalId);
+            reread.Should().NotBeNull();
+            reread!.Description.Should().Be(description, "the edit the caller did ask for was applied");
+        }
+        finally
+        {
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
+    /// <summary>
+    /// A detached role whose stored frequency characters are outside the vocabulary keeps them through an
+    /// update staged from a rebuilt instance.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion to the case above, and the harder half. A TRACKED role writes only the columns the
+    /// caller changed, so preservation there follows from the change tracker as much as from the
+    /// conversion. A DETACHED role is written in full, so every column goes to the store including both
+    /// frequencies - which means only a genuinely lossless conversion can leave them intact. Reading in one
+    /// scope and writing in another is what makes the instance detached.
+    /// </remarks>
+    [Fact]
+    public async Task UnrecognisedStoredBillingCode_SurvivesADetachedUpdate()
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"Detached Coded {Suffix()}"));
+
+        try
+        {
+            await _fixture.Database.ExecuteAsync(
+                "UPDATE [dbo].[Roles] SET [BillingFrequency] = '4', [TrialFrequency] = '0' "
+                + "WHERE [RoleID] = @roleId",
+                new Dictionary<string, object?> { ["roleId"] = roleId });
+
+            Role detached;
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = reading.ServiceProvider.GetRequiredService<IRoleRepository>();
+                Role? read = await roles.GetByIdAsync(roleId, portalId);
+
+                read.Should().NotBeNull();
+                detached = read!;
+            }
+
+            string description = FormattableString.Invariant($"Detached edit {Suffix()}");
+            detached.Description = description;
+
+            using (IServiceScope writing = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = writing.ServiceProvider.GetRequiredService<IRoleRepository>();
+                IUnitOfWork unitOfWork = writing.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await roles.UpdateAsync(detached);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
+                "4",
+                "a full-row write must reproduce the character it read, not a substitute for it");
+            (await ReadStoredTrialFrequencyAsync(roleId)).Should().Be("0");
+
+            using IServiceScope verifying = _fixture.Services.CreateScope();
+            IRoleRepository verifier = verifying.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            (await verifier.GetByIdAsync(roleId, portalId))!.Description.Should().Be(description);
         }
         finally
         {

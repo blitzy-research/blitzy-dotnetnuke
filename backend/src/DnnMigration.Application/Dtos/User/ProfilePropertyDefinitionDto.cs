@@ -128,10 +128,19 @@ public sealed class ProfilePropertyDefinitionDto
     /// <para>
     /// Never read -1, 0, or any non-positive value as "no portal". <c>Portals.PortalID</c> is
     /// declared <c>IDENTITY(-1, 1)</c>, so -1 is a genuine addressable portal and 0 is the
-    /// first portal an ordinary installation creates. In this table -1 additionally denotes
-    /// the host-level definition shared by every portal, which makes it doubly meaningful.
-    /// Absence, wherever it has to be expressed, is expressed as a null and is never inferred
-    /// from the sign or the magnitude of the value.
+    /// first portal an ordinary installation creates. Absence, wherever it has to be
+    /// expressed, is expressed as a null and is never inferred from the sign or the magnitude
+    /// of the value.
+    /// </para>
+    /// <para>
+    /// This member additionally publishes -1 for a host-level declaration, which the terminal
+    /// schema stores with a SQL <c>NULL</c> portal. The encoding is OUTBOUND ONLY and it is
+    /// lossy in exactly one respect, recorded here rather than concealed: a declaration owned
+    /// by a tenant numbered -1 and a host-level declaration both read as -1 in this member. A
+    /// consumer must therefore treat this value as the scope the response was requested for,
+    /// not as a scope discriminator. No read that reaches this contract mixes the two scopes -
+    /// every profile-definition read is scoped to one resolved tenant and host-level
+    /// administration is out of scope.
     /// </para>
     /// </remarks>
     // MIGRATION: the column starts life as PortalID int NOT NULL, in which -1 denoted the
@@ -141,9 +150,16 @@ public sealed class ProfilePropertyDefinitionDto
     // the non-nullable int and the legacy -1 encoding, because -1 is what the legacy class
     // published and what an existing consumer reads; converting an externally observable
     // sentinel silently into an absent value is exactly what the sentinel-preservation rule
-    // forbids at this boundary. Translating between the two encodings is therefore a mapping
-    // concern, and the repository predicate must keep matching the terminal
-    // "PortalId IS NULL" form. Itemise in the repository migration notes.
+    // forbids at this boundary.
+    //
+    // MIGRATION: the encoding stops at this response contract and travels in ONE direction.
+    // An earlier revision also translated it inbound - the create mapper rewrote a route
+    // portal of -1 into a null scope, and the repository rewrote a requested portal of -1 into
+    // a "PortalId IS NULL" predicate. Both were wrong in this schema, because -1 is the first
+    // real tenant IDENTITY(-1, 1) issues, so a tenant numbered -1 could neither store nor read
+    // its own declarations and was served the host scope's rows instead. The repository
+    // predicate now says exactly what it means: a null scope matches the SQL-null rows and
+    // every identifier matches that tenant's rows. Itemised in MIGRATION_NOTES.md.
     public int PortalId { get; set; }
 
     /// <summary>

@@ -1165,16 +1165,26 @@ public sealed class AuthApiTests
         using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
+        // MIGRATION: the declaration is installed ON THE RESOLVED TENANT, which is what this test has
+        // always meant to do. It previously wrote a SQL NULL portal, because the repository then rewrote a
+        // requested portal of -1 - the seeded tenant's key - into a "PortalID IS NULL" predicate, so a
+        // host-scoped row was the only thing that tenant could see. That translation was a measured
+        // data-isolation defect: dbo.Portals.PortalID is IDENTITY(-1, 1)
+        // (01.00.00.SqlDataProvider:L77), so -1 is the first REAL tenant of an installation. The scope is
+        // now matched exactly, so the tenant's own key is the scope this fixture must use.
+        // The same conflation is what made this fixture's earlier SQL-null scope look correct: see the
+        // repository's DefinitionsInPortalScope for the evidence, and MIGRATION_NOTES.md for the record.
         int definitionId = await _fixture.Database.ScalarAsync<int>(
             """
             INSERT INTO [dbo].[ProfilePropertyDefinition]
                 ([PortalID], [ModuleDefID], [Deleted], [DataType], [DefaultValue], [PropertyCategory],
                  [PropertyName], [Length], [Required], [ValidationExpression], [ViewOrder], [Visible])
-            VALUES (NULL, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 101, 1);
+            VALUES (@portalId, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 101, 1);
             SELECT CAST(SCOPE_IDENTITY() AS int);
             """,
             new Dictionary<string, object?>
             {
+                ["portalId"] = _fixture.Seed.PortalId,
                 ["propertyName"] = FormattableString.Invariant($"Gate{Suffix()}"),
             });
 
@@ -1285,16 +1295,22 @@ public sealed class AuthApiTests
     [Fact]
     public async Task Login_DoesNotRaiseTheProfileAdvisoryForTheHostAccount()
     {
+        // MIGRATION: installed on the resolved tenant for the same reason as the advisory test above. A
+        // SQL-null scope would make this assertion vacuous now that the scope is matched exactly - the
+        // tenant-scoped gate would not see the declaration at all, so "no advisory" would hold whatever
+        // the host exemption did. Scoping it to the tenant keeps the exemption itself the only reason the
+        // advisory stays down.
         int definitionId = await _fixture.Database.ScalarAsync<int>(
             """
             INSERT INTO [dbo].[ProfilePropertyDefinition]
                 ([PortalID], [ModuleDefID], [Deleted], [DataType], [DefaultValue], [PropertyCategory],
                  [PropertyName], [Length], [Required], [ValidationExpression], [ViewOrder], [Visible])
-            VALUES (NULL, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 102, 1);
+            VALUES (@portalId, NULL, 0, 0, '', 'Contact', @propertyName, 50, 1, NULL, 102, 1);
             SELECT CAST(SCOPE_IDENTITY() AS int);
             """,
             new Dictionary<string, object?>
             {
+                ["portalId"] = _fixture.Seed.PortalId,
                 ["propertyName"] = FormattableString.Invariant($"HostGate{Suffix()}"),
             });
 

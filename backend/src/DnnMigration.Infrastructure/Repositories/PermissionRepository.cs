@@ -3,6 +3,7 @@ using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
@@ -403,13 +404,28 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// travel as properties on one entity. Staged explicitly rather than left to change detection, so
     /// the call behaves identically whether the caller mutated a tracked entity or rebuilt a detached
     /// one.
+    /// <para>
+    /// MIGRATION: the staging ASSIGNS THE STATE and does not call <c>DbSet.Update</c>. <c>Update</c>
+    /// decides between <c>Added</c> and <c>Modified</c> by asking whether the key "is set" - reading an
+    /// <see cref="int"/> key of 0 as unset - and then walks the navigation graph applying the same test
+    /// to everything it reaches. This schema seeds four identity columns at 0 and one at -1, so that
+    /// test is unsafe as a general mechanism here even where a given table starts at 1: a grant carrying
+    /// a loaded principal would be enough. Assigning <see cref="EntityState.Modified"/> attaches this
+    /// entity alone, marks its scalar properties modified, and consults neither the key nor the graph.
+    /// </para>
     /// </remarks>
     public Task UpdateAsync(Permission permission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(permission);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _dbContext.Permissions.Update(permission);
+        EntityEntry<Permission> entry = _dbContext.Entry(permission);
+
+        if (entry.State is EntityState.Detached)
+        {
+            entry.State = EntityState.Modified;
+        }
+
         return Task.CompletedTask;
     }
 
@@ -677,13 +693,27 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// as properties on one entity. Staged explicitly rather than left to change detection, so the call
     /// behaves identically for a tracked entity and for a detached one, and the stored role and account
     /// values survive the round trip unchanged.
+    /// <para>
+    /// MIGRATION: the staging ASSIGNS THE STATE rather than calling <c>DbSet.Update</c>, which walks the
+    /// navigation graph and reads an <see cref="int"/> key of 0 as unset. A grant points at
+    /// <c>dbo.Modules</c>, whose <c>ModuleID</c> is <c>IDENTITY(0, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L221</c>), so a detached grant carrying its loaded module would have
+    /// had that module INSERTED as a duplicate rather than left alone. Assigning
+    /// <see cref="EntityState.Modified"/> touches this row and nothing else.
+    /// </para>
     /// </remarks>
     public Task UpdateModulePermissionAsync(ModulePermission modulePermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(modulePermission);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _dbContext.ModulePermissions.Update(modulePermission);
+        EntityEntry<ModulePermission> entry = _dbContext.Entry(modulePermission);
+
+        if (entry.State is EntityState.Detached)
+        {
+            entry.State = EntityState.Modified;
+        }
+
         return Task.CompletedTask;
     }
 
@@ -875,13 +905,27 @@ internal sealed class PermissionRepository : IPermissionRepository
     /// MIGRATION: the legacy update took six positional arguments led by the identifier; all six travel as
     /// properties on one entity. Staged explicitly rather than left to change detection, so the call
     /// behaves identically for a tracked entity and for a detached one.
+    /// <para>
+    /// MIGRATION: the staging ASSIGNS THE STATE rather than calling <c>DbSet.Update</c>, which walks the
+    /// navigation graph and reads an <see cref="int"/> key of 0 as unset. A grant points at
+    /// <c>dbo.Tabs</c>, whose <c>TabID</c> is <c>IDENTITY(0, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L140</c>), so a detached grant carrying its loaded page would have
+    /// had that page INSERTED into the portal's page tree as a duplicate. Assigning
+    /// <see cref="EntityState.Modified"/> touches this row and nothing else.
+    /// </para>
     /// </remarks>
     public Task UpdateTabPermissionAsync(TabPermission tabPermission, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tabPermission);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _dbContext.TabPermissions.Update(tabPermission);
+        EntityEntry<TabPermission> entry = _dbContext.Entry(tabPermission);
+
+        if (entry.State is EntityState.Detached)
+        {
+            entry.State = EntityState.Modified;
+        }
+
         return Task.CompletedTask;
     }
 }

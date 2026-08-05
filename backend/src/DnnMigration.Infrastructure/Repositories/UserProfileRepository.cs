@@ -116,32 +116,33 @@ namespace DnnMigration.Infrastructure.Repositories;
 /// </remarks>
 internal sealed class UserProfileRepository : IUserProfileRepository
 {
-    /// <summary>
-    /// The identifier a legacy caller passed to ask for host-level, portal-independent declarations.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: this is <c>Null.NullInteger</c> (<c>Library/Components/Shared/Null.vb:L41-L45</c>), and
-    /// the translation it drives is measured rather than assumed. The legacy definition readers did not
-    /// pass a portal identifier straight through: <c>GetPropertyDefinitionByName</c> and
-    /// <c>GetPropertyDefinitionsByPortal</c> both wrapped it as <c>GetNull(portalId)</c>
-    /// (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c>), <c>GetNull</c> is
-    /// <c>Null.GetNull(Field, DBNull.Value)</c> (<c>L325-L326</c>), and that helper turns an
-    /// <see cref="int"/> equal to -1 into <c>DBNull.Value</c> (<c>Null.vb:L167-L170</c>). The terminal
-    /// procedures then filter
-    /// <c>(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL))</c>
-    /// (<c>04.03.03.SqlDataProvider:L206</c> and <c>L226</c>), so a request carrying -1 reached the rows
-    /// stored with a SQL <c>NULL</c> portal - the host-level declarations - and nothing else.
-    /// </para>
-    /// <para>
-    /// MIGRATION: it is NOT a wildcard, and the mapping is applied at THIS boundary only. Every ordinary
-    /// identifier is matched exactly, so no request ever spans more than the tenant it named plus, for
-    /// this one value, the host-level rows the sentinel historically reached. The domain model itself
-    /// holds no sentinel: <see cref="ProfilePropertyDefinition.PortalId"/> is
-    /// <see cref="Nullable{T}"/> and host-level means genuine <see langword="null"/>.
-    /// </para>
-    /// </remarks>
-    private const int HostPortalId = -1;
+    // MIGRATION: THERE IS NO HOST SENTINEL CONSTANT HERE ANY LONGER, and its removal is the whole of a
+    // measured defect fix. The legacy definition readers did not pass a portal identifier straight
+    // through: GetPropertyDefinitionByName and GetPropertyDefinitionsByPortal both wrapped it as
+    // GetNull(portalId) (SqlDataProvider.vb:L1039 and L1042), GetNull is
+    // Null.GetNull(Field, DBNull.Value) (L325-L326), and that helper turns an int equal to -1 into
+    // DBNull.Value (Null.vb:L167-L170). The terminal procedures then filter
+    // "(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL))" (04.03.03:L206 and L226), so a
+    // request carrying -1 reached the rows stored with a SQL NULL portal and nothing else.
+    //
+    // An earlier revision reproduced that by declaring "private const int HostPortalId = -1" and
+    // rewriting portalId == -1 into "PortalId IS NULL" over a NON-NULLABLE parameter. That was wrong in
+    // this schema: dbo.Portals.PortalID is IDENTITY(-1, 1) (01.00.00.SqlDataProvider:L77), so -1 is
+    // simultaneously the FIRST REAL TENANT of an installation. The consequence was measured, not
+    // theoretical - a real tenant numbered -1 could not read its own declarations or answers at all, and
+    // every such request was served the host scope's rows instead: inaccessibility in one direction and
+    // cross-scope exposure in the other.
+    //
+    // The scope is therefore expressed the way the COLUMN expresses it, as int? - null is the SQL-null
+    // host scope and every non-null value, -1 and 0 included, is an exact tenant key. That is also what
+    // AAP Rule T7 requires: a sentinel belongs at the boundary, and the Application layer keeps the
+    // externally observable -1 in the DTO contract. 03.03.03.SqlDataProvider:L74-L83 confirms SQL NULL is
+    // the only host encoding the terminal schema has, since it made the column nullable and migrated the
+    // stored rows with "SET PortalId = NULL WHERE PortalId = -1".
+
+    // The full evidence for the predicate itself, including the AAP citation that forbids treating -1
+    // as an absence, is carried on DefinitionsInPortalScope below; the recorded divergence is in
+    // MIGRATION_NOTES.md.
 
     private readonly DnnDbContext _dbContext;
 
@@ -206,21 +207,19 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// MIGRATION: THE PORTAL SCOPE IS THE ONE <see cref="DefinitionsInPortalScope(int)"/> DEFINES, and
-    /// delegating to it rather than restating it is the point. This read compared
-    /// <see cref="ProfilePropertyDefinition.PortalId"/> with the requested tenant directly for a while, which
-    /// looked equivalent and was not: <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so -1 is both the
-    /// first tenant an installation has and the value the legacy contract used to mean "the host-level
-    /// declarations, stored with a SQL NULL portal". The declaration read maps it to those NULL rows; a direct
-    /// comparison here excluded them. Every ANSWER to a host-level property therefore became invisible to the
-    /// tenant that could see the property, and the consequence was not cosmetic - the sign-in gate that
-    /// requires a complete profile read the declarations through one rule and the answers through the other,
-    /// so an account that had just answered every required property was told it still had to answer them and
-    /// could not leave the remediation gate at all.
+    /// MIGRATION: THE PORTAL SCOPE IS THE ONE <see cref="DefinitionsInPortalScope(int?)"/> DEFINES, and
+    /// delegating to it rather than restating it is the point. There is exactly one statement in this
+    /// repository of what a scope's declarations are, and every read and write asks it rather than
+    /// re-deriving the predicate, so the answer read and the declaration read cannot drift apart. The
+    /// scope itself is nullable because the column is: <see langword="null"/> addresses the host-level
+    /// declarations that <c>03.03.03.SqlDataProvider:L74-L83</c> migrated onto a SQL <c>NULL</c> portal,
+    /// and every non-null value - <c>-1</c> and <c>0</c> included - is an exact tenant key, because
+    /// <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>).
     /// </para>
     /// <para>
     /// Expressed as a subquery over the scoped declaration keys, so the two reads cannot drift apart again:
-    /// there is one definition of what a tenant's declarations are, and this read asks it rather than
+    /// there is one definition of what a scope's declarations are, and this read asks it rather than
     /// re-deriving it. Deleted declarations are deliberately not filtered out here - an answer to a
     /// withdrawn property is still an answer, and every caller that cares about required properties consults
     /// the declaration list, which does filter them.
@@ -231,7 +230,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<UserProfileValue>> GetProfileValuesAsync(
-        int portalId,
+        int? portalId,
         int userId,
         CancellationToken cancellationToken = default)
     {
@@ -315,15 +314,17 @@ internal sealed class UserProfileRepository : IUserProfileRepository
 
     /// <inheritdoc />
     public async Task DeleteProfileValuesAsync(
-        int portalId,
+        int? portalId,
         int userId,
         CancellationToken cancellationToken = default)
     {
-        // MIGRATION: scoped through DefinitionsInPortalScope for the same reason the portal-scoped read is -
-        // -1 is both an installation's first tenant and the legacy sentinel for the host-level declarations
-        // stored with a SQL NULL portal, so a direct comparison here left the addressed tenant's OWN answers
-        // behind when it removed an account's membership of it. Asking the one definition of a tenant's
-        // declarations keeps this write and the reads beside it describing the same set.
+        // MIGRATION: scoped through DefinitionsInPortalScope for the same reason the portal-scoped read is.
+        // The scope is nullable because the column is - null is the host-level declarations that
+        // 03.03.03.SqlDataProvider:L74-L83 migrated onto a SQL NULL portal, and every non-null value is an
+        // exact tenant key, -1 included, because dbo.Portals.PortalID is IDENTITY(-1, 1)
+        // (01.00.00.SqlDataProvider:L77). Asking the one definition of a scope's declarations keeps this
+        // write and the reads beside it describing the same set, so a membership removal cannot leave the
+        // addressed scope's own answers behind or reach another scope's.
         IQueryable<int> scopedDefinitions = DefinitionsInPortalScope(portalId)
             .Select(definition => definition.PropertyDefinitionId);
 
@@ -358,7 +359,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// <c>Deleted</c> as it went (<c>L152-L166</c>). That hid two different outcomes behind one call and,
     /// worse, hid an undelete. Here a create stages a create; the duplicate test the Application layer
     /// performs before calling this member is
-    /// <see cref="GetDefinitionByNameAsync(int, string, CancellationToken)"/>, whose answer it can act on.
+    /// <see cref="GetDefinitionByNameAsync(int?, string, CancellationToken)"/>, whose answer it can act on.
     /// </para>
     /// <para>
     /// MIGRATION: no rule is applied to the declaration on the way in. The legacy add forced
@@ -436,7 +437,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// change an outcome a caller already reasons about, so the flag stays what it is: state the caller
     /// sets through <see cref="UpdateDefinitionAsync(ProfilePropertyDefinition, CancellationToken)"/>
     /// and this repository filters on in
-    /// <see cref="GetDefinitionsByPortalIdAsync(int, CancellationToken)"/>.
+    /// <see cref="GetDefinitionsByPortalIdAsync(int?, CancellationToken)"/>.
     /// </para>
     /// <para>
     /// MIGRATION: the resolution is TRACKED and pulls the recorded answers with it, which is the one
@@ -480,13 +481,20 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// (<c>ProfileController.vb:L425-L439</c>). Falling through to the raw key lookup on a catalogue miss
     /// discarded that scope and could answer another tenant's declaration. This member retains the
     /// tenant-bearing controller contract and routes the key through
-    /// <see cref="DefinitionsInPortalScope(int)"/>, the same predicate used by the name and collection
+    /// <see cref="DefinitionsInPortalScope(int?)"/>, the same predicate used by the name and collection
     /// reads. The unsafe fallback is not reproduced.
     /// </para>
     /// <para>
-    /// MIGRATION: host scope is translated before the identifier predicate is applied. A caller naming -1
-    /// therefore reaches rows whose <c>PortalID</c> is SQL <c>NULL</c>, exactly as the legacy list and name
-    /// procedures did after <c>GetNull</c>; it does not also reach a row physically storing -1.
+    /// MIGRATION: the scope predicate is applied before the identifier one, and it says exactly what it
+    /// means. A caller passing <see langword="null"/> reaches the host-level rows whose <c>PortalID</c> is
+    /// SQL <c>NULL</c>; a caller passing an identifier reaches that tenant's rows and no others. -1 is an
+    /// identifier like any other here, not a request for the host scope - it is the first key
+    /// <c>IDENTITY(-1, 1)</c> issues (<c>01.00.00.SqlDataProvider:L77</c>), and an earlier revision that
+    /// rewrote it into <c>PortalID IS NULL</c> made that tenant's own declarations unreachable while
+    /// serving it another scope's.
+    /// The legacy translation through <c>GetNull</c> did the opposite, and that difference is a
+    /// deliberate, documented divergence; the evidence is on
+    /// <see cref="DefinitionsInPortalScope(int?)"/>.
     /// </para>
     /// <para>
     /// MIGRATION: absence is <see langword="null"/> and never a sentinel identifier. Both values the
@@ -496,7 +504,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// </para>
     /// </remarks>
     public async Task<ProfilePropertyDefinition?> GetDefinitionByIdAsync(
-        int portalId,
+        int? portalId,
         int propertyDefinitionId,
         CancellationToken cancellationToken = default)
     {
@@ -527,11 +535,11 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// is matched as the ordinary value it is rather than read as a request for any name.
     /// </para>
     /// <para>
-    /// MIGRATION: the portal scope is resolved by <see cref="HostPortalId"/>, whose remarks carry the
-    /// evidence. Ordering follows the legacy <c>ORDER BY ViewOrder</c> (<c>L208</c>) with the definition
-    /// key as a tie-break, so that a store holding a host-level and a tenant declaration of the same name
-    /// - which the unique index permits - answers the same way on every read rather than the way the plan
-    /// happened to produce.
+    /// MIGRATION: the portal scope is resolved by <see cref="DefinitionsInPortalScope(int?)"/>, whose
+    /// remarks carry the evidence. Ordering follows the legacy <c>ORDER BY ViewOrder</c> (<c>L208</c>) with
+    /// the definition key as a tie-break, so that a store holding a host-level and a tenant declaration of
+    /// the same name - which the unique index permits - answers the same way on every read rather than the
+    /// way the plan happened to produce.
     /// </para>
     /// <para>
     /// MIGRATION: withdrawn declarations are deliberately still visible to this member. The legacy
@@ -542,7 +550,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// </para>
     /// </remarks>
     public async Task<ProfilePropertyDefinition?> GetDefinitionByNameAsync(
-        int portalId,
+        int? portalId,
         string propertyName,
         CancellationToken cancellationToken = default)
     {
@@ -588,7 +596,7 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<ProfilePropertyDefinition>> GetDefinitionsByPortalIdAsync(
-        int portalId,
+        int? portalId,
         CancellationToken cancellationToken = default)
     {
         return await DefinitionsInPortalScope(portalId)
@@ -601,47 +609,64 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     }
 
     /// <summary>
-    /// Builds the untracked declaration query for one tenant, translating the legacy host-level sentinel.
+    /// Builds the untracked declaration query for one scope.
     /// </summary>
-    /// <param name="portalId">The tenant identifier the caller named.</param>
-    /// <returns>A no-tracking query narrowed to the declarations that identifier reaches.</returns>
+    /// <param name="portalId">
+    /// The tenant the caller named, matched exactly, or <see langword="null"/> for the host scope.
+    /// </param>
+    /// <returns>A no-tracking query narrowed to the declarations that scope reaches.</returns>
     /// <remarks>
     /// <para>
     /// MIGRATION: this is the single place the portal scope of a declaration read is decided, and it
     /// reproduces the terminal procedures' own predicate,
     /// <c>(PortalId = @PortalId OR (PortalId IS NULL AND @PortalId IS NULL))</c>
-    /// (<c>04.03.03.SqlDataProvider:L206</c> and <c>L226</c>), for a caller that names a tenant rather
-    /// than passing a raw parameter. An ordinary identifier matches exactly, which is the first disjunct
-    /// and excludes the host-level rows because SQL <c>NULL</c> is equal to nothing. The sentinel
-    /// <see cref="HostPortalId"/> additionally matches those host-level rows, which is the second
-    /// disjunct: the legacy stack turned -1 into <c>DBNull</c> before the parameter ever reached the
-    /// procedure (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c> through
-    /// <c>Null.GetNull</c> at <c>L325-L326</c> and <c>Null.vb:L167-L170</c>), so a request carrying -1
-    /// did reach them.
+    /// (<c>04.03.03.SqlDataProvider:L206</c> and <c>L226</c>), faithfully: a supplied identifier matches
+    /// the column exactly, and a supplied <c>NULL</c> matches the rows whose column is <c>NULL</c>. The
+    /// only thing that changes is WHO turns a caller's intent into that <c>NULL</c>. The legacy stack did
+    /// it inside the provider by testing for -1 (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c> through
+    /// <c>Null.GetNull</c> at <c>L325-L326</c> and <c>Null.vb:L167-L170</c>); here the caller says
+    /// <see langword="null"/> and means it.
     /// </para>
     /// <para>
-    /// MIGRATION: the translation is exact rather than additive. The core provider wrapped -1 with
-    /// <c>GetNull</c> on the add, name and collection paths
-    /// (<c>SqlDataProvider.vb:L1021,L1039,L1042</c>), so SQL received <c>NULL</c> and the terminal
-    /// predicates matched only host-level rows. A row physically storing -1 is therefore not in host
-    /// scope for this subsystem, even though -1 is also a genuine key in <c>dbo.Portals</c>. The
-    /// Application mapper applies the same translation on creation, so the read-after-write round trip
-    /// needs no widened union.
+    /// MIGRATION: -1 IS NOT THE HOST SCOPE. <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first real tenant of an installation as well as
+    /// the legacy absence marker. Testing for it here made that tenant's own declarations unreachable and
+    /// served it the host scope's rows instead, which is a data-isolation failure in both directions. Rule
+    /// T7 keeps a sentinel at the boundary rather than in a repository, so the translation - where a
+    /// legacy contract still needs one - belongs to the Application mapper.
     /// </para>
     /// <para>
-    /// MIGRATION: it is NOT an all-portals wildcard and must never be widened into one. Exactly one
-    /// scope is ever in play: -1 means the SQL-null host scope for this legacy subsystem, and every
-    /// other identifier matches exactly one tenant value.
+    /// MIGRATION: it is NOT an all-portals wildcard and must never be widened into one. Exactly one scope
+    /// is ever in play: <see langword="null"/> selects the host-level rows and every identifier selects
+    /// one tenant's rows. Note that a comparison against a <see cref="Nullable{T}"/> would translate to
+    /// SQL as a comparison against <c>NULL</c> for the host case, which matches nothing, so the two cases
+    /// are branched in C# and each produces a predicate that says what it means.
+    /// </para>
+    /// <para>
+    /// MIGRATION: DELIBERATE, DOCUMENTED DIVERGENCE, and the action plan names it. AAP section 0.5.1.1
+    /// states that the portal-identifier wrapper "forbids treating -1 as absent", and tenant isolation is
+    /// a stated preservation requirement. Reproducing the legacy <c>GetNull</c> reading made the FIRST
+    /// TENANT OF EVERY INSTALLATION unable to see its own declarations: they were invisible through every
+    /// read, while declarations created for it were filed as host-level and shared with every other
+    /// tenant. The divergence is recorded in <c>MIGRATION_NOTES.md</c>.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the host-level rows are not orphaned by this, they are simply out of every tenant's
+    /// scope - which is precisely how the legacy predicate already behaved for every tenant other than -1.
+    /// A host-level declaration is still expressible in the store, still readable by a host-scoped read
+    /// (<paramref name="portalId"/> <see langword="null"/>), and still distinguishable in the model, where
+    /// absence is a genuine <see langword="null"/> on
+    /// <see cref="ProfilePropertyDefinition.PortalId"/> and never a sentinel.
     /// </para>
     /// </remarks>
-    private IQueryable<ProfilePropertyDefinition> DefinitionsInPortalScope(int portalId)
+    private IQueryable<ProfilePropertyDefinition> DefinitionsInPortalScope(int? portalId)
     {
         IQueryable<ProfilePropertyDefinition> definitions =
             _dbContext.ProfilePropertyDefinitions.AsNoTracking();
 
-        return portalId == HostPortalId
-            ? definitions.Where(definition => definition.PortalId == null)
-            : definitions.Where(definition => definition.PortalId == portalId);
+        return portalId is int tenantId
+            ? definitions.Where(definition => definition.PortalId == tenantId)
+            : definitions.Where(definition => definition.PortalId == null);
     }
 
     /// <summary>

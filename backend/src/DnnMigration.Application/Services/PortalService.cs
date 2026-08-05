@@ -247,6 +247,21 @@ public sealed class PortalService : IPortalService
     private readonly IPermissionRepository _permissions;
     private readonly IUserRepository _users;
     private readonly IRoleRepository _roles;
+
+    /// <summary>
+    /// Module repository, used only to remove a tenant's modules before the tenant row itself.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this dependency exists because <c>FK_Modules_Portals</c> is the ONE foreign key to
+    /// <c>dbo.Portals</c> that carries no <c>ON DELETE CASCADE</c> - every other one does
+    /// (<c>PortalAlias</c>, <c>PortalDesktopModules</c>, <c>RoleGroups</c>, <c>Roles</c>, <c>Tabs</c>,
+    /// <c>UserPortals</c>, <c>ProfilePropertyDefinition</c>). That asymmetry is not an oversight in this
+    /// solution's mapping: the terminal legacy schema declares it exactly so, the 03.00.09 upgrade script
+    /// dropping and re-adding the constraint WITHOUT a cascade clause, and Rule T4 forbids altering it. The
+    /// legacy application compensated in the procedure rather than in the schema, and so does this service -
+    /// see the removal sequence in <see cref="DeletePortalAsync"/>.
+    /// </remarks>
+    private readonly IModuleRepository _modules;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IHostSettingsService _hostSettings;
     private readonly IPasswordHasher _passwordHasher;
@@ -273,6 +288,10 @@ public sealed class PortalService : IPortalService
     /// <param name="tabs">Page repository, consulted for the page tally and the host root page.</param>
     /// <param name="users">Account repository, used for the administrator account and its credential.</param>
     /// <param name="roles">Role repository, used for the stock roles and their assignments.</param>
+    /// <param name="modules">
+    /// Module repository, used only to remove a tenant's modules before the tenant row, because
+    /// <c>FK_Modules_Portals</c> declares no cascade.
+    /// </param>
     /// <param name="unitOfWork">Commits each write exactly once.</param>
     /// <param name="hostSettings">Supplies the installation defaults a new portal inherits.</param>
     /// <param name="passwordHasher">Hashes the administrator's password before it is stored.</param>
@@ -308,6 +327,7 @@ public sealed class PortalService : IPortalService
         IPermissionRepository permissions,
         IUserRepository users,
         IRoleRepository roles,
+        IModuleRepository modules,
         IUnitOfWork unitOfWork,
         IHostSettingsService hostSettings,
         IPasswordHasher passwordHasher,
@@ -326,6 +346,7 @@ public sealed class PortalService : IPortalService
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
         _users = users ?? throw new ArgumentNullException(nameof(users));
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
+        _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
         _hostSettings = hostSettings ?? throw new ArgumentNullException(nameof(hostSettings));
         _passwordHasher = passwordHasher ?? throw new ArgumentNullException(nameof(passwordHasher));
@@ -1146,12 +1167,41 @@ public sealed class PortalService : IPortalService
         // MIGRATION: DeletePortalInfo (L1191) also began with four SkinController.SetSkin calls, resetting
         // the tenant's page and container skins. Skinning is out of scope - this generation of the product
         // uses skins rather than master pages and none of it is ported - so those calls have no counterpart.
-        // Aliases are loaded, so they are removed explicitly. Pages, modules, roles and memberships are
-        // removed by the cascade configured on the portal's relationships: the repository contracts
-        // expose no removal member for a page or a module, and expressing the sweep here would require
-        // widening abstractions that are deliberately narrow.
+        // Aliases are loaded, so they are removed explicitly. Pages, roles and memberships are removed by
+        // the cascade configured on the portal's relationships; the tenant's MODULES are not, and are
+        // removed explicitly below.
         // Captured BEFORE the removal because the alias rows do not survive it.
         int releasedAliasCount = portal.PortalAliases.Count;
+
+        // MIGRATION: THE TENANT'S MODULES ARE REMOVED FIRST, AND EXPLICITLY, because the store will not do
+        // it. Every other foreign key into dbo.Portals is declared ON DELETE CASCADE, but
+        // FK_Modules_Portals is not - the 03.00.09 upgrade script drops the constraint and re-adds it with
+        // no cascade clause, which is the terminal state Rule T4 binds this model to. A portal row deleted
+        // while any dbo.Modules row still points at it is therefore refused by the store, which surfaced as
+        // an undeclared 500 for every tenant that owned so much as one module.
+        //
+        // The legacy application solved this in exactly the same place and in exactly this order. The
+        // terminal DeletePortalInfo procedure (04.04.00.SqlDataProvider lines 155-175) opens with
+        // "DELETE FROM Modules WHERE PortalId = @PortalId" and only then deletes the Portals row, and the
+        // controller's own history records the move - "[cnurse] 24/11/2006 Removal of Modules moved to
+        // sproc" at PortalController.vb:L1191. Reproducing the order here rather than relying on a cascade
+        // keeps that behaviour where a reader can see it.
+        //
+        // Removing the module rows is sufficient for everything that hangs off them: FK_ModuleSettings_Modules,
+        // FK_TabModules_Modules and FK_ModulePermission_Modules all cascade, so a module's settings, its
+        // placements and its grants go with it. The procedure's second statement, which joined dbo.SearchItem,
+        // has no counterpart because the search subsystem is out of scope.
+        //
+        // Staged inside the transaction already open above, so a later refusal rolls the module removals back
+        // with everything else and the tenant is left exactly as it was.
+        IReadOnlyList<Module> portalModules = await _modules
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (Module module in portalModules)
+        {
+            await _modules.DeleteAsync(module.ModuleId, cancellationToken).ConfigureAwait(false);
+        }
 
         IReadOnlyList<User> portalMembers = await _users
             .ListPortalMembersForRemovalAsync(portalId, cancellationToken)

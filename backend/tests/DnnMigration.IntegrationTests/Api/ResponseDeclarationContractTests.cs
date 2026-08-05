@@ -41,6 +41,18 @@ namespace DnnMigration.IntegrationTests.Api;
 public sealed class ResponseDeclarationContractTests
 {
     /// <summary>The body every failure in this API carries.</summary>
+    /// <summary>The media type RFC 7807 section 3 registers for a problem document.</summary>
+    private const string ProblemMediaType = "application/problem+json";
+
+    /// <summary>The status advertised for a path matched under a method it does not accept.</summary>
+    private const string MethodNotAllowed = "405";
+
+    /// <summary>The status advertised for a body beyond the configured request-size ceiling.</summary>
+    private const string PayloadTooLarge = "413";
+
+    /// <summary>The status advertised for a body under a media type no input formatter reads.</summary>
+    private const string UnsupportedMediaType = "415";
+
     private const string ProblemDocument = "ProblemDetails";
 
     /// <summary>
@@ -184,6 +196,203 @@ public sealed class ResponseDeclarationContractTests
         _document.Paths.Keys.Should().NotContain(
             withdrawn,
             "the frozen API permits one public identity per operation, not compatibility aliases");
+    }
+
+    /// <summary>
+    /// Every advertised problem document is advertised under the media type RFC 7807 registers for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The explorer keys a response body by the media types an output formatter can write, and the JSON
+    /// formatter reports <c>application/json</c> ahead of <c>application/problem+json</c> - so every refusal
+    /// in this document claimed the plain JSON media type while the pipeline serves problem documents under
+    /// the registered one. A generated client would be built to expect one and receive the other, and a
+    /// contract test comparing the two would blame the implementation for a defect in the description.
+    /// </para>
+    /// <para>
+    /// Asserted over the whole document rather than per operation, because the guarantee is about the error
+    /// surface as a whole: one operation left behind is one special case a client has to carry.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void EveryAdvertisedProblemDocument_IsAdvertisedUnderTheProblemMediaType()
+    {
+        List<string> offenders = [];
+
+        foreach ((string path, OperationType verb, string status, OpenApiResponse response) in Failures())
+        {
+            foreach (KeyValuePair<string, OpenApiMediaType> body in response.Content)
+            {
+                string schema = body.Value.Schema?.Reference?.Id ?? string.Empty;
+
+                if (schema is not (ProblemDocument or ValidationDocument))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(body.Key, ProblemMediaType, StringComparison.Ordinal))
+                {
+                    offenders.Add($"{verb} {path} {status} -> {body.Key}");
+                }
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "a problem document is served as " + ProblemMediaType + ", so advertising it as anything else "
+            + "describes a response this API does not send");
+    }
+
+    /// <summary>
+    /// The refusals decided by the TRANSPORT are advertised: the wrong method on every operation, and an
+    /// oversized or unreadable body on every operation that accepts one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These three statuses are entirely reachable and were advertised nowhere. 405 is decided by routing
+    /// when a path matches a route whose method it does not accept; 413 by the host when a body exceeds the
+    /// configured ceiling; 415 by the formatter selector when a body arrives under a media type no input
+    /// formatter reads. None is produced by action code, which is why the explorer cannot discover any of
+    /// them and why a filter has to declare them.
+    /// </para>
+    /// <para>
+    /// The BODY-conditional half is asserted in both directions. Declaring 413 or 415 on an operation that
+    /// accepts no body would describe a refusal that cannot occur, which is the same defect as omitting one
+    /// that can - so an operation with no request body must NOT advertise either.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void TheTransportRefusals_AreAdvertisedWhereTheyCanOccurAndNowhereElse()
+    {
+        List<string> missing = [];
+        List<string> spurious = [];
+
+        foreach (KeyValuePair<string, OpenApiPathItem> path in _document.Paths)
+        {
+            foreach (KeyValuePair<OperationType, OpenApiOperation> operation in path.Value.Operations)
+            {
+                IDictionary<string, OpenApiResponse> responses = operation.Value.Responses;
+                bool acceptsBody = operation.Value.RequestBody is not null;
+
+                if (!responses.ContainsKey(MethodNotAllowed))
+                {
+                    missing.Add($"{operation.Key} {path.Key} -> {MethodNotAllowed}");
+                }
+
+                foreach (string status in new[] { PayloadTooLarge, UnsupportedMediaType })
+                {
+                    bool advertised = responses.ContainsKey(status);
+
+                    if (acceptsBody && !advertised)
+                    {
+                        missing.Add($"{operation.Key} {path.Key} -> {status}");
+                    }
+                    else if (!acceptsBody && advertised)
+                    {
+                        spurious.Add($"{operation.Key} {path.Key} -> {status}");
+                    }
+                }
+            }
+        }
+
+        missing.Should().BeEmpty(
+            "a caller cannot handle a refusal the contract does not mention, and all three of these are "
+            + "reachable on the operations named");
+        spurious.Should().BeEmpty(
+            "an operation that accepts no body can be refused for neither reason, so advertising either "
+            + "describes a response that cannot occur");
+    }
+
+    /// <summary>
+    /// No DERIVED model member is published as a query parameter.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A property with no setter cannot be assigned by the model binder, so a value supplied for one is
+    /// discarded in silence. The paging contract has two such members - each reports whether the caller
+    /// supplied a sort field or a filter, and each is computed from the member that carries it - and both
+    /// were published as query parameters. That invited a caller to send a value the server is guaranteed to
+    /// ignore and, worse, to send one that CONTRADICTS its source member, which the server has no way to
+    /// report because it never sees it.
+    /// </para>
+    /// <para>
+    /// The two are named explicitly rather than derived from the type, so this fact fails if either is
+    /// published again under any spelling, and the parameters that must SURVIVE are asserted alongside them -
+    /// a filter that removed the real paging parameters as well would otherwise pass.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void NoDerivedMember_IsPublishedAsAQueryParameter()
+    {
+        HashSet<string> published = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (OpenApiPathItem path in _document.Paths.Values)
+        {
+            foreach (OpenApiOperation operation in path.Operations.Values)
+            {
+                foreach (OpenApiParameter parameter in operation.Parameters)
+                {
+                    if (parameter.In == ParameterLocation.Query)
+                    {
+                        published.Add(parameter.Name);
+                    }
+                }
+            }
+        }
+
+        published.Should().NotContain(
+            "HasSort",
+            "the member is computed from SortBy and has no setter, so a supplied value is discarded");
+        published.Should().NotContain(
+            "HasQuery",
+            "the member is computed from Query and has no setter, so a supplied value is discarded");
+
+        published.Should().Contain(
+            ["PageIndex", "PageSize", "SortBy", "SortDir", "Query"],
+            "the bindable paging members must still be published, or the removal took the contract with it");
+    }
+
+    /// <summary>
+    /// Every published enumeration names its members rather than publishing bare numbers.
+    /// </summary>
+    /// <remarks>
+    /// An integral enumeration publishes as a list of its numeric values - a sort direction as
+    /// <c>[0, 1]</c> - which tells a client which values are permitted and nothing about what either means,
+    /// so choosing between them requires reading this API's source. The names belong in the description; the
+    /// wire representation is deliberately left numeric, because the numbers are the ones persisted in the
+    /// store and publishing names instead would change what the API accepts.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void EveryPublishedEnumeration_NamesItsMembers()
+    {
+        List<string> unnamed = [];
+
+        foreach (KeyValuePair<string, OpenApiSchema> schema in _document.Components.Schemas)
+        {
+            if (schema.Value.Enum is null || schema.Value.Enum.Count == 0)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(schema.Value.Description)
+                || !schema.Value.Description.Contains("Members:", StringComparison.Ordinal))
+            {
+                unnamed.Add(schema.Key);
+            }
+        }
+
+        unnamed.Should().BeEmpty(
+            "a bare list of numbers is not a contract a client can implement against without reading this "
+            + "API's source");
+
+        // Stated positively for the one this defect was reported against, so the rule above cannot be
+        // satisfied by a document that publishes no enumeration at all.
+        _document.Components.Schemas.Should().ContainKey("SortDirection");
+        _document.Components.Schemas["SortDirection"].Description
+            .Should().Contain("0 = Ascending").And.Contain("1 = Descending");
     }
 
     /// <summary>
@@ -429,6 +638,23 @@ public sealed class ResponseDeclarationContractTests
     /// contract that would have had a client parsing a document as a string field. This is asserted as an
     /// exact media type, and asserted alongside the fact that nothing ELSE in the document departs from
     /// JSON, so the exception stays a single decision a reader can see rather than a licence.
+    /// <para>
+    /// MIGRATION: THIS FACT ORIGINALLY HELD THAT THE EXPORT WAS THE DOCUMENT'S ONLY NON-JSON RESPONSE, AND
+    /// THAT PREMISE IS SUPERSEDED. Problem documents are now advertised - and served - as
+    /// <c>application/problem+json</c>, which is the media type RFC 7807 defines for them and which this API
+    /// previously mixed with plain JSON depending on which producer answered. A problem response is
+    /// therefore a SECOND sanctioned media type rather than a departure, so counting it as one would fail
+    /// this fact for the very unification it should be protecting.
+    /// </para>
+    /// <para>
+    /// Rather than merely widening the allowance, the rule is inverted into the converse of
+    /// <see cref="EveryAdvertisedProblemDocument_IsAdvertisedUnderTheProblemMediaType"/>: that fact proves
+    /// every problem document is served as a problem document, and this one proves nothing else is. The pair
+    /// is strictly stronger than the original single-media-type rule, because a payload wrongly advertised
+    /// as a problem document - or a problem document advertised as a payload - now fails one of the two,
+    /// where before both were simply "not JSON" and indistinguishable. The problem carve-out is asserted to
+    /// have matched something, so it cannot rot into a blanket exemption if the taxonomy is ever withdrawn.
+    /// </para>
     /// </remarks>
     [Fact]
     public void TheExportedDocument_IsPublishedUnderItsOwnMediaType()
@@ -440,19 +666,45 @@ public sealed class ResponseDeclarationContractTests
 
         exported.Content.Keys.Should().Equal([ExportMediaType]);
 
-        IEnumerable<string> departures = _document.Paths
-            .SelectMany(path => path.Value.Operations.Select(
-                operation => (Path: path.Key, Verb: operation.Key, Operation: operation.Value)))
-            .SelectMany(entry => entry.Operation.Responses.SelectMany(
-                response => response.Value.Content.Keys.Select(
-                    mediaType => (entry.Path, entry.Verb, response.Key, mediaType))))
-            .Where(entry => entry.mediaType != JsonMediaType)
+        List<(string Path, OperationType Verb, string Status, string MediaType, string Schema)> bodies =
+        [
+            .. _document.Paths
+                .SelectMany(path => path.Value.Operations.Select(
+                    operation => (Path: path.Key, Verb: operation.Key, Operation: operation.Value)))
+                .SelectMany(entry => entry.Operation.Responses.SelectMany(
+                    response => response.Value.Content.Select(
+                        body => (
+                            entry.Path,
+                            entry.Verb,
+                            Status: response.Key,
+                            MediaType: body.Key,
+                            Schema: body.Value.Schema?.Reference?.Id ?? string.Empty)))),
+        ];
+
+        // A response advertised as a problem document under the problem media type is the sanctioned
+        // pairing, not a departure. Its other direction - a problem document under any OTHER media type -
+        // is caught by EveryAdvertisedProblemDocument_IsAdvertisedUnderTheProblemMediaType.
+        List<(string Path, OperationType Verb, string Status, string MediaType, string Schema)> problems =
+        [
+            .. bodies.Where(entry =>
+                entry.MediaType == ProblemMediaType
+                && entry.Schema is ProblemDocument or ValidationDocument),
+        ];
+
+        problems.Should().NotBeEmpty(
+            "the problem media type is exempted here because problem documents legitimately use it, so an "
+            + "empty carve-out would mean this fact is quietly excusing a media type nothing sends");
+
+        IEnumerable<string> departures = bodies
+            .Except(problems)
+            .Where(entry => entry.MediaType != JsonMediaType)
             .Where(entry => entry.Path != ExportPath)
-            .Select(entry => $"{entry.Verb} {entry.Path} {entry.Key} -> {entry.mediaType}");
+            .Select(entry => $"{entry.Verb} {entry.Path} {entry.Status} -> {entry.MediaType}");
 
         departures.Should().BeEmpty(
-            "every other response in this API is JSON, and a second media type would be a second parsing "
-            + "path for a client to discover rather than a documented exception");
+            "a payload is JSON and a problem document is " + ProblemMediaType + ", so a third media type - "
+            + "or either of those two on the wrong kind of response - is a parsing path a client has to "
+            + "discover rather than a documented exception");
     }
 
     /// <summary>

@@ -78,11 +78,32 @@ public sealed class PortalApiTests
     private const int UnknownPortalId = 987654;
 
     /// <summary>
-    /// Prefix of the problem type carried by an AUTHORISATION refusal, as opposed to a refusal decided inside
-    /// the service. Both answer <c>403</c>, so the type is the only thing that tells them apart, and a test
-    /// that cannot tell them apart cannot prove which guard fired.
+    /// Problem type carried by every refusal of an authenticated but unentitled caller, whichever guard
+    /// decided it.
     /// </summary>
-    private const string AuthorisationProblemTypePrefix = "urn:dnnmigration:error:auth.";
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: THREE FACTS IN THIS CLASS USED TO IDENTIFY WHICH GUARD REFUSED BY REQUIRING THE PROBLEM TYPE
+    /// NOT TO BEGIN <c>urn:dnnmigration:error:auth.</c>, AND THAT DISCRIMINATOR NO LONGER EXISTS - it worked
+    /// only because of a defect. This API answered a refusal decided by the authorisation layer with its own
+    /// identifier and a refusal decided inside a service with an RFC 9110 specification link, because the
+    /// framework's client-error registration was consulted before this API's vocabulary and claimed the type
+    /// for every status the vocabulary would otherwise have named. A caller consequently received two
+    /// different problem-type vocabularies for the same status depending on which producer answered, which is
+    /// the defect the single taxonomy removes. Once removed, both refusals carry this one type - correctly,
+    /// since to a client they are the same kind of problem, and the controller's own contract note records
+    /// that the field guard "reaches the caller as a single, deliberate 403".
+    /// </para>
+    /// <para>
+    /// The security property those facts exist to prove - that the caller got PAST the endpoint policy and was
+    /// refused by the store-backed field guard - is therefore proven behaviourally instead, by showing the
+    /// same client with the same token succeeds on an update that alters no host-only field. That is direct
+    /// evidence rather than an inference from a payload member, so it is strictly stronger than what it
+    /// replaces: a payload member can be identical for two different causes, whereas a policy that refused
+    /// the caller could not have admitted the control request.
+    /// </para>
+    /// </remarks>
+    private const string AuthorisationRefusalProblemType = "urn:dnnmigration:error:auth.not_permitted";
 
     /// <summary>
     /// Problem type carried by the refusal to remove an installation's only remaining portal.
@@ -1577,6 +1598,21 @@ public sealed class PortalApiTests
 
         using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
+        // The control, and the whole reason this refusal can be attributed to the field guard: the same client
+        // and the same token are admitted by the endpoint policy for an update that alters no host-only field.
+        UpdatePortalRequest permitted = EchoHostOnlyFields(created);
+        permitted.PortalName = created.PortalName;
+
+        using HttpResponseMessage admitted = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            permitted,
+            ApiTestFixture.Json);
+
+        admitted.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the endpoint policy admits this caller, so any refusal below is the field guard's and not the "
+            + "policy's");
+
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
         request.HostFee = (created.HostFee ?? 0m) + 250.50m;
@@ -1592,9 +1628,10 @@ public sealed class PortalApiTests
             .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
 
         problem.Should().NotBeNull();
-        problem!.Type.Should().NotStartWith(
-            AuthorisationProblemTypePrefix,
-            "the refusal must come from the host-only guard, not from the endpoint policy");
+        problem!.Type.Should().Be(
+            AuthorisationRefusalProblemType,
+            "an unentitled caller is refused under this API's single problem taxonomy, whichever guard decided "
+            + "it");
     }
 
     /// <summary>
@@ -1620,6 +1657,21 @@ public sealed class PortalApiTests
             createRequest.AdministratorUsername!,
             isSuperUser: true);
 
+        // The control. This token is admitted by the endpoint policy - which is precisely why the stale
+        // super-user claim it carries has to be refused by something else, and by the store rather than the
+        // claim.
+        UpdatePortalRequest permitted = EchoHostOnlyFields(created);
+        permitted.PortalName = created.PortalName;
+
+        using HttpResponseMessage admitted = await staleClaim.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            permitted,
+            ApiTestFixture.Json);
+
+        admitted.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "authorisation succeeds for this token, so the refusal below is the store-backed field guard's");
+
         UpdatePortalRequest request = EchoHostOnlyFields(created);
         request.PortalName = created.PortalName;
         request.HostFee = (created.HostFee ?? 0m) + 10m;
@@ -1634,9 +1686,10 @@ public sealed class PortalApiTests
         ProblemDetails? problem = await response.Content
             .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
         problem.Should().NotBeNull();
-        problem!.Type.Should().NotStartWith(
-            AuthorisationProblemTypePrefix,
-            "the target-portal administrator passed the endpoint policy; the store-backed field guard refused");
+        problem!.Type.Should().Be(
+            AuthorisationRefusalProblemType,
+            "an unentitled caller is refused under this API's single problem taxonomy, whichever guard decided "
+            + "it");
     }
 
     /// <summary>
@@ -1675,9 +1728,27 @@ public sealed class PortalApiTests
         ProblemDetails? problem = await response.Content
             .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
         problem.Should().NotBeNull();
-        problem!.Type.Should().StartWith(
-            AuthorisationProblemTypePrefix,
-            "the store-backed host check must refuse the stale claim before the request reaches the field guard");
+        problem!.Type.Should().Be(
+            AuthorisationRefusalProblemType,
+            "an unentitled caller is refused under this API's single problem taxonomy");
+
+        // The discriminator, and the mirror image of the control used by the field-guard facts above. The
+        // submission it refused altered a host-only field, which the field guard would have refused on its own
+        // - so that refusal alone cannot show the endpoint policy fired. This one alters NOTHING the field
+        // guard inspects, so the field guard would permit it; a refusal here can only be the policy's, which
+        // is what proves the stale claim was rejected before the request ever reached the service.
+        UpdatePortalRequest nothingHostOnly = EchoHostOnlyFields(victim);
+        nothingHostOnly.PortalName = victim.PortalName;
+
+        using HttpResponseMessage alsoRefused = await staleClaim.PutAsJsonAsync(
+            PortalRoute(victim.PortalId),
+            nothingHostOnly,
+            ApiTestFixture.Json);
+
+        alsoRefused.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the endpoint policy refuses this caller on this route outright, so it is refused even for an "
+            + "update the host-only field guard would have allowed");
     }
 
     /// <summary>
@@ -1713,7 +1784,10 @@ public sealed class PortalApiTests
         problem.Should().NotBeNull(
             "an authorisation refusal must carry a problem document rather than an empty body");
         problem!.Status.Should().Be(StatusCodes.Status403Forbidden);
-        problem.Type.Should().StartWith(AuthorisationProblemTypePrefix);
+
+        // This submission alters no host-only field, so the field guard would have permitted it. The refusal is
+        // therefore the endpoint policy's, which is the cross-tenant property under test.
+        problem.Type.Should().Be(AuthorisationRefusalProblemType);
 
         // The refusal must also be a refusal to ACT, not merely a refusal to answer: re-read as the host and
         // confirm the name never changed.
@@ -2003,6 +2077,122 @@ public sealed class PortalApiTests
             new Dictionary<string, object?> { ["alias"] = alias });
 
         aliasCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A delete answers <c>204 No Content</c> for a tenant that owns modules, and leaves neither the modules
+    /// nor their placements, settings or grants behind.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE ONE FOREIGN KEY INTO <c>dbo.Portals</c> WITHOUT A CASCADE IS <c>FK_Modules_Portals</c>. Every
+    /// other one - alias, portal desktop module, role group, role, page, membership, profile declaration -
+    /// carries <c>ON DELETE CASCADE</c>, so a tenant with no module deletes cleanly and a tenant with one
+    /// module was refused by the store. That refusal arrived as an undeclared <c>500</c>: the operation
+    /// publishes <c>204</c>, <c>401</c>, <c>403</c>, <c>404</c> and <c>409</c> and nothing else, so the
+    /// response was outside its own contract.
+    /// </para>
+    /// <para>
+    /// The asymmetry is not a mapping defect to be corrected in the schema - the terminal legacy schema
+    /// declares it, the 03.00.09 upgrade script re-adding the constraint with no cascade clause - so the
+    /// service compensates in the same place the legacy application did. The terminal
+    /// <c>DeletePortalInfo</c> procedure opens with <c>DELETE FROM Modules WHERE PortalId = @PortalId</c>
+    /// before deleting the tenant row, and that order is what this asserts.
+    /// </para>
+    /// <para>
+    /// The dependents of the module are asserted too, because removing the module rows is only sufficient if
+    /// their placements, settings and grants really do follow. Those three keys DO cascade from
+    /// <c>dbo.Modules</c>, so nothing removes them explicitly and an orphan would be invisible to any
+    /// assertion aimed only at the module table.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task DeletePortal_WhenTheTenantOwnsModules_ReturnsNoContentAndLeavesNoOrphans()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        PortalDetailDto created = await CreatePortalAsync(client);
+
+        int tabId = await _fixture.Database.ScalarAsync<int>(
+            "SELECT MIN([TabID]) FROM [dbo].[Tabs] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId });
+
+        int moduleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted], [InheritViewPermissions])
+            VALUES (@moduleDefinitionId, @portalId, N'Cascade guard module', 0, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = _fixture.Seed.ModuleDefinitionId,
+                ["portalId"] = created.PortalId,
+            });
+
+        int tabModuleId = await _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[TabModules]
+                ([TabID], [ModuleID], [PaneName], [ModuleOrder], [CacheTime], [Visibility], [DisplayTitle],
+                 [DisplayPrint], [DisplaySyndicate])
+            VALUES (@tabId, @moduleId, N'ContentPane', 1, 0, 0, 1, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?> { ["tabId"] = tabId, ["moduleId"] = moduleId });
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[ModuleSettings] ([ModuleID], [SettingName], [SettingValue])
+            VALUES (@moduleId, N'CascadeGuard', N'1');
+            INSERT INTO [dbo].[TabModuleSettings] ([TabModuleID], [SettingName], [SettingValue])
+            VALUES (@tabModuleId, N'CascadeGuard', N'1');
+            INSERT INTO [dbo].[ModulePermission]
+                ([ModuleID], [PermissionID], [RoleID], [UserID], [AllowAccess])
+            VALUES (@moduleId, @permissionId, @roleId, NULL, 1);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleId"] = moduleId,
+                ["tabModuleId"] = tabModuleId,
+                ["permissionId"] = _fixture.Seed.ModuleViewPermissionId,
+                ["roleId"] = _fixture.Seed.RegisteredRoleId,
+            });
+
+        using HttpResponseMessage response = await client.DeleteAsync(PortalRoute(created.PortalId));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "the tenant's modules are removed before its own row, so the store has nothing left to refuse");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Portals] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId }))
+            .Should().Be(0);
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [PortalID] = @portalId;",
+            new Dictionary<string, object?> { ["portalId"] = created.PortalId }))
+            .Should().Be(0, "no module may outlive the tenant that owned it");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = moduleId }))
+            .Should().Be(0, "FK_TabModules_Modules cascades, so the placement goes with the module");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModuleSettings] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = moduleId }))
+            .Should().Be(0, "FK_ModuleSettings_Modules cascades");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModuleSettings] WHERE [TabModuleID] = @tabModuleId;",
+            new Dictionary<string, object?> { ["tabModuleId"] = tabModuleId }))
+            .Should().Be(0, "FK_TabModuleSettings_TabModules cascades from the placement");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[ModulePermission] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = moduleId }))
+            .Should().Be(0, "FK_ModulePermission_Modules cascades");
     }
 
     /// <summary>
@@ -3584,6 +3774,20 @@ public sealed class PortalApiTests
 
         using HttpClient client = await CreateAdministratorClientForAsync(createRequest, created);
 
+        // The control, asserted once for the whole table below: the endpoint policy admits this caller when no
+        // host-only field is altered, so every refusal in the loop is attributable to the field guard.
+        UpdatePortalRequest permitted = EchoHostOnlyFields(created);
+        permitted.PortalName = created.PortalName;
+
+        using HttpResponseMessage admitted = await client.PutAsJsonAsync(
+            PortalRoute(created.PortalId),
+            permitted,
+            ApiTestFixture.Json);
+
+        admitted.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the endpoint policy admits this caller, so each refusal below belongs to the field-level guard");
+
         (string Field, Action<UpdatePortalRequest> Alter)[] hostOnly =
         [
             ("hostFee", request => request.HostFee = (created.HostFee ?? 0m) + 99.99m),
@@ -3618,9 +3822,9 @@ public sealed class PortalApiTests
                 .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
             problem.Should().NotBeNull();
             problem!.Status.Should().Be(StatusCodes.Status403Forbidden);
-            problem.Type.Should().NotStartWith(
-                AuthorisationProblemTypePrefix,
-                "the refusal for '{0}' comes from the field-level guard rather than from the endpoint policy",
+            problem.Type.Should().Be(
+                AuthorisationRefusalProblemType,
+                "the refusal for '{0}' is published under this API's single problem taxonomy",
                 field);
             problem.Detail.Should().NotBeNullOrWhiteSpace();
         }
@@ -3962,9 +4166,25 @@ public sealed class PortalApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
+    /// <para>
     /// A bulk removal is the one absent capability whose absence a <c>404</c> would not demonstrate, because
     /// the address exists for reading and creating. What proves it is the METHOD being refused, and the
     /// refusal carries the permitted verbs so a client is told what the address does support.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THIS FACT USED TO REQUIRE AN EMPTY BODY, AND THAT EXPECTATION IS SUPERSEDED. A refusal
+    /// decided by routing - the wrong method here, an unmatched address elsewhere - reached the caller with no
+    /// payload at all, while every refusal decided further in carried a problem document. A client therefore
+    /// had to special-case two of this API's statuses as bodiless before it could parse any error, which is
+    /// exactly the second parsing path the single error contract exists to remove. Both are now answered with
+    /// the standard document.
+    /// </para>
+    /// <para>
+    /// The <c>Allow</c> header is asserted here for the first time. It is what this remark always claimed the
+    /// refusal carried, and the claim went unchecked - so adding the payload had to be accompanied by proving
+    /// the header survived it, since a status-code page that replaced the response wholesale would have
+    /// silently dropped the one header that tells the caller what to do instead.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task DeleteOnThePortalCollection_IsNotAllowed()
@@ -3977,9 +4197,33 @@ public sealed class PortalApiTests
             HttpStatusCode.MethodNotAllowed,
             "portals are removed one at a time, by an address that names the one being removed");
 
-        response.Content.Headers.ContentLength.Should().Be(
+        response.Content.Headers.ContentType?.MediaType.Should().Be(
+            "application/problem+json",
+            "a refusal decided by routing is a problem document like every refusal decided further in");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status405MethodNotAllowed);
+        problem.Type.Should().Be(
+            "urn:dnnmigration:error:request.method_not_allowed",
+            "the refusal names its condition in this API's own taxonomy rather than leaving the caller to "
+            + "infer it from the status line alone");
+
+        response.Content.Headers.ContentLength.Should().BeGreaterThan(
             0,
-            "a refused method reports the refusal in the response line rather than in a payload");
+            "the document is actually written, rather than the header being declared over an empty body");
+
+        response.Content.Headers.Allow.Should().Contain(
+            "GET",
+            "the address supports reading, and the refusal must say so");
+        response.Content.Headers.Allow.Should().Contain(
+            "POST",
+            "the address supports creating, and the refusal must say so");
+        response.Content.Headers.Allow.Should().NotContain(
+            "DELETE",
+            "the verb just refused must not appear among the permitted ones");
     }
 
     /// <summary>

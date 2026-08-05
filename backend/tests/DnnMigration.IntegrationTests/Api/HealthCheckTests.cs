@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Auth;
+using DnnMigration.Application.Dtos.User;
 using DnnMigration.IntegrationTests;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -404,6 +405,136 @@ public sealed class HealthCheckTests
     /// assertion holds whatever shape the reintroduction took.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Every health view answers identically when the caller PRESENTS a bearer token for an account that owes
+    /// mandatory remediation.
+    /// </summary>
+    /// <param name="path">The health view being probed.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A SEPARATE FACT FROM THE ANONYMOUS ONE. The sibling theory asserts that the views answer
+    /// with NO credential, which is the container probe's case. It cannot see the failure this one guards
+    /// against, because that failure needed a credential to be PRESENT: the store-backed remediation stage
+    /// refused every authenticated request that was not explicitly exempt, and the health views - anonymous by
+    /// contract, and mapped with <c>AllowAnonymous</c> - were not among the exemptions. A caller holding a
+    /// token for an account owing a credential change therefore received 403 from all three, while the same
+    /// three answered 200 to a caller holding nothing at all.
+    /// </para>
+    /// <para>
+    /// That is the opposite of a liveness signal. An endpoint whose answer depends on WHO ASKS cannot report
+    /// whether the process is alive, and an authenticated monitoring agent, dashboard or load balancer that
+    /// attaches a service token would read the service as failing while it served every other request
+    /// correctly. The token used here owes a credential change specifically because that is the cheapest
+    /// remediation state to establish deterministically; the requirement being asserted is about the health
+    /// views, not about which remediation is outstanding.
+    /// </para>
+    /// <para>
+    /// The assertion is that the two answers AGREE, rather than that either is 200: a readiness view is
+    /// entitled to answer 503 when a dependency is down, and pinning 200 here would make this fact fail for a
+    /// reason it is not about. What must never differ is the answer given to the same process by two callers.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData(HealthPath)]
+    [InlineData(LivenessPath)]
+    [InlineData(ReadinessPath)]
+    public async Task HealthViews_WithARemediatingToken_AnswerExactlyAsTheyDoAnonymously(string path)
+    {
+        var relative = new Uri(path, UriKind.Relative);
+
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest request = new()
+        {
+            Username = "health_rem_" + Guid.NewGuid().ToString("N")[..10],
+            FirstName = "Health",
+            LastName = "Remediation",
+            DisplayName = "Health Remediation",
+            Email = "health.rem." + Guid.NewGuid().ToString("N")[..10] + "@example.com",
+            Password = ApiTestFixture.KnownPassword,
+            ConfirmPassword = ApiTestFixture.KnownPassword,
+            Authorize = true,
+        };
+
+        using HttpResponseMessage created = await host.PostAsJsonAsync(
+            new Uri("/api/v1/users", UriKind.Relative),
+            request,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        UserDetailDto? account = await created.Content.ReadEnvelopeAsync<UserDetailDto>();
+        account.Should().NotBeNull();
+
+        try
+        {
+            using HttpResponseMessage required = await host.PostAsync(
+                new Uri(
+                    FormattableString.Invariant($"/api/v1/users/{account!.UserId}/require-password-change"),
+                    UriKind.Relative),
+                content: null);
+
+            required.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+            using HttpResponseMessage issued = await anonymous.PostAsJsonAsync(
+                new Uri("/api/v1/auth/login", UriKind.Relative),
+                new LoginRequest { Username = request.Username, Password = ApiTestFixture.KnownPassword },
+                ApiTestFixture.Json);
+
+            issued.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "an outstanding credential change is an advisory on sign-in, not a refusal");
+
+            LoginResponse? session = await issued.Content.ReadEnvelopeAsync<LoginResponse>();
+            session.Should().NotBeNull();
+            session!.MustChangePassword.Should().BeTrue(
+                "the token has to be a REMEDIATING one, or this fact measures nothing");
+
+            using HttpClient bearer = AuthenticatedClientFactory.Authenticate(
+                _fixture.CreateAnonymousClient(),
+                session.AccessToken);
+
+            using HttpResponseMessage withToken = await bearer.GetAsync(relative);
+            using HttpResponseMessage withoutToken = await _fixture.CreateAnonymousClient().GetAsync(relative);
+
+            withToken.StatusCode.Should().NotBe(
+                HttpStatusCode.Forbidden,
+                "a health view is anonymous by contract, so presenting a credential it does not consult "
+                + "cannot turn it into a denial");
+            withToken.StatusCode.Should().NotBe(
+                HttpStatusCode.Unauthorized,
+                "the view answers with no credential at all, so it cannot require a valid one");
+
+            withToken.StatusCode.Should().Be(
+                withoutToken.StatusCode,
+                "the answer must not depend on who asks, or the probe reports the caller rather than the "
+                + "process");
+
+            // The token is still a restricted one, which is what makes the exemption above narrow rather
+            // than a hole. Asserted in the same fact so a change that exempted everything would fail here.
+            using HttpResponseMessage ordinary = await bearer.GetAsync(
+                new Uri(
+                    FormattableString.Invariant($"/api/v1/users/{account.UserId}"),
+                    UriKind.Relative));
+
+            ordinary.StatusCode.Should().Be(
+                HttpStatusCode.Forbidden,
+                "the remediation boundary still closes the ordinary protected surface");
+        }
+        finally
+        {
+            using HttpResponseMessage removed = await host.DeleteAsync(new Uri(
+                FormattableString.Invariant($"/api/v1/users/{account!.UserId}"),
+                UriKind.Relative));
+
+            removed.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.NotFound);
+        }
+    }
+
     [Fact]
     public async Task Health_NamesNoRegisteredProbe()
     {

@@ -28,7 +28,19 @@ namespace DnnMigration.IntegrationTests.Persistence;
 [Collection(IntegrationTestCollection.Name)]
 public sealed class UserRepositoryTests
 {
-    private const int HostPortalId = -1;
+    /// <summary>
+    /// The first key <c>dbo.Portals.PortalID</c> issues, which the seeded tenant holds.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this is a REAL TENANT and not the host scope. <c>dbo.Portals.PortalID</c> is
+    /// <c>IDENTITY(-1, 1)</c> (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first tenant an
+    /// installation has and is always addressable; the host scope is a SQL <c>NULL</c> portal, which
+    /// <c>03.03.03.SqlDataProvider:L74-L83</c> established when it widened the column and migrated the
+    /// rows with <c>SET PortalId = NULL WHERE PortalId = -1</c>. The constant is named for what it is so
+    /// that no assertion below can be read as treating -1 as an absence.
+    /// </remarks>
+    private const int SeededTenantPortalId = -1;
+
     private const int UnknownPortalId = 987654;
     private const int UnknownUserId = 987654;
     private const int LockoutThreshold = 5;
@@ -1712,21 +1724,44 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// Collection, name and key reads apply one host-scope predicate: the legacy identifier -1 addresses
-    /// SQL-null declarations and never widens to rows that physically store the colliding portal key.
+    /// Collection, name and key reads keep the SQL-null host scope and the tenant keyed -1 apart: each
+    /// scope answers with its own declarations and never with the other's.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the regression guard for a measured data-isolation defect. An earlier revision
+    /// declared <c>private const int HostPortalId = -1</c> in the repository and rewrote a requested
+    /// portal of -1 into a <c>PortalID IS NULL</c> predicate, reproducing the legacy provider's
+    /// <c>GetNull</c> wrapper (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c> through
+    /// <c>Null.GetNull</c> at <c>L325-L326</c> and <c>Null.vb:L167-L170</c>). That is wrong in this
+    /// schema, because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the FIRST REAL TENANT of an installation - the
+    /// very tenant this fixture seeds. The consequence was failure in both directions at once: that
+    /// tenant could not read its own declarations, and every one of its requests was served the host
+    /// scope's rows instead.
+    /// </para>
+    /// <para>
+    /// The fixture is deliberately DUAL - one declaration stored with a SQL <c>NULL</c> portal and one
+    /// stored with the tenant key -1 - because a single-scope fixture cannot tell an exact match from a
+    /// translation. Both directions are asserted on every read member, so neither a reinstated
+    /// translation nor a widening of one scope into both can pass.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task ProfileDefinitionReads_ApplyOneExactLegacyHostScope()
+    public async Task ProfileDefinitionReads_SeparateTheSqlNullhostScopeFromTheTenantKeyedMinusOne()
     {
         _fixture.Seed.PortalId.Should().Be(
-            HostPortalId,
+            SeededTenantPortalId,
             "the collision is exercised against the real first portal key rather than a synthetic value");
 
+        // The host scope is a SQL NULL portal, so it is expressed as a null and never as an identifier.
+        int? hostScope = null;
+
         string hostName = FormattableString.Invariant($"HostDefinition{Suffix()}");
-        string collidingName = FormattableString.Invariant($"TenantDefinition{Suffix()}");
+        string tenantName = FormattableString.Invariant($"TenantDefinition{Suffix()}");
         int hostDefinitionId = 0;
-        int collidingDefinitionId = 0;
+        int tenantDefinitionId = 0;
 
         try
         {
@@ -1736,43 +1771,86 @@ public sealed class UserRepositoryTests
                     scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
                 IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                ProfilePropertyDefinition hostLevel = DefinitionForScope(null, hostName, viewOrder: 1);
-                ProfilePropertyDefinition collidingTenant =
-                    DefinitionForScope(HostPortalId, collidingName, viewOrder: 2);
+                ProfilePropertyDefinition hostLevel = DefinitionForScope(hostScope, hostName, viewOrder: 1);
+                ProfilePropertyDefinition tenantOwned =
+                    DefinitionForScope(SeededTenantPortalId, tenantName, viewOrder: 2);
 
                 await profiles.AddDefinitionAsync(hostLevel);
-                await profiles.AddDefinitionAsync(collidingTenant);
+                await profiles.AddDefinitionAsync(tenantOwned);
                 await unitOfWork.SaveChangesAsync();
 
                 hostDefinitionId = hostLevel.PropertyDefinitionId;
-                collidingDefinitionId = collidingTenant.PropertyDefinitionId;
+                tenantDefinitionId = tenantOwned.PropertyDefinitionId;
             }
+
+            // The two rows really are stored under different scopes, so the assertions below cannot pass
+            // by both rows sharing one encoding.
+            (await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM [dbo].[ProfilePropertyDefinition]
+                WHERE [PropertyDefinitionID] = @definitionId AND [PortalID] IS NULL;
+                """,
+                new Dictionary<string, object?> { ["definitionId"] = hostDefinitionId }))
+                .Should().Be(1, "the host declaration is stored with a SQL NULL portal");
+
+            (await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM [dbo].[ProfilePropertyDefinition]
+                WHERE [PropertyDefinitionID] = @definitionId AND [PortalID] = -1;
+                """,
+                new Dictionary<string, object?> { ["definitionId"] = tenantDefinitionId }))
+                .Should().Be(1, "the tenant declaration is stored with the literal key -1");
 
             using (IServiceScope scope = _fixture.Services.CreateScope())
             {
                 IUserProfileRepository profiles =
                     scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
 
-                IReadOnlyList<ProfilePropertyDefinition> catalogue =
-                    await profiles.GetDefinitionsByPortalIdAsync(HostPortalId);
+                IReadOnlyList<ProfilePropertyDefinition> tenantCatalogue =
+                    await profiles.GetDefinitionsByPortalIdAsync(SeededTenantPortalId);
 
-                catalogue.Select(definition => definition.PropertyDefinitionId)
-                    .Should().Contain(hostDefinitionId)
+                tenantCatalogue.Select(definition => definition.PropertyDefinitionId)
+                    .Should().Contain(
+                        tenantDefinitionId,
+                        "a tenant numbered -1 must be able to read its own declarations")
                     .And.NotContain(
-                        collidingDefinitionId,
-                        "the legacy provider translated -1 to NULL instead of matching both encodings");
+                        hostDefinitionId,
+                        "a tenant-scoped read must not be answered with the host scope's rows");
 
-                (await profiles.GetDefinitionByNameAsync(HostPortalId, hostName))
-                    .Should().NotBeNull("the name read uses the same host translation as the catalogue");
-                (await profiles.GetDefinitionByNameAsync(HostPortalId, collidingName))
-                    .Should().BeNull("a stored -1 is outside the translated host scope");
+                IReadOnlyList<ProfilePropertyDefinition> hostCatalogue =
+                    await profiles.GetDefinitionsByPortalIdAsync(hostScope);
 
-                (await profiles.GetDefinitionByIdAsync(HostPortalId, hostDefinitionId))
-                    .Should().NotBeNull("the single read must agree with the catalogue");
-                (await profiles.GetDefinitionByIdAsync(HostPortalId, collidingDefinitionId))
+                hostCatalogue.Select(definition => definition.PropertyDefinitionId)
+                    .Should().Contain(
+                        hostDefinitionId,
+                        "the host scope is addressed by a null and remains reachable")
+                    .And.NotContain(
+                        tenantDefinitionId,
+                        "the host scope must not widen to a row that physically stores a tenant key");
+
+                (await profiles.GetDefinitionByNameAsync(SeededTenantPortalId, tenantName))
+                    .Should().NotBeNull("the name read uses the same exact scope as the catalogue");
+                (await profiles.GetDefinitionByNameAsync(SeededTenantPortalId, hostName))
+                    .Should().BeNull("a tenant scope does not reach a SQL-null declaration");
+                (await profiles.GetDefinitionByNameAsync(hostScope, hostName))
+                    .Should().NotBeNull("the host scope reaches its own declaration by name");
+                (await profiles.GetDefinitionByNameAsync(hostScope, tenantName))
+                    .Should().BeNull("the host scope does not reach a tenant declaration by name");
+
+                (await profiles.GetDefinitionByIdAsync(SeededTenantPortalId, tenantDefinitionId))
+                    .Should().NotBeNull("the single read must agree with the tenant catalogue");
+                (await profiles.GetDefinitionByIdAsync(SeededTenantPortalId, hostDefinitionId))
+                    .Should().BeNull("the single read must not reintroduce the old sentinel translation");
+                (await profiles.GetDefinitionByIdAsync(hostScope, hostDefinitionId))
+                    .Should().NotBeNull("the single read must agree with the host catalogue");
+                (await profiles.GetDefinitionByIdAsync(hostScope, tenantDefinitionId))
                     .Should().BeNull("the single read must not reintroduce the old unscoped fallback");
                 (await profiles.GetDefinitionByIdAsync(UnknownPortalId, hostDefinitionId))
                     .Should().BeNull("an ordinary foreign tenant cannot address a host declaration");
+                (await profiles.GetDefinitionByIdAsync(UnknownPortalId, tenantDefinitionId))
+                    .Should().BeNull("an ordinary foreign tenant cannot address another tenant's declaration");
             }
         }
         finally
@@ -1787,12 +1865,303 @@ public sealed class UserRepositoryTests
                 await profiles.DeleteDefinitionAsync(hostDefinitionId);
             }
 
-            if (collidingDefinitionId > 0)
+            if (tenantDefinitionId > 0)
             {
-                await profiles.DeleteDefinitionAsync(collidingDefinitionId);
+                await profiles.DeleteDefinitionAsync(tenantDefinitionId);
             }
 
             await unitOfWork.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// The scoped answer read and the scoped answer purge address exactly the scope they are given: a
+    /// tenant keyed -1 sees and removes its own answers, and the SQL-null host scope keeps its own.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// MIGRATION: the answer members scope themselves through the same one statement of what a scope's
+    /// declarations are, so the same sentinel defect reached them. Read through the defect, a tenant
+    /// numbered -1 was shown the host scope's answers and none of its own; purged through it, the same
+    /// tenant's membership removal deleted the host scope's answers and left its own behind. Both halves
+    /// are asserted here, and the purge half is asserted by cardinality on the surviving row rather than
+    /// only on the deleted one, so a purge that deletes too much fails as loudly as one that deletes too
+    /// little.
+    /// </remarks>
+    [Fact]
+    public async Task ScopedProfileValueReadAndPurge_AddressExactlyTheScopeTheyAreGiven()
+    {
+        // The host scope is a SQL NULL portal, so it is expressed as a null and never as an identifier.
+        int? hostScope = null;
+
+        string hostName = FormattableString.Invariant($"HostAnswer{Suffix()}");
+        string tenantName = FormattableString.Invariant($"TenantAnswer{Suffix()}");
+        int hostDefinitionId = 0;
+        int tenantDefinitionId = 0;
+        int userId = 0;
+
+        try
+        {
+            userId = await CreateAccountAsync(
+                SeededTenantPortalId,
+                FormattableString.Invariant($"scoped_{Suffix()}"));
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                ProfilePropertyDefinition hostLevel = DefinitionForScope(hostScope, hostName, viewOrder: 1);
+                ProfilePropertyDefinition tenantOwned =
+                    DefinitionForScope(SeededTenantPortalId, tenantName, viewOrder: 2);
+
+                await profiles.AddDefinitionAsync(hostLevel);
+                await profiles.AddDefinitionAsync(tenantOwned);
+                await unitOfWork.SaveChangesAsync();
+
+                hostDefinitionId = hostLevel.PropertyDefinitionId;
+                tenantDefinitionId = tenantOwned.PropertyDefinitionId;
+
+                // LastUpdatedDate is a NOT NULL datetime column, and DateTime.MinValue is outside the
+                // SQL Server datetime range, so an explicit instant is supplied rather than left defaulted.
+                DateTime answeredAt = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+                await profiles.AddProfileValueAsync(new UserProfileValue
+                {
+                    UserId = userId,
+                    PropertyDefinitionId = hostDefinitionId,
+                    PropertyValue = "host answer",
+                    Visibility = 0,
+                    LastUpdatedDate = answeredAt,
+                });
+                await profiles.AddProfileValueAsync(new UserProfileValue
+                {
+                    UserId = userId,
+                    PropertyDefinitionId = tenantDefinitionId,
+                    PropertyValue = "tenant answer",
+                    Visibility = 0,
+                    LastUpdatedDate = answeredAt,
+                });
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+
+                (await profiles.GetProfileValuesAsync(SeededTenantPortalId, userId))
+                    .Select(value => value.PropertyDefinitionId)
+                    .Should().Contain(
+                        tenantDefinitionId,
+                        "a tenant numbered -1 must be able to read its own answers")
+                    .And.NotContain(
+                        hostDefinitionId,
+                        "a tenant-scoped answer read must not be served the host scope's answers");
+
+                (await profiles.GetProfileValuesAsync(hostScope, userId))
+                    .Select(value => value.PropertyDefinitionId)
+                    .Should().Contain(hostDefinitionId, "the host scope reaches its own answers")
+                    .And.NotContain(
+                        tenantDefinitionId,
+                        "the host scope must not widen to a tenant's answers");
+            }
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                await profiles.DeleteProfileValuesAsync(SeededTenantPortalId, userId);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            (await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM [dbo].[UserProfile]
+                WHERE [UserID] = @userId AND [PropertyDefinitionID] = @definitionId;
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["userId"] = userId,
+                    ["definitionId"] = tenantDefinitionId,
+                }))
+                .Should().Be(0, "the tenant-scoped purge removes the tenant's own answer");
+
+            (await _fixture.Database.ScalarAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM [dbo].[UserProfile]
+                WHERE [UserID] = @userId AND [PropertyDefinitionID] = @definitionId;
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["userId"] = userId,
+                    ["definitionId"] = hostDefinitionId,
+                }))
+                .Should().Be(1, "the tenant-scoped purge leaves the host scope's answer untouched");
+        }
+        finally
+        {
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IUserProfileRepository profiles =
+                scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+            IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            if (userId > 0)
+            {
+                await profiles.DeleteProfileValuesAsync(hostScope, userId);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            if (hostDefinitionId > 0)
+            {
+                await profiles.DeleteDefinitionAsync(hostDefinitionId);
+            }
+
+            if (tenantDefinitionId > 0)
+            {
+                await profiles.DeleteDefinitionAsync(tenantDefinitionId);
+            }
+
+            await unitOfWork.SaveChangesAsync();
+
+            if (userId > 0)
+            {
+                await RemoveAccountAsync(userId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The first tenant, a second tenant and the host level are three distinct scopes on a profile
+    /// declaration, on the way in and on the way out.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The three cases are asserted together because the defect they guard against was a COLLAPSE of two of
+    /// them into one, and a test that exercised any single value could not see it. <c>-1</c> is a real tenant
+    /// - the first one of every installation, because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c> -
+    /// while <c>NULL</c> is the host-level scope that <c>dbo.ProfilePropertyDefinition</c> shares with every
+    /// portal. Conflating the two simultaneously leaked one tenant's declarations to all of them and hid that
+    /// tenant's existing declarations from itself. The second tenant is provisioned here rather than assumed,
+    /// so that "each tenant sees only its own" is measured against a genuine sibling rather than against the
+    /// absence of one.
+    /// </para>
+    /// <para>
+    /// The second tenant's key is whatever the identity column issues; this test deliberately does not depend
+    /// on it being <c>0</c>. The behaviour of a profile-scope key that lands exactly on an identity seed is
+    /// the separate concern proven by <c>IdentitySeedUpdateTests</c>.
+    /// </para>
+    /// <para>
+    /// The stored column is read directly rather than through the repository, because the point at issue is
+    /// what reached the store and a read through the same translated predicate that wrote it would agree with
+    /// itself either way.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ProfileDefinitionScopes_KeepEachTenantAndTheHostLevelDistinct()
+    {
+        string nameSuffix = Suffix();
+        var written = new List<(int? Scope, int DefinitionId)>();
+        int secondTenantId = await CreatePortalAsync();
+
+        try
+        {
+            foreach (int? scope in new int?[] { SeededTenantPortalId, secondTenantId, null })
+            {
+                using IServiceScope scope0 = _fixture.Services.CreateScope();
+                IUserProfileRepository profiles =
+                    scope0.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope0.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                ProfilePropertyDefinition definition = DefinitionForScope(
+                    scope,
+                    FormattableString.Invariant($"Scope{(scope is int named ? named : 9)}{nameSuffix}"),
+                    viewOrder: 1);
+
+                await profiles.AddDefinitionAsync(definition);
+                await unitOfWork.SaveChangesAsync();
+
+                written.Add((scope, definition.PropertyDefinitionId));
+            }
+
+            // What reached the store, read straight from the column.
+            foreach ((int? scope, int definitionId) in written)
+            {
+                int nullCount = await _fixture.Database.ScalarAsync<int>(
+                    """
+                    SELECT COUNT(*) FROM [dbo].[ProfilePropertyDefinition]
+                    WHERE [PropertyDefinitionID] = @definitionId AND [PortalID] IS NULL;
+                    """,
+                    new Dictionary<string, object?> { ["definitionId"] = definitionId });
+
+                if (scope is null)
+                {
+                    nullCount.Should().Be(1, "the host-level scope is a genuine SQL null");
+                    continue;
+                }
+
+                nullCount.Should().Be(
+                    0,
+                    FormattableString.Invariant($"tenant {scope} is a tenant, so its declaration is not host-level"));
+
+                (await _fixture.Database.ScalarAsync<int>(
+                    """
+                    SELECT [PortalID] FROM [dbo].[ProfilePropertyDefinition]
+                    WHERE [PropertyDefinitionID] = @definitionId;
+                    """,
+                    new Dictionary<string, object?> { ["definitionId"] = definitionId }))
+                    .Should().Be(scope!.Value, "the tenant identifier is stored verbatim");
+            }
+
+            // What each scope can read: its own row, and neither of the other two.
+            using (IServiceScope reading = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    reading.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+
+                foreach (int tenant in new[] { SeededTenantPortalId, secondTenantId })
+                {
+                    IReadOnlyList<int> visible =
+                        (await profiles.GetDefinitionsByPortalIdAsync(tenant))
+                        .Select(definition => definition.PropertyDefinitionId)
+                        .ToList();
+
+                    visible.Should().Contain(
+                        written.Single(entry => entry.Scope == tenant).DefinitionId);
+
+                    foreach ((int? other, int otherId) in written.Where(entry => entry.Scope != tenant))
+                    {
+                        visible.Should().NotContain(
+                            otherId,
+                            FormattableString.Invariant(
+                                $"tenant {tenant} must not see the {(other is null ? "host-level" : "other tenant's")} declaration"));
+                    }
+                }
+            }
+        }
+        finally
+        {
+            using (IServiceScope cleanup = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    cleanup.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = cleanup.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                foreach ((int? _, int definitionId) in written)
+                {
+                    await profiles.DeleteDefinitionAsync(definitionId);
+                }
+
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            await RemovePortalAsync(secondTenantId);
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Api.Middleware;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
@@ -139,73 +140,99 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     private const string CorrelationIdExtensionKey = "correlationId";
 
     /// <summary>
-    /// Fallback problem-type link, title and detail for each status code this API emits.
+    /// Fallback problem-type identifier, title and detail for each status code this API emits.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This table exists because the framework's own registration cannot cover the whole range. The
-    /// mapping consulted first — <c>ApiBehaviorOptions.ClientErrorMapping</c> — is populated by
-    /// default with CLIENT-error status codes only, so every server-error response produced through
-    /// this factory arrived with a null title and a null problem type. A payload missing either is
-    /// still valid against the specification, and that is precisely the difficulty: a client written
-    /// against a documented envelope receives a member that is sometimes present and sometimes not,
-    /// and no failure ever announces itself. The entries below therefore complete the range rather
-    /// than override it, and the client-error rows deliberately restate the framework's own values so
-    /// that a deployment which clears or replaces the framework registration still emits one
-    /// vocabulary rather than two.
+    /// mapping the framework populates — <c>ApiBehaviorOptions.ClientErrorMapping</c> — holds
+    /// CLIENT-error status codes only, so every server-error response produced through this factory
+    /// arrived with a null title and a null problem type. A payload missing either is still valid
+    /// against the specification, and that is precisely the difficulty: a client written against a
+    /// documented envelope receives a member that is sometimes present and sometimes not, and no
+    /// failure ever announces itself.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THE PROBLEM TYPE IS THIS API'S OWN IDENTIFIER, NOT AN EXTERNAL SPECIFICATION LINK.
+    /// These rows previously carried <c>https://tools.ietf.org/html/rfc9110#section-15.x.y</c> - the
+    /// framework's default - which meant the API emitted TWO problem-type vocabularies at once: a
+    /// refusal decided with a failure code carried
+    /// <c>urn:dnnmigration:error:&lt;code&gt;</c>, while the same status arrived at without one carried
+    /// a specification link. A client branching on <c>type</c> then had to know which producer had
+    /// answered before it could interpret the member, which is the one thing the member exists to make
+    /// unnecessary. Every row is now built by <see cref="ApiResults.BuildProblemType(string)"/> from the
+    /// failure code that names the condition, so there is exactly one namespace, one spelling
+    /// convention and one method that produces it.
+    /// </para>
+    /// <para>
+    /// Where a code already exists for a condition it is REUSED rather than re-spelled, so a status-only
+    /// refusal and a coded refusal for the same cause are indistinguishable to a client - which is
+    /// correct, because they are the same cause. <c>auth.unauthenticated</c>, <c>auth.not_permitted</c>
+    /// and <c>resource.not_found</c> are the three that recur, and each is the code the authorisation
+    /// result handler and the controller result helpers already publish.
+    /// </para>
+    /// <para>
+    /// The specification links are not lost information: the status code itself is the reference into
+    /// RFC 9110, and it is on every payload, in the <c>status</c> member and on the status line.
+    /// </para>
     /// </remarks>
     private static readonly Dictionary<int, (string Type, string Title, string Detail)> StatusVocabulary =
         new()
         {
             [StatusCodes.Status400BadRequest] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+                ApiResults.BuildProblemType("request.invalid"),
                 "Bad Request",
                 "The request could not be processed as submitted."),
             [StatusCodes.Status401Unauthorized] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.2",
+                ApiResults.BuildProblemType("auth.unauthenticated"),
                 "Unauthorized",
                 "Authentication is required to reach this resource."),
             [StatusCodes.Status403Forbidden] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.4",
+                ApiResults.BuildProblemType("auth.not_permitted"),
                 "Forbidden",
                 "The authenticated caller is not permitted to perform this operation."),
             [StatusCodes.Status404NotFound] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.5",
+                ApiResults.BuildProblemType("resource.not_found"),
                 "Not Found",
                 "The requested resource does not exist."),
             [StatusCodes.Status405MethodNotAllowed] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.6",
+                ApiResults.BuildProblemType("request.method_not_allowed"),
                 "Method Not Allowed",
                 "The requested method is not supported for this resource."),
             [StatusCodes.Status406NotAcceptable] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.7",
+                ApiResults.BuildProblemType("request.not_acceptable"),
                 "Not Acceptable",
                 "No representation acceptable to the caller is available for this resource."),
             [StatusCodes.Status409Conflict] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.10",
+                ApiResults.BuildProblemType("resource.conflict"),
                 "Conflict",
                 "The request conflicts with the current state of the resource."),
+            [StatusCodes.Status413PayloadTooLarge] = (
+                ApiResults.BuildProblemType("request.too_large"),
+                "Payload Too Large",
+                "The submitted request body is larger than this endpoint accepts."),
             [StatusCodes.Status415UnsupportedMediaType] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.16",
+                ApiResults.BuildProblemType("request.unsupported_media_type"),
                 "Unsupported Media Type",
                 "The submitted media type is not supported by this endpoint."),
             [StatusCodes.Status422UnprocessableEntity] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.5.21",
+                ApiResults.BuildProblemType("request.unprocessable"),
                 "Unprocessable Content",
                 "The request was understood but could not be processed."),
             [StatusCodes.Status429TooManyRequests] = (
-                "https://tools.ietf.org/html/rfc6585#section-4",
+                ApiResults.BuildProblemType("request.rate_limited"),
                 "Too Many Requests",
                 "Too many requests have been submitted. Retry after a short delay."),
             [StatusCodes.Status500InternalServerError] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.6.1",
+                ApiResults.BuildProblemType("server.unexpected_failure"),
                 "Internal Server Error",
                 "An unexpected error occurred while processing the request."),
             [StatusCodes.Status501NotImplemented] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.6.2",
+                ApiResults.BuildProblemType("server.not_implemented"),
                 "Not Implemented",
                 "The requested operation is not implemented."),
             [StatusCodes.Status503ServiceUnavailable] = (
-                "https://tools.ietf.org/html/rfc9110#section-15.6.4",
+                ApiResults.BuildProblemType("server.unavailable"),
                 "Service Unavailable",
                 "The service is temporarily unavailable. Retry after a short delay."),
         };
@@ -525,17 +552,39 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
     {
         problemDetails.Status ??= statusCode;
 
-        // The title and problem-type link registered for this status code are the
-        // same ones every other framework-produced problem response uses, so
-        // borrowing them keeps one vocabulary across the whole API. Both are
-        // applied only where the caller left a null, which is why the default
-        // validation title survives this call untouched. The registration is read
-        // in a single pass rather than by testing membership and then indexing by
-        // key, so the mapping is examined once and no by-reference argument
-        // appears anywhere in this file. The mapping holds one registration per
-        // client-error status code, so a single pass over it is trivially short.
-        // An unregistered status code, and equally a registration with no value,
-        // simply leaves both members as the caller supplied them.
+        // THIS API'S OWN VOCABULARY IS CONSULTED FIRST, and the order is load-bearing. Assignment is by
+        // null-coalescence throughout, so whichever source is consulted first and has a value decides -
+        // which means the framework registration read below can only ever fill a gap this table left.
+        //
+        // MIGRATION: the two passes used to run the other way round, and that is what produced two
+        // problem-type vocabularies in one API. ApiBehaviorOptions.ClientErrorMapping is populated with
+        // RFC 9110 section links, so going first it claimed the type for every client-error status, and
+        // this table - which now holds urn:dnnmigration:error:* identifiers - only ever reached the
+        // server-error rows. A caller therefore received a specification link from one producer and this
+        // API's own identifier from another, for the same status. The table below covers every status
+        // this API emits, so in practice the framework registration now contributes nothing but remains
+        // consulted as the safety net it always was.
+        //
+        // The caller's own arguments still win over both, which is why the default validation title
+        // survives this call untouched and why a coded refusal keeps the type its producer chose.
+        if (StatusVocabulary.TryGetValue(statusCode, out var vocabulary))
+        {
+            problemDetails.Title ??= vocabulary.Title;
+            problemDetails.Type ??= vocabulary.Type;
+            problemDetails.Detail ??= vocabulary.Detail;
+        }
+
+        // The framework's registration for this status code, as the remaining fallback. Its TITLE is
+        // taken; its LINK is deliberately not, because taking it would reintroduce the second
+        // vocabulary this factory exists to remove - a status the table above does not name would be
+        // the one response carrying a specification link. Such a status has no problem type instead,
+        // which the specification permits and which the note at the end of this method explains.
+        //
+        // The registration is read in a single pass rather than by testing membership and then indexing
+        // by key, so the mapping is examined once and no by-reference argument appears anywhere in this
+        // file. It holds one row per client-error status code, so a single pass is trivially short. An
+        // unregistered status code, and equally a registration with no value, simply leaves the members
+        // as they stand.
         ClientErrorData? clientErrorData = _apiBehaviorOptions.ClientErrorMapping
             .FirstOrDefault(registration => registration.Key == statusCode)
             .Value;
@@ -543,20 +592,6 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         if (clientErrorData is not null)
         {
             problemDetails.Title ??= clientErrorData.Title;
-            problemDetails.Type ??= clientErrorData.Link;
-        }
-
-        // Whatever the framework registration did not cover is completed here. Server-error status
-        // codes are the reason this second pass exists: the registration above holds client-error
-        // rows only, so before this every 500 produced through this factory carried a null title and
-        // a null problem type. Assignment is still by null-coalescence, in this order — caller,
-        // then framework registration, then this table — so nothing already decided is overwritten
-        // and the default validation title continues to survive untouched.
-        if (StatusVocabulary.TryGetValue(statusCode, out var vocabulary))
-        {
-            problemDetails.Title ??= vocabulary.Title;
-            problemDetails.Type ??= vocabulary.Type;
-            problemDetails.Detail ??= vocabulary.Detail;
         }
 
         // Last resort for a status code in neither mapping. The reason phrase is the platform's own,

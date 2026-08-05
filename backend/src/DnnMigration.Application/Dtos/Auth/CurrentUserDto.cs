@@ -168,9 +168,29 @@ public sealed class CurrentUserDto
 
     /// <summary>
     /// The names of the roles the caller holds in <see cref="PortalId"/>. Never
-    /// <see langword="null"/>; an empty list means the caller holds none.
+    /// <see langword="null"/>. An empty list means the caller holds none ONLY on
+    /// the current-user read; on the sign-in and refresh responses it is always
+    /// empty by design and reports nothing at all.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// WHICH RESPONSE CARRIES THIS MATTERS, and reading an empty list as "holds
+    /// no roles" is wrong on two of the three. This type is returned by the
+    /// current-user read, which resolves roles as of the instant it is asked, and
+    /// by the sign-in and refresh responses, which deliberately do not resolve
+    /// them at all. Authority handed out at a credential exchange is a snapshot
+    /// that stops being true the moment an assignment is withdrawn, and a client
+    /// holding one has every reason to trust it for the life of the session - so
+    /// those two responses omit it rather than serve it stale, and the endpoint
+    /// that does serve it is the one whose answer is fresh by construction.
+    /// </para>
+    /// <para>
+    /// Advisory in every case. The list exists so a client can hide affordances
+    /// it cannot exercise; it is never the basis of an access decision, because
+    /// the authorisation policies re-read the caller's roles per request and are
+    /// the only thing that grants anything.
+    /// </para>
+    /// <para>
     /// MIGRATION: the legacy getter performed database access. Measured at
     /// <c>UserInfo.vb</c> L262-L269, it tested a private hydration flag and,
     /// when that flag was unset, constructed a role controller and queried the
@@ -179,13 +199,16 @@ public sealed class CurrentUserDto
     /// per shell render that is the wrong place for I/O, so both the lazy getter
     /// and its flag are dropped and the service fills this list from data it has
     /// already loaded. Role names only: the role DTO set owns the richer shape.
+    /// </para>
     /// </remarks>
     public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
 
     /// <summary>
     /// The permission keys the caller holds, used by the client to hide
-    /// affordances it cannot exercise. Never <see langword="null"/>; an empty
-    /// list means the caller holds none.
+    /// affordances it cannot exercise. Never <see langword="null"/>. An empty
+    /// list means the caller holds none ONLY on the current-user read; on the
+    /// sign-in and refresh responses it is always empty by design and reports
+    /// nothing at all - see the note on <see cref="Roles"/>.
     /// </summary>
     /// <remarks>
     /// Strings on the wire rather than the domain permission-key enumeration:

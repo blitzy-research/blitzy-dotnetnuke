@@ -214,6 +214,7 @@ public class PortalServiceApplicationTests
                 Permissions.Object,
                 Users.Object,
                 Roles.Object,
+                Modules.Object,
                 UnitOfWork.Object,
                 HostSettings.Object,
                 PasswordHasher.Object,
@@ -249,6 +250,9 @@ public class PortalServiceApplicationTests
 
         /// <summary>Gets the role repository mock.</summary>
         public Mock<IRoleRepository> Roles { get; } = new();
+
+        /// <summary>Gets the module repository mock, used only by the tenant-removal sweep.</summary>
+        public Mock<IModuleRepository> Modules { get; } = new();
 
         /// <summary>Gets the unit-of-work mock, which owns the single transactional commit point.</summary>
         public Mock<IUnitOfWork> UnitOfWork { get; } = new();

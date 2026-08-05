@@ -1061,11 +1061,20 @@ public sealed class RoleApiTests
     /// <remarks>
     /// <para>
     /// This asserts the consequence rather than the conversion, and the consequence is what made the defect
-    /// worth fixing. An unguarded character-to-member cast materialises a value the enumeration does not
-    /// declare, which no read complains about; the failure surfaces at the wire, where the serialiser
-    /// refuses to write a code it does not recognise. So a single out-of-vocabulary character in a single
-    /// row did not degrade one field - it turned a successful read into a server fault, and took every
-    /// other role in the same listing down with it.
+    /// worth fixing. A character the vocabulary does not declare materialises without complaint, and the
+    /// failure used to surface at the wire, where the serialiser refused to write a code it did not
+    /// recognise. So a single out-of-vocabulary character in a single row did not degrade one field - it
+    /// turned a successful read into a server fault, and took every other role in the same listing down
+    /// with it.
+    /// </para>
+    /// <para>
+    /// THE RESOLUTION IS TO WRITE THE CHARACTER, NOT TO SUBSTITUTE FOR IT. An earlier revision closed the
+    /// wire failure by normalising the stored character to <c>'N'</c> as it was read, which kept responses
+    /// working and destroyed the stored byte on the next update of the row - the read fed the write. Both
+    /// halves are lossless now, so the response reports what the database actually holds. What a CALLER may
+    /// SUBMIT is unchanged and still closed: the role write contracts declare an <c>IsInEnum</c> rule for
+    /// both frequency members, so an undeclared code in a request is refused as a field-level validation
+    /// failure.
     /// </para>
     /// <para>
     /// The character planted here is one the product itself ships: the frequency vocabulary table is seeded
@@ -1096,14 +1105,28 @@ public sealed class RoleApiTests
             + "reading it must degrade the field rather than fail the response");
 
         RoleDetailDto read = await ReadDetailAsync(item);
-        read.BillingFrequency.Should().Be(BillingFrequency.None);
-        read.TrialFrequency.Should().Be(BillingFrequency.None);
+        read.BillingFrequency.Should().Be(
+            (BillingFrequency)'4',
+            "the stored character is carried rather than normalised, so the response reports the truth");
+        read.TrialFrequency.Should().Be((BillingFrequency)'0');
 
         string body = await item.Content.ReadAsStringAsync();
         body.Should().Contain(
+            "\"billingFrequency\":\"4\"",
+            "the character the installation stored reaches the wire unchanged");
+        body.Should().Contain(
+            "\"trialFrequency\":\"0\"",
+            "and so does the trial character, independently of the billing one");
+        body.Should().NotContain(
             "\"billingFrequency\":\"N\"",
-            "the fallback reaches the wire as the code the legacy application would have treated the "
-            + "unrecognised character as");
+            "substituting a declared code would tell the client something the database does not say");
+
+        (await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Roles] "
+            + "WHERE [RoleID] = @roleId AND [BillingFrequency] = '4' AND [TrialFrequency] = '0'",
+            new Dictionary<string, object?> { ["roleId"] = created.RoleId })).Should().Be(
+            1,
+            "reading the role over HTTP must not have rewritten either stored character");
 
         using HttpResponseMessage listing = await client.GetAsync(RolesRoute(_fixture.Seed.PortalId));
 

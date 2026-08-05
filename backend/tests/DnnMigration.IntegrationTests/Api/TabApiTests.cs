@@ -1868,26 +1868,32 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// A refusal produced inside the controller pipeline defaults to plain JSON and switches to the
-    /// problem media type when the caller asks for it.
+    /// A refusal produced inside the controller pipeline is served under the problem media type whether or
+    /// not the caller asked for it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <para>
-    /// The two halves are one measurement. The page controller declares that it produces
-    /// <c>application/json</c>, and that declaration constrains every result the action pipeline formats -
-    /// including the automatic validation refusal - so the default media type on a 400 is
-    /// <c>application/json</c> even though the BODY is a problem document. Ask for the problem media type
-    /// explicitly and the same document is served under it.
+    /// MIGRATION: THIS FACT USED TO ASSERT THE OPPOSITE OF ITS FIRST HALF, AND THE BEHAVIOUR IT RECORDED WAS
+    /// THE DEFECT. Every controller in this API declares that it produces <c>application/json</c>, and that
+    /// declaration constrained every result the action pipeline formatted - including the automatic validation
+    /// refusal - so a problem DOCUMENT went out under the media type for an ordinary payload unless the caller
+    /// happened to negotiate otherwise. Refusals decided before the controller ran were unaffected and carried
+    /// the problem media type, so one API answered the same kind of failure under two media types depending on
+    /// which stage refused, and a client could not tell a problem document from a payload by its content type.
     /// </para>
     /// <para>
-    /// Both halves are asserted because either alone reads as a defect. The default alone looks like a problem
-    /// document served under the wrong type; the negotiated form alone hides the constraint the controller
-    /// declaration imposes. Together they state the actual contract, and either changing would break a test.
+    /// Both halves are still asserted, and together they now state something stronger than the pair they
+    /// replace: the media type does not depend on negotiation. Keeping the negotiated half matters because the
+    /// obvious way to implement the fix - having callers ask for the problem type - would satisfy the first
+    /// half for the wrong reason, and keeping the default half is what proves the controller's own
+    /// <c>Produces</c> declaration no longer wins. The declaration is a filter that reassigns the result's
+    /// content types, and at equal ordering a controller-scoped filter runs after a global one, so the
+    /// correction only holds while the global filter is ordered to write last.
     /// </para>
     /// </remarks>
     [Fact]
-    public async Task UpdateTab_WhenRefused_ServesTheProblemDocumentUnderTheNegotiatedMediaType()
+    public async Task UpdateTab_WhenRefused_ServesTheProblemDocumentUnderTheProblemMediaType()
     {
         int tabId = await CreateTabAsync("IMediaType" + Suffix());
 
@@ -1900,8 +1906,9 @@ public sealed class TabApiTests
 
         defaulted.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         defaulted.Content.Headers.ContentType?.MediaType.Should().Be(
-            "application/json",
-            "the controller declares that it produces JSON, which constrains its formatted results");
+            ProblemMediaType,
+            "a problem document is served as a problem document even though the controller declares that it "
+            + "produces JSON, so a client can identify one by its content type alone");
 
         using HttpRequestMessage negotiated = new(HttpMethod.Put, TabRoute(tabId))
         {
@@ -1916,7 +1923,8 @@ public sealed class TabApiTests
         requested.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         requested.Content.Headers.ContentType?.MediaType.Should().Be(
             ProblemMediaType,
-            "a caller that asks for the problem media type receives the same document under it");
+            "a caller that asks for the problem media type receives the same document under it, so the media "
+            + "type is invariant to negotiation rather than a consequence of it");
     }
 
     /// <summary>

@@ -1,7 +1,9 @@
 using DnnMigration.Api.Authorization;
+using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Domain.Common;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 
@@ -17,7 +19,29 @@ namespace DnnMigration.Api.Middleware;
 /// </remarks>
 public sealed class RestrictedSessionMiddleware
 {
-    private const string RestrictedSessionType = "https://httpstatuses.com/403";
+    /// <summary>
+    /// The failure code this refusal is reported under, in the API's own problem-type taxonomy.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this replaces a hard-coded <c>https://httpstatuses.com/403</c>. That URI named a
+    /// THIRD-PARTY host, did not resolve, and said only what the status line already said, so a client
+    /// could not distinguish a mandatory-remediation refusal from any other 403 without parsing prose -
+    /// while the ordinary authorisation refusal on the very same status already carried this API's own
+    /// <c>urn:dnnmigration:error:auth.not_permitted</c>. One taxonomy, built by one method, for every
+    /// problem document.
+    /// </remarks>
+    private const string RestrictedSessionCode = "auth.remediation_required";
+
+    /// <summary>
+    /// The media type every problem document carries, per RFC 7807 section 3.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: previously this refusal was written with <c>WriteAsJsonAsync</c>, which labels the body
+    /// <c>application/json</c>. A client cannot then select a problem parser from the media type, which is
+    /// the reason the specification registers one.
+    /// </remarks>
+    private const string ProblemContentType = "application/problem+json";
+
     private readonly RequestDelegate _next;
 
     /// <summary>Initialises the middleware.</summary>
@@ -45,9 +69,28 @@ public sealed class RestrictedSessionMiddleware
         ArgumentNullException.ThrowIfNull(users);
         ArgumentNullException.ThrowIfNull(problemDetailsFactory);
 
+        // MIGRATION: AN ANONYMOUSLY REACHABLE ENDPOINT IS EXEMPT, and this is a correction rather than a
+        // convenience. An endpoint that answers with no credential at all cannot meaningfully be
+        // restricted by the PRESENCE of one: doing so makes the response depend on a credential the
+        // endpoint does not consult, so the same request succeeds or is refused according to whether the
+        // caller happened to attach a bearer token. The liveness, readiness and aggregate health probes
+        // are exactly that kind of endpoint - each is mapped with AllowAnonymous, and the pipeline
+        // comment on their stage states that they are anonymous and must remain so - yet a caller holding
+        // a token that required credential or profile remediation received 403 from all three. A container
+        // orchestrator that forwards a token, or an operator probing from an authenticated session, would
+        // read the service as unhealthy while it was serving every other request correctly, and the
+        // compose health condition that gates the frontend container depends on that probe.
+        //
+        // Tested through IAllowAnonymous metadata rather than by matching paths, so the exemption follows
+        // the endpoint's own declaration and cannot fall out of step with it: an endpoint that stops being
+        // anonymous stops being exempt in the same edit. This covers the credential endpoints uniformly
+        // for the same reason - signing in cannot require an unrestricted session. Endpoints that are
+        // authenticated but must stay reachable while remediation is outstanding continue to declare
+        // RemediationAllowedAttribute, which is a different statement and remains necessary.
         Endpoint? endpoint = context.GetEndpoint();
         if (!currentUser.IsAuthenticated
             || endpoint is null
+            || endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null
             || endpoint.Metadata.GetMetadata<RemediationAllowedAttribute>() is not null)
         {
             await _next(context).ConfigureAwait(false);
@@ -113,10 +156,17 @@ public sealed class RestrictedSessionMiddleware
             context,
             StatusCodes.Status403Forbidden,
             title: "Mandatory account remediation is required.",
-            type: RestrictedSessionType,
+            type: ApiResults.BuildProblemType(RestrictedSessionCode),
             detail: detail);
 
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
-        return context.Response.WriteAsJsonAsync(problem, context.RequestAborted);
+        context.Response.ContentType = ProblemContentType;
+
+        return context.Response.WriteAsJsonAsync(
+            problem,
+            problem.GetType(),
+            options: null,
+            contentType: ProblemContentType,
+            cancellationToken: context.RequestAborted);
     }
 }

@@ -2,6 +2,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
@@ -295,9 +296,19 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
         // declaration and must not be re-attached, because attaching a second instance bearing a tracked
         // key throws; asking for the entry does not begin tracking, so the test itself is free of side
         // effects.
-        if (_dbContext.Entry(portalAlias).State is EntityState.Detached)
+        //
+        // MIGRATION: the attachment ASSIGNS THE STATE and must not call DbSet.Update. Update walks the
+        // navigation graph and decides Added-versus-Modified for everything it reaches by asking whether
+        // the key "is set", reading an int key of 0 as unset. An alias carries PortalAlias.Portal, and
+        // GetAllByHttpAliasAsync loads it (with the portal's roles behind it), so a caller handing back a
+        // detached alias whose portal is the installation's key-0 tenant would have had that TENANT
+        // inserted as a duplicate - a far larger blow than the alias edit it asked for. Assigning
+        // EntityState.Modified attaches this row alone and consults neither the key nor the graph.
+        EntityEntry<PortalAlias> entry = _dbContext.Entry(portalAlias);
+
+        if (entry.State is EntityState.Detached)
         {
-            _dbContext.PortalAliases.Update(portalAlias);
+            entry.State = EntityState.Modified;
         }
 
         return Task.CompletedTask;

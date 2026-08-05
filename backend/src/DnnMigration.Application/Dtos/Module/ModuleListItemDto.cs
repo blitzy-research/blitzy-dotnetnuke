@@ -123,14 +123,33 @@ public sealed class ModuleListItemDto
     /// </summary>
     /// <remarks>
     /// The referenced <c>ModuleDefinitions.ModuleDefID</c> is <c>int IDENTITY (1, 1) NOT NULL</c>
-    /// (01.00.00 line 66), so no boundary value on this member carries a second meaning. Only the
-    /// identifier travels on a list row; a caller needing the definition's display metadata resolves
-    /// it from <c>GET /api/v1/module-definitions</c>, whose contract is
-    /// <see cref="ModuleDefinitionDto"/>. <see cref="FriendlyName"/> is the single definition fact
-    /// carried inline, because a grid showing only a numeric definition identifier would be
-    /// unreadable.
+    /// (01.00.00 line 66), so no boundary value on this member carries a second meaning. The full
+    /// definition metadata - its cache default and its capability flags - is still resolved from
+    /// <c>GET /api/v1/module-definitions</c>, whose contract is <see cref="ModuleDefinitionDto"/>; what
+    /// travels inline here is the same five-value catalogue set the single read carries, so a grid can
+    /// name each row's module type and package without a second request per row.
     /// </remarks>
     public int ModuleDefId { get; set; }
+
+    /// <summary>
+    /// The installed module package behind the definition, projected read-only from
+    /// <c>ModuleDefinitions.DesktopModuleID</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ABSENT MEANS UNRESOLVED, AND ZERO IS NOT A VALUE THIS MEMBER CAN CARRY, for the reason recorded
+    /// in full on <c>ModuleDetailDto.DesktopModuleId</c>: the package's own key column is a plain
+    /// <c>IDENTITY</c> seeding at one, and the terminal <c>ModuleDefinitions.DesktopModuleID</c> is
+    /// declared <c>NOT NULL</c> with a foreign key onto it.
+    /// </para>
+    /// <para>
+    /// MIGRATION: added so that a listing row and a single read of the same module report the same
+    /// package. Previously the listing omitted this and the three package members below entirely while
+    /// the single read declared all four, which left a caller unable to tell from a listing which
+    /// package any row came from.
+    /// </para>
+    /// </remarks>
+    public int? DesktopModuleId { get; set; }
 
     /// <summary>
     /// The administrator-supplied title of this module instance, mapped from
@@ -174,6 +193,41 @@ public sealed class ModuleListItemDto
     /// <see cref="ModuleTitle"/>.
     /// </remarks>
     public string? FriendlyName { get; set; }
+
+    /// <summary>
+    /// The installed package's name, projected read-only from <c>DesktopModules.ModuleName</c>
+    /// (<c>nvarchar(128) NOT NULL</c>).
+    /// </summary>
+    /// <remarks>
+    /// NEVER WRITABLE: it belongs to the installed package, not to this instance, and no create or
+    /// update contract accepts it. Nullable because it is the result of a join two tables away and is
+    /// therefore absent whenever the definition or its package cannot be resolved, even though the
+    /// underlying column is declared <c>NOT NULL</c> in its own table.
+    /// </remarks>
+    public string? ModuleName { get; set; }
+
+    /// <summary>
+    /// The installed package's description, projected read-only from
+    /// <c>DesktopModules.Description</c> (<c>nvarchar(2000) NULL</c>).
+    /// </summary>
+    /// <remarks>
+    /// Nullable for two independent reasons that this contract does not distinguish: the join may not
+    /// resolve, and the column itself permits a null. Both mean the same thing to a caller - there is no
+    /// description to show.
+    /// </remarks>
+    public string? Description { get; set; }
+
+    /// <summary>
+    /// The installed package's version, projected read-only from <c>DesktopModules.Version</c>
+    /// (<c>nvarchar(8) NULL</c>).
+    /// </summary>
+    /// <remarks>
+    /// Carried as the OPAQUE STRING the column holds, never parsed into a version structure and never
+    /// compared: the legacy column is eight characters wide and its contents are whatever each package
+    /// author wrote, so ordering or comparing it here would impose a grammar the store does not enforce.
+    /// Nullable for the same two reasons as <see cref="Description"/>.
+    /// </remarks>
+    public string? Version { get; set; }
 
     /// <summary>
     /// The module's position within its pane on the page, mapped from

@@ -128,14 +128,26 @@ public static class ModuleMappings
     /// </summary>
     /// <param name="module">The module to project.</param>
     /// <param name="placement">The placement whose page, order and appearance are reported.</param>
-    /// <param name="friendlyName">The definition's display name, or <see langword="null"/> when it could not be resolved.</param>
+    /// <param name="catalogue">
+    /// The definition and package facts the caller resolved, or <see langword="null"/> to resolve them
+    /// from the module's own navigations.
+    /// </param>
     /// <returns>The list row.</returns>
     /// <remarks>
+    /// <para>
     /// Source of every member, so the owning table is legible without opening the entities: the module
     /// row supplies the module key, the definition key, the title, the all-pages flag, the deleted flag
     /// and both publication dates; the placement row supplies the placement key, the page key, the
-    /// position and the title-display flag; and the display name arrives as an argument, falling back to
-    /// the definition navigation only when the caller resolved none.
+    /// position and the title-display flag; and the five catalogue values arrive as one argument,
+    /// falling back to the definition and package navigations only when the caller resolved none.
+    /// </para>
+    /// <para>
+    /// MIGRATION: this row carries the catalogue values - the package key, the display name, the package
+    /// name, its description and its version - which an earlier reading omitted from the listing while
+    /// declaring them on the single read. A caller could therefore not tell, from a listing, which
+    /// package a module came from, and had to read every row individually to find out. They are
+    /// projected from the same resolved facts the single read uses, so the two agree by construction.
+    /// </para>
     /// </remarks>
     // MIGRATION: THE PRESENTATION STATE IS READ FROM THE PLACEMENT, NOT FROM THE MODULE. This is the
     //   single most likely error in the five-way split, so it is stated once here and holds everywhere
@@ -154,10 +166,12 @@ public static class ModuleMappings
     //   (ModuleController.vb L80 to L84, where zero and minus one shared one branch); that coalescing
     //   belongs to the reader that decodes a stored column, not to a projection between two typed
     //   members, so it is deliberately absent here.
-    public static ModuleListItemDto ToListItem(Module module, TabModule placement, string? friendlyName)
+    public static ModuleListItemDto ToListItem(Module module, TabModule placement, ModuleCatalogueFacts? catalogue)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(placement);
+
+        ModuleCatalogueFacts facts = catalogue ?? ModuleCatalogueFacts.FromNavigation(module);
 
         return new ModuleListItemDto
         {
@@ -166,7 +180,6 @@ public static class ModuleMappings
             TabId = placement.TabId,
             ModuleDefId = module.ModuleDefinitionId,
             ModuleTitle = module.ModuleTitle,
-            FriendlyName = friendlyName ?? module.ModuleDefinition?.FriendlyName,
             ModuleOrder = placement.ModuleOrder,
             AllTabs = module.AllTabs,
             Visibility = placement.Visibility,
@@ -174,6 +187,15 @@ public static class ModuleMappings
             DisplayTitle = placement.DisplayTitle,
             StartDate = module.StartDate,
             EndDate = module.EndDate,
+
+            // Read-only catalogue projections, taken from the SAME five resolved facts that
+            // ToDetail projects, so a row in this listing and the single read of the module it
+            // names cannot describe the module's definition or package differently.
+            DesktopModuleId = facts.DesktopModuleId,
+            FriendlyName = facts.FriendlyName,
+            ModuleName = facts.ModuleName,
+            Description = facts.Description,
+            Version = facts.Version,
         };
     }
 
@@ -182,7 +204,10 @@ public static class ModuleMappings
     /// </summary>
     /// <param name="module">The module to project.</param>
     /// <param name="placement">The placement whose page, order, cache period, icon and visibility are reported.</param>
-    /// <param name="friendlyName">The definition's display name, or <see langword="null"/> when it could not be resolved.</param>
+    /// <param name="catalogue">
+    /// The definition and package facts the caller resolved, or <see langword="null"/> to resolve them
+    /// from the module's own navigations.
+    /// </param>
     /// <returns>The detail contract.</returns>
     /// <remarks>
     /// <para>
@@ -245,13 +270,12 @@ public static class ModuleMappings
     //   never written reports false. This projection does not surface the flag at all - no response
     //   contract reads it - so the divergence is observable only through the store, and it is recorded
     //   here rather than silently absorbed.
-    public static ModuleDetailDto ToDetail(Module module, TabModule placement, string? friendlyName)
+    public static ModuleDetailDto ToDetail(Module module, TabModule placement, ModuleCatalogueFacts? catalogue)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(placement);
 
-        ModuleDefinition? definition = module.ModuleDefinition;
-        DesktopModule? package = definition?.DesktopModule;
+        ModuleCatalogueFacts facts = catalogue ?? ModuleCatalogueFacts.FromNavigation(module);
 
         return new ModuleDetailDto
         {
@@ -262,10 +286,14 @@ public static class ModuleMappings
             PortalId = module.PortalId,
             ModuleDefId = module.ModuleDefinitionId,
 
-            // MIGRATION: the definition's package key defaults to 0 in the schema, so an unresolved
-            // definition and a definition whose package was never linked both report 0 - which is a
-            // legitimate stored value here and must not be read as "no package".
-            DesktopModuleId = definition?.DesktopModuleId ?? 0,
+            // MIGRATION: an unresolved definition reports an ABSENT package key, never zero. An earlier
+            // reading of the schema had it defaulting to zero and treated zero as a legitimate stored
+            // value; that is wrong. dbo.DesktopModules.DesktopModuleID is a plain IDENTITY, so it seeds
+            // at one, and dbo.ModuleDefinitions.DesktopModuleID is declared NOT NULL with a foreign key
+            // onto it - a resolved definition therefore always carries a positive key and zero cannot be
+            // one. Reporting zero fabricated a key that identifies no package, and it did so on exactly
+            // the path that had the real one in hand.
+            DesktopModuleId = facts.DesktopModuleId,
 
             // Module scope: identical on every page the module appears on.
             ModuleTitle = module.ModuleTitle,
@@ -290,11 +318,12 @@ public static class ModuleMappings
             DisplayTitle = placement.DisplayTitle,
 
             // Read-only catalogue projections. Each is nullable because the join may not resolve, even
-            // where the underlying column is declared NOT NULL in its own table.
-            FriendlyName = friendlyName ?? definition?.FriendlyName,
-            ModuleName = package?.ModuleName,
-            Description = package?.Description,
-            Version = package?.Version,
+            // where the underlying column is declared NOT NULL in its own table. All four come from the
+            // one resolved fact set, so the listing row for this module reports exactly the same values.
+            FriendlyName = facts.FriendlyName,
+            ModuleName = facts.ModuleName,
+            Description = facts.Description,
+            Version = facts.Version,
         };
     }
 

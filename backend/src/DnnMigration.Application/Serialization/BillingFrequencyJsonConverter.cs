@@ -50,15 +50,23 @@ namespace DnnMigration.Application.Serialization;
 /// are outbound only.
 /// </para>
 /// <para>
-/// <b>An unrecognised inbound value is rejected, not coerced.</b> This is the deliberate opposite of
-/// the persistence half —
-/// <c>DnnMigration.Infrastructure.Persistence.ValueConverters.BillingFrequencyToStringConverter</c>
-/// resolves an unrecognised stored character to <see cref="BillingFrequency.None"/> because AAP Rule
-/// T4 makes an existing database authoritative and a row a legacy installation already accepted must
-/// stay readable. Caller input carries no such authority. Quietly reading <c>"Q"</c> as "no billing
-/// frequency" would create a role the caller did not ask for, so the value is refused and surfaces
-/// as a field-level 400 through the deserialisation failure path rather than as a successful write
-/// of something else.
+/// <b>An unrecognised inbound value is never COERCED, and the layer that refuses it is the validator
+/// rather than this converter.</b> The persistence half —
+/// <c>DnnMigration.Infrastructure.Persistence.ValueConverters.BillingFrequencyToStringConverter</c> —
+/// carries an unrecognised stored character through losslessly, because AAP Rule T4 makes an existing
+/// database authoritative: a row a legacy installation already holds must stay readable AND must
+/// survive an edit to some unrelated column unchanged. Every installation holds two such rows
+/// (<c>01.00.00.SqlDataProvider</c> L7192 and L7194). This converter therefore has to be able to WRITE
+/// such a character, and — since the same contract types and the same converter serve both directions —
+/// to READ it back, or the API could not deserialise its own output.
+/// </para>
+/// <para>
+/// Caller input carries no authority, and it is still refused: <c>CreateRoleRequest</c> and
+/// <c>UpdateRoleRequest</c> each declare an <c>IsInEnum</c> rule for both frequency members, so
+/// <c>"Q"</c> from a caller becomes an RFC 7807 <c>ValidationProblemDetails</c> naming the field. That
+/// is a strictly better contract than a <see cref="JsonException"/> raised mid-document, which
+/// surfaces as a bare bad request naming nothing. Quietly reading <c>"Q"</c> as "no billing frequency"
+/// remains forbidden, and neither half does it.
 /// </para>
 /// <para>
 /// <b>Nullability is handled by the framework.</b> Every carrying member is declared
@@ -68,13 +76,15 @@ namespace DnnMigration.Application.Serialization;
 /// JSON <c>null</c> is consumed by that wrapper and never reaches <see cref="Read"/>.
 /// </para>
 /// <para>
-/// <b>Case is parsed, not substituted.</b> A one-character value is upper-cased invariantly before
-/// resolution, so <c>"m"</c> resolves to <see cref="BillingFrequency.Month"/> and the canonical
-/// <c>"M"</c> is what is emitted and stored. This is parsing rather than the silent value
-/// substitution this codebase forbids elsewhere: the six codes are six distinct letters, so no
-/// spelling is ambiguous and no other member <c>"m"</c> could have meant exists. Should a member
-/// ever be added whose code differs from another only by case, this leniency becomes ambiguous and
-/// must be revisited.
+/// <b>Case is parsed, not substituted, and only on the INBOUND side.</b> A one-character value read
+/// from a document is upper-cased invariantly before resolution, so <c>"m"</c> resolves to
+/// <see cref="BillingFrequency.Month"/> and the canonical <c>"M"</c> is what is emitted and stored.
+/// This is parsing rather than the silent value substitution this codebase forbids elsewhere: the six
+/// codes are six distinct letters, so no spelling is ambiguous and no other member <c>"m"</c> could
+/// have meant exists. Should a member ever be added whose code differs from another only by case, this
+/// leniency becomes ambiguous and must be revisited. The persistence half deliberately does NOT
+/// up-case, because the legacy application compared stored codes case-sensitively and up-casing a
+/// stored <c>'m'</c> would both change how the row reads and rewrite its byte on the next update.
 /// </para>
 /// <para>
 /// This type holds no state, so a single instance is safe to share across every options object and
@@ -113,6 +123,17 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The outbound direction is deliberately TOLERANT while <see cref="Parse"/> stays strict, and the
+    /// asymmetry is the point. What is written here is a value the SERVER holds, which for this
+    /// enumeration may legitimately be a character no vocabulary declares: the persistence conversion
+    /// carries a stored character through losslessly so that an unrelated edit cannot rewrite it, and
+    /// the installation seed of every DotNetNuke database contains two such rows. Refusing to write it
+    /// would turn one legacy row into a failed response and take every other role in the same listing
+    /// down with it, and reporting a substitute would tell the client something the database does not
+    /// say. What a CALLER may send is a different question with a different answer, and
+    /// <see cref="Parse"/> gives it.
+    /// </remarks>
     public override void Write(Utf8JsonWriter writer, BillingFrequency value, JsonSerializerOptions options)
     {
         ArgumentNullException.ThrowIfNull(writer);
@@ -120,7 +141,7 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
         // A one-character span rather than a string keeps the write allocation-free on a path that
         // runs for every role in every page of results.
         Span<char> code = stackalloc char[1];
-        code[0] = RequireDeclaredCode(value);
+        code[0] = CodeOf(value);
         writer.WriteStringValue(code);
     }
 
@@ -136,7 +157,7 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
         ArgumentNullException.ThrowIfNull(writer);
 
         Span<char> code = stackalloc char[1];
-        code[0] = RequireDeclaredCode(value);
+        code[0] = CodeOf(value);
         writer.WritePropertyName(code);
     }
 
@@ -150,9 +171,43 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
     /// <param name="text">The value read from the JSON document.</param>
     /// <returns>The member the value names.</returns>
     /// <exception cref="JsonException">
-    /// Thrown when the value is absent, is not exactly one character long, or is a character the
-    /// enumeration does not declare.
+    /// Thrown when the value is absent or is not exactly one character long.
     /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>SHAPE is enforced here; VOCABULARY is enforced by the request validators.</b> An empty value
+    /// and a value of the wrong length are refused, because neither can be resolved to a code at all and
+    /// there is nothing a later layer could say about them that this one cannot say better. A
+    /// single character the enumeration does not declare is accepted and carried, and that division is
+    /// deliberate for three reasons.
+    /// </para>
+    /// <para>
+    /// First, the response contract has to be readable back. The persistence conversion carries a stored
+    /// character through losslessly so an unrelated edit cannot rewrite it, and the installation seed of
+    /// every DotNetNuke database contains two roles whose frequency is outside the vocabulary
+    /// (<c>01.00.00.SqlDataProvider</c> L7192 and L7194). A converter that writes <c>"4"</c> and then
+    /// refuses to read <c>"4"</c> would make the API unable to deserialise its own output - which is not
+    /// a hypothetical, since the same contract types and the same converter serve both directions.
+    /// </para>
+    /// <para>
+    /// Second, the vocabulary is still closed on the only side a caller can widen. Both write contracts
+    /// that carry a frequency - <c>CreateRoleRequest</c> and <c>UpdateRoleRequest</c> - declare an
+    /// <c>IsInEnum</c> rule for it, so an undeclared code submitted by a caller is refused before any
+    /// service sees it.
+    /// </para>
+    /// <para>
+    /// Third, refusing it THERE is a better contract than refusing it here. A validator failure becomes
+    /// an RFC 7807 <c>ValidationProblemDetails</c> naming the offending field, whereas a
+    /// <see cref="JsonException"/> raised mid-document surfaces as a bare bad request with no field
+    /// information and no indication of which of several frequencies was at fault.
+    /// </para>
+    /// <para>
+    /// An inbound character is UPPER-CASED before it is resolved, which the persistence read
+    /// deliberately does not do: caller text is not stored data, and the legacy application compared
+    /// stored codes case-sensitively, so up-casing a stored <c>'m'</c> would change how an existing row
+    /// reads and would rewrite its byte on the next update.
+    /// </para>
+    /// </remarks>
     private static BillingFrequency Parse(string? text)
     {
         if (string.IsNullOrEmpty(text))
@@ -173,44 +228,34 @@ public sealed class BillingFrequencyJsonConverter : JsonConverter<BillingFrequen
 
         // The member's value IS its character, so the cast is the whole resolution and there is no
         // lookup table to keep in step with the enumeration.
-        BillingFrequency candidate = (BillingFrequency)char.ToUpperInvariant(text[0]);
-
-        if (!Enum.IsDefined(candidate))
-        {
-            throw new JsonException(
-                "The billing frequency is not one this contract recognises. Accepted values are " +
-                AcceptedCodes + ".");
-        }
-
-        return candidate;
+        return (BillingFrequency)char.ToUpperInvariant(text[0]);
     }
 
     /// <summary>
-    /// Returns the character a member is written as, refusing a value the enumeration does not
-    /// declare.
+    /// Returns the character a value is written as, whether or not the enumeration declares it.
     /// </summary>
-    /// <param name="value">The member being written.</param>
-    /// <returns>The member's one-character legacy code.</returns>
-    /// <exception cref="JsonException">
-    /// Thrown when <paramref name="value"/> names no declared member.
-    /// </exception>
+    /// <param name="value">The value being written.</param>
+    /// <returns>The one-character legacy code the value carries.</returns>
     /// <remarks>
-    /// Unreachable through either supported path: the persistence converter resolves every
-    /// unrecognised stored character to <see cref="BillingFrequency.None"/>, and
-    /// <see cref="Parse"/> refuses one on the way in. Reaching it therefore means server code cast
-    /// an arbitrary number into the enumeration, and emitting the corresponding character would put
-    /// a value on the wire that no client can interpret and that the vocabulary does not contain.
-    /// Failing visibly is the better outcome for a defect that only server code can introduce.
+    /// <para>
+    /// The member's value IS its character, so the cast is the whole conversion for a declared member
+    /// and equally for an undeclared one — which is what lets this direction be lossless. An earlier
+    /// revision threw for anything undeclared, on the reasoning that such a value could only come from
+    /// server code casting an arbitrary number. That reasoning no longer holds and was in fact the
+    /// weaker half of a pair of defects: the persistence conversion used to normalise an unrecognised
+    /// stored character to <see cref="BillingFrequency.None"/> precisely so that it would never reach
+    /// here, and that normalisation destroyed the stored byte on the next update of the row. Making the
+    /// read lossless is the fix; making this write lossless is what allows it, because the two roles
+    /// every DotNetNuke installation ships with store characters outside the vocabulary
+    /// (<c>01.00.00.SqlDataProvider</c> L7192 and L7194).
+    /// </para>
+    /// <para>
+    /// A client reading such a value therefore sees exactly what the database holds, which is more
+    /// informative than a substitute and strictly more truthful. It may not send one back:
+    /// <see cref="Parse"/> refuses an undeclared character and the request validators independently
+    /// constrain the same property, so the closed vocabulary is enforced on the only side where a
+    /// caller can widen it.
+    /// </para>
     /// </remarks>
-    private static char RequireDeclaredCode(BillingFrequency value)
-    {
-        if (!Enum.IsDefined(value))
-        {
-            throw new JsonException(
-                "A billing frequency outside the declared vocabulary cannot be serialised. Accepted values are " +
-                AcceptedCodes + ".");
-        }
-
-        return (char)value;
-    }
+    private static char CodeOf(BillingFrequency value) => (char)value;
 }

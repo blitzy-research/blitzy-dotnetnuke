@@ -668,6 +668,16 @@ public sealed class UserService : IUserService
     /// properties simply leaves both columns absent.
     /// </para>
     /// <para>
+    /// MIGRATION: the tenant's <c>Column_*</c> settings decide what this listing FETCHES and nothing more.
+    /// The account columns every row carries - the given and family names, the display name, the electronic
+    /// mail address, the creation and last sign-in instants and the approval flag - are always projected as
+    /// stored, whatever those settings say, because the legacy grid honoured them by declining to render a
+    /// column rather than by altering the value behind it. Only the address and telephone profile values
+    /// are gated, by skipping their per-row read, so their absence reports "not requested". The settings
+    /// themselves are published verbatim by the membership-settings read, so a client that wants to
+    /// reproduce the legacy column set has everything it needs to do so.
+    /// </para>
+    /// <para>
     /// Host-level accounts are excluded because this list serves tenant administration and a host
     /// account is beyond its reach, which is the same rule the deletion guard enforces. Unauthorised
     /// accounts are included, because the grid renders an authorised column and hiding them would make
@@ -837,9 +847,24 @@ public sealed class UserService : IUserService
                 }
             }
 
-            UserListItemDto row = UserMappings.ToListItem(account, portalId, address, telephone);
-            ApplyUserListVisibility(row, visibility);
-            rows.Add(row);
+            // MIGRATION: the tenant's column settings govern what this projection FETCHES, above, and
+            // nothing more. They are deliberately NOT applied to the account columns the row already
+            // carries. The legacy grid honoured Column_FirstName, Column_LastName, Column_Email,
+            // Column_CreatedDate, Column_LastLogin and Column_Authorized by declining to RENDER a column
+            // (UserModuleBase.vb:L98-L115 reads the setting, and the grid omitted the column) - it never
+            // altered the value behind it. Overwriting the value instead is not the same behaviour and is
+            // strictly worse than either alternative: an empty name and an absent instant are
+            // indistinguishable from an account that genuinely holds none, so a client cannot tell a
+            // minimised row from an incomplete one, and the flags are ALREADY published verbatim by
+            // GET /api/v1/users/settings, so nothing was concealed by blanking them either. Whether to
+            // render a column is a presentation decision and stays with the client, which is where the
+            // layering puts it.
+            //
+            // Address and telephone are different in kind and keep their gate: they are profile VALUES
+            // rather than account columns, they cost one profile read per row, and that read is skipped
+            // above when the tenant hides them - so null there reports "not requested" rather than
+            // "overwritten", and ComposeAddress already returns null for an empty property set.
+            rows.Add(UserMappings.ToListItem(account, portalId, address, telephone));
         }
 
         return Result<PagedResult<UserListItemDto>>.Success(
@@ -2358,9 +2383,10 @@ public sealed class UserService : IUserService
             .GetDefinitionByIdAsync(portalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        // The repository has already applied the same portal predicate used by the collection read,
-        // including the legacy -1-to-NULL host translation. This layer decides only whether a scoped row
-        // that exists is still live.
+        // The repository has already applied the same portal predicate used by the collection read: the
+        // scope reaching it is matched exactly, so -1 addresses the tenant IDENTITY(-1, 1) numbered -1
+        // rather than the host-level rows, which the terminal schema stores with a SQL NULL portal. This
+        // layer decides only whether a scoped row that exists is still live.
         if (definition is null || definition.IsDeleted)
         {
             // The contract declares absence as a null value on a non-nullable type parameter.
@@ -2870,64 +2896,6 @@ public sealed class UserService : IUserService
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// Applies the tenant's configured user-list visibility to one projected row.
-    /// </summary>
-    /// <param name="row">The row to minimise.</param>
-    /// <param name="settings">The tenant's typed membership settings.</param>
-    /// <remarks>
-    /// Username remains present because the legacy grid made it unconditionally visible. Every other
-    /// configurable column is replaced with its contract's absent value before the row crosses the API
-    /// boundary, so a client cannot recover hidden PII by ignoring presentation settings.
-    /// </remarks>
-    private static void ApplyUserListVisibility(UserListItemDto row, MembershipSettingsDto settings)
-    {
-        if (!settings.ColumnFirstName)
-        {
-            row.FirstName = string.Empty;
-        }
-
-        if (!settings.ColumnLastName)
-        {
-            row.LastName = string.Empty;
-        }
-
-        if (!settings.ColumnDisplayName)
-        {
-            row.DisplayName = string.Empty;
-        }
-
-        if (!settings.ColumnAddress)
-        {
-            row.Address = null;
-        }
-
-        if (!settings.ColumnTelephone)
-        {
-            row.Telephone = null;
-        }
-
-        if (!settings.ColumnEmail)
-        {
-            row.Email = string.Empty;
-        }
-
-        if (!settings.ColumnCreatedDate)
-        {
-            row.CreatedDate = null;
-        }
-
-        if (!settings.ColumnLastLogin)
-        {
-            row.LastLoginDate = null;
-        }
-
-        if (!settings.ColumnAuthorized)
-        {
-            row.IsApproved = false;
-        }
     }
 
     /// <summary>

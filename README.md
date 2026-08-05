@@ -23,8 +23,8 @@ buildable and deployable exactly as it was.
 | Node.js | **20.x** (`>=20.20.2 <21`) | `frontend/.nvmrc` and the `engines` block in `frontend/package.json`. Matches the `node:20-alpine` build stage |
 | npm | **>=10.8.2** | Ships with the pinned Node |
 | Google Chrome | any recent stable | The front-end test run drives it headless. Set `CHROME_BIN` if it is not on the default path |
-| SQL Server | 2019 or later | The API maps to the existing DotNetNuke schema. A container is sufficient for local work |
-| Docker Engine + Compose v2 | recent | Only needed to build and run the containerised topology |
+| SQL Server | 2019 or later | The API maps to the existing DotNetNuke schema. A container is sufficient for local work. The integration suite also needs one, and provisions its own throwaway database — see [the database the integration suite runs against](#the-database-the-integration-suite-runs-against) |
+| Docker Engine + Compose v2 | recent | Needed to build and run the containerised topology. Also sufficient on its own for the integration suite, which starts a throwaway SQL Server when no server is configured |
 
 ## Backend
 
@@ -40,6 +40,38 @@ dotnet test  --configuration Release --filter "Category=Integration"
 `--warnaserror` is not optional in this solution. `backend/Directory.Build.props`
 enables nullable reference types, treats warnings as errors for every project, and
 suppresses exactly two diagnostics, both documented in that file.
+
+### The database the integration suite runs against
+
+The two test commands above need no preparation, and that is deliberate: the
+integration suite provisions its own **uniquely named, throwaway** database, applies
+the schema, seeds it, and drops it again when the run ends. It never touches a
+database you already have. It does need a **real SQL Server**, because the accounts
+it signs in as live in the external `aspnet_*` membership tables and the credential
+store reports itself unavailable on any other provider — a permissive in-memory
+substitute would report a pass while the behaviour under test had stopped executing.
+
+`TestDatabaseFactory` picks the route in this order:
+
+| Order | Condition | Route |
+| --- | --- | --- |
+| 1 | `DNN_TESTS_USE_MSSQL` set to a truthy value | Starts a throwaway SQL Server container. An explicit request outranks everything, including a configured server |
+| 2 | `DNN_TEST_SQLSERVER` set to a connection string with rights to create a database | Creates its database on **that** server. Fastest route, and it needs no container runtime |
+| 3 | `DNN_TESTS_USE_MSSQL` set to `0`, `false`, `no` or `off`, with no server configured | Refuses to run. An explicit "off" also vetoes step 4 |
+| 4 | Neither variable set, and a container runtime is reachable | Starts a throwaway container. **This is what lets the commands above run unprepared** |
+| 5 | Neither variable set, and no container runtime found | Refuses to run, naming both routes |
+
+So: with Docker (or Podman) available, run the gate commands as written. Without a
+container runtime, point the suite at any SQL Server 2019 or later, for example
+
+```bash
+DNN_TEST_SQLSERVER='Server=localhost,1433;Database=master;User Id=sa;Password=…;TrustServerCertificate=True;Encrypt=True' \
+  dotnet test --configuration Release --filter "Category=Integration"
+```
+
+The suite fails closed rather than degrading when it can reach neither, and the
+failure names both routes. Each run creates a database whose name carries a fresh
+identifier, so parallel checkouts sharing one server cannot collide.
 
 ### Solution layout
 
@@ -68,7 +100,7 @@ form, which is how the container supplies them.
 | Key | Environment form | Notes |
 | --- | --- | --- |
 | `ConnectionStrings:Default` | `ConnectionStrings__Default` | The existing DotNetNuke database. Replaces the legacy `SiteSqlServer` connection string |
-| `Jwt:Secret` | `Jwt__Secret` | **At least 32 bytes, or the host refuses to start.** Never committed: the Production overlay leaves it blank and the Development overlay carries a clearly labelled development-only value |
+| `Jwt:Secret` | `Jwt__Secret` | **At least 32 bytes, or the host refuses to start** — it also rejects a low-entropy or well-known placeholder value. **No overlay carries one, in any environment**: `appsettings.json` ships it blank and neither the Development nor the Production overlay supplies a value, so every run — including a local one — must pass it in from the environment or a secret store. That is the point: there is no committed key to leak and no environment in which one is silently used |
 | `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpirationMinutes` | `Jwt__…` | Access tokens are deliberately short-lived; see `MIGRATION_NOTES.md` on sign-out |
 | `Cors:AllowedOrigins` | `Cors__AllowedOrigins__0` | A named policy restricted to the front-end origin |
 

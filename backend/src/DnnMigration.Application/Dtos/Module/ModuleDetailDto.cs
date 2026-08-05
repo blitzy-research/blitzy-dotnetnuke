@@ -256,14 +256,25 @@ public sealed class ModuleDetailDto
     /// <c>ModuleDefinitions.DesktopModuleID</c>.
     /// </summary>
     /// <remarks>
-    /// UNLIKE THE OTHER KEYS HERE, THIS ONE HAS A STORED DEFAULT OF 0: the column is declared
-    /// <c>int NOT NULL CONSTRAINT DF_{objectQualifier}ModuleDefinitions_DesktopModuleID DEFAULT 0</c>
-    /// (02.00.00 line 5174). A value of 0 is therefore something the database itself writes, and reading
-    /// it as "no package" is wrong. The package's own key column is <c>IDENTITY (1, 1)</c>, so 0 also
-    /// indicates a definition whose package was never linked - a legacy data state to be reported, not
-    /// silently corrected.
+    /// <para>
+    /// ABSENT MEANS UNRESOLVED, AND ZERO IS NOT A VALUE THIS MEMBER CAN CARRY.
+    /// <c>DesktopModules.DesktopModuleID</c> is a plain <c>IDENTITY</c>, so it seeds at one, and the
+    /// terminal <c>ModuleDefinitions.DesktopModuleID</c> is declared <c>NOT NULL</c> with a foreign key
+    /// onto it. A definition that resolves therefore always names a real package with a positive key.
+    /// </para>
+    /// <para>
+    /// MIGRATION: an earlier reading of the upgrade chain had this column carrying a stored default of
+    /// zero, from <c>ALTER TABLE ... ADD DesktopModuleID int NOT NULL CONSTRAINT
+    /// DF_{objectQualifier}ModuleDefinitions_DesktopModuleID DEFAULT 0</c> at 02.00.00 line 5173, and
+    /// declared this member non-nullable so that zero could be reported. That default was TRANSITIONAL:
+    /// the same script backfills the column from the package rows and then drops the constraint again at
+    /// 02.00.00 line 5243, so no terminal installation carries it. Reporting zero therefore fabricated a
+    /// key identifying no package - and it did so on the creation path, which had the real key in hand.
+    /// The member is nullable so that "the definition could not be resolved" is said plainly, which is
+    /// the same shape the four catalogue projections at the end of this type already use.
+    /// </para>
     /// </remarks>
-    public int DesktopModuleId { get; set; }
+    public int? DesktopModuleId { get; set; }
 
     // ---------------------------------------------------------------------------------------------
     // GROUP B - MODULE SCOPE, THE dbo.Modules ROW

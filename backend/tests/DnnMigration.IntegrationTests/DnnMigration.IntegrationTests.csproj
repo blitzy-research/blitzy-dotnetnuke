@@ -6,16 +6,30 @@
     class here must carry [Trait("Category", "Integration")], because that is
     what the "Category=Integration" test filter selects.
 
-    Test-database strategy: every run uses a real SQL Server, either the instance
-    named by DNN_TEST_SQLSERVER or a Testcontainers.MsSql container. No fixture
-    selects the InMemory or Sqlite provider, and none can: TestDatabaseFactory
-    documents three paths under test that a non-relational provider cannot run -
-    ExecuteDeleteAsync, a FromSqlInterpolated query root, and IsAvailableAsync,
-    which returns false unless the provider is SQL Server and the external
-    aspnet_* objects exist. Account creation answering 201 is an acceptance
-    criterion and fails closed without them. The InMemory and Sqlite references
-    below are kept because AAP 0.6.1 approves them, not because anything uses
-    them; treat them as unexercised until a fixture actually opts in.
+    Test-database strategy: every run uses a real SQL Server. TestDatabaseFactory
+    selects the route, and it needs NO PREPARATION to do so — the acceptance gates
+    are run verbatim, so a run that configures nothing must still provision a
+    database. Order: DNN_TESTS_USE_MSSQL truthy starts a throwaway container;
+    otherwise DNN_TEST_SQLSERVER names an existing server; otherwise a falsey
+    DNN_TESTS_USE_MSSQL refuses and the run fails closed; otherwise a reachable
+    container runtime is discovered and used; otherwise the run fails closed with
+    one actionable diagnosis. Discovery is why the bare gate command works on an
+    unprepared host, and it can only fire when nothing was configured.
+
+    No fixture selects the InMemory or Sqlite provider, and none can: the credential
+    store answers "unavailable" on any provider that is not SQL Server, the accounts
+    these tests sign in as live in the external aspnet_* tables that no model-driven
+    creation could produce, a query root arrives through FromSqlInterpolated, and the
+    persistence suite asserts declared column types against the relational catalogue.
+    Account creation answering 201 is an acceptance criterion and fails closed
+    without all of that. The two references below are RETAINED because AAP 0.6.1
+    approves them for this project and the approved set is not narrowed here — but
+    they are unexercised, deliberately and visibly so, and the capability they were
+    meant to provide (a gate that runs with no database prepared) is provided by
+    discovery instead. Adopting either one later means authoring a SQLite-dialect
+    schema, a substitute for the external membership store and provider-aware
+    catalogue expectations; it is a deliberate piece of work rather than a switch.
+    The disposition is recorded in MIGRATION_NOTES.md.
 
     ANALYZER HAZARD: xunit.analyzers ships transitively with xunit and reports its
     xUnit#### rules as warnings, which the inherited warnings-as-errors policy
@@ -54,12 +68,26 @@
     e_sqlite3 asset is never loaded and a load or behaviour regression has no path to
     reach a test. If a fixture ever does adopt Sqlite, re-validate this pin against
     that fixture first, and prefer aligning the EF Core version over deepening the
-    pin. The production SQL client carries a direct pin too, but at the version the
+    pin. Removing the Sqlite reference would remove the need for this pin as well -
+    and is NOT the resolution taken, because AAP 0.6.1 approves that reference
+    explicitly; the disposition is recorded in MIGRATION_NOTES.md.
+
+    Testcontainers.MsSql is pinned to the plan's 3.10.0 rather than to 4.13.0, which
+    AAP 0.6.4 lists among the versions checked and rejected. An earlier revision
+    raised it to 4.13.0 to shed a transitive identity; the move is reverted because
+    the 3.10.0 graph audits clean at mode=all and level=low, every identity it
+    resolves - Docker.DotNet, SSH.NET, SshNet.Security.Cryptography, SharpZipLib,
+    Newtonsoft.Json - is already claimed by a NuGet.Config source-mapping pattern,
+    and the route was re-verified at runtime against this host's Docker Engine
+    rather than assumed compatible.
+
+    The production SQL client carries a direct pin too, but at the version the
     frozen dependency inventory names - Microsoft.Data.SqlClient 5.2.3 (AAP 0.6.1) -
     and for the reason the inventory gives: without the pin the SQL Server provider
     resolves an older 5.1.x line transitively. An earlier revision raised that pin to
     6.1.6 on its own initiative; it was withdrawn, because raising a version the plan
-    pins is not this project's decision to take unilaterally.
+    pins is not this project's decision to take unilaterally. Its own reasoning is
+    recorded in DnnMigration.Infrastructure.csproj beside the reference itself.
   -->
 
   <PropertyGroup>
@@ -78,7 +106,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
-    <PackageReference Include="Testcontainers.MsSql" Version="4.13.0" />
+    <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
       <PrivateAssets>all</PrivateAssets>

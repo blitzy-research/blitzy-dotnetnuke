@@ -210,6 +210,39 @@ export interface ModuleListItem {
   readonly friendlyName: string | null;
 
   /**
+   * The installed package behind the definition, projected from `dbo.ModuleDefinitions.DesktopModuleID`.
+   *
+   * `null` means the definition could not be resolved. **It is never 0**:
+   * `dbo.DesktopModules.DesktopModuleID` is a plain `IDENTITY`, so it seeds at 1, and the terminal
+   * `dbo.ModuleDefinitions.DesktopModuleID` is `NOT NULL` with a foreign key onto it.
+   *
+   * MIGRATION: carried on the listing so a row here and a single read of the same module report the same
+   *   package. The listing previously omitted this and the three package members below, so a caller could
+   *   not tell from a listing which package any row came from.
+   */
+  readonly desktopModuleId: number | null;
+
+  /**
+   * The installed package's name, projected read-only from `dbo.DesktopModules.ModuleName`.
+   *
+   * `null` when the definition or its package could not be resolved, even though the column is
+   * `NOT NULL` in its own table - the absence describes the join, not the row.
+   */
+  readonly moduleName: string | null;
+
+  /** The installed package's description, projected read-only from `dbo.DesktopModules.Description`. */
+  readonly description: string | null;
+
+  /**
+   * The installed package's version, projected read-only from `dbo.DesktopModules.Version`.
+   *
+   * An OPAQUE 8-character string, never parsed into a version structure and never compared: its contents
+   * are whatever each package author wrote, so imposing a grammar here would invent one the store does
+   * not enforce.
+   */
+  readonly version: string | null;
+
+  /**
    * The placement's position within its pane on the page, from `dbo.TabModules.ModuleOrder`.
    *
    * Lower values render nearer the top of the pane. A per-placement fact, so two placements of one
@@ -326,12 +359,17 @@ export interface ModuleDetail {
   /**
    * The installed package behind the definition, projected from `dbo.ModuleDefinitions.DesktopModuleID`.
    *
-   * MIGRATION: unlike the other keys on this contract, this column was added with a STORED DEFAULT OF 0
-   *   (02.00.00.SqlDataProvider line 5174), so 0 here can mean either a real package or a row that
-   *   predates the association and was defaulted. It is carried as the catalogue cross-reference it is
-   *   and is not interpreted as a presence test.
+   * `null` means the definition could not be resolved. **It is never 0**:
+   * `dbo.DesktopModules.DesktopModuleID` is a plain `IDENTITY`, so it seeds at 1, and the terminal
+   * `dbo.ModuleDefinitions.DesktopModuleID` is `NOT NULL` with a foreign key onto it.
+   *
+   * MIGRATION: an earlier reading had this non-nullable because 02.00.00.SqlDataProvider line 5173 adds
+   *   the column with a stored default of 0. That default is TRANSITIONAL - the same script backfills the
+   *   column and drops the constraint again at line 5243 - so no terminal installation carries it, and
+   *   reporting 0 named a package that cannot exist. Absence is now said plainly, matching the four
+   *   catalogue projections alongside it.
    */
-  readonly desktopModuleId: number;
+  readonly desktopModuleId: number | null;
 
   /**
    * The administrator-supplied heading of this module instance, or `null` when none was given.

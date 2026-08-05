@@ -418,11 +418,29 @@ public sealed class RequestLoggingMiddleware
     /// FIRST and is informational: nobody is left to answer, no work of ours failed, and there
     /// is nothing for an operator to act on - a browser navigating away mid-request would
     /// otherwise raise an error alert, and enough of them would drown the alerts that matter.
-    /// An escaped failure or a server-error status is this application's own fault and an
-    /// operator has to see it, so it is an error. A client-error status is the caller's fault:
-    /// worth noticing, not worth alarming anybody, so it is a warning - and it is deliberately
-    /// not promoted to error, or the error stream would fill with ordinary validation failures
-    /// until the genuine faults in it were invisible. A <em>successful</em> health probe is
+    /// A CLIENT-ERROR STATUS IS THE CALLER'S FAULT WHATEVER SHAPE IT ARRIVED IN: worth noticing,
+    /// not worth alarming anybody, so it is a warning - and it is deliberately not promoted to
+    /// error, or the error stream would fill with ordinary validation failures until the genuine
+    /// faults in it were invisible.
+    /// </para>
+    /// <para>
+    /// MIGRATION: that test now comes BEFORE the escaped-failure test, and the order is the whole
+    /// point. Some client errors reach this stage AS AN EXCEPTION rather than as a returned status
+    /// - the host raises one when it declines to read an oversized or malformed body, and the
+    /// exception handler translates it to the 413 or 400 the host had already decided. Testing for
+    /// an escaped failure first classified every one of those as a server fault, so a caller
+    /// submitting bodies larger than the ceiling filled the error stream with entries describing
+    /// its own mistake, and the two stages disagreed with each other about the same request: the
+    /// exception handler recorded a warning and this stage recorded an error. The status is read
+    /// from what was ANSWERED - the exception handler publishes it for exactly this purpose - so
+    /// this stage now agrees with it by construction.
+    /// </para>
+    /// <para>
+    /// An escaped failure that did NOT resolve to a client error, and any server-error status,
+    /// remains an error: those are this application's own fault and an operator has to see them.
+    /// A failure raised after the response had already started keeps its 2xx status and is still
+    /// an error, because it falls to the escaped-failure test rather than past it. A
+    /// <em>successful</em> health probe is
     /// written at debug, below the configured floor: the container probes this endpoint every
     /// few seconds for the lifetime of the deployment, and at informational level those probes
     /// alone would outnumber every other entry in the log. Everything else is routine and
@@ -453,14 +471,18 @@ public sealed class RequestLoggingMiddleware
             return LogLevel.Information;
         }
 
+        // Tested before the escaped-failure branch, so a client error that arrived as an exception is
+        // recorded as the caller's mistake rather than as this application's fault. The upper bound is
+        // explicit: a 5xx must not fall into this branch even though it is also >= 400.
+        if (statusCode >= StatusCodes.Status400BadRequest
+            && statusCode < StatusCodes.Status500InternalServerError)
+        {
+            return LogLevel.Warning;
+        }
+
         if (failure is not null || statusCode >= StatusCodes.Status500InternalServerError)
         {
             return LogLevel.Error;
-        }
-
-        if (statusCode >= StatusCodes.Status400BadRequest)
-        {
-            return LogLevel.Warning;
         }
 
         return isHealthProbe ? LogLevel.Debug : LogLevel.Information;

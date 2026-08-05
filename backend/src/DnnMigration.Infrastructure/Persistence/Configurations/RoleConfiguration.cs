@@ -177,11 +177,21 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
         // constrained this column against a code lookup table existed [01.00.00:L584] and was
         // recreated by both rebuilds [01.00.04:L1366, 01.00.05:L2802], but it is dropped for good at
         // 03.00.01:L1297 with no recreate. No check constraint replaced it, so a live installation may
-        // legitimately hold a character outside the vocabulary. That is precisely why the shared
-        // converter resolves an unrecognised character to the None member through Enum.IsDefined rather
-        // than casting it through: an undeclared enumeration value would materialise, survive into a
-        // response, and then fail JSON serialisation at the wire boundary - turning one legacy row into
-        // a failed request. A bare cast, as the removed inline lambdas performed, does exactly that.
+        // legitimately hold a character outside the vocabulary - and every installation DOES, because
+        // the seed inserts the Administrators role with '4' and the Registered Users role with '0'
+        // [01.00.00:L7192, L7194].
+        //
+        // MIGRATION: the shared converter therefore CARRIES an unrecognised character rather than
+        // normalising it. An earlier revision resolved anything undeclared to the None member through
+        // Enum.IsDefined, on the reasoning that an undeclared enumeration value would survive into a
+        // response and fail JSON serialisation at the wire boundary. The reasoning was sound about the
+        // wire and wrong about the cost: because a role update rewrites this column from the
+        // materialised value, editing anything else on the role - a description - rewrote a stored '4'
+        // as 'N' and destroyed authoritative legacy data, which Rule T4 forbids outright. The wire half
+        // is now lossless too (Application/Serialization/BillingFrequencyJsonConverter), so the read no
+        // longer has to choose between a readable response and an intact row. The vocabulary a CALLER
+        // may submit stays closed, enforced by that converter's inbound direction and by the role
+        // request validators.
         builder.Property(x => x.BillingFrequency)
             .HasColumnName("BillingFrequency")
             .HasConversion(BillingFrequencyToStringConverter.Instance)
@@ -205,9 +215,12 @@ internal sealed class RoleConfiguration : IEntityTypeConfiguration<Role>
         //
         // MIGRATION: this column is the less constrained of the two. FK_Roles_CodeFrequency covered
         // the billing column [01.00.05:L2801-2808] and nothing ever covered this one, so an arbitrary
-        // character here is a row a legacy installation already accepts. The converter's fallback is
-        // consequently load-bearing on this column even in an installation whose billing codes are
-        // clean.
+        // character here is a row a legacy installation already accepts. The converter's lossless
+        // carrying of such a character is consequently load-bearing on this column even in an
+        // installation whose billing codes are clean - and doubly so here, because an unrecognised
+        // character satisfies the legacy trial test TrialFrequency.ToString() <> "N"
+        // [RoleController.vb:L521], so normalising it to None would have flipped whether the trial
+        // governs the derived expiry rather than merely losing a byte.
         builder.Property(x => x.TrialFrequency)
             .HasColumnName("TrialFrequency")
             .HasConversion(BillingFrequencyToStringConverter.Instance)

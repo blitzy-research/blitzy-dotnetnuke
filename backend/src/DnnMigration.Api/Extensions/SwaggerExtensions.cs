@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.Formatters;
+using Microsoft.AspNetCore.Mvc.ModelBinding.Metadata;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -103,6 +104,17 @@ public static class SwaggerExtensions
     /// interactive console unable to authorise anything.
     /// </summary>
     private const string BearerSecuritySchemeName = "Bearer";
+
+    /// <summary>
+    /// The media type RFC 7807 section 3 registers for a problem document, and the one this API labels
+    /// every problem document with.
+    /// </summary>
+    /// <remarks>
+    /// Declared here so the document and the runtime cannot disagree by a typing error: the same spelling
+    /// is used by the filter that re-keys documented problem responses and by the filter that declares the
+    /// transport refusals.
+    /// </remarks>
+    private const string ProblemContentType = "application/problem+json";
 
     /// <summary>
     /// The scheme value written into the document. The OpenAPI specification requires
@@ -266,6 +278,28 @@ public static class SwaggerExtensions
             // as a content result. See the filter for why an action-level produces attribute is not the
             // fix: it corrects the description at the cost of answering 406 to every refusal.
             options.OperationFilter<DeclaredResponseContentTypeOperationFilter>();
+
+            // Labels every documented problem document with the media type it is actually served as.
+            // The explorer keys a response body by the media types an output formatter can write, and
+            // the JSON formatter reports application/json first, so every 400, 401, 403, 404, 409, 429
+            // and 500 in this document claimed a media type the API does not send for them. Corrected
+            // centrally rather than by annotating sixty-six operations, so no operation can be missed.
+            options.OperationFilter<ProblemResponseContentTypeOperationFilter>();
+
+            // Declares the refusals the TRANSPORT can produce for an operation the explorer cannot see,
+            // because no action code produces them: 405 is decided by routing and 413 and 415 by the
+            // host and the formatter selector before any action runs.
+            options.OperationFilter<TransportRefusalResponseOperationFilter>();
+
+            // Removes query parameters for DERIVED model members. A property with no setter cannot be
+            // bound, so publishing it invites a caller to send a value the server is guaranteed to
+            // ignore - and to conclude, when nothing changes, that the parameter is broken.
+            options.OperationFilter<DerivedQueryParameterOperationFilter>();
+
+            // Names the members of every integral enumeration in the document. Without this an
+            // enumeration publishes as a bare list of numbers, which tells a client the permitted values
+            // but not what any of them means.
+            options.SchemaFilter<EnumMemberNameSchemaFilter>();
 
             // Reflects the solution-wide nullable annotations into the schema's own
             // nullability flags. This is a schema-shape concern only; it changes no
@@ -829,6 +863,325 @@ public static class SwaggerExtensions
                        .GetCustomAttributes(inherit: true)
                        .OfType<ProducesResponseTypeAttribute>()
                    ?? [];
+        }
+    }
+
+    /// <summary>
+    /// Labels every documented problem-document response with the media type RFC 7807 registers for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THE DOCUMENT WAS WRONG. The explorer keys a response body by the media types an output
+    /// formatter can write for the declared type, and the JSON formatter reports <c>application/json</c>
+    /// ahead of <c>application/problem+json</c>. Every refusal in this document therefore claimed
+    /// <c>application/json</c>, while the API labels its problem documents
+    /// <c>application/problem+json</c> - so a generated client would be built to expect one media type
+    /// and receive another, and a contract test comparing the two would fail on the document rather than
+    /// on the implementation.
+    /// </para>
+    /// <para>
+    /// The response is recognised by its SCHEMA rather than by its status code, because status code is
+    /// the wrong authority: a 400 carrying a validation document and a 200 carrying a resource are told
+    /// apart by what they carry, and an operation is free to answer a status this filter has never heard
+    /// of. Only the key changes; the schema the generator resolved is carried across untouched.
+    /// </para>
+    /// </remarks>
+    private sealed class ProblemResponseContentTypeOperationFilter : IOperationFilter
+    {
+        /// <summary>The schema identifiers that mark a body as a problem document.</summary>
+        private static readonly string[] ProblemSchemaIds =
+            [nameof(ProblemDetails), nameof(ValidationProblemDetails)];
+
+        /// <summary>Re-keys every problem-document body on the described operation.</summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="operation"/> or <paramref name="context"/> is <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentNullException.ThrowIfNull(context);
+
+            foreach (OpenApiResponse response in operation.Responses.Values)
+            {
+                if (response.Content.Count == 0)
+                {
+                    continue;
+                }
+
+                KeyValuePair<string, OpenApiMediaType> body = response.Content.First();
+
+                if (!IsProblemDocument(body.Value))
+                {
+                    continue;
+                }
+
+                if (response.Content.Count == 1
+                    && string.Equals(body.Key, ProblemContentType, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                response.Content.Clear();
+                response.Content[ProblemContentType] = body.Value;
+            }
+        }
+
+        /// <summary>Reports whether a documented body is a problem document.</summary>
+        /// <param name="body">The documented body.</param>
+        /// <returns><see langword="true"/> when the body's schema is a problem document.</returns>
+        private static bool IsProblemDocument(OpenApiMediaType body)
+        {
+            string? schemaId = body.Schema?.Reference?.Id;
+
+            return schemaId is not null
+                && ProblemSchemaIds.Contains(schemaId, StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Declares the refusals produced by the TRANSPORT rather than by an action, which the explorer
+    /// cannot discover because no action code returns them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three statuses were absent from every one of this API's operations while being entirely reachable.
+    /// <b>405</b> is decided by routing when a path matches a route whose method it does not accept, and
+    /// the API answers it with the <c>Allow</c> header and a problem document. <b>413</b> is decided by
+    /// the host when a body exceeds the configured request-size ceiling, before any action is entered.
+    /// <b>415</b> is decided by the formatter selector when a body arrives under a media type no input
+    /// formatter reads. A caller reading this document had no way to know that any of the three could
+    /// happen, and a generated client had no case for them.
+    /// </para>
+    /// <para>
+    /// 405 is declared on every operation because every route can be addressed with the wrong method. 413
+    /// and 415 are declared only where the operation ACCEPTS A BODY: a read that takes none can be
+    /// refused for neither reason, and declaring them there would describe refusals that cannot occur.
+    /// An existing declaration is never replaced - an operation that documents one of these three itself,
+    /// with its own wording, keeps it.
+    /// </para>
+    /// </remarks>
+    private sealed class TransportRefusalResponseOperationFilter : IOperationFilter
+    {
+        /// <summary>The refusals every operation can produce, whatever it accepts.</summary>
+        private static readonly (int Status, string Description)[] UniversalRefusals =
+        [
+            (StatusCodes.Status405MethodNotAllowed,
+                "The route exists but does not accept this method. The response carries an Allow header "
+                + "naming the methods it does accept, and an RFC 7807 body."),
+        ];
+
+        /// <summary>The refusals only an operation accepting a request body can produce.</summary>
+        private static readonly (int Status, string Description)[] BodyRefusals =
+        [
+            (StatusCodes.Status413PayloadTooLarge,
+                "The submitted body is larger than the configured request-size ceiling. The ceiling is a "
+                + "deployment setting and is deliberately not quoted in the response."),
+            (StatusCodes.Status415UnsupportedMediaType,
+                "The body arrived under a media type this endpoint does not read. Submit "
+                + "application/json."),
+        ];
+
+        /// <summary>Adds the transport refusals the described operation can produce.</summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="operation"/> or <paramref name="context"/> is <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentNullException.ThrowIfNull(context);
+
+            OpenApiSchema problemSchema = context.SchemaGenerator
+                .GenerateSchema(typeof(ProblemDetails), context.SchemaRepository);
+
+            foreach ((int status, string description) in UniversalRefusals)
+            {
+                Declare(operation, status, description, problemSchema);
+            }
+
+            if (operation.RequestBody is null)
+            {
+                return;
+            }
+
+            foreach ((int status, string description) in BodyRefusals)
+            {
+                Declare(operation, status, description, problemSchema);
+            }
+        }
+
+        /// <summary>Declares one refusal, leaving an existing declaration untouched.</summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="status">The status code to declare.</param>
+        /// <param name="description">The authored description of the refusal.</param>
+        /// <param name="problemSchema">The problem-document schema reference.</param>
+        private static void Declare(
+            OpenApiOperation operation,
+            int status,
+            string description,
+            OpenApiSchema problemSchema)
+        {
+            string key = status.ToString(CultureInfo.InvariantCulture);
+
+            if (operation.Responses.ContainsKey(key))
+            {
+                return;
+            }
+
+            operation.Responses[key] = new OpenApiResponse
+            {
+                Description = description,
+                Content =
+                {
+                    [ProblemContentType] = new OpenApiMediaType { Schema = problemSchema },
+                },
+            };
+        }
+    }
+
+    /// <summary>
+    /// Removes query parameters that correspond to DERIVED model members, which cannot be bound.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A property with no setter cannot be assigned by the complex-object binder, so a value supplied for
+    /// one is silently discarded. The explorer publishes it anyway, because it walks the model's metadata
+    /// rather than its bindable surface. The paging contract has two such members - each reports whether
+    /// the caller supplied a sort field or a filter, and each is computed from the member that carries it -
+    /// so the document invited a caller to send a value the server is guaranteed to ignore, and to
+    /// conclude from the absence of any effect that the parameter was broken. Worse, sending one alongside
+    /// its source member reads as a contradiction the server has no way to report.
+    /// </para>
+    /// <para>
+    /// Recognised by the model metadata's own read-only flag rather than by name, so the rule follows the
+    /// contract: a member that gains a setter becomes bindable and is published again in the same edit,
+    /// and a member added as derived is removed without anyone remembering to.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the read-only flag is necessary but NOT sufficient, and reading it alone is a trap this
+    /// filter fell into once. For a top-level action argument the metadata kind is
+    /// <see cref="ModelMetadataKind.Parameter"/>, and the framework reports such metadata as read-only
+    /// unconditionally - a method argument has no setter to describe. Filtering on the flag by itself
+    /// therefore removed EVERY simple-typed route and query argument in the document, which silently
+    /// erased the identifier segments of the addresses themselves. The kind is consequently required to be
+    /// <see cref="ModelMetadataKind.Property"/>, which is what a member of a bound complex object reports
+    /// and where a missing setter genuinely means unbindable; and removal is confined to parameters the
+    /// document places in the query string, so a route segment sharing a name with some model's derived
+    /// property can never be collateral damage.
+    /// </para>
+    /// </remarks>
+    private sealed class DerivedQueryParameterOperationFilter : IOperationFilter
+    {
+        /// <summary>Removes every derived query parameter from the described operation.</summary>
+        /// <param name="operation">The operation being described.</param>
+        /// <param name="context">The generator's context for the operation.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="operation"/> or <paramref name="context"/> is <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiOperation operation, OperationFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ArgumentNullException.ThrowIfNull(context);
+
+            if (operation.Parameters is null || operation.Parameters.Count == 0)
+            {
+                return;
+            }
+
+            HashSet<string> derived = new(StringComparer.Ordinal);
+
+            foreach (ApiParameterDescription parameter in context.ApiDescription.ParameterDescriptions)
+            {
+                // Both conditions are load-bearing. The kind restricts the rule to members of a bound
+                // complex object, where a missing setter really does mean the binder cannot assign the
+                // value; a top-level action argument reports itself read-only merely because an argument
+                // has no setter at all, and treating that as derived removes the whole addressable surface.
+                if (parameter.Name is not null
+                    && parameter.ModelMetadata is
+                    {
+                        MetadataKind: ModelMetadataKind.Property,
+                        IsReadOnly: true,
+                    })
+                {
+                    derived.Add(parameter.Name);
+                }
+            }
+
+            if (derived.Count == 0)
+            {
+                return;
+            }
+
+            for (int index = operation.Parameters.Count - 1; index >= 0; index--)
+            {
+                OpenApiParameter published = operation.Parameters[index];
+
+                // Confined to the query string: an unbindable member of a query-bound model can only ever
+                // have been published there, so anything the document places elsewhere - a route segment
+                // above all - is a different parameter that merely shares a name.
+                if (published.In == ParameterLocation.Query && derived.Contains(published.Name))
+                {
+                    operation.Parameters.RemoveAt(index);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Names the members of every integral enumeration the document publishes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An integral enumeration publishes as a bare list of its numeric values - a sort direction, for
+    /// instance, as <c>[0, 1]</c>. That tells a client which values are permitted and nothing whatever
+    /// about what either means, so choosing between them requires reading this API's source. The member
+    /// names are appended to the schema's description, in value order, alongside the numbers they belong
+    /// to.
+    /// </para>
+    /// <para>
+    /// The description is ADDED TO rather than replaced, so the authored summary a documented enumeration
+    /// already carries survives. The wire representation is deliberately untouched: publishing the names
+    /// as strings instead would change what the API accepts and returns, which is a contract change rather
+    /// than a documentation fix, and the numeric values are the ones persisted in the store.
+    /// </para>
+    /// </remarks>
+    private sealed class EnumMemberNameSchemaFilter : ISchemaFilter
+    {
+        /// <summary>Annotates an enumeration schema with its member names.</summary>
+        /// <param name="schema">The schema being generated.</param>
+        /// <param name="context">The generator's context for the type.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="schema"/> or <paramref name="context"/> is <see langword="null"/>.
+        /// </exception>
+        public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+        {
+            ArgumentNullException.ThrowIfNull(schema);
+            ArgumentNullException.ThrowIfNull(context);
+
+            if (!context.Type.IsEnum || schema.Enum is null || schema.Enum.Count == 0)
+            {
+                return;
+            }
+
+            string[] members = Enum.GetValues(context.Type)
+                .Cast<object>()
+                .Select(member => FormattableString.Invariant(
+                    $"{Convert.ToInt64(member, CultureInfo.InvariantCulture)} = {member}"))
+                .ToArray();
+
+            if (members.Length == 0)
+            {
+                return;
+            }
+
+            string names = "Members: " + string.Join(", ", members) + ".";
+
+            schema.Description = string.IsNullOrWhiteSpace(schema.Description)
+                ? names
+                : schema.Description.TrimEnd() + " " + names;
         }
     }
 }

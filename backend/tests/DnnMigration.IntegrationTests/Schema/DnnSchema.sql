@@ -113,7 +113,15 @@ GO
 CREATE TABLE [dbo].[PortalAlias] (
     [PortalAliasID] int NOT NULL IDENTITY,
     [PortalID] int NOT NULL,
-    [HTTPAlias] nvarchar(200) NOT NULL,
+    -- MIGRATION: HTTPAlias is NULLABLE in the terminal schema, and this declaration must say so.
+    --   The table is created at 02.02.02.SqlDataProvider:3805-3808 as
+    --   "[HTTPAlias] [nvarchar] (200)" with NO NOT NULL clause, and a case-insensitive sweep of all
+    --   eighty-eight upgrade scripts across all four object-naming forms finds no later ALTER of the
+    --   column. PortalAliasConfiguration maps it nullable for exactly that reason, and suppresses the
+    --   filter EF Core would otherwise attach to IX_PortalAlias because the legacy unique index has
+    --   none. Declaring it NOT NULL here made the fixture REJECT a row the production schema accepts,
+    --   so an integration test could not prove compatibility with legacy-valid data.
+    [HTTPAlias] nvarchar(200) NULL,
     CONSTRAINT [PK_PortalAlias] PRIMARY KEY ([PortalAliasID]),
     CONSTRAINT [FK_PortalAlias_Portals] FOREIGN KEY ([PortalID]) REFERENCES [dbo].[Portals] ([PortalID]) ON DELETE CASCADE
 );
@@ -188,7 +196,14 @@ GO
 CREATE TABLE [dbo].[ModuleControls] (
     [ModuleControlID] int NOT NULL IDENTITY,
     [ModuleDefID] int NULL,
-    [ControlKey] nvarchar(20) NULL,
+    -- MIGRATION: ControlKey is nvarchar(50) in the terminal schema, not the baseline nvarchar(20).
+    --   02.02.00.SqlDataProvider:459-460 runs
+    --   "ALTER TABLE {databaseOwner}{objectQualifier}ModuleControls ALTER COLUMN ControlKey
+    --   [nvarchar] (50)", the sibling procedure at :465 declares @ControlKey nvarchar(50), and no
+    --   later script narrows it again. Only the terminal cumulative state is meaningful, so a
+    --   twenty-character declaration here truncated values ModuleControlConfiguration maps and the
+    --   production column stores.
+    [ControlKey] nvarchar(50) NULL,
     [ControlTitle] nvarchar(50) NULL,
     [ControlSrc] nvarchar(256) NULL,
     [IconFile] nvarchar(100) NULL,
@@ -225,7 +240,13 @@ CREATE TABLE [dbo].[Permission] (
     [PermissionID] int NOT NULL IDENTITY,
     [PermissionCode] varchar(50) NOT NULL,
     [ModuleDefID] int NOT NULL,
-    [PermissionKey] varchar(20) NOT NULL,
+    -- MIGRATION: PermissionKey is varchar(50) in the terminal schema. The baseline declared
+    --   "[PermissionKey] [varchar] (20) NOT NULL" (02.02.00.SqlDataProvider:688) and
+    --   04.06.00.SqlDataProvider:393-398 widens it under the heading "enlarge permission key field"
+    --   with "ALTER TABLE {databaseOwner}{objectQualifier}Permission ALTER COLUMN PermissionKey
+    --   varchar(50) not null". Nothing narrows it afterwards. PermissionConfiguration maps the
+    --   terminal width, so the baseline width here contradicted the model it exists to bind.
+    [PermissionKey] varchar(50) NOT NULL,
     [PermissionName] varchar(50) NOT NULL,
     CONSTRAINT [PK_Permission] PRIMARY KEY ([PermissionID])
 );

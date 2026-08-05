@@ -155,6 +155,29 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         + " response header when reporting this problem.";
 
     /// <summary>
+    /// Explanation returned when the submitted body exceeded the configured request-size ceiling.
+    /// </summary>
+    /// <remarks>
+    /// The ceiling itself is deliberately NOT quoted. A refusal that published the exact limit would
+    /// hand an unauthenticated caller the one number needed to sit just beneath it, and the limit is a
+    /// deployment setting rather than part of the contract. It says what to do instead, which is the
+    /// only thing the caller can act on.
+    /// </remarks>
+    private const string PayloadTooLargeDetail =
+        "The submitted request body is larger than this endpoint accepts. Submit a smaller body.";
+
+    /// <summary>
+    /// Explanation returned when the server could not read the request at the transport level.
+    /// </summary>
+    /// <remarks>
+    /// Covers a malformed chunked body, a declared length that disagrees with what arrived, and the
+    /// other framing faults the host rejects before any model binding happens. The host's own message
+    /// is not published, for the reason set out on <see cref="UnexpectedFailureDetail"/>.
+    /// </remarks>
+    private const string MalformedRequestDetail =
+        "The request could not be read. Check the request framing and headers, then submit it again.";
+
+    /// <summary>
     /// Text recorded in place of a route template when the failure happened before, or
     /// outside, endpoint selection.
     /// </summary>
@@ -503,6 +526,29 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         // is challenged by the authentication handler and never arrives here. This is a
         // caller who is known and still not entitled, so 403 rather than 401.
         UnauthorizedAccessException => (StatusCodes.Status403Forbidden, ForbiddenDetail),
+
+        // MIGRATION: A TRANSPORT REFUSAL CARRIES THE STATUS THE HOST ALREADY CHOSE. The host raises
+        // this type when it declines to read a request itself - the body exceeding the configured size
+        // ceiling, a malformed chunked body, a declared length that disagrees with what arrived - and it
+        // records the status it settled on ON THE EXCEPTION. Without this arm the whole family fell to
+        // the general case and was answered 500 and logged at Error, which was wrong twice over: it told
+        // the caller the server had failed when the caller had submitted something the server correctly
+        // refused, and it raised a server-fault log entry for an ordinary client mistake, so a volume of
+        // oversized submissions read as an outage. Both are corrected by taking the status the host
+        // already decided; the log level follows from the status family with no further change, because
+        // the branch above keys off exactly that.
+        //
+        // The exception's own message is not published, in keeping with every other arm - the host's
+        // wording for a size refusal quotes the configured limit, which is a deployment fact and not
+        // part of any contract. The status is READ from the exception rather than assumed to be 413:
+        // this type also carries 400 for the framing faults, and hard-coding either would mislabel the
+        // other. Kestrel's own subclass derives from this type, so one arm covers both, and an
+        // unexpected status on the exception is honoured as-is rather than being second-guessed here.
+        BadHttpRequestException badRequest => (
+            badRequest.StatusCode,
+            badRequest.StatusCode == StatusCodes.Status413PayloadTooLarge
+                ? PayloadTooLargeDetail
+                : MalformedRequestDetail),
 
         // MIGRATION: the general case publishes fixed text and never the exception's own
         // message, in every environment. That is not conservatism about detail. An

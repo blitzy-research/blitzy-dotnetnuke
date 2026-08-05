@@ -41,11 +41,181 @@ public sealed class ProblemDetailsContractTests
     /// </remarks>
     private const int UnknownRoleId = 987_654;
 
+    /// <summary>The media type RFC 7807 section 3 registers for a problem document.</summary>
+    private const string ProblemMediaType = "application/problem+json";
+
+    /// <summary>
+    /// The namespace every problem type in this API belongs to, built by one method from a failure code.
+    /// </summary>
+    private const string ProblemTypePrefix = "urn:dnnmigration:error:";
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="ProblemDetailsContractTests"/> class.</summary>
     /// <param name="fixture">The shared host and database.</param>
     public ProblemDetailsContractTests(ApiTestFixture fixture) => _fixture = fixture;
+
+    /// <summary>
+    /// Every producer of a problem document in this API - middleware, routing, the formatter selector, the
+    /// host and a controller alike - labels it with one media type and names it in one taxonomy.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHAT WAS INCONSISTENT, AND WHY IT MATTERED. Refusals decided outside MVC were labelled
+    /// <c>application/problem+json</c> while every controller-produced one was labelled
+    /// <c>application/json</c>, so a client could not select a problem parser from the media type - which is
+    /// the reason RFC 7807 registers one. And the mandatory-remediation refusal named its type
+    /// <c>https://httpstatuses.com/403</c>: a THIRD-PARTY, non-resolving URI, on the same status where the
+    /// ordinary authorisation refusal already carried this API's own identifier. A client branching on
+    /// <c>type</c> therefore had to know which producer had answered before it could interpret the member.
+    /// </para>
+    /// <para>
+    /// THE PRODUCERS ARE EXERCISED TOGETHER, deliberately. Each one is a different code path - a
+    /// short-circuiting middleware, the router, the formatter selector, the model-validation filter and a
+    /// controller action - and the property being asserted is that they AGREE. Testing them one at a time
+    /// would let any two drift apart and still pass, which is exactly how the inconsistency arose.
+    /// </para>
+    /// <para>
+    /// The type is asserted by PREFIX rather than by exact value, because the point is the namespace: each
+    /// producer names its own condition, and pinning the codes here would make this fact fail whenever a
+    /// refusal was renamed for a reason it is not about.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task EveryProblemProducer_UsesOneMediaTypeAndOneTaxonomy()
+    {
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+        using HttpClient unprivileged = await _fixture.CreateUnprivilegedClientAsync();
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+
+        List<(string Producer, HttpResponseMessage Response)> answers = [];
+
+        try
+        {
+            // Authentication handler: no credential at all.
+            answers.Add(("the authentication challenge", await anonymous.GetAsync(
+                new Uri("/api/v1/portals?pageIndex=0&pageSize=10", UriKind.Relative))));
+
+            // Authorisation result handler: authenticated, not entitled.
+            answers.Add(("the authorisation refusal", await unprivileged.GetAsync(
+                new Uri("/api/v1/portals?pageIndex=0&pageSize=10", UriKind.Relative))));
+
+            // Controller result helper: a successful outcome establishing absence.
+            answers.Add(("a controller refusal", await host.GetAsync(new Uri(
+                FormattableString.Invariant($"/api/v1/roles/{UnknownRoleId}"),
+                UriKind.Relative))));
+
+            // Model validation: a bound value the declared rules refuse.
+            answers.Add(("the validation filter", await host.GetAsync(
+                new Uri("/api/v1/users?pageIndex=0&pageSize=99999", UriKind.Relative))));
+
+            // Routing: a path matching no route.
+            answers.Add(("routing, for an unmatched path", await host.GetAsync(
+                new Uri("/api/v1/there-is-no-such-collection", UriKind.Relative))));
+
+            // Routing: a path matching a route under a method it does not accept.
+            answers.Add(("routing, for an unaccepted method", await host.PatchAsync(
+                new Uri("/api/v1/portals", UriKind.Relative),
+                content: null)));
+
+            foreach ((string producer, HttpResponseMessage response) in answers)
+            {
+                ((int)response.StatusCode).Should().BeGreaterThanOrEqualTo(
+                    400,
+                    FormattableString.Invariant($"{producer} was expected to refuse the request"));
+
+                response.Content.Headers.ContentType?.MediaType.Should().Be(
+                    ProblemMediaType,
+                    FormattableString.Invariant(
+                        $"{producer} must label its problem document with the registered media type"));
+
+                using JsonDocument body = JsonDocument.Parse(
+                    await response.Content.ReadAsStringAsync());
+
+                body.RootElement.TryGetProperty("type", out JsonElement type).Should().BeTrue(
+                    FormattableString.Invariant($"{producer} must name the condition it refused for"));
+
+                type.GetString().Should().StartWith(
+                    ProblemTypePrefix,
+                    FormattableString.Invariant(
+                        $"{producer} must name it in this API's own taxonomy, not a third party's"));
+
+                body.RootElement.TryGetProperty("status", out JsonElement status).Should().BeTrue();
+                status.GetInt32().Should().Be((int)response.StatusCode);
+
+                body.RootElement.TryGetProperty("title", out _).Should().BeTrue();
+                body.RootElement.TryGetProperty("detail", out _).Should().BeTrue();
+            }
+
+            // The prefix assertion above is satisfied by any member of the namespace, so the two producers
+            // that used to disagree with each other on the SAME status are pinned exactly.
+            answers[1].Response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        finally
+        {
+            foreach ((string _, HttpResponseMessage response) in answers)
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A status decided by ROUTING carries the same problem document as every other refusal, and a method
+    /// refusal still names the methods it would accept.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// These two statuses are decided before any endpoint is entered, and the router answers them with the
+    /// status line alone - so a client with one parser for error responses had two cases it could not parse.
+    /// The <c>Allow</c> header is asserted alongside the body because supplying a body must not cost the
+    /// header: it is the only thing that tells the caller which method to use instead.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RoutingDecidedRefusals_CarryTheProblemDocumentAndKeepTheirHeaders()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage unmatched = await host.GetAsync(
+            new Uri("/api/v1/no-such-collection-exists", UriKind.Relative));
+
+        unmatched.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        unmatched.Content.Headers.ContentLength.Should().BeGreaterThan(
+            0,
+            "an empty body is the defect this fact exists to prevent");
+
+        using JsonDocument notFound = JsonDocument.Parse(await unmatched.Content.ReadAsStringAsync());
+        notFound.RootElement.GetProperty("status").GetInt32().Should().Be(404);
+        notFound.RootElement.GetProperty("type").GetString().Should().StartWith(ProblemTypePrefix);
+
+        using HttpResponseMessage wrongMethod = await host.PatchAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            content: null);
+
+        wrongMethod.StatusCode.Should().Be(HttpStatusCode.MethodNotAllowed);
+        wrongMethod.Content.Headers.ContentLength.Should().BeGreaterThan(0);
+
+        wrongMethod.Content.Headers.Allow.Should().NotBeEmpty(
+            "the Allow header is the only thing that tells the caller which method to use, and adding a "
+            + "body must not cost it");
+
+        using JsonDocument notAllowed = JsonDocument.Parse(await wrongMethod.Content.ReadAsStringAsync());
+        notAllowed.RootElement.GetProperty("status").GetInt32().Should().Be(405);
+        notAllowed.RootElement.GetProperty("type").GetString().Should().StartWith(ProblemTypePrefix);
+
+        // A successful response must be untouched by the stage that supplies these bodies: it acts only on a
+        // 4xx or 5xx with no body of its own, and asserting that here is what keeps the blast radius visible.
+        using HttpResponseMessage healthy = await _fixture.CreateAnonymousClient()
+            .GetAsync(new Uri("/health", UriKind.Relative));
+
+        ((int)healthy.StatusCode).Should().BeLessThan(400);
+        healthy.Content.Headers.ContentType?.MediaType.Should().Be(
+            "application/json",
+            "the health document is not a problem document and must keep its own media type");
+    }
 
     /// <summary>
     /// A request carrying no credential answers a problem document rather than an empty body.

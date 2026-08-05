@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Text.Json;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.User;
@@ -2754,6 +2755,119 @@ public sealed class UserApiTests
     /// <returns>A relative route.</returns>
     private static Uri UsersRoute(int _) => new("/api/v1/users", UriKind.Relative);
 
+    /// <summary>
+    /// The listing and the single read report the SAME account identically, field for field, for every
+    /// member the two contracts share.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The two projections are written out by hand from different sources - the listing from a paged query,
+    /// the single read from a keyed one - so nothing but a test keeps them in step. The failure this guards
+    /// against was exactly that drift: the listing reported an empty given name, family name and electronic
+    /// mail address for every account while the single read reported all three correctly, which no consumer
+    /// can reconcile and no compiler can catch.
+    /// </para>
+    /// <para>
+    /// The comparison is driven off the SHARED members rather than a hand-copied list of names, so a member
+    /// added to both contracts is compared automatically instead of being silently omitted. The listing's
+    /// address and telephone are excluded deliberately: they are profile values the listing composes and the
+    /// single read does not carry at all, so they have no counterpart to agree with.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListUsers_ReportsEachAccountIdenticallyToTheSingleRead()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest request = NewUserRequest();
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        UserDetailDto createdUser = await ReadDetailAsync(created);
+
+        try
+        {
+            PagedEnvelope<UserListItemDto> page = await ListAsync(client, string.Empty);
+
+            UserListItemDto listed = page.Items
+                .Should().ContainSingle(item => item.UserId == createdUser.UserId)
+                .Subject;
+
+            using HttpResponseMessage read = await client.GetAsync(
+                UserRoute(_fixture.Seed.PortalId, createdUser.UserId));
+
+            read.StatusCode.Should().Be(HttpStatusCode.OK);
+            UserDetailDto detail = await ReadDetailAsync(read);
+
+            // The listing composes these from the profile tables; the single read does not carry them, so
+            // they have no counterpart and are not compared.
+            string[] listingOnly = [nameof(UserListItemDto.Address), nameof(UserListItemDto.Telephone)];
+
+            IReadOnlyList<PropertyInfo> detailProperties = typeof(UserDetailDto)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance);
+
+            var compared = new List<string>();
+
+            foreach (PropertyInfo listProperty in typeof(UserListItemDto)
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (listingOnly.Contains(listProperty.Name, StringComparer.Ordinal))
+                {
+                    continue;
+                }
+
+                PropertyInfo? detailProperty = detailProperties.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, listProperty.Name, StringComparison.Ordinal)
+                    && candidate.PropertyType == listProperty.PropertyType);
+
+                if (detailProperty is null)
+                {
+                    continue;
+                }
+
+                object? fromList = listProperty.GetValue(listed);
+                object? fromDetail = detailProperty.GetValue(detail);
+
+                fromList.Should().Be(
+                    fromDetail,
+                    FormattableString.Invariant(
+                        $"the listing and the single read must agree on {listProperty.Name}"));
+
+                compared.Add(listProperty.Name);
+            }
+
+            // The comparison is only meaningful if it actually reached the members the defect emptied.
+            compared.Should().Contain(
+            [
+                nameof(UserListItemDto.Username),
+                nameof(UserListItemDto.FirstName),
+                nameof(UserListItemDto.LastName),
+                nameof(UserListItemDto.DisplayName),
+                nameof(UserListItemDto.Email),
+            ]);
+
+            // And those five must carry the values that were submitted, not merely agree on emptiness.
+            listed.Username.Should().Be(request.Username);
+            listed.FirstName.Should().Be(request.FirstName);
+            listed.LastName.Should().Be(request.LastName);
+            listed.DisplayName.Should().Be(request.DisplayName);
+            listed.Email.Should().Be(request.Email);
+        }
+        finally
+        {
+            using HttpResponseMessage removed = await client.DeleteAsync(
+                UserRoute(_fixture.Seed.PortalId, createdUser.UserId));
+
+            removed.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.NotFound);
+        }
+    }
+
     /// <summary>Builds the item route for one account.</summary>
     /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
@@ -3032,8 +3146,15 @@ public sealed class UserApiTests
             .Should().ContainSingle(item => item.UserId == createdUser.UserId)
             .Subject;
         matched.Username.Should().Be(request.Username);
-        matched.Email.Should().BeEmpty(
-            "the filter may use the stored address without disclosing a column the tenant hides");
+
+        // MIGRATION: the listing projects the stored address, whatever the tenant's Column_Email setting
+        // says. That setting decided whether the legacy grid RENDERED the column; it never rewrote the
+        // value behind it, and emptying the value instead made a minimised row indistinguishable from an
+        // account holding no address while concealing nothing - GET .../users/settings publishes the same
+        // flag verbatim. Deciding whether to render the column belongs to the client.
+        matched.Email.Should().Be(
+            request.Email,
+            "the listing projects the stored address; hiding a column is the client's presentation decision");
 
         // A fragment lifted from the middle of the very address that was just matched by prefix. The account
         // demonstrably exists and demonstrably holds the fragment, so an empty page here can only be the

@@ -71,29 +71,78 @@ namespace DnnMigration.IntegrationTests;
 /// reaches only the throwaway database this type has just created and owns.
 /// </para>
 /// <para>
-/// <strong>Where the server comes from, and why it is never guessed at.</strong> The route is SELECTED
-/// EXPLICITLY, by <see cref="SelectProvider"/>, from exactly two environment variables, and a run that names
-/// neither is refused with a single actionable diagnosis rather than quietly doing something expensive.
-/// Setting <see cref="ServerConnectionEnvironmentVariable"/> uses that connection string as the
-/// administrative connection and creates a database on that server; setting
-/// <see cref="ContainerOptInEnvironmentVariable"/> starts a throwaway SQL Server container for the duration
-/// of the run.
+/// <strong>Where the server comes from.</strong> <see cref="SelectProvider"/> owns the whole decision and is
+/// the only place it is made. It reads two environment variables and, when neither directs it, ONE property
+/// of the host:
+/// </para>
+/// <list type="number">
+///   <item><description>
+///     <see cref="ContainerOptInEnvironmentVariable"/> set to a truthy value - start a throwaway SQL Server
+///     container. An explicit instruction wins outright, including over a configured server, because it is
+///     the only way to exercise the container route on a host that has one.
+///   </description></item>
+///   <item><description>
+///     <see cref="ServerConnectionEnvironmentVariable"/> set - use that connection string as the
+///     administrative connection and create a database on that server. This is the PREFERRED route: it is
+///     the fastest, it needs no container runtime, and it is what a developer or a CI image with a database
+///     already available should configure.
+///   </description></item>
+///   <item><description>
+///     <see cref="ContainerOptInEnvironmentVariable"/> set to a falsey value with no server configured -
+///     refuse. A written <c>0</c> is a veto, so an operator who turned the container route OFF does not get
+///     one started by discovery.
+///   </description></item>
+///   <item><description>
+///     Nothing configured either way, and a container runtime is reachable - start a throwaway container.
+///     The route is DISCOVERED rather than assumed: <see cref="IsContainerRuntimeReachable"/> looks for a
+///     socket or an endpoint variable and finds nothing on a host that has no runtime.
+///   </description></item>
+///   <item><description>
+///     Nothing configured and no runtime reachable - refuse, with one diagnosis that reports what was
+///     probed and how to supply a server.
+///   </description></item>
+/// </list>
+/// <para>
+/// <strong>Why discovery exists at all, given that a container is expensive.</strong> Because the acceptance
+/// gates are executed verbatim - <c>dotnet test --configuration Release --filter "Category=Integration"</c>,
+/// with no preparation - and an earlier revision refused that command outright unless one of the two
+/// variables had already been exported. The requirement the harness exists to satisfy is that the suite runs
+/// "with no live DotNetNuke database available", so a gate that fails closed on a clean runner does not meet
+/// it however well the failure reads: anyone following the published instructions saw the whole suite red and
+/// had no way to tell an unconfigured host from a broken migration. Discovery closes that without weakening
+/// anything else, because it is reached only when nothing has been configured, it cannot fire on a host with
+/// no runtime, and an explicit falsey opt-out still refuses.
 /// </para>
 /// <para>
-/// A container is NEVER started implicitly, and that is a requirement rather than a preference: the
-/// migration plan lists the container package as explicitly not the default, and the configured-server route
-/// is what makes the acceptance gates runnable on a host with no container runtime at all. An earlier
-/// revision started a container whenever the server variable happened to be absent, which meant an
-/// unconfigured run silently depended on a Docker daemon, pulled an image and took minutes - and reported
-/// container plumbing as the cause when the real cause was a missing variable.
+/// A container is still never started by GUESSWORK - the distinction that matters, and the one the earlier
+/// revision got wrong. That revision started a container whenever the server variable happened to be absent,
+/// so a run on a host with no daemon spent minutes failing inside container plumbing and reported that
+/// plumbing as the cause when the real cause was a missing variable. Here the runtime is confirmed reachable
+/// first, the selected route is carried in <see cref="TestDatabaseProvider"/> so the failure text can say
+/// whether it was asked for or discovered, and a host with neither route still gets the single actionable
+/// message rather than a socket error repeated once per test.
 /// </para>
 /// <para>
-/// <strong>Why there is no permissive fallback.</strong> Neither an in-memory nor a SQLite provider is
-/// substituted when nothing is configured. The credential paths this suite exercises answer
-/// "store unavailable" on any provider that is not SQL Server, because the accounts live in external
-/// membership tables, and every persona in the assembly now obtains its token by signing in for real. A
-/// permissive provider would therefore report a pass while the behaviour under test had stopped executing,
-/// which is strictly worse than refusing to run.
+/// <strong>Why there is no permissive fallback, and what that means for two approved packages.</strong>
+/// Neither an in-memory nor a SQLite provider is substituted, at any point in the order above. The credential
+/// paths this suite exercises answer "store unavailable" on any provider that is not SQL Server, because the
+/// accounts live in external membership tables, and every persona in the assembly obtains its token by
+/// signing in for real. A permissive provider would therefore report a pass while the behaviour under test
+/// had stopped executing, which is strictly worse than refusing to run - and the four SQL-Server-only paths
+/// listed above are not incidental to a handful of facts, they are what the personas, the raw-SQL query root
+/// and the catalogue assertions are all built on.
+/// </para>
+/// <para>
+/// MIGRATION: the plan approves <c>Microsoft.EntityFrameworkCore.InMemory</c> and
+/// <c>Microsoft.EntityFrameworkCore.Sqlite</c> for this project and describes them as the route for a host
+/// with no container runtime. Both references are therefore RETAINED in the project file - the approved
+/// dependency set is not narrowed here - but no fixture selects either, and this file is the reason. What
+/// closes the gap that capability was meant to close is discovery: the acceptance gates now run unprepared
+/// wherever a database can be provisioned honestly, rather than depending on a provider that cannot execute
+/// the credential behaviour the gates assert. Adopting either provider later means authoring a SQLite-dialect
+/// schema, a substitute for the external membership store, and provider-aware expectations for the
+/// catalogue-shape facts - a deliberate piece of work, not a switch. The disposition is recorded in
+/// MIGRATION_NOTES.md.
 /// </para>
 /// <para>
 /// <strong>Fidelity of what the scripts provision.</strong> The legacy identity seeds are reproduced rather
@@ -123,14 +172,16 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     public const string ServerConnectionEnvironmentVariable = "DNN_TEST_SQLSERVER";
 
     /// <summary>
-    /// Environment variable that OPTS IN to starting a throwaway SQL Server container. Absent or falsey, no
-    /// container is ever started.
+    /// Environment variable that directs the container route explicitly: a truthy value asks for a throwaway
+    /// SQL Server container and outranks a configured server, a falsey value refuses one and also vetoes
+    /// discovering a runtime.
     /// </summary>
     /// <remarks>
-    /// An opt-in rather than an opt-out, because starting a container is the expensive, daemon-dependent route
-    /// and the one the migration plan names as not the default. Accepted values are the ordinary truthy
-    /// spellings - see <see cref="IsOptedIn"/> - so a value of <c>0</c> or <c>false</c> reads as "no", which is
-    /// what an operator turning the route off will write.
+    /// Read as THREE states rather than as a boolean - asked for, refused, or not mentioned - by
+    /// <see cref="ReadContainerRouteRequest"/>. The distinction is load-bearing because an unmentioned value
+    /// permits <see cref="SelectProvider"/> to discover a runtime, so a value of <c>0</c>, <c>false</c>,
+    /// <c>no</c> or <c>off</c> has to mean "not even then". Anything else reads as consent, matching the
+    /// ordinary truthy spellings an operator or a CI definition writes.
     /// </remarks>
     public const string ContainerOptInEnvironmentVariable = "DNN_TESTS_USE_MSSQL";
 
@@ -206,61 +257,173 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     public string ConnectionString { get; }
 
     /// <summary>
-    /// Decides which route this run provisions its database through, from the environment alone.
+    /// Decides which route this run provisions its database through, from the environment and, only when the
+    /// environment directs nothing, from whether a container runtime is reachable.
     /// </summary>
     /// <returns>
-    /// The selected route, or <see cref="TestDatabaseProvider.None"/> when the environment names neither -
-    /// which <see cref="CreateAsync"/> turns into one actionable failure rather than a guess.
+    /// The selected route, or <see cref="TestDatabaseProvider.None"/> when no route is available - which
+    /// <see cref="CreateAsync"/> turns into one actionable failure rather than a guess.
     /// </returns>
     /// <remarks>
     /// <para>
     /// Public and side-effect-free so that the decision can be read - by a test, or by a developer reasoning
     /// about a run - without provisioning anything. The whole selection lives in this one member, which is what
-    /// makes "a container is never started implicitly" a property of a single readable function rather than of
-    /// a condition buried in a provisioning path.
+    /// makes every claim about it checkable by reading one function rather than by starting a run.
     /// </para>
     /// <para>
-    /// <b>The explicit container opt-in wins when both are set,</b> because it is the more specific instruction:
+    /// <b>The explicit container opt-in wins over everything,</b> because it is the most specific instruction:
     /// a configured server may well be ambient in a shell profile or a CI image, whereas nobody sets the
     /// container variable by accident. It is also the only way to exercise the container route at all on a host
-    /// that has a server configured, and a route that cannot be exercised is a route that quietly rots - which
-    /// is the defect class this whole remediation is about.
+    /// that has a server configured, and a route that cannot be exercised is a route that quietly rots.
+    /// </para>
+    /// <para>
+    /// <b>A configured server beats discovery,</b> because it is the cheaper and more predictable route and
+    /// because someone who exported that variable said where the database should live.
+    /// </para>
+    /// <para>
+    /// <b>An explicit falsey opt-out is a veto, not merely an absence of consent.</b> Discovery is skipped
+    /// entirely when the variable is present and reads as "no", so <c>DNN_TESTS_USE_MSSQL=0</c> genuinely turns
+    /// the container route off instead of turning it into an implicit one. This is the whole reason the opt-in
+    /// is read as three states rather than as a boolean.
+    /// </para>
+    /// <para>
+    /// <b>Discovery is last, and it is a measurement rather than an assumption.</b> It fires only when nothing
+    /// has been configured and only when a runtime is actually reachable, so an unconfigured run on a host with
+    /// no runtime still refuses with the diagnosis instead of spending minutes failing inside container
+    /// plumbing.
     /// </para>
     /// </remarks>
     public static TestDatabaseProvider SelectProvider()
     {
-        if (IsOptedIn(Environment.GetEnvironmentVariable(ContainerOptInEnvironmentVariable)))
+        ContainerRouteRequest request = ReadContainerRouteRequest(
+            Environment.GetEnvironmentVariable(ContainerOptInEnvironmentVariable));
+
+        if (request == ContainerRouteRequest.Requested)
         {
             return TestDatabaseProvider.Container;
         }
 
-        return string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ServerConnectionEnvironmentVariable))
-            ? TestDatabaseProvider.None
-            : TestDatabaseProvider.ConfiguredServer;
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ServerConnectionEnvironmentVariable)))
+        {
+            return TestDatabaseProvider.ConfiguredServer;
+        }
+
+        if (request == ContainerRouteRequest.Refused)
+        {
+            return TestDatabaseProvider.None;
+        }
+
+        return IsContainerRuntimeReachable()
+            ? TestDatabaseProvider.DiscoveredContainer
+            : TestDatabaseProvider.None;
     }
 
-    /// <summary>Reads an environment value as an opt-in flag.</summary>
+    /// <summary>What the container opt-in variable asks for.</summary>
+    /// <remarks>
+    /// Three states rather than a boolean, because "absent" and "explicitly off" must behave differently once
+    /// an absent value permits discovery: collapsing them is precisely how a written <c>0</c> would stop
+    /// meaning anything.
+    /// </remarks>
+    private enum ContainerRouteRequest
+    {
+        /// <summary>The variable is absent or blank, so discovery may proceed.</summary>
+        Unspecified = 0,
+
+        /// <summary>The variable asks for the container route.</summary>
+        Requested = 1,
+
+        /// <summary>The variable refuses the container route, which also vetoes discovery.</summary>
+        Refused = 2,
+    }
+
+    /// <summary>Reads the container opt-in variable as a three-state request.</summary>
     /// <param name="value">The raw value, which may be absent.</param>
-    /// <returns><see langword="true"/> when the value asks for the route.</returns>
+    /// <returns>What the value asks for.</returns>
     /// <remarks>
     /// The falsey spellings are recognised explicitly rather than treating any non-empty value as consent,
     /// because <c>DNN_TESTS_USE_MSSQL=0</c> is what an operator writes to turn the route OFF, and reading that
     /// as "on" would be the most confusing possible behaviour. Comparison is case-insensitive and trims, since
     /// these values arrive from shell profiles and CI definitions.
     /// </remarks>
-    private static bool IsOptedIn(string? value)
+    private static ContainerRouteRequest ReadContainerRouteRequest(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return false;
+            return ContainerRouteRequest.Unspecified;
         }
 
         string trimmed = value.Trim();
 
-        return !string.Equals(trimmed, "0", StringComparison.Ordinal)
-            && !string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase);
+        bool refused = string.Equals(trimmed, "0", StringComparison.Ordinal)
+            || string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase);
+
+        return refused ? ContainerRouteRequest.Refused : ContainerRouteRequest.Requested;
+    }
+
+    /// <summary>
+    /// Reports whether a container runtime looks reachable from this process, without contacting it.
+    /// </summary>
+    /// <returns><see langword="true"/> when an endpoint variable or a well-known socket is present.</returns>
+    /// <remarks>
+    /// <para>
+    /// Deliberately a CHEAP, SIDE-EFFECT-FREE probe rather than a handshake. <see cref="SelectProvider"/> is
+    /// documented as answerable without provisioning anything, and it is called before any container work
+    /// begins; opening a connection here would make reading the decision cost a round trip and would give the
+    /// probe two ways to fail. Being approximate is acceptable because it is not the last word: when the
+    /// runtime turns out to be unusable after all, <see cref="StartContainerAsync"/> still translates that into
+    /// one actionable failure naming both supported routes.
+    /// </para>
+    /// <para>
+    /// The endpoint variables are checked first and are the ones the container library itself honours, so a
+    /// remote or rootless daemon reached over TCP is recognised even though no socket exists on this
+    /// filesystem. The socket paths then cover the ordinary local cases: the Docker daemon's own socket, and
+    /// the rootful and rootless Podman sockets, since Podman's Docker-compatible endpoint serves this library
+    /// unchanged. <c>File.Exists</c> answers <see langword="true"/> for a unix domain socket on this runtime -
+    /// verified by execution rather than assumed, because a probe that silently answered
+    /// <see langword="false"/> for every socket would reintroduce exactly the defect this closes.
+    /// </para>
+    /// </remarks>
+    private static bool IsContainerRuntimeReachable()
+    {
+        string[] endpointVariables =
+        [
+            "DOCKER_HOST",
+            "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE",
+        ];
+
+        foreach (string variable in endpointVariables)
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(variable)))
+            {
+                return true;
+            }
+        }
+
+        string? runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        string?[] socketPaths =
+        [
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/run/podman/podman.sock",
+            string.IsNullOrWhiteSpace(runtimeDirectory)
+                ? null
+                : Path.Combine(runtimeDirectory, "podman", "podman.sock"),
+            string.IsNullOrWhiteSpace(home) ? null : Path.Combine(home, ".docker", "run", "docker.sock"),
+        ];
+
+        foreach (string? path in socketPaths)
+        {
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Builds the diagnosis for a run that selected no route at all.</summary>
@@ -272,21 +435,25 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     /// </remarks>
     private static string DescribeUnselectedProvider() => string.Join(
         Environment.NewLine,
-        "The integration suite could not provision a test database: no provider was selected.",
+        "The integration suite could not provision a test database: no SQL Server was available.",
         string.Empty,
-        "Select exactly one of the two supported routes:",
+        DescribeWhyNoRouteWasAvailable(),
+        string.Empty,
+        "Take either supported route:",
         string.Empty,
         FormattableString.Invariant(
             $"  1. {ServerConnectionEnvironmentVariable}=<connection string with rights to create a"),
         "     database>. The suite creates a uniquely named database on that server, applies the",
-        "     schema, and drops it again at the end of the run. This is the DEFAULT route and it needs",
-        "     no container runtime, which is what makes the acceptance gates runnable on a host that",
-        "     has none.",
+        "     schema, and drops it again at the end of the run. This is the PREFERRED route: it is the",
+        "     fastest and it needs no container runtime. Any SQL Server 2019 or later will do, including",
+        "     one you start yourself, so this is the route on a host with no container runtime at all.",
         string.Empty,
         FormattableString.Invariant($"  2. {ContainerOptInEnvironmentVariable}=1, which starts a throwaway"),
-        FormattableString.Invariant($"     '{ContainerImage}' container for the run. It needs a running"),
+        FormattableString.Invariant($"     '{ContainerImage}' container for the run. It needs a reachable"),
         "     container runtime and generates its own credential, so nothing is committed to source",
-        "     control. It is opt-in on purpose and is never started implicitly.",
+        "     control. This route is also selected AUTOMATICALLY when neither variable is set and a",
+        "     runtime is reachable, which is what lets the acceptance gates run unprepared - so seeing",
+        "     this message means no runtime was found, and naming the variable will not conjure one.",
         string.Empty,
         "No in-memory or SQLite provider is substituted, and that is deliberate rather than an omission.",
         "The accounts these tests sign in as live in the external ASP.NET membership tables, and the",
@@ -294,6 +461,32 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
         "persona in this assembly would fail to sign in, every protected-endpoint fact would be measuring",
         "a refusal instead of the behaviour it names, and the run would still be capable of reporting a",
         "pass. Refusing to start is the safer answer.");
+
+    /// <summary>States why this run had no route, using only what was actually established.</summary>
+    /// <returns>The explanation, in one or two sentences.</returns>
+    /// <remarks>
+    /// Composed from the opt-in state rather than written as one fixed paragraph, because the two ways to
+    /// reach <see cref="TestDatabaseProvider.None"/> have DIFFERENT remedies and different evidence behind
+    /// them. When the variable refused the route, no runtime probe ran at all, so saying "no runtime could be
+    /// found" would assert a measurement that was never taken - and would send the reader off to install a
+    /// container runtime when clearing one variable is what they need. Diagnoses that overstate what was
+    /// checked are how a clear message becomes a wrong one.
+    /// </remarks>
+    private static string DescribeWhyNoRouteWasAvailable() =>
+        ReadContainerRouteRequest(Environment.GetEnvironmentVariable(ContainerOptInEnvironmentVariable))
+            == ContainerRouteRequest.Refused
+            ? string.Join(
+                Environment.NewLine,
+                FormattableString.Invariant(
+                    $"No server was configured, and {ContainerOptInEnvironmentVariable} is set to a value that"),
+                "refuses the container route - which also vetoes discovering one, deliberately, so that",
+                "turning the route off cannot be undone by discovery. Nothing was probed on this host.")
+            : string.Join(
+                Environment.NewLine,
+                "This run reached the last resort: no server was configured, no container runtime could be",
+                FormattableString.Invariant(
+                    $"found on this host, and {ContainerOptInEnvironmentVariable} said nothing either way - so"),
+                "a reachable runtime would have been discovered and used automatically.");
 
     /// <summary>The name of the provisioned database.</summary>
     public string DatabaseName => _databaseName;
@@ -324,8 +517,9 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
 
         MsSqlContainer? container = null;
         string administrativeConnectionString;
+        TestDatabaseProvider provider = SelectProvider();
 
-        switch (SelectProvider())
+        switch (provider)
         {
             case TestDatabaseProvider.ConfiguredServer:
                 administrativeConnectionString = Normalise(
@@ -334,7 +528,8 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
                 break;
 
             case TestDatabaseProvider.Container:
-                container = await StartContainerAsync(cancellationToken).ConfigureAwait(false);
+            case TestDatabaseProvider.DiscoveredContainer:
+                container = await StartContainerAsync(provider, cancellationToken).ConfigureAwait(false);
                 administrativeConnectionString = Normalise(container.GetConnectionString(), "master");
                 break;
 
@@ -591,9 +786,14 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     }
 
     /// <summary>
-    /// Starts the throwaway server this run opted into, translating an unusable container runtime into a
+    /// Starts the throwaway server this run selected, translating an unusable container runtime into a
     /// single actionable failure.
     /// </summary>
+    /// <param name="provider">
+    /// The route that led here, so the diagnosis can say whether the container was ASKED for or DISCOVERED.
+    /// Reporting the wrong one sends the reader to the wrong remedy: an opted-in run needs its runtime fixed,
+    /// whereas a discovered run can simply be pointed at a server instead.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The started container.</returns>
     /// <remarks>
@@ -611,13 +811,20 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     /// releasing it here is what keeps a failed run from leaking one.
     /// </para>
     /// </remarks>
-    private static async Task<MsSqlContainer> StartContainerAsync(CancellationToken cancellationToken)
+    private static async Task<MsSqlContainer> StartContainerAsync(
+        TestDatabaseProvider provider,
+        CancellationToken cancellationToken)
     {
         MsSqlContainer? container = null;
 
         try
         {
-            container = new MsSqlBuilder(ContainerImage).Build();
+            // WithImage rather than a builder constructor taking the image: the pinned
+            // Testcontainers.MsSql 3.10.0 exposes only the parameterless builder, and WithImage is the
+            // supported way to replace the module's own default tag on that line. Overriding it is the
+            // point - the module default is a moving tag, and ContainerImage explains at length why this
+            // suite refuses one.
+            container = new MsSqlBuilder().WithImage(ContainerImage).Build();
 
             await container.StartAsync(cancellationToken).ConfigureAwait(false);
             return container;
@@ -633,21 +840,29 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
         {
             await DisposeContainerAsync(container).ConfigureAwait(false);
 
+            string selection = provider == TestDatabaseProvider.DiscoveredContainer
+                ? "Nothing named a route, a container runtime looked reachable, so this run started"
+                : FormattableString.Invariant(
+                    $"{ContainerOptInEnvironmentVariable} opted this run into");
+
+            string remedy = provider == TestDatabaseProvider.DiscoveredContainer
+                ? FormattableString.Invariant(
+                    $"REMEDY: set {ServerConnectionEnvironmentVariable} to a connection string with rights to create a database.")
+                : FormattableString.Invariant(
+                    $"REMEDY: either make the container runtime usable, or clear {ContainerOptInEnvironmentVariable} and set {ServerConnectionEnvironmentVariable}.");
+
             string diagnosis = string.Join(
                 Environment.NewLine,
                 "The integration suite could not provision a test database.",
                 string.Empty,
+                selection,
                 FormattableString.Invariant(
-                    $"{ContainerOptInEnvironmentVariable} opted this run into a throwaway"),
-                FormattableString.Invariant($"'{ContainerImage}' container, and starting it failed:"),
+                    $"a throwaway '{ContainerImage}' container, and starting it failed:"),
                 failure.Message,
                 string.Empty,
-                "REMEDY: either make a container runtime available, or take the other supported route -",
-                FormattableString.Invariant(
-                    $"clear {ContainerOptInEnvironmentVariable} and set {ServerConnectionEnvironmentVariable}"),
-                "to a connection string with rights to create a database. The suite then creates and drops",
-                "its own database on that server and starts no container, which is the supported route on a",
-                "host with no container runtime.",
+                remedy,
+                "The suite then creates and drops its own database on that server and starts no container,",
+                "which is the supported route on a host whose container runtime is missing or unusable.",
                 string.Empty,
                 "A permissive in-memory or SQLite provider is deliberately NOT used as a fallback. The",
                 "credential paths under test report themselves unavailable on any provider that is not SQL",
@@ -843,32 +1058,46 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
 /// by starting it.
 /// </para>
 /// <para>
+/// The two container members are distinguished by HOW the route was chosen rather than by what it does, because
+/// they provision identically and differ only in what a failure should tell the reader to do about it. Folding
+/// them into one member would cost nothing at provisioning time and would make every diagnosis on that path
+/// either guess or stay silent about which remedy applies.
+/// </para>
+/// <para>
 /// There is deliberately no member for an in-memory or SQLite provider. Both are named in the migration plan as
 /// available, and both are unusable here for a reason that is a property of this application rather than of the
 /// test harness: the accounts live in external ASP.NET membership tables and the credential store reports
 /// itself unavailable on any provider that is not SQL Server. Adding a member for a route that cannot execute
-/// the behaviour under test would be adding exactly the kind of unexercised infrastructure this remediation
-/// exists to remove.
+/// the behaviour under test would be adding exactly the kind of unexercised infrastructure this suite is meant
+/// to avoid. MIGRATION: the two package references remain, and TestDatabaseFactory records why.
 /// </para>
 /// </remarks>
 public enum TestDatabaseProvider
 {
     /// <summary>
-    /// Nothing was selected. Provisioning refuses with a diagnosis naming both routes rather than guessing.
+    /// No route was available: nothing was configured and no container runtime could be found, or the container
+    /// route was explicitly refused. Provisioning fails with one diagnosis naming both routes.
     /// </summary>
     None = 0,
 
     /// <summary>
     /// An already-running server, named by <see cref="TestDatabaseFactory.ServerConnectionEnvironmentVariable"/>.
-    /// The suite creates and drops its own uniquely named database on it. This is the default route and it
+    /// The suite creates and drops its own uniquely named database on it. This is the preferred route and it
     /// requires no container runtime.
     /// </summary>
     ConfiguredServer = 1,
 
     /// <summary>
-    /// A throwaway container, started only when
-    /// <see cref="TestDatabaseFactory.ContainerOptInEnvironmentVariable"/> asks for it. Never selected
-    /// implicitly.
+    /// A throwaway container, asked for explicitly by
+    /// <see cref="TestDatabaseFactory.ContainerOptInEnvironmentVariable"/>. This request outranks a configured
+    /// server.
     /// </summary>
     Container = 2,
+
+    /// <summary>
+    /// A throwaway container selected because nothing was configured and a container runtime was found to be
+    /// reachable. This is what lets the acceptance gates run on an unprepared host; it is never chosen when a
+    /// server is configured, and never when the container route has been explicitly refused.
+    /// </summary>
+    DiscoveredContainer = 3,
 }

@@ -2021,6 +2021,488 @@ note) and
 `frontend/src/app/features/module/module-settings/module-settings.view-model.ts`
 (the view model, the form-state shape and the adapter that crosses the boundary).
 
+### A detached entity carrying an identity-seed key is now updated by explicit state, not by key inference
+
+**Artefacts:** `backend/src/DnnMigration.Infrastructure/Repositories/TabRepository.cs`,
+`PortalRepository.cs`, `RoleRepository.cs`
+
+**What was wrong.** `DbSet<T>.Update` and `DbSet<T>.Attach` both decide an entity's
+state by inspecting its key, and both pass `forceStateWhenUnknownKey:
+EntityState.Added`. For a store-generated `int` key, "unknown" means the CLR default —
+zero. Four of this schema's tables seed their identity at a value that collides with
+that default or sits below it: `dbo.Tabs.TabID`, `dbo.Modules.ModuleID`,
+`dbo.Roles.RoleID` and `dbo.RoleGroups.RoleGroupID` are all `IDENTITY(0, 1)`, and
+`dbo.Portals.PortalID` is `IDENTITY(-1, 1)`. Updating the row at the seed therefore
+INSERTED a duplicate instead of writing the existing row, and returned the new key as
+though the edit had succeeded.
+
+The page surface showed the whole consequence at once: renaming the first page of a
+tenant created a second page, left the original untouched, and rewrote the child
+page's materialised `TabPath` to describe the rename that had not happened — so the
+hierarchy referred to a name no row carried.
+
+**What changed.** Every write to one of these tables now assigns the state
+explicitly — `context.Entry(entity).State = EntityState.Modified` — so no key is
+inspected and no seed value can be read as an absence. The one narrower write,
+`TabRepository.UpdateOrderAsync`, attaches as `Unchanged` and then marks only the four
+ordering columns, which preserves its narrowness while removing the same inference.
+
+**What deliberately did not change.** The writes on tables whose identity seeds at
+one — `UserRoles`, `Permission`, `ModulePermission`, `TabPermission`, `PortalAlias` —
+are audited and left as they were. Zero cannot be a key there, so no inference can
+misfire, and rewriting them would be change without cause.
+
+**Behavioural difference to record.** A caller that previously received a NEW
+identifier from an update of a seed-keyed row now receives the identifier it addressed.
+That is the corrected behaviour, but it is a difference an integration written against
+the defect could notice.
+
+**Guarded by.**
+`backend/tests/DnnMigration.IntegrationTests/Persistence/IdentitySeedUpdateTests.cs`,
+which forces each hazardous key with `SET IDENTITY_INSERT`, reads in one scope and
+writes in another so the entity is genuinely detached, and asserts both that the row
+count did not change and that the value landed.
+
+### Deleting a tenant removes its modules first, because that one relationship does not cascade
+
+**Artefact:** `backend/src/DnnMigration.Application/Services/PortalService.cs`
+
+**What was wrong.** The deletion assumed the store would remove a tenant's modules by
+cascade. `FK_Modules_Portals` is the only foreign key into `dbo.Portals` declared
+WITHOUT `ON DELETE CASCADE`, so deleting a tenant that owned any module failed on a
+referential-integrity violation and surfaced as an unhandled fault.
+
+**Why the schema is not the thing corrected.** The absence of the cascade is faithful
+to the terminal legacy schema — `03.00.09.SqlDataProvider` re-adds the constraint with
+no cascade clause — and the migration does not alter existing table structures.
+
+**What the legacy application did.** The terminal `DeletePortalInfo`
+(`04.04.00.SqlDataProvider:L155-L175`) deletes from `Modules` for the portal FIRST and
+then deletes the portal row. `PortalController.vb:L1191` records when that ordering
+moved into the procedure: "[cnurse] 24/11/2006 Removal of Modules moved to sproc". The
+service now reproduces that order inside the transaction it already opened, so the two
+deletions still commit together or not at all.
+
+**Reach of the removal.** Removing the module rows is sufficient for everything below
+them: `dbo.Modules` cascades to `ModuleSettings`, `TabModules` and `ModulePermission`,
+and `TabModules` cascades to `TabModuleSettings`. Nothing is orphaned and nothing else
+is deleted explicitly.
+
+**Guarded by.**
+`PortalApiTests.DeletePortal_WhenTheTenantOwnsModules_ReturnsNoContentAndLeavesNoOrphans`,
+which populates all six tables before deleting and asserts every one of them is empty
+afterwards.
+
+### A profile declaration scoped to portal `-1` is stored as `-1`, and SQL `NULL` remains the host scope alone
+
+**Artefacts:** `backend/src/DnnMigration.Application/Mapping/UserMappings.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/UserProfileRepository.cs`
+
+**What the legacy provider did.** `AddPropertyDefinition` wrapped its portal argument
+in `GetNull` (`SqlDataProvider.vb:L1021`), which translates the absent-integer sentinel
+`-1` to SQL `NULL`, and the `04.03.03` upgrade migrated existing `-1` rows to `NULL`.
+The write path, the outbound projection and the query scope all reproduced that
+translation, consistently.
+
+**Why it is not carried forward.** `dbo.Portals.PortalID` is `IDENTITY(-1, 1)`, so
+`-1` is the FIRST REAL TENANT of every installation, not an absence. Under the legacy
+translation a declaration created by that tenant's administrator was stored at the host
+level, where every other tenant could read it, and the tenant's own existing `-1` rows
+were invisible to it. The API compounded the ambiguity by reporting `portalId: -1` for
+a row it had stored as `NULL`. Treating `-1` as absent is forbidden by AAP §0.5.1.1
+and §0.7.2, and tenant isolation is a §0.9.1 preservation requirement.
+
+**What changed.** The write persists the tenant identifier verbatim. The read scope is
+a single exact comparison for every tenant, with no branch for `-1`. The
+`HostPortalId` constant is gone from the repository, and a note in its place records
+why it must not return.
+
+**What deliberately did not change.** The entity configuration already mapped the
+column as a nullable integer, verbatim, and is untouched. The outbound projection still
+reports a stored `NULL` as `-1`, which is now documented as an ONE-WAY encoding with no
+inverse: host-level rows are reachable from no tenant-scoped route, so the encoding is
+never read back as a tenant.
+
+**Behavioural difference to record.** A request scoped to portal `-1` no longer
+receives host-level declarations, and a declaration created by that tenant is no longer
+shared with every other tenant. Any installation whose `-1` rows were migrated to
+`NULL` by `04.03.03` will find those rows at the host level, where they now stay; they
+are administered from a host-scoped surface rather than appearing inside a tenant.
+
+**Guarded by** `UserRepositoryTests.ProfileDefinitionReads_ApplyOneExactTenantScope`,
+`UserRepositoryTests.ProfileDefinitionScopes_KeepEachTenantAndTheHostLevelDistinct`
+and
+`MappingTests.ProfileDefinitionToNewDefinition_KeepsTheTenantIdentifierAndFloorsTheLength`.
+Two of those previously asserted the opposite and were inverted; the required-profile
+sign-in fixtures in `AuthApiTests` were likewise writing `NULL` where they meant "on
+the tenant", and now write the tenant's key.
+
+### The account listing projects what it stored: a hidden column is not rendered, not emptied
+
+**Artefact:** `backend/src/DnnMigration.Application/Services/UserService.cs`
+
+**What was wrong.** The listing overwrote the given name, family name, display name,
+electronic mail address, creation instant, last sign-in instant and approval flag with
+each contract's absent value whenever the tenant's corresponding `Column_*` setting was
+off. Six of those nine settings default to off, so a caller with no settings configured
+received an empty name and an empty address for every account, and an approval flag
+reported as `false` for accounts that were approved.
+
+**What the legacy application did.** `UserModuleBase.vb:L98-L115` reads the same
+settings, and the grid honoured them by DECLINING TO RENDER A COLUMN. It never altered
+the value behind the column.
+
+**Why overwriting is strictly worse than either alternative.** An empty name is
+indistinguishable from an account that holds no name, and an absent instant from an
+account that has never signed in, so a caller cannot tell a minimised row from an
+incomplete one. It also concealed nothing: the same settings are published verbatim by
+`GET /api/v1/users/settings`, so any caller could read which columns were hidden and,
+under the old behaviour, could not read the values regardless of whether it respected
+them. Reporting an approved account as unapproved was the sharpest case — a
+presentation setting was changing a membership fact.
+
+**What changed.** The account columns are projected as stored. Whether to render a
+column is a presentation decision and belongs to the client, which is where the
+layering puts it.
+
+**What deliberately did not change.** The postal address and telephone number keep
+their gate, because they are different in kind: they are profile VALUES costing one
+additional read per row, and that read is still skipped when the tenant hides them. A
+`null` there therefore reports "not requested" rather than "overwritten", and the
+address composer already returns `null` for an empty property set.
+
+**Behavioural difference to record.** A tenant that relied on the listing to withhold
+these values now receives them and must decline to display them. The values were always
+readable through the single-account read, which applied no such minimisation, so this
+closes a divergence between two endpoints rather than opening an exposure.
+
+**Guarded by**
+`UserServiceTests.ListUsers_SuppressesTheProfileReadsAndKeepsTheAccountColumnsAsStored`
+(inverted from a test that asserted the blanking) and
+`UserApiTests.ListUsers_ReportsEachAccountIdenticallyToTheSingleRead`, which compares
+every member the two contracts share by reflection so a member added to both is
+compared without anyone remembering to.
+
+### A module's package is reported identically by creation, the single read and the listing — and its key is never zero
+
+**Artefacts:** `backend/src/DnnMigration.Application/Mapping/ModuleCatalogueFacts.cs`
+(new), `ModuleMappings.cs`, `Services/ModuleService.cs`,
+`Dtos/Module/ModuleDetailDto.cs`, `Dtos/Module/ModuleListItemDto.cs`,
+`backend/src/DnnMigration.Infrastructure/Repositories/ModuleRepository.cs`,
+`frontend/src/app/core/models/module.model.ts`
+
+**What was wrong.** Three endpoints described one module's definition and package three
+different ways. Creation reported a package key of `0` and no package name,
+description or version, because it projected through navigations that a
+just-constructed entity does not carry. The single read reported the real key but still
+no name, description or version, because the module reads loaded the definition and not
+the package one table beyond it. The listing carried none of the five values at all.
+
+**Zero is not a key this column can hold.** An earlier reading of the upgrade chain
+took `ALTER TABLE ... ADD DesktopModuleID int NOT NULL CONSTRAINT
+DF_{objectQualifier}ModuleDefinitions_DesktopModuleID DEFAULT 0`
+(`02.00.00.SqlDataProvider:L5173`) to mean `0` was a legitimate stored value. That
+default is TRANSITIONAL: the same script backfills the column from the package rows and
+drops the constraint again at `L5243`. The terminal `ModuleDefinitions.DesktopModuleID`
+is `NOT NULL` with a foreign key onto `DesktopModules.DesktopModuleID`, which is a
+plain `IDENTITY` and therefore seeds at one. Reporting `0` named a package that cannot
+exist.
+
+**What changed.** The five catalogue values are resolved ONCE by the caller and passed
+to the projection as a single argument, so no projection can silently depend on whether
+a navigation happened to be loaded. A listing resolves its whole page in one read of
+the tenant's definition catalogue; a single read resolves one; creation forwards the
+definition and package it had already read before staging anything. The module
+repository additionally loads the package alongside the definition on every read, so
+the navigation fallback is truthful too.
+
+**Contract changes.** `ModuleDetailDto.DesktopModuleId` becomes NULLABLE, joining the
+four catalogue projections beside it, so "the definition could not be resolved" is said
+plainly instead of being encoded as a key that identifies nothing. `ModuleListItemDto`
+gains `desktopModuleId`, `moduleName`, `description` and `version`, making the listing
+row and the single read agree member for member. The client models mirror both changes.
+A definition may resolve while its package does not, so the two are supplied separately
+rather than reached one through the other.
+
+**Behavioural difference to record.** A client that treated `desktopModuleId == 0` as
+"no package" must now test for absence; a client that read the creation response's
+package key was previously reading a fabricated value.
+
+**Guarded by**
+`ModuleApiTests.ModuleCatalogueProjections_AgreeAcrossCreationTheSingleReadAndTheListing`,
+which compares all three projections against `GET /api/v1/module-definitions` as an
+independent control — so three endpoints agreeing on a wrong value cannot pass — and
+asserts the control itself carries every value, so "all four agree" cannot be satisfied
+by all four being absent.
+
+
+
+### Health views are reachable with a credential that still needs remediating
+
+**Artefacts** `Api/Middleware/RestrictedSessionMiddleware.cs`.
+
+A session that must change its password or complete its profile is confined to the
+endpoints that let it do so. The confinement was applied to every routed endpoint,
+which caught the health views: presenting such a token to `/health`, `/health/live`
+or `/health/ready` was refused with `403`, while the same request with no credential
+at all succeeded. A monitoring probe that happened to carry a token therefore
+reported the API as unhealthy because of the state of one user account, and
+`docker-compose.yml` gates the frontend service on that endpoint.
+
+The exemption is now any endpoint carrying `IAllowAnonymous` metadata. That is the
+root-cause form rather than a list of paths: an endpoint reachable with no credential
+cannot meaningfully be restricted by the presence of one, so the rule follows the
+endpoint's own declaration and covers the health views and the credential endpoints
+uniformly. The confinement itself is unchanged — an ordinary route presented with a
+remediating token is still refused.
+
+**Behavioural difference to record.** `/health*` and the credential endpoints are now
+invariant to the presence of a bearer token. No other endpoint's behaviour changes.
+
+**Guarded by**
+`HealthCheckTests.HealthViews_WithARemediatingToken_AnswerExactlyAsTheyDoAnonymously`,
+which asserts the token-bearing and anonymous answers AGREE rather than asserting a
+literal 200 — so the fact cannot be satisfied by both breaking — and additionally
+asserts an ordinary route is still refused for the same token.
+
+
+### A body past the host's ceiling is refused, not faulted
+
+**Artefacts** `Api/ErrorHandling/GlobalExceptionHandler.cs`,
+`Api/Middleware/TransportRefusalMiddleware.cs`,
+`Api/Middleware/RequestLoggingMiddleware.cs`.
+
+The host refuses an oversized or unreadable request body by raising an exception that
+carries the status it settled on. Nothing mapped that type, so the whole family fell to
+the general case: the caller was told `500`, and a server-fault entry was written at
+Error. Both halves were wrong. The caller had made an ordinary mistake the server had
+correctly refused, and a caller repeatedly submitting oversized bodies could fill the
+error stream and defeat error-rate alerting for the faults that matter.
+
+Three changes were needed, because the status and the log level are decided in
+different places. The handler now takes the status FROM the exception — `413` for a body
+past the ceiling, `400` for a framing fault — with caller-safe wording authored here
+rather than taken from the host's message. The request-logging stage tests the
+client-error range before the escaped-failure case, so a refusal in the 4xx range is
+recorded at Warning. And a dedicated stage intercepts the refusal ahead of the
+framework's own exception handler, which logs at Error unconditionally before
+delegating, so mapping alone would not have removed the entry.
+
+The configured ceiling is deliberately not quoted in the response. It is a deployment
+setting rather than part of the contract, and publishing it would hand an
+unauthenticated caller the one number needed to sit just beneath it.
+
+**Behavioural difference to record.** An oversized body is answered `413` rather than
+`500`, and neither the host's message nor any exception type appears in the payload.
+
+**Guarded by** `TransportRefusalMappingTests`, which exercises the handler with the
+exception the host actually raises and asserts the status is taken from it (so a
+hard-coded `413` fails the framing case) and that every log entry is below Error. The
+mapping is asserted there rather than over HTTP because the in-memory test host does
+not enforce the body ceiling at all — an end-to-end assertion passed against the defect
+and failed against the fix. `ResponseDeclarationContractTests` pins the declaration;
+`RequestBoundTests` keeps the end-to-end property the test host can honestly measure.
+
+
+### One problem taxonomy and one problem media type
+
+**Artefacts** `Api/Filters/ValidationProblemDetailsFactory.cs`,
+`Api/Filters/ProblemDetailsContentTypeFilter.cs`,
+`Api/Middleware/RestrictedSessionMiddleware.cs`.
+
+A refusal was described two different ways depending on which stage produced it. The
+framework's client-error registration was consulted before this API's own status
+vocabulary, and because that registration holds RFC 9110 specification links and covers
+every client-error status, it claimed the problem type for all of them — leaving this
+API's `urn:dnnmigration:error:*` identifiers to reach only the server-error rows. One
+producer also wrote a bare `httpstatuses.com` link of its own. Separately, every
+controller declares that it produces `application/json`, and that declaration
+constrained the results the action pipeline formatted, so a problem DOCUMENT went out
+under the media type for an ordinary payload — while refusals decided before the
+controller ran carried `application/problem+json`. A client could not identify a problem
+document by its content type, nor a condition by its type URI.
+
+The two passes now run the other way round: this API's vocabulary decides the type and
+the framework registration contributes only a title, as a fallback that in practice
+contributes nothing. Assignment is by null-coalescence throughout, so a producer that
+chose its own coded type still keeps it. A single result filter stamps
+`application/problem+json` on any result carrying a problem document; it is ordered to
+run last because `[Produces]` is itself a filter that reassigns the result's content
+types, and at equal ordering a controller-scoped filter runs after a global one.
+
+The problem type is deliberately given no blanket fallback. Every status this API
+returns is named in the vocabulary, and inventing a URI for one that is not would
+publish a link documenting nothing.
+
+**Behavioural difference to record.** Problem `type` values are
+`urn:dnnmigration:error:*` throughout; no response carries an RFC 9110 or
+`httpstatuses.com` link. Every problem document is served as
+`application/problem+json`, including those from controller actions, which previously
+used `application/json`. Success payloads are unchanged.
+
+**Guarded by** `ProblemDetailsContractTests.EveryProblemProducer_UsesOneMediaTypeAndOneTaxonomy`
+across six producers, and `ResponseDeclarationContractTests` in both directions — every
+advertised problem document uses the problem media type, and nothing else departs from
+`application/json`. `TabApiTests.UpdateTab_WhenRefused_ServesTheProblemDocumentUnderTheProblemMediaType`
+keeps the negotiated case alongside the default one, so a fix that merely asked clients
+to negotiate would not satisfy it.
+
+
+### The published contract matches what the API accepts and answers
+
+**Artefacts** `Api/Extensions/ApplicationBuilderExtensions.cs`,
+`Api/Extensions/SwaggerExtensions.cs`.
+
+Four gaps between the document and the implementation, none of which changed a
+successful request.
+
+Refusals decided by ROUTING — an unmatched address, and a method a matched route does
+not accept — reached the caller with an empty body while every refusal decided further
+in carried a problem document, so a client had to special-case two statuses as bodiless
+before it could parse any error. Both now carry the standard document, added by a
+status-code stage that leaves alone any response already declaring a content type or a
+length; that boundary is what keeps the authentication challenge, the authorisation
+refusal and every controller problem exactly as they were. The `Allow` header survives.
+
+`405`, `413` and `415` were reachable and advertised nowhere, because none is produced
+by action code and the explorer can only describe what it can see. They are now
+declared: `405` on every operation, and `413` and `415` only on operations that accept
+a body, since neither can arise where there is no body to read.
+
+The paging contract has two DERIVED members, each reporting whether the caller supplied
+a sort field or a filter. Both were published as query parameters, so the document
+invited a caller to send a value the binder is guaranteed to discard. They are no longer
+published. Recognising them by the model metadata's read-only flag alone is a trap worth
+recording: a top-level action argument reports itself read-only too, because an argument
+has no setter, so the rule additionally requires the metadata to describe a PROPERTY and
+confines removal to the query string. Without both guards the filter removes every
+simple-typed route and query parameter in the document — which erases the identifier
+segments of the addresses themselves.
+
+An integral enumeration published as a bare list of numbers. The member names are now
+appended to the schema description in value order; the wire representation is untouched,
+because publishing names instead would change what the API accepts.
+
+**Behavioural difference to record.** Routing-decided `404` and `405` now carry a body
+where they previously carried none. A caller that supplied either derived paging member
+is unaffected — the value was ignored before and is ignored now.
+
+**Guarded by** `ResponseDeclarationContractTests`, whose transport-refusal fact asserts
+the body-conditional declarations in BOTH directions — declared where they can occur and
+absent where they cannot — plus
+`ProblemDetailsContractTests.RoutingDecidedRefusals_CarryTheProblemDocumentAndKeepTheirHeaders`
+and `PortalApiTests.DeleteOnThePortalCollection_IsNotAllowed`, which asserts the `Allow`
+header the status-code stage could have dropped.
+
+
+### Responses declare that they vary by origin
+
+**Artefacts** `Api/Middleware/OriginVaryMiddleware.cs`.
+
+The cross-origin policy names exactly one permitted origin, and the framework emits
+`Vary: Origin` only for a policy naming more than one. The header was therefore absent
+everywhere, which makes a shared cache free to serve one origin the
+`Access-Control-Allow-Origin` response computed for another — the header is
+origin-dependent whether or not the policy has one entry or several.
+
+The header is appended from a response-starting callback, and only when neither `*` nor
+`Origin` is already present, so it is emitted exactly once and an existing declaration
+is never duplicated. It is added ahead of the cross-origin stage so it applies to
+refusals and preflight responses as well as to successes.
+
+**Behavioural difference to record.** Every response carries `Vary: Origin`. No
+`Access-Control-*` header changes.
+
+**Guarded by** `CorsPolicyTests.EveryResponse_DeclaresThatItVariesByOrigin`, over an
+allowed origin, a disallowed origin, no origin and a preflight, asserting exactly one
+entry in each case.
+
+
+### Sign-in and refresh carry no authority, and now say so
+
+**Artefacts** `Api/Controllers/AuthController.cs`,
+`Application/Dtos/Auth/CurrentUserDto.cs`. No behaviour changes.
+
+The identity on the sign-in and refresh responses always carries empty role and
+permission collections. That is deliberate — the service builds an authority-minimised
+snapshot and `GET /api/v1/auth/me` is the endpoint that resolves authority, as of the
+moment it is asked — but nothing in the published contract said so, and the DTO's own
+documentation stated that an empty list means the caller holds none. A client reading
+either could only conclude the collections were unpopulated by mistake, and the obvious
+"fix" would have been to populate them.
+
+Authority is exactly the kind of fact that must not be cached in a client from a
+credential exchange. A role list handed out at sign-in stops being true the moment an
+assignment is withdrawn, yet a client holding one has every reason to trust it for the
+life of the session. Enforcement is the server's in every case — the authorisation
+policies re-read the caller's roles per request — so the collections are omitted rather
+than served stale, and the endpoint that does serve them is the one whose answer is
+fresh by construction.
+
+Both operations now state this in their published descriptions, and both DTO members
+record that an empty list means "holds none" ONLY on the current-user read.
+
+
+### The development overlay no longer relaxes framework logging
+
+**Artefacts** `Api/appsettings.Development.json`.
+
+The hosting layer's "Request starting" and "Request finished" entries embed the raw
+query string in their message templates. This API has query-backed reads whose natural
+search term is an email address, so an ordinary user lookup wrote a personal identifier
+into the log verbatim, against the requirement for structured logging with no sensitive
+data.
+
+Raising the framework channel to Warning is not a new restriction: `appsettings.json`
+already set it and `appsettings.Production.json` repeated it, so the development overlay
+was the only place that opted out of a default the rest of the configuration had already
+got right — which is why the defect existed in development and not in production, the
+shape of problem that ships because the safe environment is the one nobody tests.
+
+Nothing observable is lost. This API logs its own request completion at Information with
+the method, the route TEMPLATE, the status, the elapsed time, the correlation identifier
+and "query string present" as a BOOLEAN. That entry is what a developer reads, it
+survives at this level, and it is free of personal data by construction rather than by
+redaction. The overlay's own `Default: Debug` is unchanged.
+
+
+### Multiple Active Result Sets must stay off, and the template says why
+
+**Artefacts** `docker/.env.example`. No code changes.
+
+`MultipleActiveResultSets=True` is a common addition to a legacy DotNetNuke connection
+string and the template said nothing about it. The client library cannot create a
+transaction savepoint on a connection with the option enabled, and Entity Framework Core
+normally takes one before each save that runs inside an already-open transaction so that
+a failure unwinds only that save. With the option present it proceeds without one,
+recording `SavepointsDisabledBecauseOfMARS` and nothing else — no error, no failed
+request, just a weaker guarantee at the moment it is needed.
+
+This API has multi-step transactions that rely on it, portal removal above all: it opens
+a serialisable transaction and writes more than once inside it, removing the tenant's
+modules before the tenant. The option buys this API nothing in exchange, since it exists
+to allow several result sets to be open on one connection at once — a pattern of the
+ADO.NET layer this migration replaced.
+
+
+### Content-security headers belong to the proxy, not to the API
+
+**Artefacts** none. Recorded to close the question rather than to describe a change.
+
+The API returns JSON to a single-page application and serves no markup, and the
+technical specification assigns content-security headers to the reverse proxy.
+`docker/nginx.conf` emits `X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`, `Content-Security-Policy`, `Strict-Transport-Security`,
+`Cross-Origin-Opener-Policy`, `X-Permitted-Cross-Domain-Policies` and
+`Permissions-Policy`, repeated in each `location` that sets any header at all — nginx
+replaces rather than inherits a parent block's headers once a child sets one, so the
+repetition is required and its absence would be the defect.
+
+No header stage is added to the API. Emitting document-security headers from a JSON
+endpoint would put the same policy in two places with no mechanism keeping them in step,
+and the copy behind the proxy would be the one nobody observes.
+
+
 ## Domain enumerations
 ### `PermissionKey` — permission keys are strings, and the member name is the value
 
@@ -3746,6 +4228,18 @@ explicitly source-mapped. The obsolete parameterless `MsSqlBuilder` call was rep
 `new MsSqlBuilder(ContainerImage)`. The full 841-test integration suite passed both against the
 configured SQL Server and with `DNN_TEST_SQLSERVER` removed so that Testcontainers provisioned its
 own SQL Server.
+
+> **Superseded, and three claims in the paragraph above corrected.** Both client moves have since been
+> reverted to the plan's pins, and the last sentence overstated what was observed: with
+> `DNN_TEST_SQLSERVER` removed the suite did **not** fall back to Testcontainers — the container
+> route required an explicit `DNN_TESTS_USE_MSSQL` opt-in, so a run with neither variable set failed
+> closed instead. The third correction follows from the pin revert: `Testcontainers.MsSql` is back at
+> the inventory's **3.10.0**, that line exposes only the parameterless builder, so the call is
+> `new MsSqlBuilder().WithImage(ContainerImage)` rather than the 4.x
+> `new MsSqlBuilder(ContainerImage)` recorded above — the image is still pinned explicitly, which was
+> the point of naming it, and `BouncyCastle.Cryptography` is no longer resolved at all. See
+> *Test-harness remediation: the acceptance gates run unprepared, and two pins return to the plan* at
+> the end of this document for the measured behaviour, the reverted pins and the reasoning.
 
 The xUnit deprecation is a bounded accepted residual, not a runtime dependency. The AAP pins the
 2.9.3 test framework, and controlled `xunit.v3` trials produced 194 warnings-as-errors and contract
@@ -13056,3 +13550,278 @@ uses the one spelling the application reads, `Https__RedirectPort`.
 
 **Annotated in code at.** `docker/.env.example`, `docker/docker-compose.tls.yml`,
 `docker/nginx.tls.conf`, `docker/nginx.tls.conf.example`.
+
+## Test-harness remediation: the acceptance gates run unprepared, and two pins return to the plan
+
+Four findings from runtime testing of the backend build, test and configuration surface are closed
+here. All four concern the harness and the dependency inventory rather than production behaviour, so
+nothing in the request path changed; what changed is that the published commands now do what they
+say, and that the reviewed dependency graph again describes the build.
+
+### The gate commands required an environment variable no document named
+
+`dotnet test --configuration Release --filter "Category=Integration"` — the acceptance command,
+executed verbatim — refused to run on a host that had not already exported either
+`DNN_TEST_SQLSERVER` or `DNN_TESTS_USE_MSSQL`. Every selected fact failed, not skipped, with
+`no provider was selected`, because `TestDatabaseFactory.SelectProvider` recognised exactly two
+opt-in variables and treated their absence as an instruction to refuse. Neither variable was
+mentioned in `README.md`, so the only way to learn of them was to read the failure — and anyone
+following the published instructions saw a red suite with no way to distinguish an unconfigured host
+from a broken migration.
+
+Failing closed was itself a deliberate and defensible choice, argued at length in that file: the
+accounts these tests sign in as live in the external `aspnet_*` membership tables, the credential
+store answers "unavailable" on any provider that is not SQL Server, and a permissive substitute
+would report a pass while the behaviour under test had silently stopped executing. That reasoning
+survives intact. What it did not justify was refusing when a database *could* have been provisioned
+honestly.
+
+`SelectProvider` now decides in five steps, and the whole decision still lives in that one
+side-effect-free member:
+
+1. `DNN_TESTS_USE_MSSQL` truthy — start a throwaway SQL Server container. An explicit request
+   outranks everything, including a configured server, because that is the only way to exercise the
+   container route on a host that has one.
+2. `DNN_TEST_SQLSERVER` set — create the run's database on that server. The preferred route: fastest,
+   and it needs no container runtime.
+3. `DNN_TESTS_USE_MSSQL` falsey (`0`, `false`, `no`, `off`) with no server configured — refuse. An
+   explicit "off" is a veto, and it also vetoes step 4, which is why the variable is read as three
+   states rather than as a boolean.
+4. Nothing configured either way, and a container runtime reachable — start a throwaway container.
+   **This step is the fix.**
+5. Nothing configured and no runtime reachable — refuse, with one diagnosis naming both routes.
+
+Step 4 is discovery, not guesswork, and the distinction is the one an earlier revision got wrong: it
+started a container whenever the server variable happened to be absent, so a run on a host with no
+daemon spent minutes failing inside container plumbing and reported that plumbing as the cause when
+the real cause was a missing variable. Here a runtime is confirmed reachable first —
+`IsContainerRuntimeReachable` looks for `DOCKER_HOST`, `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`, and
+the well-known Docker and Podman sockets — the selected route travels with the provisioning call so a
+failure can say whether the container was asked for or discovered, and a host with neither route
+still gets one actionable message rather than a socket error repeated once per test. The two refusal
+messages were also separated, because "explicitly off" and "nothing found" have different remedies
+and different evidence: the veto path now reports that nothing was probed, instead of claiming a
+measurement it never took.
+
+Measured after the change, in a shell with no `DNN_*` variable set: the reported reproduction
+(`--filter "Category=Integration&FullyQualifiedName~HealthCheckTests"`) passes 16 of 16 where it had
+failed 16 of 16; the full `Category=Integration` gate passes **1220 of 1220** in 2 m 42 s; and the
+whole suite passes **2770 unit plus 1220 integration, nothing skipped**. With the container socket
+masked in a private mount namespace the run still refuses, proving the probe measures the host rather
+than always answering yes; with `DNN_TEST_SQLSERVER` set and that socket masked the suite passes in
+three seconds, proving the configured-server route needs no runtime at all; and with both variables
+set a throwaway container is still started, proving the explicit request outranks a configured
+server. No throwaway database and no orphaned container survived any of those runs.
+
+### Two client pins return to the values the plan names
+
+`Microsoft.Data.SqlClient` goes back from 6.1.6 to **5.2.3**, and `Testcontainers.MsSql` from 4.13.0
+to **3.10.0**. Both had been raised to shed transitive identities that NuGet's deprecation listing
+reports; both are reverted, because the plan pins those versions explicitly and its rejected-version
+list names 4.13.0 by number.
+
+The trade-off is recorded rather than absorbed. Deprecation carries no `NU` diagnostic, so it never
+failed a build and never could, and the graph it concerns is the client's Entra ID authentication
+path, which this delivery does not use: every connection string here authenticates with a SQL login.
+The position the warnings-as-errors policy *can* observe is the vulnerability inventory, and it is
+clean — restoring the solution with auditing enabled at `all`/`low` reports zero advisories against
+either pin or anything they bring in, and the audit was proven live by a control experiment that
+introduced a known-vulnerable package and saw it reported. The 3.10.0 container route was
+re-verified against this host's Docker Engine rather than assumed compatible: a throwaway
+SQL Server 2022 CU26 started in under ten seconds and answered a query. Its transitive chain —
+`Docker.DotNet`, `SSH.NET`, `SshNet.Security.Cryptography`, `SharpZipLib`, `Newtonsoft.Json` — was
+already claimed by the repository's package-source mapping, so no new identity entered the trust
+surface; `BouncyCastle.Cryptography`, which arrived with 4.13.0, leaves it. Should a deployment ever
+need Entra ID authentication, the client version is raised there deliberately, with its audit
+position re-verified in the same change.
+
+### The in-memory and SQLite providers stay referenced, and stay unexercised
+
+`Microsoft.EntityFrameworkCore.InMemory` and `Microsoft.EntityFrameworkCore.Sqlite` are referenced by
+the integration-test project and selected by nothing: there is no `UseInMemoryDatabase` or `UseSqlite`
+call anywhere in the repository. Runtime testing raised that as a dead dependency and offered two
+resolutions — implement the route, or remove the references.
+
+Both references are **kept**, because the plan's dependency inventory approves them for this project
+by name and version, and narrowing an approved set is not a licence this remediation has. What the
+finding is really about — that the capability those packages were meant to provide, a gate that runs
+with no database prepared, did not exist — is closed by discovery instead, and closed more honestly
+than a permissive provider could: the gates now provision a real SQL Server wherever one can be
+provisioned, so the behaviour they assert is the behaviour that executes.
+
+Their unexercised status is therefore deliberate and is now stated at both points of departure, in
+`TestDatabaseFactory` and in the project file. Adopting either provider later is a piece of work
+rather than a switch: it needs a SQLite-dialect schema for tables the legacy DDL chain only ever
+alters, a substitute for the external membership store the personas sign in through, and
+provider-aware expectations for the facts that assert declared column types against the relational
+catalogue.
+
+One consequence is worth naming, because it is the price of keeping the SQLite reference. That
+package resolves the native `SQLitePCLRaw.lib.e_sqlite3` 2.1.6, which carries a high-severity
+advisory, and no patched release exists on the line EF Core 8.0.29 selects. The direct
+`SQLitePCLRaw.bundle_e_sqlite3` 2.1.12 pin is what keeps the restore clean, and it is therefore
+load-bearing rather than housekeeping — measured: removing it reproduces the advisory as a restore
+warning, which this solution's policy promotes to a build error. Removing the SQLite reference would
+remove the need for the pin as well; that is a change to the approved inventory and belongs to
+whoever owns it, not here.
+
+### Two documentation claims that runtime testing disproved
+
+`README.md` asserted that the Development overlay carries a clearly labelled development-only
+`Jwt:Secret`. It does not, and no other overlay does either: `appsettings.json` ships the key blank
+and the host refuses to start until a value arrives from the environment or a secret store. The
+shipped behaviour is the safer one, so the documentation now describes it — there is no committed
+signing key anywhere in this repository, in any environment. The same section now also documents the
+test-database routes beside the gate commands they govern, and the prerequisites table states what
+the integration suite actually needs: a SQL Server, or a container runtime it can start one with.
+
+## QA remediation: four persistence findings, and the four behavioural differences that closing them introduced
+
+A persistence-layer QA pass executed 4,186 cases against SQL Server 2022 and returned four MAJOR
+findings, every one of which the shipped test suites had passed. That combination is the interesting
+part: 2,770 unit tests and 1,220 integration tests were green while three of the four defects were
+actively corrupting or hiding data, because each suite's fixture had been written to the behaviour the
+code had rather than to the behaviour the terminal legacy schema demands. Closing the findings
+therefore meant changing assertions as well as code, and each such change is recorded below with the
+evidence that made the old assertion wrong.
+
+### The integration fixture drifted from the terminal schema in three columns, and the drift hid real defects
+
+`backend/tests/DnnMigration.IntegrationTests/Schema/DnnSchema.sql` is the only place the integration
+suite learns what the legacy schema looks like, so a column declared there more narrowly than the
+88-script upgrade chain leaves it makes the suite reject writes the real database accepts. Three
+columns had drifted, and each was checked against the script that last touched it rather than against
+the baseline:
+
+- `PortalAlias.HTTPAlias` was `NOT NULL` in the fixture. `02.02.02.SqlDataProvider:L3805-L3808`
+  recreates the table with `[HTTPAlias] [nvarchar] (200)` and no `NOT NULL` clause, and no later
+  script constrains it. The column is nullable in the terminal schema.
+- `ModuleControls.ControlKey` was `nvarchar(20)`. `02.02.00.SqlDataProvider:L459-L460` is
+  `ALTER COLUMN ControlKey [nvarchar] (50)`, and it is the only `ALTER` the column receives.
+- `Permission.PermissionKey` was `varchar(20)`. `04.06.00.SqlDataProvider:L393-L398` widens it under
+  the comment "enlarge permission key field" to `varchar(50) not null`.
+
+The entity configurations were already correct in all three cases — the model declared the nullable
+alias and both fifty-character keys — so the fixture, not the mapping, was the thing that had to
+move. The consequence of leaving it was not merely a missing test: a fixture that refuses a legally
+storable value cannot distinguish "the code is wrong" from "the fixture is wrong", so the suite could
+never have caught a regression in any of those three columns.
+
+Two tests were added that make the class of drift unrepeatable rather than fixing three instances of
+it. One sweeps **every mapped column** and compares the model's `IsColumnNullable` against
+`INFORMATION_SCHEMA.COLUMNS.IS_NULLABLE`; the other sweeps **every mapped text column** and compares
+each declared `GetMaxLength()` against `CHARACTER_MAXIMUM_LENGTH`. A drift in any column, not just
+these three, now fails a test. Worth recording because it cost a false result on the way: for
+national character types `CHARACTER_MAXIMUM_LENGTH` is already a **character** count, not a byte
+count — `CHARACTER_OCTET_LENGTH` is the byte count — so halving it for `nvarchar` produced two
+spurious mismatches before the conversion was removed.
+
+### A real zero-valued identity now updates in place, because `DbSet.Update` reads key zero as "unsaved"
+
+`DbSet.Update` and `DbSet.Attach` decide between `Added` and `Modified` by asking whether the key is
+set, and for an `int` key "set" means "not zero". That test is safe in most schemas and unsafe in this
+one. `dbo.Roles`, `dbo.RoleGroups`, `dbo.Tabs` and `dbo.Modules` are all `IDENTITY(0, 1)`
+(`01.00.00.SqlDataProvider:L114`, `03.02.03.SqlDataProvider:L18`, `L140`, `L221`), and `dbo.Portals`
+is `IDENTITY(-1, 1)` (`01.00.00.SqlDataProvider:L77`) so its second row is numbered zero. A detached
+entity carrying one of those keys was therefore staged as an INSERT: the addressed row kept its old
+values, a duplicate appeared beside it, and nothing failed.
+
+Every affected update member now assigns `EntityEntry<T>.State` explicitly, which states the intent
+instead of inferring it — the pattern `ModuleRepository.UpdateAsync` already used, which is why the
+module aggregate was the one the QA pass found intact. `TabRepository.UpdateOrderAsync` needed the
+same correction in its other half: it attached the row and then marked four positional properties,
+so the attach itself had to become a state assignment to `Unchanged` before the four flags could
+mean anything.
+
+The second hazard is subtler and is the reason the change reaches further than the five members the
+finding named. `DbSet.Update` **walks the navigation graph** and applies the same zero test to
+everything it reaches, so a member updating an entity with a perfectly ordinary key could stage a
+duplicate of a zero-keyed relative. `PortalAliasRepository.UpdateAsync` reaches `Portals`,
+`PermissionRepository`'s grant updates reach `Modules` and `Tabs`, and `RoleRepository`'s assignment
+update reaches the `Role` that every read of it includes. All four were converted as well. There is
+now no `DbSet.Update` or `DbSet.Attach` call anywhere in the repository layer.
+
+The service-level amplification is worth stating because it is how the defect would have reached a
+user: reordering pages calls the order-update member on each moved page's siblings, so editing an
+ordinary page duplicated the sibling numbered zero — the site's own home page in a default
+installation.
+
+### An unrecognised stored billing code is now carried through unchanged, and the read no longer normalises it
+
+`Roles.BillingFrequency` and `Roles.TrialFrequency` are `char(1)`, and the installation seeds two
+values the enumeration does not declare: `'4'` on the Administrators role
+(`01.00.00.SqlDataProvider:L7192`) and `'0'` on Registered Users (`L7194`). The check constraint that
+had restricted the column, `FK_Roles_CodeFrequency`, is dropped for good at
+`03.00.01.SqlDataProvider:L1297` with no replacement, so any character is storable and real
+installations store characters outside the vocabulary.
+
+The value converter's read arm ended `Enum.IsDefined(candidate) ? candidate : BillingFrequency.None`,
+which turned every such character into `'N'` in memory. On its own that is a read-side inaccuracy;
+combined with an update member that wrote every column of the entity it was handed, it was silent
+data destruction — reading a role and editing its description rewrote both billing columns to `'N'`.
+
+The read is now lossless, and it can be lossless exactly because of how the enumeration was defined:
+`BillingFrequency` is `ushort`-backed and **each member's value is its own legacy code point**
+(`None` is `'N'` is 78, and so on for `'O'`, `'D'`, `'W'`, `'M'`, `'Y'`). `(BillingFrequency)stored[0]`
+is therefore a faithful representation of any single character, declared or not, and the write arm
+already emitted the code point back.
+
+Two things follow that are worth recording as differences rather than fixes. First, the lossy
+fallback was **not behaviour-preserving in the first place**, which is why restoring the raw value is
+the conservative choice and not the adventurous one: the legacy subscription engine decided whether a
+trial governs an expiry with `TrialFrequency.ToString() <> "N"` (`RoleController.vb:L521`), a
+predicate an undeclared character SATISFIES, so normalising to `None` flipped a live business
+decision. The derivation switch already ended in a default arm mirroring the legacy `Case Else`, so
+it needed no change once the value stopped being normalised. Second, the JSON boundary had to move
+with it. The outbound writer refused any undeclared code, so a legacy row holding `'4'` would have
+failed to serialise; it now emits the character. Inbound parsing enforces **shape only** — a
+non-empty, single-character string token — and the closed vocabulary is enforced by the `IsInEnum`
+rules already present on the create and update requests. That asymmetry is deliberate and was forced
+by measurement: the same converter serves both directions, so a strict parser meant the API could not
+deserialise its own output, and moving the vocabulary check to the validators also turns a bare
+`JsonException` into a problem-details response that names the offending field.
+
+### The first tenant an installation has is no longer mistaken for the host profile scope
+
+`ProfilePropertyDefinition.PortalID` starts life `NOT NULL`, with `-1` denoting the declarations
+shared across an installation. `03.03.03.SqlDataProvider:L74-L83` widens the column and migrates the
+stored rows with `SET PortalId = NULL WHERE PortalId = -1`, so **a SQL null is the only host encoding
+the terminal schema has**. The legacy provider still accepted `-1` from callers and wrapped it with
+`GetNull` before every scoped read (`SqlDataProvider.vb:L1021`, `L1039`, `L1042`, through
+`Null.GetNull` at `L325-L326` and `Null.vb:L167-L170`), and the migration reproduced that wrapper as
+a repository constant, `HostPortalId = -1`, over a non-nullable parameter.
+
+That is unsafe in this schema for one reason: `dbo.Portals.PortalID` is `IDENTITY(-1, 1)`, so `-1` is
+the **first real tenant** an installation has. Rewriting it into `PortalID IS NULL` failed in both
+directions at once — that tenant could not read its own declarations or the answers to them, and
+every one of its requests was served another scope's rows. The route that reaches these members
+resolves an actual tenant from the request's alias and never asks for a host scope, host-level
+administration being out of scope, so `-1` arriving here always meant a tenant and was always
+misread.
+
+The scope is now expressed the way the column expresses it. The five scoped repository members take
+`int?`: null selects the rows whose portal is SQL null, and every non-null value — `-1` and `0`
+included — is an exact tenant key. Three consequences are deliberate:
+
+- **The create mapper no longer translates either.** It used to rewrite an incoming `-1` into a null
+  scope, which filed a real tenant's declaration where that tenant's own read could never find it, so
+  a create and the read after it disagreed. Every scope is now written exactly as given.
+- **The response contract keeps the legacy `-1`, outbound only.** `ProfilePropertyDefinitionDto`
+  deliberately keeps a non-nullable `int` and publishes `-1` for a null scope, because that is what
+  the legacy class published and Rule T7 preserves an externally observable sentinel at the boundary.
+  The encoding is lossy in exactly one respect, stated rather than concealed: a declaration owned by
+  a tenant numbered `-1` and a host-level declaration both read as `-1` in that member. No read that
+  reaches the projection mixes the two, because every one is scoped to a single resolved tenant.
+- **Host-scoped declarations are not reachable through the API.** They were previously reachable
+  only by a request naming `-1`, which is to say only by the collision itself. Reaching them
+  deliberately would be host-level administration, which the plan excludes.
+
+Two integration fixtures had encoded the collision and were corrected rather than preserved. The
+repository suite's scope test asserted that a request for `-1` returns the host rows; it now installs
+**both** a null-scoped and a literal `-1` row, proves by raw SQL that they really are stored under
+different scopes, and asserts each read member in both directions. The sign-in suite's
+required-profile tests installed their declaration with a null portal — its own commentary says the
+declaration belongs "on the tenant", and the null was there only because `-1` used to reach null rows
+— so both now scope it to the resolved tenant, which also stops the host-exemption assertion beside
+it from becoming vacuous.
+

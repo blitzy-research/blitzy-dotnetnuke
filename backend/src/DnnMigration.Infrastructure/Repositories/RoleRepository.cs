@@ -2,6 +2,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
@@ -248,6 +249,42 @@ internal sealed class RoleRepository : IRoleRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// A role this repository handed out is already tracked, so its modifications are staged by the
+    /// change tracker and this call is the caller's explicit statement of intent. A DETACHED instance -
+    /// one rebuilt outside this context - is attached and marked modified so that the same call serves
+    /// both origins. Nothing is written either way.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the detached branch ASSIGNS THE STATE and must never call <c>DbSet.Update</c>, for two
+    /// independent reasons that both make <c>Update</c> unsafe on THIS entity.
+    /// </para>
+    /// <para>
+    /// First, the key. <c>Update</c> chooses between <c>Added</c> and <c>Modified</c> by asking whether
+    /// the key "is set", and it reads an <see cref="int"/> key of 0 as unset. <c>dbo.Roles.RoleID</c> is
+    /// declared <c>IDENTITY(0, 1)</c> (<c>01.00.00.SqlDataProvider:L115</c>, re-declared by both rebuilds
+    /// at <c>01.00.04:L1322</c> and <c>01.00.05:L2748</c>), so 0 is the ADMINISTRATORS role of every
+    /// installation and the target of <c>Portals.AdministratorRoleId</c>. Calling <c>Update</c> on it
+    /// staged an INSERT, duplicated the most privileged role in the installation under a new key and left
+    /// the addressed row unchanged while reporting success.
+    /// </para>
+    /// <para>
+    /// Second, the graph. <c>Update</c> traverses the navigation graph and marks everything it reaches,
+    /// and every read on this repository <c>Include</c>s <see cref="Role.RoleGroup"/> - whose own key is
+    /// likewise <c>IDENTITY(0, 1)</c>. So a detached role carrying group 0 duplicated the GROUP as well,
+    /// and a tracked role carrying an already-tracked group failed outright. Assigning
+    /// <see cref="EntityState.Modified"/> attaches this entity alone, marks its scalar properties
+    /// modified and consults neither the key nor the graph.
+    /// </para>
+    /// <para>
+    /// Leaving a TRACKED role to the change tracker rather than re-marking it is load-bearing too, and
+    /// not merely tidier: it keeps the emitted statement to the columns the caller actually changed. That
+    /// is what stops an unrelated edit - a new description, say - from rewriting
+    /// <c>BillingFrequency</c> and <c>TrialFrequency</c>, whose <c>char(1)</c> columns a legacy
+    /// installation may hold characters in that no vocabulary declares.
+    /// </para>
+    /// </remarks>
     public Task UpdateAsync(Role role, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(role);
@@ -255,8 +292,35 @@ internal sealed class RoleRepository : IRoleRepository
 
         // Staged explicitly rather than left to change detection alone, so that the call behaves
         // identically whether the caller mutated a tracked entity or rebuilt a detached one.
-        _context.Roles.Update(role);
+        //
+        // MIGRATION: the state is ASSIGNED and DbSet.Update is deliberately not used. DbSet.Update
+        // infers Added when a store-generated int key equals 0, and dbo.Roles.RoleID is declared
+        // IDENTITY(0, 1) (01.00.00.SqlDataProvider:L115, DnnSchema.sql:260), so 0 is the real first role
+        // of a tenant - by convention its Administrators role. Every read on this repository is tracked,
+        // which is what kept DbSet.Update correct here in practice; assigning the state removes the
+        // dependence on that, so a detached role rebuilt by a caller, a seeder or a test is UPDATED
+        // rather than duplicated. Assignment also stages this entity ALONE: DbSet.Update walks the
+        // navigation graph and applies the same key test to everything it reaches, which for a role
+        // means the assignments and the group hanging off it. Same -1/0 sentinel collision as
+        // dbo.Tabs, dbo.Portals, dbo.RoleGroups and dbo.Modules.
+        SetModified(_context.Entry(role));
         return Task.CompletedTask;
+    }
+
+    /// <summary>Stages one entity as a full-row update without consulting its key.</summary>
+    /// <param name="entry">The change-tracker entry for the entity being staged.</param>
+    /// <remarks>
+    /// Shared by the two write members whose tables are seeded at zero. A tracked entry is left to the
+    /// change tracker, whose narrower set of pending modifications this must not widen; a detached entry
+    /// is attached as modified in full. Assignment is what avoids <c>DbSet.Update</c>'s key inference,
+    /// which treats a store-generated key of 0 as "unset" and stages an insert.
+    /// </remarks>
+    private static void SetModified(EntityEntry entry)
+    {
+        if (entry.State is EntityState.Detached)
+        {
+            entry.State = EntityState.Modified;
+        }
     }
 
     /// <inheritdoc />
@@ -323,12 +387,28 @@ internal sealed class RoleRepository : IRoleRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the detached branch ASSIGNS THE STATE for the same reason
+    /// <see cref="UpdateAsync(Role, CancellationToken)"/> does, and the collision is if anything sharper
+    /// here. <c>DbSet.Update</c> reads an <see cref="int"/> key of 0 as unset, and
+    /// <c>dbo.RoleGroups.RoleGroupID</c> is declared <c>IDENTITY(0, 1)</c>
+    /// (<c>03.02.03.SqlDataProvider:L18</c>, re-declared at <c>04.00.04.SqlDataProvider:L51</c>), so a
+    /// portal's FIRST group is numbered zero - and unlike a role, a group has no seeded name a caller
+    /// could recognise a duplicate of. Renaming group 0 therefore created a second group and left the
+    /// first one exactly as it was. Assigning <see cref="EntityState.Modified"/> attaches this entity
+    /// alone and consults neither the key nor the roles that point at it.
+    /// </remarks>
     public Task UpdateRoleGroupAsync(RoleGroup roleGroup, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(roleGroup);
         cancellationToken.ThrowIfCancellationRequested();
 
-        _context.RoleGroups.Update(roleGroup);
+        // MIGRATION: the state is ASSIGNED rather than inferred, for the reason recorded on
+        // UpdateAsync above: dbo.RoleGroups.RoleGroupID is declared IDENTITY(0, 1)
+        // (03.02.03.SqlDataProvider:L18, re-declared at 04.00.04.SqlDataProvider:L51, mirrored by the
+        // fixture at DnnSchema.sql:135), so a tenant's first group is numbered zero and DbSet.Update
+        // would read that key as "unset" and stage an insert for a detached instance.
+        SetModified(_context.Entry(roleGroup));
         return Task.CompletedTask;
     }
 
@@ -551,12 +631,29 @@ internal sealed class RoleRepository : IRoleRepository
     /// The legacy member could rewrite only the two dates; passing the entity also lets the
     /// trial-used flag be persisted, which the cancellation path depends on.
     /// </para>
+    /// <para>
+    /// MIGRATION: the staging ASSIGNS THE STATE and must not call <c>DbSet.Update</c>. <c>Update</c>
+    /// walks the navigation graph and decides Added-versus-Modified for everything it reaches by asking
+    /// whether the key "is set", reading an <see cref="int"/> key of 0 as unset. An assignment carries
+    /// <see cref="UserRole.Role"/>, which every read here <c>Include</c>s and whose
+    /// <c>dbo.Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> (<c>01.00.00.SqlDataProvider:L115</c>), so a
+    /// detached assignment to the administrators role would have DUPLICATED that role instead of merely
+    /// recording the assignment's dates. <c>UserRoleID</c> is itself <c>IDENTITY(1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L239</c>), so the assignment row's own key is never at risk - the
+    /// hazard is entirely in what the graph reaches. Assigning <see cref="EntityState.Modified"/>
+    /// attaches this row alone.
+    /// </para>
     /// </remarks>
     public Task UpdateUserRoleAsync(UserRole userRole, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userRole);
 
-        _context.UserRoles.Update(userRole);
+        EntityEntry<UserRole> entry = _context.Entry(userRole);
+
+        if (entry.State is EntityState.Detached)
+        {
+            entry.State = EntityState.Modified;
+        }
 
         return Task.CompletedTask;
     }

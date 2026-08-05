@@ -3,6 +3,7 @@ using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
@@ -704,9 +705,27 @@ internal sealed class PortalRepository : IPortalRepository
         // the detached read members - is attached and marked modified so the same call works for it
         // too, which keeps the contract honest for a caller that did not obtain the entity from the
         // tracked entry point. Nothing is written either way.
-        if (_dbContext.Entry(portal).State is EntityState.Detached)
+        //
+        // MIGRATION: the detached branch ASSIGNS THE STATE and must never call DbSet.Update, and that
+        // is a correctness requirement of this schema rather than a stylistic preference. DbSet.Update
+        // chooses between Added and Modified by asking whether the key "is set", and it reads an int
+        // key of 0 as unset. dbo.Portals.PortalID is declared IDENTITY(-1, 1)
+        // (01.00.00.SqlDataProvider:L77, re-declared by the Tmp_Portals rebuild at
+        // 01.00.05.SqlDataProvider:L1366, and mirrored by the fixture at DnnSchema.sql:51), so the
+        // FIRST TWO tenants of an installation bear -1 and 0 - which means Update(portal) on a detached
+        // portal 0 staged an INSERT, silently duplicated the tenant under a freshly generated key and
+        // left the addressed row exactly as it was, while still reporting success. Assigning
+        // EntityState.Modified attaches the instance and marks its scalar properties modified without
+        // consulting the key at all, and without walking the navigation graph - which a portal, whose
+        // aliases, roles, pages and modules all hang off it, is the worst possible entity to have
+        // walked. This is the same -1/0 sentinel collision the migration analysis records, and it is
+        // shared by dbo.Tabs, dbo.Roles, dbo.RoleGroups and dbo.Modules: here 0 and -1 are values,
+        // never absences.
+        EntityEntry<Portal> entry = _dbContext.Entry(portal);
+
+        if (entry.State is EntityState.Detached)
         {
-            _dbContext.Portals.Update(portal);
+            entry.State = EntityState.Modified;
         }
 
         return Task.CompletedTask;

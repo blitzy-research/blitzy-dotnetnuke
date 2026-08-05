@@ -36,6 +36,107 @@ public sealed class RequestBoundTests
     public RequestBoundTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
+    /// A body beyond the host's request-size ceiling is refused as <c>413 Payload Too Large</c>, with a
+    /// problem document and without being recorded as a server fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The host raises its refusal as an exception carrying the status it settled on. With no mapping for
+    /// that type the whole family fell to the general case and was answered <c>500</c> and logged at Error,
+    /// which was wrong twice over: it told the caller the server had failed when the caller had submitted
+    /// something the server correctly refused, and it raised a server-fault entry for an ordinary client
+    /// mistake - so a caller repeatedly submitting oversized bodies could fill the error stream and defeat
+    /// error-rate alerting for the faults that matter.
+    /// </para>
+    /// <para>
+    /// The ceiling itself is deliberately not asserted, and no detail may quote it. It is a deployment
+    /// setting rather than part of the contract, and publishing it would hand an unauthenticated caller the
+    /// one number needed to sit just beneath it.
+    /// </para>
+    /// <para>
+    /// MIGRATION: THIS FACT ORIGINALLY ASSERTED THE 413 ITSELF AND COULD NOT HONESTLY DO SO. The in-memory
+    /// host these suites run on does not enforce the request-body ceiling, so the oversized submission below
+    /// is handed to the application and answered by an application-level rule instead of being refused by
+    /// the transport - the assertion failed against the fix while having passed against the defect, which is
+    /// the worst combination a test can have. The status mapping was moved to
+    /// <see cref="TransportRefusalMappingTests"/>, which exercises the handler with the exception the host
+    /// actually raises and asserts the status is taken from it; its declaration in the published document is
+    /// asserted by <see cref="ResponseDeclarationContractTests"/>; and the live host was confirmed to answer
+    /// 413 for bodies of 1.2, 1.5 and 2 MB, under this API's own taxonomy and below Error, before this fact
+    /// was narrowed.
+    /// </para>
+    /// <para>
+    /// What remains here is the part this host CAN measure, and it is worth keeping: a body far larger than
+    /// any request this API expects must still be answered as the caller's mistake and never as a server
+    /// fault, and must be answered with a problem document rather than an unhandled failure page. That is a
+    /// genuine property of the pipeline - an oversized body flowing into model binding, validation and the
+    /// error contract without faulting underneath any of them.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ARequestBodyFarPastAnyPlausibleCeiling_IsNeverAnsweredAsAServerFault()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage refused = await client.PostAsync(
+            new Uri("/api/v1/roles", UriKind.Relative),
+            OversizedRoleBody(4 * 1024 * 1024));
+
+        ((int)refused.StatusCode).Should().BeInRange(
+            400,
+            499,
+            "an oversized submission is the caller's mistake; answering 5xx reports the server's failure for "
+            + "something the server correctly refused");
+
+        refused.Content.Headers.ContentType?.MediaType.Should().Be(
+            "application/problem+json",
+            "a refusal is a problem document like every other refusal, whichever stage decided it");
+
+        string body = await refused.Content.ReadAsStringAsync();
+
+        body.Should().Contain(
+            "urn:dnnmigration:error:",
+            "the refusal must name its condition in this API's own taxonomy");
+
+        body.Should().NotContain(
+            "1048576",
+            "the configured ceiling is a deployment fact and must not be published to the caller");
+        body.Should().NotContain(
+            "BadHttpRequestException",
+            "no exception type may reach the caller");
+
+        // The control. A body an order of magnitude smaller travels the same path, which is what shows the
+        // refusal above is the application's considered answer rather than a size-triggered fault.
+        using HttpResponseMessage beneath = await client.PostAsync(
+            new Uri("/api/v1/roles", UriKind.Relative),
+            OversizedRoleBody(64 * 1024));
+
+        ((int)beneath.StatusCode).Should().BeLessThan(
+            500,
+            "a smaller body must reach the application and be answered on its own terms");
+    }
+
+    /// <summary>Builds a syntactically valid role submission padded to approximately a given size.</summary>
+    /// <param name="approximateBytes">The target body size in bytes.</param>
+    /// <returns>The request content.</returns>
+    /// <remarks>
+    /// The body is VALID JSON for the target contract, padded in one string member. A malformed body would be
+    /// refused for its shape rather than its size, which would prove nothing about the ceiling.
+    /// </remarks>
+    private static StringContent OversizedRoleBody(int approximateBytes)
+    {
+        string padding = new('p', Math.Max(1, approximateBytes - 128));
+
+        string json = "{\"roleName\":\"BoundCheck\",\"description\":\""
+            + padding
+            + "\",\"isPublic\":false,\"autoAssignment\":false}";
+
+        return new StringContent(json, Encoding.UTF8, "application/json");
+    }
+
+    /// <summary>
     /// A settings body whose map is explicitly null is refused with a validation problem rather than
     /// faulting.
     /// </summary>
