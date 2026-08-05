@@ -12376,3 +12376,319 @@ competitor after it. Measured after the fix: a focused row changes **7548 pixels
 border box and exactly zero outside it**, the inward band is 100% continuous along the top and
 99.68% along the bottom with the shortfall being antialiasing of the container's own corner radius,
 and the three controls that must keep the outward ring still have it.
+
+
+## Review remediation: the profile family's two request bodies, and the affordance one of them made impossible
+
+**Targets:** `frontend/src/app/core/models/profile.model.ts`,
+`frontend/src/app/features/user/user-profile/user-profile.component.ts`,
+`frontend/src/app/features/user/profile-definition-list/profile-definition-list.component.{ts,html}`
+
+A wire-seam review found the client's profile write shapes disagreeing with the request
+contracts the API binds, in two ways that no compiler on either side can see. Both are
+recorded here because closing the second one removed a control an operator could see.
+
+### The profile replace payload names its collection `properties`, not `values`
+
+`PUT /api/v1/users/{userId}/profile` binds `UserProfileDto` — the same type the matching
+read returns, because a replace and a read of the whole profile are one contract on the
+server rather than two. That type declares `UserId` and `Properties`. The client declared
+`userId` and `values`, and the profile editor assembled `values` to match it.
+
+That is not a tolerated near-miss. The API's request deserialiser is configured to
+**refuse** an undeclared member rather than to discard it, so the payload would have been
+answered `400` naming `values` while the required `properties` was absent — every profile
+save on the screen, not an edge case. The member is renamed on the contract and at the one
+site that builds it. The editor's own grouping still calls its local member `values`,
+which is correct: that is a view model of the component's and never crosses the wire.
+
+### One client shape cannot serve both declaration verbs
+
+The client declared a single `ProfilePropertyDefinitionSubmission` used for both the
+create and the replace of a profile declaration. The API binds two distinct contracts
+there, and the reason is in the terminal procedures rather than in a style preference:
+`AddPropertyDefinition` (`04.06.00.SqlDataProvider:L1101`) declares `@ModuleDefId` and
+`UpdatePropertyDefinition` (`04.05.00.SqlDataProvider:L1685`) neither declares it nor
+names the column in its `SET` list. A module association can therefore be established
+when a declaration is made and never afterwards — which is already recorded above, where
+the two server contracts were split for exactly this reason.
+
+The single shared shape is replaced by three declarations mirroring the server's own
+split: the nine members both verbs carry, a create shape adding the module association,
+and a replace shape that is the shared set exactly. The consequence worth stating is the
+one a naive fix gets wrong: adding `moduleDefId` to a *shared* shape would have made every
+replace fail, because the replace contract does not declare it. The create arm of the
+editor adds the member; nothing else does, and it sends `null` because the screen offers
+no module picker — as the legacy editor did not either. `0` would have been wrong in any
+case, since `dbo.ModuleDefinitions.ModuleDefID` is `IDENTITY(1, 1)`.
+
+### A visibility control was removed from the declaration editor
+
+This is the behavioural difference, and it is a **reduction in a visible affordance**, so
+it is stated plainly rather than folded into the paragraph above.
+
+The declaration editor offered a "Visible to" dropdown bound to a `visibility` member of
+the shared submission. No write contract declares that member, for the reason already
+recorded above: `ProfilePropertyDefinition` has no visibility column at any point in the
+88-script chain, the stored per-account counterpart lives on `UserProfile`, and the value
+a declaration *reports* is a default hint the API derives from the "User Accounts" module
+setting `Profile_DefaultVisibility`. Because the deserialiser refuses an undeclared
+member, the control did not merely have its value ignored — it made **every** create and
+every edit from that screen fail with `400`.
+
+The control is therefore removed rather than silently emptied, because a control whose
+value is collected and then discarded is worse than no control: it tells an operator a
+choice was recorded when nothing was. Two facts make the removal parity rather than loss.
+The legacy editor, `Website/admin/Users/EditProfileDefinition.ascx`, offered no visibility
+control at all — its steps are an introduction, a list step and a localisation step, and
+the only dropdown in the markup selects a locale. And the value remains **visible**: the
+grid's "Visible to" column still renders each declaration's resolved hint, which is the
+read a maintainer of the catalogue actually needs.
+
+Setting the per-tenant default remains a module-setting decision, exactly where the API
+derives it from. Nothing about this change alters what any account's own profile answer
+can be set to; per-answer visibility is a member of the profile write and is untouched.
+
+### What now prevents both defects from returning
+
+Neither defect is visible to a compiler, so both are pinned by key rather than by type.
+The profile editor's suite asserts the submitted object's key set is exactly
+`['properties', 'userId']`; the declaration editor's suite asserts the create payload's
+ten keys and the replace payload's nine, asserts `moduleDefId` is absent from the replace
+shape and `visibility` from both, and asserts the editor renders no visibility control.
+
+
+## Review remediation: the client's failure-code vocabularies were spelled in a language the API never speaks
+
+**Target:** `frontend/src/app/core/utils/form-errors.util.ts`
+**Legacy sources:** `Library/Components/Users/UserController.vb` (`GetUserCreateStatus`, L598),
+`Library/Components/Users/Membership/PasswordUpdateStatus.vb`,
+`Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb` L168-L185,
+`Website/App_GlobalResources/SharedResources.resx`
+
+The error-presentation module carries four vocabularies mapping a failure outcome to the
+wording the legacy application showed for it. Every one of them was keyed on the **legacy
+enumeration member name** — `DuplicateRole`, `EnterCode`, `PasswordMissing`,
+`NotValidXml`, `Portal.LastPortal` and about twenty-five more.
+
+The API publishes a failure code in exactly one place, and it is not a member of its own:
+`GlobalExceptionHandler.BuildProblemType` writes it into the problem document's `type` as
+`urn:dnnmigration:error:<code>`, lower-cased with a hyphen folded onto an underscore.
+There is no `code` extension member, so `type` is the whole channel. The consequence was
+absolute rather than partial: **not one of the declared values could ever match a value
+taken off the wire**, so every lookup returned null, and the module had no parser for the
+namespace either. Five of the declared values named nothing that exists in the API at all.
+
+### The wording is preserved; the key becomes what the server sends
+
+The migration has to preserve the *wording*, and it is preserved verbatim, Title Case and
+legacy punctuation included. What changes is the key. Each entry now names the legacy
+member it descends from in a comment, so the parity claim stays checkable, and a new
+`failureCode(problem)` reads the code out of the document — returning null for an absent
+`type`, for the specification URL the framework writes when it maps a status without
+reaching an action, and for a prefix with nothing after it.
+
+| Vocabulary | Was | Now |
+| --- | --- | --- |
+| Verification ladder | `EnterCode`, `InvalidCode`, `UserNotAuthorized` | `auth.verification_required`, `auth.verification_code_invalid`, `auth.account_not_approved` |
+| Password change | eight legacy member names | five `user.password.*` codes |
+| Account creation | eighteen legacy member names | ten `user.create.*` codes |
+| State refusals | eleven legacy resource keys | nine codes across `portal.*`, `role.*`, `role_group.*`, `role_assignment.*`, `tab.*` and `module.*` |
+
+The two arrays that existed only to restate a legacy enumeration are removed, following
+the precedent this module already set when it removed the legacy login-status array: an
+exported vocabulary with no reader is a second definition of something that already had
+one, and the two spellings drift apart with nothing to detect it. The legacy ordinals
+those arrays recorded are still pinned — the creation enumeration by its own model's
+specification, the password enumeration in the commentary that cites its source lines.
+
+### Nine legacy outcomes have no code, and each absence is a decision
+
+- **`Success` (password) and `AddUser`/`Success` (creation)** are not failures. No code is
+  emitted for a write that worked.
+- **`InvalidPasswordAnswer`, `InvalidPasswordQuestion`, `InvalidAnswer`, `InvalidQuestion`**
+  have no counterpart because the password question-and-answer requirement is not carried
+  forward. The legacy store held credentials reversibly so a password could be recovered by
+  answering a question; the target hashes them one way, so there is no question to be wrong
+  about. Their wording is reproduced under no key rather than parked under one nothing can
+  select.
+- **`UserRejected`** described an approval state, which the target reports at sign-in as
+  `auth.account_not_approved` rather than on the creation path.
+- **`DuplicateAlias`** ("The Portal Alias already exists.") collapses onto the same
+  `portal.alias_duplicate` code as `DuplicatePortalAlias`, because the server reports one
+  code for the collision however it was reached. The more actionable of the two legacy
+  wordings survives — it names the field and says what to do — and the terser variant is
+  not kept under a second key.
+- **`TabExists`** ("The Page Name you chose is already being used…") has no code because no
+  request can elicit it. The legacy guard sat behind `If String.IsNullOrEmpty(strAction)`
+  at `ManageTabs.ascx.vb:L279` while the edit branch was entered at `:L304` under
+  `If strAction = "edit"`, so it belonged to the create path — and this API deliberately
+  exposes no page create. The page service declares no conflict reason code and the update
+  action declares no `409`, so wording it would describe a refusal that cannot happen. The
+  reserved-device-name refusal, which *is* reachable on the update verb, keeps its wording
+  under `tab.name_reserved`.
+
+### Four legacy members become one code, without losing anything
+
+`ProviderError`, `UnexpectedError`, `DuplicateProviderUserKey` and `InvalidProviderUserKey`
+all become `user.create.provider-error`. That is not a fidelity loss: `GetUserCreateStatus`
+already collapsed all four into a single `Case` arm resolving to one message, so they were
+indistinguishable to a person before this migration too. `AddUserToPortal` becomes
+`user.create.portal-assignment-failed` and takes the same registration-fault wording — the
+legacy value reached the throwing `Case Else` and so had no wording of its own, and
+authoring a new sentence would introduce text no operator has seen.
+
+### The vocabulary is no longer one status
+
+"Conflict" is retained as the historical name of the fourth vocabulary, but the set is
+explicitly documented as spanning three statuses, because the server derives a status from
+a reason token: the duplicate and last-remaining codes arrive as `409`, the
+protected-assignment code as `403` (its token is `protected`), and the page-name and
+module-content codes as `400`. What the nine share is a shape — a refusal the person can
+act on — not a status code.
+
+### What now prevents the defect from returning
+
+One assertion would have caught the whole class: every key of every table must match
+`/^[a-z0-9_]+(\.[a-z0-9_]+)+/` and must round-trip through `failureCode` from a document
+spelled as the server writes it. Both are asserted over all twenty-seven codes at once.
+Each vocabulary additionally asserts that every legacy member name it descends from
+resolves to **null**, so a reversion to the legacy spelling fails loudly rather than
+silently returning nothing. Beyond the suite, the twenty-seven codes were checked
+mechanically against every dotted string literal in `backend/src`: all twenty-seven are
+emitted, and none is speculative.
+
+
+## Review remediation: the route surface was correct and its justification was not
+
+**Target:** `frontend/src/app/core/config/api-endpoints.ts`
+
+A wire-seam review raised the resource-shape question as needing human adjudication:
+the client's route module asserted that the flat resource families were what the frozen
+action plan authorises, and the reviewer's record of the plan said tenant scoping was
+nested. Both sides of the wire agreed 39 endpoints to 39, so no build, test or request
+could ever have settled it — agreement between two sides is not evidence of conformance
+to a specification, which is exactly why the reviewer declined to close it.
+
+**Adjudicated against the specification, and the code was already right.** The action
+plan's API-layer file mapping (§0.5.1.4) names each family explicitly, and it names them
+flat: "Read-only lookup surface at `/api/v1/module-definitions`", "Lookup surface at
+`/api/v1/profile-definitions`", "Read-only `/api/v1/permissions` catalogue", "Role
+membership assignment becomes `POST`/`DELETE` on `/api/v1/roles/{id}/users`",
+"Attribute-routed to `/api/v1/portals`", "`POST /api/v1/modules/{id}/export` and
+`POST /api/v1/modules/import`", and "`POST /api/v1/auth/login`, `refresh`, `logout` and
+`GET /api/v1/auth/me`". It names exactly two operations as children of a portal —
+"Nested under `/api/v1/portals/{id}/aliases`" and "`GET /api/v1/portals/{id}/tabs` and
+`GET`/`PUT /api/v1/tabs/{id}` only". **No route changed**, because changing one would
+have moved the code away from the frozen surface rather than towards it.
+
+**What did change is the justification.** The claim was asserted rather than sourced, so
+a future reader had no way to check it without re-doing the adjudication. Each family now
+carries the plan's own wording beside it, in a table, with the section cited. The note
+also records that both directions of "tidying" are wrong: nesting a flat family invents a
+second public identity for one operation, and flattening a nested one addresses a resource
+that has no standalone identity.
+
+**One genuine documentation defect was found while adjudicating.** The note said the
+exceptions were "portal aliases and page listings" — two — while the implementation nests
+**three**: aliases, the page listing, and the settings projection. Enumerating the
+controllers mechanically confirmed the count. Settings is nested because the projection is
+a representation of the portal itself rather than a separate resource, which is why it sits
+on the portal controller and carries no family of its own. The corrected note names all
+three and gives each its reason, and additionally records that the page family is
+deliberately split across both shapes — the listing belongs to a portal, an individual page
+is addressed on its own — which the plan's own sentence fixes and which a reader would
+otherwise be likely to read as an inconsistency.
+
+The 39-to-39 correspondence was re-verified mechanically after the edit, by resolving every
+`apiUrl` template in the module against every `[Http*]` route on the eleven controllers:
+zero client templates without a controller route, and zero controller routes without a
+client template.
+
+
+## Review remediation: three contract declarations that described themselves inaccurately
+
+**Targets:** `frontend/src/app/core/models/paged-result.model.ts`,
+`frontend/src/app/core/models/role.model.ts`,
+`frontend/src/app/core/models/permission.model.ts`
+
+Three low-severity findings from the wire-seam review, grouped because they share a
+failure mode: each declaration said something about the wire that was not true, and in
+none of the three could a compiler have noticed.
+
+### The payload-free envelope's metadata member described itself two ways at once
+
+`EmptyApiResponse` carried an interface-level paragraph saying its metadata member was
+"left OPTIONAL", a member-level paragraph saying "Present and nullable", and a
+declaration reading `meta: ApiMeta | null`. Two of the three agreed; the interface-level
+paragraph was the stale one, left behind when the declaration was corrected.
+
+It is now rewritten to say present-and-nullable, and — more usefully — to say WHY the
+absence of a producer is not a reason to declare it differently from its
+payload-bearing twin. The serializer policy is a property of the server rather than of
+any endpoint, so if this arity is ever produced it will carry the member with the value
+`null` rather than omit it; and declaring the two arities of one contract differently
+would let them disagree about the member they share, so a consumer narrowing this one
+with `=== undefined` would take the wrong branch the moment a producer appeared. That
+is the precise defect already corrected on the payload-bearing form, and repeating it
+here on the strength of there being nothing to measure yet would have reintroduced it
+in the one place nobody would look.
+
+### The role classification claimed to travel by name, and nothing made it do so
+
+`RoleStatus` is a three-member string union, and the note justifying that said the API
+"states that the value travels by name". The sub-claim it rested on is true — the Domain
+enumeration really does declare its members with no explicit numeric values — but the
+inference is not. Declaring an enumeration without numeric values does not make it
+serialise by name: the platform's default is the integer, and this API registers no
+blanket string-enum converter. It registers exactly **two** per-type converters, for the
+two values that genuinely cross the wire — the billing frequency, pinned to its
+one-character code, and the permission key, pinned to its member name. Published today,
+without a third converter, the classification would arrive as `0`, `1` or `2`.
+
+Nothing is broken, because nothing publishes it: the role listing documents the
+classification as absent by design, the enumeration is consumed only server-side by the
+portal-administration evaluator, and no contract member carries the type. So the union
+stays as the client's own vocabulary for a classification it derives, and the note now
+records the obligation rather than an untrue claim — whoever publishes the value must
+register a per-type string converter at the same time, exactly as was done for the other
+two, or the names will not be what arrives.
+
+### The permission key was narrowed on the client while the producer stayed open
+
+The permission projection's key member was typed as the closed four-member union
+`'VIEW' | 'EDIT' | 'READ' | 'WRITE'`, with no runtime guard. The producer is open: the
+server declares the member as a plain string and the catalogue listing publishes bare
+strings, because the column stores whatever key was seeded and an installation may hold
+one this codebase has never seen — a third-party module's own key, for instance.
+
+The member is therefore widened to `string`, which is the same decision already taken
+and documented for its sibling scope-code member on the same type, for the same reason:
+narrowing it would statically type an unrecognised key as a recognised one, and a check
+against the four would look exhaustive to both a reader and the compiler while failing
+at run time. That is strict typing producing exactly the unsafety it exists to prevent.
+
+Constraining the PRODUCER to the Domain enumeration was considered and rejected: the
+stored column is genuinely wider than the enumeration, so the effect would be to make a
+legitimate installation-specific key unreadable rather than merely untyped.
+
+The union is kept and re-documented as what it actually is — the client's vocabulary for
+a value the application decides, such as the key a screen requires or a route guard
+tests — and the supported route from the wire to it is named: `normaliseRequiredKeys` in
+the permission directive, which takes an unknown value and returns only recognised keys,
+discarding the rest. Comparing the member directly against a key literal still needs no
+guard, because both sides are strings; what needs the guard is treating the value AS the
+narrower type. No runtime code was added to the model file, which is type-only by
+construction.
+
+### One finding closed by verification rather than by a change
+
+The review also observed that the payload-free `ApiResponse` arity is referenced by no
+production code, and recorded that no action was required. That was confirmed rather than
+taken on trust: the type has no production reference outside its own file, its absence is
+already documented at length on the type and in the result translator, and it is pinned by
+a contract test asserting that the schema appears nowhere in the generated OpenAPI
+document and that no `204` carries a body. The client's mirroring declaration is
+documented as producerless in the same terms. Both sides are consistent and the
+declaration is retained as documentation of an arity the server declares, so no code
+changed.

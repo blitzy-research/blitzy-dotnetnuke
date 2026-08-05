@@ -175,9 +175,20 @@
  * browser is a rendering hint — the `hasPermission` directive is NEVER the sole
  * enforcement mechanism, and the server decides independently.
  *
- * Note that the read-only permission LIST endpoint publishes bare keys of this
- * type, NOT full {@link Permission} records; see {@link Permission} for which
- * endpoints return which shape.
+ * THIS UNION IS THE CLIENT'S VOCABULARY, NOT THE PRODUCER'S TYPE. The distinction
+ * matters and is easy to lose. These four are the complete set of keys THIS
+ * codebase seeds and evaluates, so they are the right type for a value the
+ * application decides — the key a screen requires, the key a route guard tests.
+ * They are the wrong type for a value the SERVER supplies: the permission
+ * projection declares its key member as a plain string and the catalogue listing
+ * publishes bare strings, because the column stores whatever was seeded and an
+ * installation may hold a key this codebase has never seen. So a payload member is
+ * typed `string` (see {@link Permission.permissionKey}) and is narrowed to this
+ * union through the guard named there, never asserted into it.
+ *
+ * Note that the read-only permission LIST endpoint publishes bare key strings, NOT
+ * full {@link Permission} records; see {@link Permission} for which endpoints
+ * return which shape.
  */
 export type PermissionKey = 'VIEW' | 'EDIT' | 'READ' | 'WRITE';
 
@@ -253,8 +264,29 @@ export interface Permission {
    *
    * See {@link PermissionKey} for why this is an upper-case string rather than
    * a number, and why the four values must never be re-spelled.
+   *
+   * DELIBERATELY A PLAIN `string` AND NOT {@link PermissionKey}, for the same reason
+   * {@link permissionCode} is not a union of its observed values — the producer is
+   * open. The server declares this member on its permission projection as a plain
+   * string, and the catalogue listing publishes a bare array of strings, because the
+   * column stores whatever key is seeded and an installation may hold one this
+   * codebase has never seen. Narrowing it here would statically type such a value as
+   * a {@link PermissionKey} while it is not one, and a check against the four known
+   * keys would then look exhaustive to a reader and to the compiler while silently
+   * failing at run time. That is strict typing producing exactly the unsafety it
+   * exists to prevent.
+   *
+   * NARROW IT WITH A GUARD, NEVER WITH A CAST. `normaliseRequiredKeys` in
+   * `shared/directives/has-permission.directive.ts` takes an unknown value and
+   * returns only recognised keys, discarding anything else — that is the supported
+   * route from this member to a {@link PermissionKey}. Comparing this member directly
+   * against a key literal remains correct and needs no guard, because both sides are
+   * strings; what needs the guard is treating the value AS the narrower type.
+   *
+   * Arrives as `""` rather than as `null` when the server has nothing to say, per the
+   * sentinel note in this file's header.
    */
-  readonly permissionKey: PermissionKey;
+  readonly permissionKey: string;
 
   /**
    * Human-readable name of the definition, from `Permission.PermissionName`,

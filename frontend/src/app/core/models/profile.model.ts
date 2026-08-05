@@ -2,10 +2,15 @@
  * The profile wire contract.
  *
  * Every declaration in this file mirrors, member for member, a data-transfer object
- * the API already serialises, so that a change on either side of the boundary shows
- * up as a compilation failure rather than as an `undefined` at run time. The
- * backend types are `ProfilePropertyDefinitionDto`, `UserProfileValueDto` and
- * `UserProfileDto` in `DnnMigration.Application.Dtos.User`.
+ * the API already serialises or binds, so that a change on either side of the
+ * boundary shows up as a compilation failure rather than as an `undefined` at run
+ * time. The backend types, all in `DnnMigration.Application.Dtos.User`, are
+ * `ProfilePropertyDefinitionDto`, `UserProfileValueDto` and `UserProfileDto` for the
+ * reads, and `CreateProfilePropertyDefinitionRequest` and
+ * `UpdateProfilePropertyDefinitionRequest` for the two declaration writes. Note that
+ * `UserProfileDto` is BOTH the read projection and the replace request body, which is
+ * why the profile submission below is named the way that type names its members
+ * rather than the way a form happens to group them.
  *
  * NAMING
  * ------
@@ -174,40 +179,45 @@ export interface UserProfileValueSubmission {
  * omitted from the payload is a property cleared — so this contract carries the
  * complete set rather than a difference. Modelling it as a difference would invite a
  * caller to send one changed field and silently erase the rest.
+ *
+ * The two members are named exactly as `UserProfileDto` names them, because
+ * `PUT /api/v1/users/{userId}/profile` binds THAT type as its request body — the
+ * read projection and the replace payload are one contract on the server, not two.
+ * The member is therefore `properties`, matching {@link UserProfile.properties}, and
+ * a submission spelling it any other way is refused with `400` naming the offending
+ * member: the API's request deserialiser is configured to reject an undeclared
+ * member rather than to discard it silently, so a near-miss fails loudly at the
+ * boundary instead of writing a partial profile.
  */
 export interface UserProfileSubmission {
   /** The account being written. */
   readonly userId: number;
 
   /** Every declared property's value and visibility. */
-  readonly values: readonly UserProfileValueSubmission[];
+  readonly properties: readonly UserProfileValueSubmission[];
 }
 
 /**
- * A declaration submission, used for both creating and replacing a declaration.
+ * The members a declaration write carries on BOTH verbs.
  *
- * `propertyDefinitionId` is absent when creating; the screen that raises the
- * submission reports which of the two it means through a separate event rather than
- * by the presence of an identifier, so that an accidental omission cannot turn an
- * edit into a create.
+ * Declared once and extended, mirroring the server, which shares exactly these nine
+ * members through a common interface that both of its request contracts implement.
+ * A member added here therefore reaches create and replace together, which is the
+ * only way the two can be kept from drifting apart.
  *
- * MIGRATION: the API binds TWO distinct contracts behind the two verbs, because the
- * terminal stored procedures do not honour the same member set -
- * `AddPropertyDefinition` declares a module-definition key that
- * `UpdatePropertyDefinition` does not. This interface is deliberately the
- * INTERSECTION of the two rather than a mirror of either: the screen offers no
- * module association, so the member that distinguishes them is one this form could
- * not fill in. Anything sent from here is therefore valid on both verbs.
- *
- * MIGRATION: `visibility` is carried on this shape for the form's own use and is NOT
- * part of either server write contract. There is no `Visibility` column on
- * `ProfilePropertyDefinition` at any point in the schema's upgrade history - the
- * stored per-account counterpart lives on `UserProfile` - so the value a definition
- * reports is a default hint the API derives from a module setting, not something a
- * definition write can persist. A service wiring this submission to the API must
- * omit the member rather than expect it to round-trip.
+ * MIGRATION: `visibility` is NOT a member of any write contract, and its absence is
+ * enforced here rather than merely documented. There is no `Visibility` column on
+ * `ProfilePropertyDefinition` at any point in the schema's 88-script upgrade history
+ * - the stored per-account counterpart lives on `UserProfile` - so the value a
+ * definition REPORTS is a default hint the API derives from the "User Accounts"
+ * module setting `Profile_DefaultVisibility`. It is retained on the read projection,
+ * because a client needs the resolved hint, and is absent from both writes because
+ * no write could persist it. A shape that carried it would be refused with `400`
+ * naming the member: the API's request deserialiser rejects an undeclared member
+ * rather than discarding it, so an editor offering the value would collect a choice
+ * the server then refuses the whole request over.
  */
-export interface ProfilePropertyDefinitionSubmission {
+export interface ProfilePropertyDefinitionWriteMembers {
   /** The property's name, which is also its label. */
   readonly propertyName: string;
 
@@ -234,12 +244,56 @@ export interface ProfilePropertyDefinitionSubmission {
 
   /** Whether the property is shown at all. */
   readonly visible: boolean;
-
-  /**
-   * The visibility applied when an account has recorded none.
-   *
-   * Held for the form's own use only. The definition write endpoints do not accept
-   * this member and could not store it if they did; see the note on this interface.
-   */
-  readonly visibility: ProfileVisibilityCode;
 }
+
+/**
+ * The body of `POST /api/v1/profile-definitions`.
+ *
+ * Mirrors `CreateProfilePropertyDefinitionRequest`: the nine shared members plus the
+ * module association, which only a create may decide.
+ *
+ * MIGRATION: THE TWO VERBS BIND TWO DISTINCT CONTRACTS, and one shared client shape
+ * cannot satisfy both. The terminal stored procedures genuinely disagree -
+ * `AddPropertyDefinition` (`04.06.00.SqlDataProvider:L1101`) declares
+ * `@ModuleDefId` and `UpdatePropertyDefinition` (`04.05.00.SqlDataProvider:L1685`)
+ * neither declares it nor names the column in its `SET` list - so a module
+ * association can be established when a property is declared and never afterwards.
+ * That is why this shape is separate from {@link UpdateProfilePropertyDefinitionRequest}
+ * rather than the two sharing one declaration: sending `moduleDefId` on the replace
+ * verb would be refused, and omitting it here would silently discard the only member
+ * the create verb accepts and the replace verb does not.
+ *
+ * `propertyDefinitionId` is absent because the store issues it, and `portalId` is
+ * absent because the API resolves the tenant before dispatching the request. A
+ * screen reports whether it means a create or a replace by raising a different
+ * event, never by the presence or absence of an identifier, so an accidental
+ * omission cannot turn an edit into a duplicate.
+ */
+export interface CreateProfilePropertyDefinitionRequest
+  extends ProfilePropertyDefinitionWriteMembers {
+  /**
+   * The module definition to scope the declaration to, or `null` for none.
+   *
+   * Nullable rather than optional, because the server declares it as an optional
+   * integer with no validation rule and treats an absent value as "no module
+   * association" - and `null` is what a screen offering no module picker has to
+   * send. `0` would be wrong: `dbo.ModuleDefinitions.ModuleDefID` is
+   * `IDENTITY(1, 1)`, so zero names no row.
+   */
+  readonly moduleDefId: number | null;
+}
+
+/**
+ * The body of `PUT /api/v1/profile-definitions/{propertyDefinitionId}`.
+ *
+ * Mirrors `UpdateProfilePropertyDefinitionRequest`, which is exactly the nine shared
+ * members: the identifier arrives from the route, the tenant is resolved by the API,
+ * and the module association cannot be changed after the declaration exists - see
+ * the note on {@link CreateProfilePropertyDefinitionRequest} for the procedure-level
+ * reason.
+ *
+ * An alias rather than an empty extension, because a distinct interface declaring
+ * nothing of its own would invite a member to be added to it and thereby to diverge
+ * from the shared set for no reason the server could honour.
+ */
+export type UpdateProfilePropertyDefinitionRequest = ProfilePropertyDefinitionWriteMembers;

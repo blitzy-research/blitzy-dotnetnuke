@@ -173,10 +173,30 @@ export type BillingFrequency = 'N' | 'O' | 'D' | 'W' | 'M' | 'Y';
  * L494-L496 with one named state, and it is computed on read and never persisted.
  *
  * MIGRATION: it is a STRING union with exactly three members. The API declares the
- * matching enumeration with no explicit numeric values specifically so that no
- * significance can be read into the ordering, and states that the value travels by
- * name; the ordinal is meaningless and must never be sent, stored or compared by
- * magnitude.
+ * matching enumeration — `Domain/Enums/RoleStatus.cs` — with no explicit numeric
+ * values specifically so that no significance can be read into the ordering; the
+ * ordinal is meaningless and must never be sent, stored or compared by magnitude.
+ *
+ * WHAT MAKES THE NAMES TRAVEL, AND WHY IT IS NOT IN PLACE YET. This is stated
+ * precisely because the obvious reading of the paragraph above is wrong. Nothing about
+ * declaring an enumeration without numeric values makes it serialise by name: the
+ * platform's default for an enumeration is the INTEGER, and this API registers no
+ * blanket string-enum converter. It registers exactly two per-type converters, in
+ * `Application/Serialization/DnnJsonConverters.cs`, and they exist for the two values
+ * that do cross the wire — the billing frequency, pinned to its one-character code,
+ * and the permission key, pinned to its member name. So if this classification were
+ * published TODAY, without a third converter, it would arrive as `0`, `1` or `2` and
+ * this union would be wrong.
+ *
+ * That is a statement about the future rather than a defect, because the value is not
+ * published at all: the role listing documents the classification as absent by design,
+ * the Domain enumeration is consumed only server-side by the portal-administration
+ * evaluator, and no member of any contract in this file carries the type. The union is
+ * therefore the CLIENT's vocabulary for a classification it derives, and it is
+ * documented rather than removed so that the vocabulary has one spelling. The
+ * obligation this note records is on whoever publishes it: register a per-type string
+ * converter for the enumeration at the same time, exactly as was done for the other
+ * two, or the names above will not be what arrives.
  *
  * MIGRATION: no member is added for a used trial, for a withdrawn assignment, for a
  * deletion or for a suspension. `IsTrialUsed` is an orthogonal `bit NULL` column on
@@ -187,8 +207,8 @@ export type BillingFrequency = 'N' | 'O' | 'D' | 'W' | 'M' | 'Y';
  *
  * No role or membership contract published by the API carries this value today, so
  * it is the client's vocabulary for the classification rather than a member to be
- * read off a payload. Should a contract ever carry it, it arrives as one of these
- * three names.
+ * read off a payload. Should a contract ever carry it, these three names are what it
+ * must be made to send — see the converter note above for what that requires.
  */
 export type RoleStatus = 'Pending' | 'Active' | 'Expired';
 

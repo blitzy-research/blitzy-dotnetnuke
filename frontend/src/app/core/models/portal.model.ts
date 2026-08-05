@@ -14,6 +14,13 @@
  * | `UpdatePortalRequest` | `Dtos/Portal/UpdatePortalRequest.cs`      |
  * | `UpdatePortalSettingsRequest` | `Dtos/Portal/UpdatePortalSettingsRequest.cs` |
  * | `PortalAlias`         | `Dtos/Portal/PortalAliasDto.cs`           |
+ * | `CreatePortalAliasRequest` | `Dtos/Portal/CreatePortalAliasRequest.cs` |
+ * | `UpdatePortalAliasRequest` | `Dtos/Portal/UpdatePortalAliasRequest.cs` |
+ *
+ * The alias family has THREE entries because the API binds three distinct types
+ * there: one nullable projection for reads and two non-nullable request bodies. They
+ * are not variations of one shape and must not be derived from one another — the
+ * reasoning is on {@link CreatePortalAliasRequest}.
  *
  * ## Member naming
  *
@@ -933,7 +940,7 @@ export interface UpdatePortalRequest {
    * non-empty `secret://...` value replaces it. The referenced credential never
    * crosses this contract and no response shape echoes even the reference.
    */
-      readonly processorCredentialReference: string | null;
+  readonly processorCredentialReference: string | null;
 
   /** Portal description, at most 500 characters. */
   readonly description: string | null;
@@ -989,6 +996,99 @@ export interface UpdatePortalRequest {
  * validators and service guards.
  */
 export type UpdatePortalSettingsRequest = Omit<UpdatePortalRequest, 'portalId'>;
+
+/**
+ * Body of `POST /api/v1/portals/{portalId}/aliases`.
+ *
+ * Mirrors `Dtos/Portal/CreatePortalAliasRequest.cs`, which carries exactly one
+ * member.
+ *
+ * THIS IS NOT {@link PortalAlias} WITH FEWER MEMBERS, and the difference is the whole
+ * reason it is declared separately rather than derived from the read model. A
+ * projection is the wrong shape for a write in three ways, and the server states all
+ * three: it reports the host name as NULLABLE, because the column is nullable and a
+ * reader must be able to represent what it finds; it carries a database-assigned
+ * identifier a create cannot supply; and it carries an owning-portal identifier that
+ * duplicates the one the route already fixes. So `httpAlias` is `string` here while
+ * {@link PortalAlias.httpAlias} is `string | null` — deriving this type from that one,
+ * however convenient, would declare an absent alias sendable when the server refuses
+ * it, and would put the resulting `400` at a call site rather than at a compile.
+ *
+ * The owning portal is not a member. It is supplied by the route and is authoritative
+ * there, so there is no second copy to disagree with it and no way to bind a host name
+ * to a tenant other than the one addressed. The alias identifier is not a member
+ * either: the column is `IDENTITY (1, 1)`
+ * (`02.02.02.SqlDataProvider:L3805`), so the value is issued by the store and is
+ * reported back on the projection once the write has happened.
+ *
+ * MIGRATION: the legacy screen collected this single value and nothing else.
+ * `Website/admin/Portal/editportalalias.ascx` declares one input for the alias at
+ * `L7`, and `EditPortalAlias.ascx.vb` read it at `L208` and assigned it at `L235`
+ * before inserting, with the owning portal taken from page state at `L234` rather than
+ * from the operator.
+ *
+ * MIGRATION: two transformations the legacy screen performed are NOT performed here.
+ * The stored value is lower-cased by the write path
+ * (`Library/Components/Portal/PortalAliasController.vb:L31`), so what is stored may
+ * differ in case from what is sent — that belongs to the service, and a client that
+ * pre-applied it would leave the server validating a value the caller never sent. And
+ * a protocol prefix is REFUSED rather than stripped, reversing the silent rewrite at
+ * `EditPortalAlias.ascx.vb:L210-L215`. Whether the host name collides with one already
+ * bound is a question about stored state, answered by the service with
+ * `portal.alias_duplicate`; the unique constraint is
+ * `IX_PortalAlias UNIQUE NONCLUSTERED (HTTPAlias)` at `03.00.07.SqlDataProvider:L14-L18`.
+ */
+export interface CreatePortalAliasRequest {
+  /**
+   * The host name by which the portal is to be reached.
+   *
+   * A host name, an IP address or a server name, optionally followed by a port and a
+   * child path, with no protocol prefix. Required and NON-NULLABLE: a create that
+   * supplied nothing has nothing to bind, and the legacy screen refused to act on an
+   * empty box at `EditPortalAlias.ascx.vb:L209`. Bound for
+   * `PortalAlias.HTTPAlias`, declared `[nvarchar] (200)` at
+   * `02.02.02.SqlDataProvider:L3807`.
+   */
+  readonly httpAlias: string;
+}
+
+/**
+ * Body of `PUT /api/v1/portals/{portalId}/aliases/{portalAliasId}`.
+ *
+ * Mirrors `Dtos/Portal/UpdatePortalAliasRequest.cs`, which carries the same single
+ * member as the create contract.
+ *
+ * A separate declaration rather than an alias of {@link CreatePortalAliasRequest},
+ * mirroring the server, which gives the two the same reasoning: they answer to
+ * different routes and may diverge without either becoming wrong, whereas one shared
+ * type would make every future member of one contract a member of the other by
+ * default — which is how an update quietly acquires the ability to set something only
+ * a create should decide. The RULE SET is what the two share, not the type: both
+ * server validators call one shared rule module, so the two paths cannot enforce
+ * different shapes.
+ *
+ * The alias identifier is not a member. It is supplied by the route and is
+ * authoritative there, so a caller cannot redirect a write it is otherwise entitled to
+ * make onto a different alias by editing the body.
+ *
+ * MIGRATION: an alias cannot be moved between portals through this contract, and the
+ * legacy screen is the reason rather than a simplification —
+ * `EditPortalAlias.ascx.vb` re-supplied the owning portal from page state on update at
+ * `L221` rather than from the operator, so an operator could never retarget an alias
+ * either. No owning-portal member appears here, so the omission is enforced rather
+ * than merely documented.
+ */
+export interface UpdatePortalAliasRequest {
+  /**
+   * The host name by which the portal is to be reached.
+   *
+   * Required and NON-NULLABLE, for the same reason as on the create contract: an
+   * update carrying nothing has nothing to store. The legacy screen simply did
+   * nothing at all in that case (`EditPortalAlias.ascx.vb:L209`), which a contract
+   * that must answer cannot reproduce, so the value is refused instead.
+   */
+  readonly httpAlias: string;
+}
 
 /**
  * The lookup lists a settings screen needs in order to offer the choices the legacy

@@ -40,16 +40,55 @@ import { environment } from '../../../environments/environment';
  * that reading are worth stating up front, because both contradict what a reader
  * might reasonably expect:
  *
- * - Modules, accounts, roles, role groups and profile definitions use one canonical
- *   flat resource family. Their tenant is resolved from the request host and the
- *   authenticated context; adding a portal segment would create a second public
- *   identity for the same operation and drift from the frozen API surface. Portal
- *   aliases and page listings are the deliberate exceptions because the AAP defines
- *   those operations as children of an explicitly named portal.
+ * - Most resources use one canonical FLAT family. Their tenant is resolved from the
+ *   request host and the authenticated context; adding a portal segment would create
+ *   a second public identity for the same operation. Only three operations are
+ *   nested, and each is nested because it is a property OF a named portal rather
+ *   than a tenant-scoped view of something else.
  * - The versioned prefix is mandatory. The API does not assume a default version
  *   when none is supplied, so a request that omits the prefix does not fall back —
  *   it fails to route. `environment.apiBaseUrl` carries the prefix, which is the
  *   second reason invariant 1 exists.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY FLAT, WITH THE AUTHORITY QUOTED RATHER THAN ASSERTED.
+ *
+ * This shape is not a client-side preference and it is not inferred from the
+ * controllers agreeing with these templates — two sides can agree and both be wrong
+ * against the specification. The frozen action plan names each family explicitly in
+ * its API-layer file mapping (§0.5.1.4), and the wording below is its wording:
+ *
+ * | Family                     | Action plan §0.5.1.4                                       |
+ * | -------------------------- | ---------------------------------------------------------- |
+ * | `portals`                  | "Attribute-routed to `/api/v1/portals`"                    |
+ * | `modules`                  | "`POST /api/v1/modules/{id}/export` and `POST /api/v1/modules/import`" |
+ * | `module-definitions`       | "Read-only lookup surface at `/api/v1/module-definitions`" |
+ * | `profile-definitions`      | "Lookup surface at `/api/v1/profile-definitions`"          |
+ * | `permissions`              | "Read-only `/api/v1/permissions` catalogue"                |
+ * | `roles`, `role-groups`     | "Role membership assignment becomes `POST`/`DELETE` on `/api/v1/roles/{id}/users`" |
+ * | `users`                    | "one resource controller with profile, password and settings sub-resources" |
+ * | `tabs`                     | "`GET`/`PUT /api/v1/tabs/{id}` only"                       |
+ * | `auth`                     | "`POST /api/v1/auth/login`, `refresh`, `logout` and `GET /api/v1/auth/me`" |
+ *
+ * THE THREE NESTED OPERATIONS, and their authority — note that there are three and
+ * not two, which is the count a reader is most likely to get wrong:
+ *
+ * - `portals/{portalId}/aliases` — "Nested under `/api/v1/portals/{id}/aliases`". An
+ *   alias has no identity apart from the portal it resolves to.
+ * - `portals/{portalId}/tabs` — "`GET /api/v1/portals/{id}/tabs`", and the same
+ *   sentence fixes the sibling page resource as flat, so the page family is
+ *   deliberately split across both shapes: the LISTING belongs to a portal, an
+ *   individual page is addressed on its own.
+ * - `portals/{portalId}/settings` — the settings projection is a representation of
+ *   the portal itself rather than a separate resource, which is why it lives on the
+ *   portal controller and carries no family of its own here.
+ *
+ * A template must never be "tidied" from one shape into the other. Both directions
+ * are equally wrong: nesting a flat family invents a second identity the API does not
+ * serve, and flattening a nested one addresses a resource that has no standalone
+ * identity. Either produces a 404 no build step detects, and either departs from a
+ * specification that is frozen and is not reinterpreted from this file.
+ * ---------------------------------------------------------------------------
  */
 
 /**

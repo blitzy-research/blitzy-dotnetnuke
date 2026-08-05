@@ -586,9 +586,14 @@ export class UserProfileComponent {
       return;
     }
 
+    // The member is `properties` rather than `values` because that is what the request
+    // body declares: the replace verb binds the same contract the read returns, so the
+    // submission has to spell the collection the way the projection does. The local
+    // grouping below still calls its own member `values` - that is a view model of this
+    // component's own and never crosses the wire.
     this.save.emit({
       userId: profile.userId,
-      values: this.categories.flatMap((category) =>
+      properties: this.categories.flatMap((category) =>
         category.values.map((value) => ({
           propertyDefinitionId: value.definition.propertyDefinitionId,
           propertyValue: this.valueControl(value)?.value ?? '',

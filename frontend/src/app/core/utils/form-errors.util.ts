@@ -76,7 +76,15 @@ import type {
   ProblemDetailsErrors,
   ValidationProblemDetails,
 } from '../models/problem-details.model';
-import { UserCreateStatus } from '../models/user.model';
+
+// The legacy `UserCreateStatus` enumeration is deliberately NOT imported. This module
+// once derived its creation vocabulary from it, which was correct while the vocabulary
+// was legacy member NAMES - but the vocabulary is now the failure codes the API
+// publishes, and those are not derivable from the enumeration's member names. The
+// enumeration remains declared in `core/models/user.model.ts`, is cited by name in the
+// commentary on that vocabulary, and its ordinals continue to be pinned by that model's
+// own specification. Importing it here to leave it unused would only re-create the
+// second-definition problem this module already removed once, for the login statuses.
 
 // ---------------------------------------------------------------------------
 // SEVERITY
@@ -832,21 +840,120 @@ export function summarizeProblem(
 }
 
 // ---------------------------------------------------------------------------
+// THE FAILURE CODE, AND WHERE IT ACTUALLY TRAVELS
+// ---------------------------------------------------------------------------
+//
+// The four vocabularies below are keyed on the failure code the API publishes.
+// That code arrives in exactly ONE place, and it is not a member of its own: the
+// server writes it into the problem document's `type` as
+// `urn:dnnmigration:error:<code>`, built by `GlobalExceptionHandler.BuildProblemType`
+// and reached from three call sites - the result translator, the tenant-resolution
+// middleware and the authorisation-refusal handler. There is no `code` extension
+// member on the document, so `type` is the whole channel and a consumer that does not
+// parse it cannot key on a code at all.
+//
+// MIGRATION: THE VOCABULARIES ARE SPELLED AS THE SERVER SPELLS THEM, NOT AS THE
+//   LEGACY ENUMERATIONS DID. Every table below previously used the legacy PascalCase
+//   member names - `DuplicateRole`, `EnterCode`, `NotValidXml` and so on - and not one
+//   of those values could ever match a value taken off the wire, so every lookup
+//   returned null and the tables were unreachable in practice. The wording is what the
+//   migration has to preserve, and it is preserved verbatim; the KEY has to be what the
+//   server sends. The legacy member each entry descends from is named in a comment so
+//   the parity claim stays checkable.
+//
+// MIGRATION: a legacy outcome with no emitted code gets NO ENTRY, rather than an entry
+//   nothing can select. Each omission is named where it belongs, with the reason.
+//   Symmetrically, an emitted code with no legacy wording gets no entry either: the
+//   server's own `detail` is what {@link problemMessage} shows for it, which is both
+//   correct and better than wording invented here.
+
+/** The scheme and namespace the API puts in front of every failure code it publishes. */
+const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
+
+/**
+ * Reduces a failure code to the form the server publishes.
+ *
+ * Mirrors the server's own reduction, which lower-cases and folds a hyphen onto an
+ * underscore, because the services disagree about which separator they use inside a
+ * reason token and the server declines to keep two spellings of one code. Applying it
+ * again here is harmless - the operation is idempotent - and it means a caller may
+ * pass either a code read off the wire or one quoted from a service.
+ *
+ * @param code A failure code in any of its spellings.
+ * @returns The comparable form.
+ */
+function normaliseFailureCode(code: string): string {
+  return code.trim().toLowerCase().replace(/-/g, '_');
+}
+
+/**
+ * Reads the application failure code out of a problem document.
+ *
+ * This is the function that makes the four vocabularies below usable at all. Without
+ * it a caller holds a `type` such as `urn:dnnmigration:error:role.name_duplicate` and
+ * every table expects `role.name_duplicate`, so no lookup can ever succeed.
+ *
+ * Returns null rather than a best guess in three cases, and each is a real one:
+ *
+ * - the document carries no `type`, which the server allows and does deliberately
+ *   rather than inventing a URI that documents nothing;
+ * - the `type` is a URL into the HTTP semantics specification, which is what the
+ *   framework writes for a status it mapped without reaching an action - a `404` from
+ *   a bare not-found result, or a model-state failure. That is not an application
+ *   failure code and must not be treated as one;
+ * - the prefix is present but nothing follows it, which no producer emits and which
+ *   would otherwise yield the empty string as though it were a code.
+ *
+ * The prefix test is case-insensitive on the prefix only. A URI scheme is
+ * case-insensitive by specification, so a gateway that re-cased `URN:` must still be
+ * recognised; the code that follows is compared in its normalised form.
+ *
+ * @param problem The problem document, or null.
+ * @returns The normalised failure code, or null when the document carries none.
+ */
+export function failureCode(problem: ProblemDetails | null | undefined): string | null {
+  const type = problem?.type?.trim();
+
+  if (type === undefined || type.length <= FAILURE_TYPE_PREFIX.length) {
+    return null;
+  }
+
+  if (!type.toLowerCase().startsWith(FAILURE_TYPE_PREFIX)) {
+    return null;
+  }
+
+  const code = normaliseFailureCode(type.slice(FAILURE_TYPE_PREFIX.length));
+
+  return code.length > 0 ? code : null;
+}
+
+// ---------------------------------------------------------------------------
 // CODE VOCABULARY 1 - LOGIN AND VERIFICATION
 // ---------------------------------------------------------------------------
 
 /**
- * The verification-failure codes the legacy login flow could report.
+ * The verification-failure codes the sign-in flow can report.
  *
- * EXACTLY THREE, and the list is closed. Verified against
- * Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L168-L185,
- * where the only three values assigned to the outgoing message are `"EnterCode"`
- * (L175 and L180), `"InvalidCode"` (L178) and `"UserNotAuthorized"` (L184).
+ * EXACTLY THREE, and the list is closed, because the legacy flow had exactly three:
+ * Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L168-L185 assigns
+ * only `"EnterCode"` (L175 and L180), `"InvalidCode"` (L178) and
+ * `"UserNotAuthorized"` (L184) to its outgoing message.
+ *
+ * MIGRATION: the three legacy names map one-for-one onto three codes the API really
+ * emits, so nothing is lost by respelling them - `EnterCode` becomes
+ * `auth.verification_required`, `InvalidCode` becomes
+ * `auth.verification_code_invalid` and `UserNotAuthorized` becomes
+ * `auth.account_not_approved`. The last of the three is the one worth naming
+ * carefully: the legacy condition it reported was `LOGIN_USERNOTAPPROVED`, and the
+ * target code says the same thing in the target's own vocabulary.
  */
 export const AUTH_FAILURE_CODES = Object.freeze([
-  'EnterCode',
-  'InvalidCode',
-  'UserNotAuthorized',
+  /** Legacy `EnterCode`. */
+  'auth.verification_required',
+  /** Legacy `InvalidCode`. */
+  'auth.verification_code_invalid',
+  /** Legacy `UserNotAuthorized`. */
+  'auth.account_not_approved',
 ] as const);
 
 /** One of the three verification-failure codes. */
@@ -866,9 +973,9 @@ export type AuthFailureCode = (typeof AUTH_FAILURE_CODES)[number];
  * nothing and invite invented wording.
  */
 export const AUTH_FAILURE_MESSAGE: Readonly<Record<AuthFailureCode, string>> = Object.freeze({
-  EnterCode: 'Enter Your Verification Code',
-  InvalidCode: 'Invalid Verification Code',
-  UserNotAuthorized: 'You are not currently authorized to login to this site.',
+  'auth.verification_required': 'Enter Your Verification Code',
+  'auth.verification_code_invalid': 'Invalid Verification Code',
+  'auth.account_not_approved': 'You are not currently authorized to login to this site.',
 });
 
 /**
@@ -878,7 +985,10 @@ export const AUTH_FAILURE_MESSAGE: Readonly<Record<AuthFailureCode, string>> = O
  * @returns True when the value is one of the three.
  */
 export function isAuthFailureCode(value: string | null | undefined): value is AuthFailureCode {
-  return typeof value === 'string' && AUTH_FAILURE_CODES.some((code) => code === value);
+  return (
+    typeof value === 'string' &&
+    AUTH_FAILURE_CODES.some((code) => code === normaliseFailureCode(value))
+  );
 }
 
 /**
@@ -888,7 +998,13 @@ export function isAuthFailureCode(value: string | null | undefined): value is Au
  * @returns The message, or null when the code is not one of the three.
  */
 export function authFailureMessage(code: string | null | undefined): string | null {
-  return isAuthFailureCode(code) ? AUTH_FAILURE_MESSAGE[code] : null;
+  if (typeof code !== 'string') {
+    return null;
+  }
+
+  const normalised = normaliseFailureCode(code);
+
+  return isAuthFailureCode(normalised) ? AUTH_FAILURE_MESSAGE[normalised] : null;
 }
 
 /**
@@ -958,12 +1074,13 @@ export interface VerificationPrompt {
  * STATEFUL, and a flat mapping from code to string would lose it:
  *
  * - Registration is not verified by code, so the refusal is final:
- *   `UserNotAuthorized`.
+ *   `auth.account_not_approved`, legacy `UserNotAuthorized`.
  * - Registration is verified and the field is not yet on screen: reveal it and
- *   ask for the code - `EnterCode`.
+ *   ask for the code - `auth.verification_required`, legacy `EnterCode`.
  * - The field is on screen and something was typed: what was typed was wrong -
- *   `InvalidCode`.
- * - The field is on screen and nothing was typed: ask again - `EnterCode`.
+ *   `auth.verification_code_invalid`, legacy `InvalidCode`.
+ * - The field is on screen and nothing was typed: ask again -
+ *   `auth.verification_required` again.
  *
  * The emptiness test is NOT trimmed, and that is deliberate rather than an
  * oversight. The legacy comparison `<> ""` is untrimmed, so a code of spaces was
@@ -999,18 +1116,21 @@ export interface VerificationPrompt {
  */
 export function resolveVerificationPrompt(state: VerificationPromptState): VerificationPrompt {
   if (!state.verifiedRegistration) {
-    return ladderOutcome('UserNotAuthorized', false);
+    return ladderOutcome('auth.account_not_approved', false);
   }
 
   if (!state.verificationVisible) {
-    return ladderOutcome('EnterCode', true);
+    return ladderOutcome('auth.verification_required', true);
   }
 
   // Untrimmed, matching the legacy `<> ""`. Null and the empty string take the
   // same branch, and neither is rewritten into the other.
   const submitted = state.verificationCode ?? '';
 
-  return ladderOutcome(submitted === '' ? 'EnterCode' : 'InvalidCode', false);
+  return ladderOutcome(
+    submitted === '' ? 'auth.verification_required' : 'auth.verification_code_invalid',
+    false,
+  );
 }
 
 /**
@@ -1065,88 +1185,108 @@ function ladderOutcome(code: AuthFailureCode, revealVerification: boolean): Veri
 // ---------------------------------------------------------------------------
 
 /**
- * The password-change outcomes, IN DECLARATION ORDER.
+ * The password-change failure codes that carry legacy wording.
  *
- * The order is the specification, not a presentation choice.
- * Library/Components/Users/Membership/PasswordUpdateStatus.vb:L23-L32 declares the
- * enumeration with NO explicit values, so the compiler assigns ordinals by
- * declaration order and the position of a member in this array IS its legacy
- * ordinal: `Success` 0 (L24), `PasswordMissing` 1, `PasswordNotDifferent` 2,
- * `PasswordResetFailed` 3, `PasswordInvalid` 4, `PasswordMismatch` 5,
- * `InvalidPasswordAnswer` 6, `InvalidPasswordQuestion` 7 (L31).
+ * FIVE, and the count is the interesting part. The legacy enumeration
+ * Library/Components/Users/Membership/PasswordUpdateStatus.vb:L23-L32 declared eight
+ * members with no explicit values, so declaration order was the ordinal: `Success` 0
+ * (L24), `PasswordMissing` 1, `PasswordNotDifferent` 2, `PasswordResetFailed` 3,
+ * `PasswordInvalid` 4, `PasswordMismatch` 5, `InvalidPasswordAnswer` 6,
+ * `InvalidPasswordQuestion` 7 (L31). Three of those eight have no code here, for three
+ * different and individually sound reasons:
  *
- * MIGRATION: the ordering circulating in the migration requirements lists the same
- * eight members in a DIFFERENT sequence, which mis-assigns ordinals 1 to 5. The
- * order above was read from the source file and is authoritative. Encoding it as
- * an array rather than as prose is deliberate: the accompanying specification
- * asserts the index of each member, so the correction cannot quietly regress.
+ * - `Success` is not a failure. No code is emitted for a write that worked, and an
+ *   entry mapping success to a failure message would be a category error.
+ * - `InvalidPasswordAnswer` and `InvalidPasswordQuestion` have no counterpart because
+ *   the password question-and-answer requirement is NOT carried forward: the legacy
+ *   store held credentials reversibly so that a password could be recovered by
+ *   answering a question, and the target hashes them one way, so there is no question
+ *   to be wrong about. Their wording ("Password Answer must be provided" and "Password
+ *   Question must be provided") is therefore not reproduced under any key, rather than
+ *   parked under a key nothing can select.
  *
- * Nothing here keys a message on an ordinal - {@link passwordUpdateMessage} takes
- * the string code - so the ordinals are recorded for provenance and for a caller
- * that must interpret a legacy numeric value, never relied upon for lookup.
+ * MIGRATION: no ordinal survives, and nothing is lost by that. The status never crossed
+ * the wire even in the legacy application - it was a return value read in-process - and
+ * the target reports the outcome as a stable code instead. A numeric value passed here
+ * resolves to null, which the specification pins so that a caller cannot start relying
+ * on an ordinal that no longer exists.
+ *
+ * MIGRATION: the service emits several password codes with NO legacy antecedent -
+ * a current credential that is wrong, a reset that is not enabled, an operation the
+ * store does not support, a change already required, and two self-service refusals.
+ * None appears here. {@link problemMessage} shows the server's own `detail` for them,
+ * which says the right thing in the target's own words; inventing legacy-styled wording
+ * for an outcome the legacy application never had would be fabrication.
  */
-export const PASSWORD_UPDATE_STATUS_NAMES = Object.freeze([
-  'Success',
-  'PasswordMissing',
-  'PasswordNotDifferent',
-  'PasswordResetFailed',
-  'PasswordInvalid',
-  'PasswordMismatch',
-  'InvalidPasswordAnswer',
-  'InvalidPasswordQuestion',
+export const PASSWORD_UPDATE_CODES = Object.freeze([
+  /** Legacy `PasswordMissing` (1). */
+  'user.password.missing',
+  /** Legacy `PasswordNotDifferent` (2). */
+  'user.password.not_different',
+  /** Legacy `PasswordResetFailed` (3). */
+  'user.password.reset_failed',
+  /** Legacy `PasswordInvalid` (4). */
+  'user.password.invalid',
+  /** Legacy `PasswordMismatch` (5). */
+  'user.password.mismatch',
 ] as const);
 
-/** One password-change outcome. */
-export type PasswordUpdateStatusName = (typeof PASSWORD_UPDATE_STATUS_NAMES)[number];
+/** One password-change failure code. */
+export type PasswordUpdateCode = (typeof PASSWORD_UPDATE_CODES)[number];
 
 /**
- * Wording for each password-change outcome.
+ * Wording for each password-change failure code.
  *
- * From the global resource file. `Success` is null because it is not a failure and
- * has no failure wording to show.
+ * From the global resource file, reproduced verbatim against the legacy member each
+ * code descends from.
  *
- * The `PasswordMismatch` entry uses the `PasswordMismatch.Text` value. The same
- * file also carries a second, differently-keyed variant reading "Password Values
- * Entered Do Not Match."; the unsuffixed key is the unambiguous one and is the one
- * reproduced.
+ * The mismatch entry uses the `PasswordMismatch.Text` value. The same file also
+ * carries a second, differently-keyed variant reading "Password Values Entered Do Not
+ * Match."; the unsuffixed key is the unambiguous one and is the one reproduced.
  */
-export const PASSWORD_UPDATE_MESSAGE: Readonly<
-  Record<PasswordUpdateStatusName, string | null>
-> = Object.freeze({
-  Success: null,
-  PasswordMissing: 'You must provide your current password in order to change the password.',
-  PasswordNotDifferent:
-    'The new password is the same as the old password. Please enter a different password',
-  PasswordResetFailed:
-    'There was an error setting the password. The password has not been changed.',
-  PasswordInvalid:
-    'You must enter a valid password. Please check with the Portal Administrator if you ' +
-    'do not know the password requirements.',
-  PasswordMismatch: 'The Password and Confirmation Passwords do not match',
-  InvalidPasswordAnswer: 'Password Answer must be provided',
-  InvalidPasswordQuestion: 'Password Question must be provided',
-});
+export const PASSWORD_UPDATE_MESSAGE: Readonly<Record<PasswordUpdateCode, string>> =
+  Object.freeze({
+    'user.password.missing':
+      'You must provide your current password in order to change the password.',
+    'user.password.not_different':
+      'The new password is the same as the old password. Please enter a different password',
+    'user.password.reset_failed':
+      'There was an error setting the password. The password has not been changed.',
+    'user.password.invalid':
+      'You must enter a valid password. Please check with the Portal Administrator if you ' +
+      'do not know the password requirements.',
+    'user.password.mismatch': 'The Password and Confirmation Passwords do not match',
+  });
 
 /**
- * Narrows a string to a password-change outcome.
+ * Narrows a string to a password-change failure code.
  *
  * @param value A code from the server, or anything else.
- * @returns True when the value names one of the eight outcomes.
+ * @returns True when the value names one of the five codes.
  */
-export function isPasswordUpdateStatusName(
+export function isPasswordUpdateCode(
   value: string | null | undefined,
-): value is PasswordUpdateStatusName {
-  return typeof value === 'string' && PASSWORD_UPDATE_STATUS_NAMES.some((name) => name === value);
+): value is PasswordUpdateCode {
+  return (
+    typeof value === 'string' &&
+    PASSWORD_UPDATE_CODES.some((code) => code === normaliseFailureCode(value))
+  );
 }
 
 /**
- * Wording for a password-change outcome.
+ * Wording for a password-change failure code.
  *
- * @param code The outcome the server reported.
- * @returns The message, or null for an unrecognised code and for `Success`.
+ * @param code The code the server reported, as {@link failureCode} returns it.
+ * @returns The message, or null for a code this vocabulary does not word.
  */
 export function passwordUpdateMessage(code: string | null | undefined): string | null {
-  return isPasswordUpdateStatusName(code) ? PASSWORD_UPDATE_MESSAGE[code] : null;
+  if (typeof code !== 'string') {
+    return null;
+  }
+
+  const normalised = normaliseFailureCode(code);
+
+  return isPasswordUpdateCode(normalised) ? PASSWORD_UPDATE_MESSAGE[normalised] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,72 +1294,91 @@ export function passwordUpdateMessage(code: string | null | undefined): string |
 // ---------------------------------------------------------------------------
 
 /**
- * The user-creation outcomes, in ordinal order.
+ * The account-creation failure codes.
  *
- * DERIVED FROM {@link UserCreateStatus}, which is the authoritative declaration in
- * `core/models/user.model.ts`, rather than restated as a literal list. Restating it
- * gave the same vocabulary two definitions and no mechanism to keep them agreeing: a
- * member added, removed or renumbered on the model would leave this array quietly
- * describing the previous contract, and the wording table below is keyed on it.
+ * TEN, which is what the creation path actually emits. The legacy enumeration
+ * `UserCreateStatus` declared eighteen members with explicit values 0 to 17, and it is
+ * still declared on the client in `core/models/user.model.ts` because it is a legacy
+ * contract worth recording - but it never crossed the wire, in the legacy application
+ * or in the target. It was a return value read in-process, and the target reports the
+ * outcome as a stable code instead, so this vocabulary is keyed on the code and the
+ * enumeration is cited for provenance rather than derived from.
  *
- * The enumeration declares its eighteen members with EXPLICIT values 0 to 17 in
- * declaration order, so the index of a member here is its ordinal, exactly as before.
- * The reverse-mapping walk is the standard one for a numeric TypeScript enumeration:
- * the object holds both directions, and reading it by ascending ordinal yields the
- * member names in declaration order.
+ * WHY EIGHTEEN LEGACY MEMBERS BECOME TEN CODES, member by member:
  *
- * TWO ORDINALS ARE COUNTER-INTUITIVE AND BOTH MATTER:
+ * - `AddUser` (0) and `Success` (13) are not failures. `AddUser` was the "no error yet"
+ *   seed - Website/admin/Users/User.ascx.vb L175 and L185 both read
+ *   `If createStatus <> UserCreateStatus.AddUser`, treating any other value as a
+ *   failure - so a "zero means success" reading was wrong even in the legacy code, and
+ *   wrong differently in each neighbouring enumeration: `UserLoginStatus.Success` is 1
+ *   while the legacy `UserValidStatus.VALID` is 0. Three enumerations, three
+ *   conventions, and none of them a code.
+ * - `ProviderError` (12), `UnexpectedError` (14), `DuplicateProviderUserKey` (4) and
+ *   `InvalidProviderUserKey` (9) become the ONE code `user.create.provider-error`. That
+ *   is not a loss of fidelity: the legacy translator already collapsed all four into a
+ *   single `Case` arm resolving to one message, so the four were indistinguishable to a
+ *   person before this migration too.
+ * - `AddUserToPortal` (17) becomes `user.create.portal-assignment-failed`. The legacy
+ *   value was an operation marker that reached the throwing `Case Else`; the target
+ *   turns the failure of that step into a reportable outcome, which is strictly more
+ *   information than a thrown `ArgumentException`.
+ * - `InvalidAnswer` (6) and `InvalidQuestion` (10) have no code, because the password
+ *   question-and-answer requirement is not carried forward - see the note on
+ *   {@link PASSWORD_UPDATE_CODES}.
+ * - `UserRejected` (15) has no code on the creation path. The refusal it described is
+ *   an approval state, and the target reports that at sign-in, as
+ *   `auth.account_not_approved`.
+ * - The remaining eight map one-for-one, as annotated below.
  *
- * - `AddUser` is 0 and is NOT a failure. It is the "no error yet" seed, and the
- *   legacy code tests against it exactly that way: Website/admin/Users/User.ascx.vb
- *   L175 and L185 both read `If createStatus <> UserCreateStatus.AddUser`, treating
- *   any other value as a failure.
- * - `Success` is 13, NOT 0.
- *
- * A "zero means success" assumption is therefore wrong here, and wrong differently
- * in each neighbouring enumeration: `UserLoginStatus.Success` is 1 (see
- * `core/models/auth.model.ts`) while the legacy `UserValidStatus.VALID` is 0. Three
- * enumerations, three conventions.
+ * The codes are spelled with the hyphen the service uses. The server folds a hyphen
+ * onto an underscore before publishing, and {@link failureCode} folds it the same way,
+ * so both spellings resolve here.
  */
-export const USER_CREATE_STATUS_NAMES: readonly string[] = Object.freeze(
-  Object.values(UserCreateStatus).filter(
-    (member): member is string => typeof member === 'string',
-  ),
-);
+export const USER_CREATE_CODES = Object.freeze([
+  /** Legacy `UsernameAlreadyExists` (1). */
+  'user.create.username_already_exists',
+  /** Legacy `UserAlreadyRegistered` (2). */
+  'user.create.user_already_registered',
+  /** Legacy `DuplicateEmail` (3). */
+  'user.create.duplicate_email',
+  /** Legacy `DuplicateUserName` (5). */
+  'user.create.duplicate_username',
+  /** Legacy `InvalidEmail` (7). */
+  'user.create.invalid_email',
+  /** Legacy `InvalidPassword` (8). */
+  'user.create.invalid_password',
+  /** Legacy `InvalidUserName` (11). */
+  'user.create.invalid_username',
+  /** Legacy `ProviderError` (12), `UnexpectedError` (14) and the two provider-key members. */
+  'user.create.provider_error',
+  /** Legacy `PasswordMismatch` (16). */
+  'user.create.password_mismatch',
+  /** Legacy `AddUserToPortal` (17), whose step can now fail reportably. */
+  'user.create.portal_assignment_failed',
+] as const);
+
+/** One account-creation failure code. */
+export type UserCreateCode = (typeof USER_CREATE_CODES)[number];
 
 /**
- * One user-creation outcome, spelled as the authoritative enumeration spells it.
- *
- * Taken from the enumeration's own key set rather than from the derived array,
- * because a value derived at run time cannot produce a literal union at compile time.
- * The two are the same vocabulary by construction: the array is the enumeration's
- * string members and this union is its keys.
- */
-export type UserCreateStatusName = keyof typeof UserCreateStatus;
-
-/**
- * Wording for each user-creation outcome.
+ * Wording for each account-creation failure code.
  *
  * A faithful port of `UserController.GetUserCreateStatus`
  * (Library/Components/Users/UserController.vb:L598), including the fact that the
  * legacy translator maps SEVERAL DISTINCT OUTCOMES ONTO ONE MESSAGE:
  *
- * - `UsernameAlreadyExists`, `UserAlreadyRegistered` and `DuplicateUserName` all
- *   resolve to the `UserNameExists` wording, in a single combined `Case` arm.
- * - `ProviderError`, `DuplicateProviderUserKey`, `InvalidProviderUserKey` and
- *   `UnexpectedError` all resolve to the `RegError` wording, likewise.
- * - `DuplicateEmail` resolves to `UserEmailExists`, a key that does not match its
- *   member name.
+ * - the two "name is taken" outcomes and the duplicate-name outcome all resolve to the
+ *   `UserNameExists` wording, in a single combined `Case` arm;
+ * - the four provider-fault outcomes all resolve to the `RegError` wording, likewise -
+ *   and here they are additionally one code, because the server does not distinguish
+ *   them either;
+ * - the duplicate-address outcome resolves to `UserEmailExists`, a resource key that
+ *   does not match its member name.
  *
- * THE THREE USERNAME OUTCOMES REMAIN THREE SEPARATE ENTRIES. Sharing wording is
- * not the same as being the same outcome: `UsernameAlreadyExists` (1) and
- * `DuplicateUserName` (5) share a message, while `InvalidUserName` (11) has its
- * own, and all three keep distinct keys here so that a caller can still tell them
- * apart and so that a future divergence in wording needs no restructuring.
- *
- * `AddUser`, `Success` and `AddUserToPortal` are null. They are the three values
- * that reach the legacy `Case Else`, which throws; see the module header for why
- * throwing is not reproduced.
+ * THE THREE NAME OUTCOMES REMAIN THREE SEPARATE ENTRIES. Sharing wording is not the
+ * same as being the same outcome: the server emits three distinct codes for them, the
+ * invalid-name outcome has wording of its own, and keeping the keys apart means a
+ * future divergence in wording needs no restructuring.
  */
 const USER_NAME_EXISTS =
   'A User Already Exists For the Username Specified. Please Register Again Using A ' +
@@ -1233,63 +1392,71 @@ const REGISTRATION_ERROR =
   'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
   'Administrator For Further Information.';
 
-export const USER_CREATE_MESSAGE: Readonly<Record<UserCreateStatusName, string | null>> =
-  Object.freeze({
-    AddUser: null,
-    // These three share one message because the legacy translator combined them in a
-    // single Case arm. Referencing one constant rather than repeating the text makes
-    // that grouping visible in the source and impossible to break by editing one
-    // copy of three.
-    UsernameAlreadyExists: USER_NAME_EXISTS,
-    UserAlreadyRegistered: USER_NAME_EXISTS,
-    DuplicateEmail: USER_EMAIL_EXISTS,
-    DuplicateProviderUserKey: REGISTRATION_ERROR,
-    DuplicateUserName: USER_NAME_EXISTS,
-    InvalidAnswer:
-      'The answer specified is invalid. Please specify a valid answer to the question.',
-    InvalidEmail: 'The email address specified is invalid. Please specify a valid email address.',
-    // MIGRATION: the legacy wording continues "Passwords must be at least
-    // [PasswordLength] characters in length and contain at least [NoneAlphabet]
-    // non-alphanumeric characters.", with both tokens replaced at run time from the
-    // membership provider's configuration. That tail is dropped here rather than
-    // reproduced with invented numbers: the password policy is decided server-side,
-    // this module re-decides nothing, and the server's own message carries the
-    // configured values when it has them.
-    InvalidPassword: 'The password specified is invalid. Please specify a valid password.',
-    InvalidProviderUserKey: REGISTRATION_ERROR,
-    InvalidQuestion: 'The question specified is invalid. Please specify a valid question.',
-    InvalidUserName: 'The username specified is invalid. Please specify a valid username.',
-    ProviderError: REGISTRATION_ERROR,
-    Success: null,
-    UnexpectedError: REGISTRATION_ERROR,
-    UserRejected:
-      'This user registration has been rejected. Please contact an administrator for more ' +
-      'information.',
-    PasswordMismatch: 'The Password and Confirmation Passwords do not match',
-    AddUserToPortal: null,
-  });
+export const USER_CREATE_MESSAGE: Readonly<Record<UserCreateCode, string>> = Object.freeze({
+  // These three share one message because the legacy translator combined them in a
+  // single Case arm. Referencing one constant rather than repeating the text makes
+  // that grouping visible in the source and impossible to break by editing one
+  // copy of three.
+  'user.create.username_already_exists': USER_NAME_EXISTS,
+  'user.create.user_already_registered': USER_NAME_EXISTS,
+  'user.create.duplicate_username': USER_NAME_EXISTS,
+  'user.create.duplicate_email': USER_EMAIL_EXISTS,
+  'user.create.invalid_email':
+    'The email address specified is invalid. Please specify a valid email address.',
+  // MIGRATION: the legacy wording continues "Passwords must be at least
+  // [PasswordLength] characters in length and contain at least [NoneAlphabet]
+  // non-alphanumeric characters.", with both tokens replaced at run time from the
+  // membership provider's configuration. That tail is dropped here rather than
+  // reproduced with invented numbers: the password policy is decided server-side,
+  // this module re-decides nothing, and the server's own message carries the
+  // configured values when it has them.
+  'user.create.invalid_password':
+    'The password specified is invalid. Please specify a valid password.',
+  'user.create.invalid_username':
+    'The username specified is invalid. Please specify a valid username.',
+  // One code for four legacy provider-fault members, which the legacy translator had
+  // already reduced to one message.
+  'user.create.provider_error': REGISTRATION_ERROR,
+  'user.create.password_mismatch': 'The Password and Confirmation Passwords do not match',
+  // MIGRATION: the legacy member behind this reached the throwing Case Else and so had
+  // no wording of its own. The registration-fault wording is used, because that is what
+  // the legacy application showed for every other fault in the same sequence and
+  // authoring a new sentence here would introduce wording no operator has seen.
+  'user.create.portal_assignment_failed': REGISTRATION_ERROR,
+});
 
 /**
- * Narrows a string to a user-creation outcome.
+ * Narrows a string to an account-creation failure code.
  *
  * @param value A code from the server, or anything else.
- * @returns True when the value names one of the eighteen outcomes.
+ * @returns True when the value names one of the ten codes.
  */
-export function isUserCreateStatusName(
-  value: string | null | undefined,
-): value is UserCreateStatusName {
-  return typeof value === 'string' && USER_CREATE_STATUS_NAMES.some((name) => name === value);
+export function isUserCreateCode(value: string | null | undefined): value is UserCreateCode {
+  return (
+    typeof value === 'string' &&
+    USER_CREATE_CODES.some((code) => code === normaliseFailureCode(value))
+  );
 }
 
 /**
- * Wording for a user-creation outcome.
+ * Wording for an account-creation failure code.
  *
- * @param code The outcome the server reported.
- * @returns The message, or null for an unrecognised code and for the three
- * outcomes that are not failures.
+ * Total, and never throws. The legacy translator ended with a `Case Else` that threw
+ * `ArgumentException`; a display adapter that throws on an input it does not recognise
+ * converts a cosmetic gap into a broken screen, so an unrecognised code resolves to
+ * null and the caller falls back on the server's own message.
+ *
+ * @param code The code the server reported, as {@link failureCode} returns it.
+ * @returns The message, or null for a code this vocabulary does not word.
  */
 export function userCreateMessage(code: string | null | undefined): string | null {
-  return isUserCreateStatusName(code) ? USER_CREATE_MESSAGE[code] : null;
+  if (typeof code !== 'string') {
+    return null;
+  }
+
+  const normalised = normaliseFailureCode(code);
+
+  return isUserCreateCode(normalised) ? USER_CREATE_MESSAGE[normalised] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1297,82 +1464,123 @@ export function userCreateMessage(code: string | null | undefined): string | nul
 // ---------------------------------------------------------------------------
 
 /**
- * The conflict codes the API can report, spelled exactly as they arrive.
+ * The state-refusal codes for which the legacy application had wording.
  *
- * `Portal.LastPortal` contains a full stop as part of the code itself - it is one
- * string, not a path into a nested structure, and it must not be split.
+ * NINE. "Conflict" is the historical name of this vocabulary and it is retained, but
+ * the set is not one status: the server derives a status from a reason token, so the
+ * duplicate and last-remaining codes arrive as `409`, the protected-assignment code as
+ * `403` (its token is `protected`), and the page-name and module-content codes as
+ * `400`. What the nine have in common is not a status but a shape - each is a refusal
+ * the person can act on, by renaming the thing, choosing a different file or picking
+ * another page - which is why {@link problemSeverity} presents the statuses that carry
+ * them as errors rather than warnings, matching the red message type the legacy
+ * administration pages used at every site that named one.
  *
- * MIGRATION: `Portal.LastPortal` has no verbatim antecedent in the legacy tree.
- * The legacy resource key is `LastPortal`, held in the GLOBAL file
+ * Each code carries a full stop as part of the code itself. It is ONE string, not a
+ * path into a nested structure, and it must not be split.
+ *
+ * MIGRATION: two legacy keys are deliberately absent, and neither is an oversight.
+ *
+ * - `DuplicateAlias` ("The Portal Alias already exists.") collapses onto the same
+ *   `portal.alias_duplicate` code as `DuplicatePortalAlias`, because the server reports
+ *   one code for the collision however it was reached. The more actionable of the two
+ *   legacy wordings is the one kept - it names the field and says what to do about it -
+ *   and the terser variant is not reproduced under a second key nothing could select.
+ * - `TabExists` ("The Page Name you chose is already being used…") has NO code, because
+ *   no request can elicit it. The legacy guard sat behind
+ *   `If String.IsNullOrEmpty(strAction)` at ManageTabs.ascx.vb:L279 while the edit
+ *   branch was entered at L304 under `If strAction = "edit"`, so it belonged to the
+ *   create path - and this API deliberately exposes no page create. The page service
+ *   declares no conflict reason code, and the page update action declares no `409`, so
+ *   wording it here would describe a refusal that cannot happen.
+ *
+ * MIGRATION: `portal.last_remaining` has no verbatim antecedent as a code. The legacy
+ * resource key is `LastPortal`, held in the GLOBAL file
  * Website/App_GlobalResources/SharedResources.resx and read at
  * Library/Components/Portal/PortalController.vb:L200 through
- * `Localization.GetString("LastPortal")` with no local resource file. The wire
- * spelling is reproduced as-is because that is what a caller must match; the
- * wording is taken from the legacy key it descends from.
+ * `Localization.GetString("LastPortal")` with no local resource file. The wording is
+ * taken from that key; the code is what the server publishes.
+ *
+ * MIGRATION: several emitted refusals have no legacy wording at all - a role group
+ * still classifying roles, a duplicate portal administrator, an approval state already
+ * set, a store-level write conflict. None appears here; {@link problemMessage} shows
+ * the server's own `detail` for them.
  */
 export const CONFLICT_CODES = Object.freeze([
-  'DuplicatePortalAlias',
-  'Portal.LastPortal',
-  'DuplicateAlias',
-  'DuplicateRole',
-  'DuplicateRoleGroup',
-  'RoleRemoveError',
-  'TabExists',
-  'InvalidTabName',
-  'NotValidXml',
-  'NotCorrectType',
-  'ImportNotSupported',
+  /** Legacy `DuplicatePortalAlias`, and `DuplicateAlias` with it. */
+  'portal.alias_duplicate',
+  /** Legacy `LastPortal`. */
+  'portal.last_remaining',
+  /** Legacy `DuplicateRole`. */
+  'role.name_duplicate',
+  /** Legacy `DuplicateRoleGroup`. */
+  'role_group.name_duplicate',
+  /** Legacy `RoleRemoveError`. Arrives as `403`, not `409`. */
+  'role_assignment.protected',
+  /** Legacy `InvalidTabName`, the reserved-device-name refusal. */
+  'tab.name_reserved',
+  /** Legacy `NotValidXml`. */
+  'module.content_invalid',
+  /** Legacy `NotCorrectType`. */
+  'module.content_type_mismatch',
+  /** Legacy `ImportNotSupported`. */
+  'module.not_portable',
 ] as const);
 
-/** One conflict code. */
+/** One state-refusal code. */
 export type ConflictCode = (typeof CONFLICT_CODES)[number];
 
 /**
- * Wording for each conflict code, from the legacy resource files.
+ * Wording for each state-refusal code, from the legacy resource files.
  *
- * Every one of these is a refusal the person can act on - rename the thing, pick a
- * different file, choose another page - which is why {@link problemSeverity} treats
- * the status that carries them as an error rather than a warning: the legacy
- * administration pages surface this wording through the red message type at every
- * site that names one.
+ * The page-name wording corrects a misspelling that is in the legacy string itself:
+ * the legacy text reads "page heirarchy". Only the reserved-name refusal is reachable
+ * through this API, so the corrected duplicate-path sentence has no key here - see the
+ * note on {@link CONFLICT_CODES}.
  */
 export const CONFLICT_MESSAGE: Readonly<Record<ConflictCode, string>> = Object.freeze({
-  DuplicatePortalAlias:
+  'portal.alias_duplicate':
     'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.',
-  'Portal.LastPortal': 'You Can Not Delete The Last Portal In Your Database',
-  DuplicateAlias: 'The Portal Alias already exists.',
-  DuplicateRole: 'A role with the same name already exists. The role was not added.',
-  DuplicateRoleGroup:
+  'portal.last_remaining': 'You Can Not Delete The Last Portal In Your Database',
+  'role.name_duplicate': 'A role with the same name already exists. The role was not added.',
+  'role_group.name_duplicate':
     'A role group with the same name already exists. The new group was not added.',
-  RoleRemoveError:
+  'role_assignment.protected':
     'You Can Not Remove The Portal Administrator Or The Registered Users Role',
-  TabExists:
-    'The Page Name you chose is already being used for another page at the same level ' +
-    'of the page hierarchy.',
-  InvalidTabName: 'This is an invalid Page Name',
-  NotValidXml: 'The file you selected does not contain a valid XML structure',
-  NotCorrectType: 'The import file specified is not the correct type for this module',
-  ImportNotSupported: 'The module selected does not support the importing of content',
+  'tab.name_reserved': 'This is an invalid Page Name',
+  'module.content_invalid': 'The file you selected does not contain a valid XML structure',
+  'module.content_type_mismatch':
+    'The import file specified is not the correct type for this module',
+  'module.not_portable': 'The module selected does not support the importing of content',
 });
 
 /**
- * Narrows a string to a conflict code.
+ * Narrows a string to a state-refusal code.
  *
  * @param value A code from the server, or anything else.
- * @returns True when the value names one of the eleven codes.
+ * @returns True when the value names one of the nine codes.
  */
 export function isConflictCode(value: string | null | undefined): value is ConflictCode {
-  return typeof value === 'string' && CONFLICT_CODES.some((code) => code === value);
+  return (
+    typeof value === 'string' &&
+    CONFLICT_CODES.some((code) => code === normaliseFailureCode(value))
+  );
 }
 
 /**
- * Wording for a conflict code.
+ * Wording for a state-refusal code.
  *
- * @param code The code the server reported.
- * @returns The message, or null when the code is not one of the eleven.
+ * @param code The code the server reported, as {@link failureCode} returns it.
+ * @returns The message, or null when the code is not one of the nine.
  */
 export function conflictMessage(code: string | null | undefined): string | null {
-  return isConflictCode(code) ? CONFLICT_MESSAGE[code] : null;
+  if (typeof code !== 'string') {
+    return null;
+  }
+
+  const normalised = normaliseFailureCode(code);
+
+  return isConflictCode(normalised) ? CONFLICT_MESSAGE[normalised] : null;
 }
 
 // ---------------------------------------------------------------------------

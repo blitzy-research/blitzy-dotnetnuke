@@ -416,15 +416,24 @@ export interface ApiResponse<T> {
  * than related by inheritance: a payload-bearing envelope assigned to a payload-free
  * declared type would lose its payload silently.
  *
- * UNLIKE {@link ApiResponse}, THIS ARITY GENUINELY HAS NO PRODUCER, and `meta` is
- * therefore left OPTIONAL rather than being made present-and-nullable to match its
- * sibling. The reason is structural rather than an oversight: a payload-free response
- * is what an endpoint answers when it has nothing to send, which in this API is a
- * `204`, and `204` forbids a body — so there is nothing for the server to write this
- * shape into. `AuthService.logout` accordingly types its call as bare `void`. The
- * declaration is kept because the server declares the arity, and its `meta` stays
- * optional because no observed body constrains it; the moment an endpoint does
- * produce one, that observation should decide the member and not this note.
+ * UNLIKE {@link ApiResponse}, THIS ARITY GENUINELY HAS NO PRODUCER, and that is
+ * structural rather than an oversight: a payload-free response is what an endpoint
+ * answers when it has nothing to send, which in this API is a `204`, and `204` forbids
+ * a body — so there is nothing for the server to write this shape into.
+ * `AuthService.logout` accordingly types its call as bare `void`. The declaration is
+ * kept because the server declares the arity.
+ *
+ * `meta` is nevertheless declared PRESENT AND NULLABLE, exactly as its sibling is, and
+ * the absence of a producer is not a reason to declare it differently. Two reasons, and
+ * the second is the load-bearing one. The serializer policy that governs the member is
+ * a property of the server, not of any particular endpoint: it writes every declared
+ * member including one holding null, so IF this arity is ever produced it will carry
+ * `meta` with the value `null` rather than omit it. And declaring the two arities of one
+ * contract differently would let them disagree about the member they share — a consumer
+ * narrowing this one with `=== undefined` would take the wrong branch the moment a
+ * producer appeared, which is the precise defect that had to be corrected on
+ * {@link ApiResponse.meta}. Repeating it here, on the strength of there being nothing to
+ * measure yet, would reintroduce it in the one place nobody would think to look.
  */
 export interface EmptyApiResponse {
   /**

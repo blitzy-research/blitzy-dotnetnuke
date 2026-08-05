@@ -230,17 +230,11 @@
             <input id="definition-order" type="number" min="0" formControlName="viewOrder" />
           </div>
 
-          <div>
-            <label for="definition-visibility">Visible to</label>
-            <select id="definition-visibility" formControlName="visibility">
-              @for (option of visibilityOptions; track option.code) {
-                <option [ngValue]="option.code">{{ option.label }}</option>
-              }
-            </select>
-            <small class="profile-definitions__form-hint">
-              The default an account starts with. An account may narrow its own value.
-            </small>
-          </div>
+          <!-- No visibility control. The declaration table has no visibility column, so
+               neither write contract declares the member and the API refuses a body
+               carrying it; a control here would collect a choice that then failed the
+               whole save. The legacy editor offered none either. The value a declaration
+               reports is rendered in the grid above, where it is a read-only hint. -->
 
           <div>
             <label>

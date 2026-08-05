@@ -669,7 +669,21 @@ describe('UserProfileComponent', () => {
 
       expect(submitted.length).toBe(1);
       expect(submitted[0].userId).toBe(7);
-      expect(submitted[0].values.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
+      expect(submitted[0].properties.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
+    });
+
+    it('names the collection exactly as the request body declares it', () => {
+      // The replace verb binds the same contract the read returns, and that contract
+      // spells the collection `properties`. The API refuses an undeclared member rather
+      // than discarding it, so a payload spelling this `values` is answered 400 naming
+      // the member and no profile is written. Nothing in a compiler catches a
+      // cross-language name divergence, so it is pinned here by key rather than by type.
+      setInput('profile', profileOf([value(definition())]));
+
+      submit();
+
+      expect(Object.keys(submitted[0]).sort()).toEqual(['properties', 'userId']);
+      expect('values' in submitted[0]).toBeFalse();
     });
 
     it('carries the values the operator entered', () => {
@@ -678,7 +692,7 @@ describe('UserProfileComponent', () => {
       type(controlFor(1)!, 'Hopper');
       submit();
 
-      expect(submitted[0].values[0].propertyValue).toBe('Hopper');
+      expect(submitted[0].properties[0].propertyValue).toBe('Hopper');
     });
 
     it('carries the visibility the operator chose', () => {
@@ -693,8 +707,8 @@ describe('UserProfileComponent', () => {
 
       // A number, not the string the browser reports: the option is bound with
       // `ngValue`, which preserves the declared type all the way to the payload.
-      expect(submitted[0].values[0].visibility).toBe(PROFILE_VISIBILITY.allUsers);
-      expect(typeof submitted[0].values[0].visibility).toBe('number');
+      expect(submitted[0].properties[0].visibility).toBe(PROFILE_VISIBILITY.allUsers);
+      expect(typeof submitted[0].properties[0].visibility).toBe('number');
     });
 
     it('carries a collapsed category too, because a write replaces the whole profile', () => {
@@ -712,7 +726,7 @@ describe('UserProfileComponent', () => {
 
       // Omitting a collapsed group would clear every value in it, because the API
       // replaces rather than merges.
-      expect(submitted[0].values.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
+      expect(submitted[0].properties.map((entry) => entry.propertyDefinitionId)).toEqual([1, 2]);
     });
 
     it('emits nothing while the form is invalid', () => {

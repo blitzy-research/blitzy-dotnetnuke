@@ -2,8 +2,8 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import {
   PROFILE_VISIBILITY,
+  type CreateProfilePropertyDefinitionRequest,
   type ProfilePropertyDefinition,
-  type ProfilePropertyDefinitionSubmission,
 } from '../../../core/models/profile.model';
 import {
   ProfileDefinitionListComponent,
@@ -40,7 +40,7 @@ function defn(overrides: Partial<ProfilePropertyDefinition> = {}): ProfileProper
 describe('ProfileDefinitionListComponent', () => {
   let fixture: ComponentFixture<ProfileDefinitionListComponent>;
   let component: ProfileDefinitionListComponent;
-  let created: ProfilePropertyDefinitionSubmission[];
+  let created: CreateProfilePropertyDefinitionRequest[];
   let updated: ProfileDefinitionUpdate[];
   let removed: ProfilePropertyDefinition[];
   let reordered: ProfileDefinitionReorder[];
@@ -584,18 +584,50 @@ describe('ProfileDefinitionListComponent', () => {
       expect(typeof created[0].length).toBe('number');
     });
 
-    it('carries the chosen visibility as a number', () => {
+    it('carries the module association as null, and offers no control for it', () => {
+      // Only the create verb declares this member, and the screen offers no module
+      // picker - exactly as the legacy editor did not - so null is what a create has to
+      // send. Zero would be wrong: the definition identity column is IDENTITY(1, 1), so
+      // zero names no row.
       type(field<HTMLInputElement>('definition-name')!, 'Nickname');
-
-      const select = field<HTMLSelectElement>('definition-visibility')!;
-      select.selectedIndex = PROFILE_VISIBILITY.membersOnly;
-      select.dispatchEvent(new Event('change'));
-      fixture.detectChanges();
-
       submit();
 
-      expect(created[0].visibility).toBe(PROFILE_VISIBILITY.membersOnly);
-      expect(typeof created[0].visibility).toBe('number');
+      expect(created[0].moduleDefId).toBeNull();
+      expect(field<HTMLInputElement>('definition-module')).toBeNull();
+    });
+
+    it('sends exactly the ten members the create contract declares', () => {
+      // The API refuses an undeclared request member rather than discarding it, so an
+      // extra key is not cosmetic - it fails the whole save with a 400 naming the key.
+      // Pinned by key rather than by type, because no compiler sees across the two
+      // languages.
+      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
+      submit();
+
+      expect(Object.keys(created[0]).sort()).toEqual([
+        'dataType',
+        'defaultValue',
+        'length',
+        'moduleDefId',
+        'propertyCategory',
+        'propertyName',
+        'required',
+        'validationExpression',
+        'viewOrder',
+        'visible',
+      ]);
+    });
+
+    it('offers no visibility control, because no write contract accepts one', () => {
+      // ProfilePropertyDefinition has no visibility column anywhere in the 88-script
+      // upgrade chain, so neither request contract declares the member. A control here
+      // would collect a choice the server then refuses the request over.
+      expect(field<HTMLSelectElement>('definition-visibility')).toBeNull();
+
+      type(field<HTMLInputElement>('definition-name')!, 'Nickname');
+      submit();
+
+      expect('visibility' in created[0]).toBeFalse();
     });
   });
 
@@ -632,9 +664,28 @@ describe('ProfileDefinitionListComponent', () => {
       expect(field<HTMLInputElement>('definition-order')?.value).toBe('3');
       expect(field<HTMLInputElement>('definition-default')?.value).toBe('Unknown');
       expect(field<HTMLInputElement>('definition-validation')?.value).toBe('^.+$');
-      expect(field<HTMLSelectElement>('definition-visibility')?.selectedIndex).toBe(
-        PROFILE_VISIBILITY.membersOnly,
-      );
+    });
+
+    it('sends exactly the nine members the replace contract declares', () => {
+      // One fewer than the create contract: the module association can be established
+      // when a declaration is made and never afterwards, because the terminal update
+      // procedure neither declares the parameter nor names the column. Sending it here
+      // would be refused.
+      submit();
+
+      expect(Object.keys(updated[0].submission).sort()).toEqual([
+        'dataType',
+        'defaultValue',
+        'length',
+        'propertyCategory',
+        'propertyName',
+        'required',
+        'validationExpression',
+        'viewOrder',
+        'visible',
+      ]);
+      expect('moduleDefId' in updated[0].submission).toBeFalse();
+      expect('visibility' in updated[0].submission).toBeFalse();
     });
 
     it('populates a null default and a null expression as blank controls', () => {

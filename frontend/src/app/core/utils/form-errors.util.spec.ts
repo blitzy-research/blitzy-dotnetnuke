@@ -70,16 +70,18 @@ import {
   FORBIDDEN,
   NOT_AUTHENTICATED,
   NOT_FOUND,
-  PASSWORD_UPDATE_STATUS_NAMES,
+  PASSWORD_UPDATE_CODES,
+  PASSWORD_UPDATE_MESSAGE,
   REQUEST_REJECTED,
   SERVER_ERROR,
   TOO_MANY_ATTEMPTS,
   USER_CREATE_MESSAGE,
-  USER_CREATE_STATUS_NAMES,
+  USER_CREATE_CODES,
   VALIDATION_REJECTED,
   advisoryMessage,
   authFailureMessage,
   conflictMessage,
+  failureCode,
   fieldErrorMessage,
   fieldErrorMessages,
   fieldMessages,
@@ -219,8 +221,8 @@ describe('form-errors.util', () => {
         verifiedRegistration: true,
       });
 
-      expect(withNull.code).toBe('EnterCode');
-      expect(withEmpty.code).toBe('EnterCode');
+      expect(withNull.code).toBe('auth.verification_required');
+      expect(withEmpty.code).toBe('auth.verification_required');
       expect(withNull).toEqual(withEmpty);
     });
 
@@ -786,7 +788,7 @@ describe('form-errors.util', () => {
         verifiedRegistration: false,
       });
 
-      expect(outcome.code).toBe('UserNotAuthorized');
+      expect(outcome.code).toBe('auth.account_not_approved');
       expect(outcome.revealVerification).toBeFalse();
       expect(outcome.message).toBe('You are not currently authorized to login to this site.');
     });
@@ -799,7 +801,7 @@ describe('form-errors.util', () => {
         verifiedRegistration: true,
       });
 
-      expect(outcome.code).toBe('EnterCode');
+      expect(outcome.code).toBe('auth.verification_required');
       expect(outcome.revealVerification).toBeTrue();
       expect(outcome.message).toBe('Enter Your Verification Code');
     });
@@ -812,7 +814,7 @@ describe('form-errors.util', () => {
         verifiedRegistration: true,
       });
 
-      expect(outcome.code).toBe('InvalidCode');
+      expect(outcome.code).toBe('auth.verification_code_invalid');
       expect(outcome.revealVerification).toBeFalse();
       expect(outcome.message).toBe('Invalid Verification Code');
     });
@@ -825,7 +827,7 @@ describe('form-errors.util', () => {
           verificationCode: '',
           verifiedRegistration: true,
         }).code,
-      ).toBe('EnterCode');
+      ).toBe('auth.verification_required');
     });
 
     it('DOES NOT TRIM the emptiness test, because the legacy `<> ""` did not', () => {
@@ -837,7 +839,7 @@ describe('form-errors.util', () => {
           verificationCode: '   ',
           verifiedRegistration: true,
         }).code,
-      ).toBe('InvalidCode');
+      ).toBe('auth.verification_code_invalid');
     });
 
     it('walks the whole progression in order, which a flat code map could not', () => {
@@ -858,9 +860,9 @@ describe('form-errors.util', () => {
       });
 
       expect([first.code, second.code, third.code]).toEqual([
-        'EnterCode',
-        'InvalidCode',
-        'EnterCode',
+        'auth.verification_required',
+        'auth.verification_code_invalid',
+        'auth.verification_required',
       ]);
     });
 
@@ -878,125 +880,256 @@ describe('form-errors.util', () => {
       }
     });
 
-    it('exposes exactly three codes and nothing else', () => {
-      expect(AUTH_FAILURE_CODES).toEqual(['EnterCode', 'InvalidCode', 'UserNotAuthorized']);
+    it('exposes exactly three codes, spelled as the API publishes them', () => {
+      // The legacy member names - EnterCode, InvalidCode, UserNotAuthorized - are the
+      // PROVENANCE of these three, not their wire spelling. A vocabulary keyed on the
+      // legacy names could never match a value taken off the wire, so each legacy
+      // spelling is asserted to resolve to nothing, alongside the code that does.
+      expect(AUTH_FAILURE_CODES).toEqual([
+        'auth.verification_required',
+        'auth.verification_code_invalid',
+        'auth.account_not_approved',
+      ]);
       expect(AUTH_FAILURE_CODES.length).toBe(3);
-      expect(authFailureMessage('EnterCode')).toBe('Enter Your Verification Code');
+      expect(authFailureMessage('auth.verification_required')).toBe(
+        'Enter Your Verification Code',
+      );
+      expect(authFailureMessage('EnterCode')).toBeNull();
+      expect(authFailureMessage('InvalidCode')).toBeNull();
+      expect(authFailureMessage('UserNotAuthorized')).toBeNull();
       expect(authFailureMessage('NotACode')).toBeNull();
       expect(authFailureMessage(null)).toBeNull();
     });
   });
 
   // -------------------------------------------------------------------------
-  // THE ORDINAL CORRECTION AND THE THREE SUCCESS CONVENTIONS
+  // THE FAILURE CODE, AND WHY EVERY VOCABULARY IS KEYED ON IT
   // -------------------------------------------------------------------------
-  describe('password-change vocabulary', () => {
-    it('records the ordinals in DECLARATION ORDER, which is the authoritative order', () => {
-      // PasswordUpdateStatus.vb:L23-L32 declares no explicit values, so position is
-      // the ordinal. This assertion is what stops the incorrect ordering that
-      // circulates in the requirements from creeping back in.
-      expect([...PASSWORD_UPDATE_STATUS_NAMES]).toEqual([
-        'Success',
-        'PasswordMissing',
-        'PasswordNotDifferent',
-        'PasswordResetFailed',
-        'PasswordInvalid',
-        'PasswordMismatch',
-        'InvalidPasswordAnswer',
-        'InvalidPasswordQuestion',
-      ]);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('Success')).toBe(0);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('PasswordMissing')).toBe(1);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('PasswordNotDifferent')).toBe(2);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('PasswordResetFailed')).toBe(3);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('PasswordInvalid')).toBe(4);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('PasswordMismatch')).toBe(5);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('InvalidPasswordAnswer')).toBe(6);
-      expect(PASSWORD_UPDATE_STATUS_NAMES.indexOf('InvalidPasswordQuestion')).toBe(7);
+  describe('failureCode', () => {
+    it('strips the namespace the API puts in front of every code it publishes', () => {
+      expect(failureCode({ type: 'urn:dnnmigration:error:role.name_duplicate' })).toBe(
+        'role.name_duplicate',
+      );
     });
 
-    it('words each failure and reports null for the non-failure and the unknown', () => {
-      expect(passwordUpdateMessage('PasswordMissing')).toBe(
+    it('folds a hyphen onto an underscore, exactly as the server does before publishing', () => {
+      // The services disagree about the separator inside a reason token, and the
+      // server declines to keep two spellings of one code, so it normalises before
+      // publishing. Doing it again here is idempotent and lets a caller pass a code
+      // quoted from a service as well as one read off the wire.
+      expect(failureCode({ type: 'urn:dnnmigration:error:user.create.duplicate-email' })).toBe(
+        'user.create.duplicate_email',
+      );
+      expect(failureCode({ type: 'urn:dnnmigration:error:USER.PASSWORD.NOT-DIFFERENT' })).toBe(
+        'user.password.not_different',
+      );
+    });
+
+    it('recognises the namespace whatever case the scheme arrives in', () => {
+      // A URI scheme is case-insensitive by specification, so a gateway that re-cased
+      // the prefix must still be understood.
+      expect(failureCode({ type: 'URN:DNNMigration:Error:portal.not_found' })).toBe(
+        'portal.not_found',
+      );
+    });
+
+    it('reports null for a framework problem type, which is NOT an application code', () => {
+      // The framework writes a specification URL for a status it mapped without
+      // reaching an action. Treating that as a failure code would key a vocabulary on
+      // a documentation link.
+      expect(failureCode({ type: 'https://tools.ietf.org/html/rfc9110#section-15.5.5' })).toBeNull();
+      expect(failureCode({ type: 'about:blank' })).toBeNull();
+    });
+
+    it('reports null when there is no type, and never returns the empty string', () => {
+      expect(failureCode(null)).toBeNull();
+      expect(failureCode(undefined)).toBeNull();
+      expect(failureCode({})).toBeNull();
+      expect(failureCode({ type: '' })).toBeNull();
+      expect(failureCode({ type: '   ' })).toBeNull();
+      expect(failureCode({ type: 'urn:dnnmigration:error:' })).toBeNull();
+      expect(failureCode({ type: 'urn:dnnmigration:error:   ' })).toBeNull();
+    });
+
+    it('hands a value every vocabulary can actually resolve', () => {
+      // The point of the function, asserted end to end: a document as the server
+      // writes it, through the parser, into a wording table.
+      const problem: ProblemDetails = {
+        type: 'urn:dnnmigration:error:portal.alias_duplicate',
+        title: 'Conflict',
+        status: 409,
+      };
+
+      expect(conflictMessage(failureCode(problem))).toBe(
+        'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE PASSWORD VOCABULARY, AND THE THREE LEGACY OUTCOMES THAT HAVE NO CODE
+  // -------------------------------------------------------------------------
+  describe('password-change vocabulary', () => {
+    it('carries the five codes that have legacy wording, in legacy ordinal order', () => {
+      // PasswordUpdateStatus.vb:L23-L32 declared eight members with no explicit
+      // values, so declaration order was the ordinal. Five of the eight map onto a
+      // code the service emits, and the order below is theirs: 1, 2, 3, 4, 5.
+      expect([...PASSWORD_UPDATE_CODES]).toEqual([
+        'user.password.missing',
+        'user.password.not_different',
+        'user.password.reset_failed',
+        'user.password.invalid',
+        'user.password.mismatch',
+      ]);
+      expect(PASSWORD_UPDATE_CODES.length).toBe(5);
+    });
+
+    it('words each failure and reports null for a code it does not word', () => {
+      expect(passwordUpdateMessage('user.password.missing')).toBe(
         'You must provide your current password in order to change the password.',
       );
-      expect(passwordUpdateMessage('InvalidPasswordAnswer')).toBe(
-        'Password Answer must be provided',
+      expect(passwordUpdateMessage('user.password.not_different')).toBe(
+        'The new password is the same as the old password. Please enter a different password',
       );
-      expect(passwordUpdateMessage('Success')).toBeNull();
+      expect(passwordUpdateMessage('user.password.current-incorrect')).toBeNull();
       expect(passwordUpdateMessage('NotAStatus')).toBeNull();
       expect(passwordUpdateMessage(null)).toBeNull();
     });
 
-    it('keys on the string code and never on a numeric ordinal', () => {
+    it('accepts either separator spelling of a code', () => {
+      expect(passwordUpdateMessage('user.password.reset-failed')).toBe(
+        'There was an error setting the password. The password has not been changed.',
+      );
+      expect(passwordUpdateMessage('user.password.reset_failed')).toBe(
+        'There was an error setting the password. The password has not been changed.',
+      );
+    });
+
+    it('words NONE of the three legacy outcomes that have no code', () => {
+      // Success is not a failure. The two question-and-answer outcomes have no
+      // counterpart because the password question requirement is not carried
+      // forward - the target hashes credentials one way, so there is no question to
+      // be wrong about. Their legacy wording is reproduced under no key at all.
+      expect(passwordUpdateMessage('Success')).toBeNull();
+      expect(passwordUpdateMessage('InvalidPasswordAnswer')).toBeNull();
+      expect(passwordUpdateMessage('InvalidPasswordQuestion')).toBeNull();
+
+      for (const message of Object.values(PASSWORD_UPDATE_MESSAGE)) {
+        expect(message).not.toContain('Password Answer');
+        expect(message).not.toContain('Password Question');
+      }
+    });
+
+    it('keys on the code and never on a legacy member name or a numeric ordinal', () => {
+      expect(passwordUpdateMessage('PasswordMissing')).toBeNull();
+      expect(passwordUpdateMessage('PasswordInvalid')).toBeNull();
       expect(passwordUpdateMessage('1')).toBeNull();
       expect(passwordUpdateMessage('5')).toBeNull();
     });
   });
 
   describe('user-creation vocabulary', () => {
-    it('places Success at 13 and the AddUser seed at 0', () => {
-      // UserCreateStatus.vb:L23-L42 assigns explicit values 0..17 in declaration
-      // order, so position is the ordinal here too.
-      expect(USER_CREATE_STATUS_NAMES.length).toBe(18);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('AddUser')).toBe(0);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('Success')).toBe(13);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('AddUserToPortal')).toBe(17);
+    it('carries the ten codes the creation path emits', () => {
+      expect([...USER_CREATE_CODES]).toEqual([
+        'user.create.username_already_exists',
+        'user.create.user_already_registered',
+        'user.create.duplicate_email',
+        'user.create.duplicate_username',
+        'user.create.invalid_email',
+        'user.create.invalid_password',
+        'user.create.invalid_username',
+        'user.create.provider_error',
+        'user.create.password_mismatch',
+        'user.create.portal_assignment_failed',
+      ]);
+      expect(USER_CREATE_CODES.length).toBe(10);
     });
 
     it('proves the three success conventions differ, so zero never means success', () => {
-      // Read from the authoritative enumerations rather than from a restatement of them.
-      // Creation seeds at AddUser 0 and succeeds at 13; sign-in fails at 0 and succeeds at 1.
+      // Read from the authoritative enumerations, which remain declared on the client
+      // as legacy contracts even though neither ever crossed the wire. Creation seeds
+      // at AddUser 0 and succeeds at 13; sign-in fails at 0 and succeeds at 1. Neither
+      // value is a failure code, which is why no vocabulary here is keyed on one.
       expect(UserCreateStatus.Success).toBe(13);
       expect(UserCreateStatus.AddUser).toBe(0);
+      expect(UserCreateStatus.AddUserToPortal).toBe(17);
       expect(UserLoginStatus.Success).toBe(1);
       expect(UserLoginStatus.Failure).toBe(0);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('Success')).toBe(13);
-      expect(USER_CREATE_STATUS_NAMES[0]).toBe('AddUser');
     });
 
-    it('keeps the three username outcomes as three distinct members', () => {
-      expect(USER_CREATE_STATUS_NAMES.indexOf('UsernameAlreadyExists')).toBe(1);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('DuplicateUserName')).toBe(5);
-      expect(USER_CREATE_STATUS_NAMES.indexOf('InvalidUserName')).toBe(11);
-      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('UsernameAlreadyExists');
-      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('DuplicateUserName');
-      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('InvalidUserName');
+    it('keeps the three name outcomes as three distinct codes', () => {
+      // Sharing wording is not the same as being the same outcome: the server emits
+      // three codes, so three keys are carried.
+      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('user.create.username_already_exists');
+      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('user.create.duplicate_username');
+      expect(Object.keys(USER_CREATE_MESSAGE)).toContain('user.create.invalid_username');
     });
 
     it('reproduces the legacy grouping of outcomes onto shared wording', () => {
-      // GetUserCreateStatus combines these in one Case arm.
-      const nameTaken = userCreateMessage('UsernameAlreadyExists');
+      // GetUserCreateStatus combined the name outcomes in one Case arm, and combined
+      // all four provider faults in another - which the server has taken one step
+      // further by emitting a single code for the latter.
+      const nameTaken = userCreateMessage('user.create.username_already_exists');
 
-      expect(userCreateMessage('DuplicateUserName')).toBe(nameTaken);
-      expect(userCreateMessage('UserAlreadyRegistered')).toBe(nameTaken);
+      expect(userCreateMessage('user.create.duplicate_username')).toBe(nameTaken);
+      expect(userCreateMessage('user.create.user_already_registered')).toBe(nameTaken);
 
-      const registrationError = userCreateMessage('ProviderError');
+      const registrationError = userCreateMessage('user.create.provider_error');
 
-      expect(userCreateMessage('DuplicateProviderUserKey')).toBe(registrationError);
-      expect(userCreateMessage('InvalidProviderUserKey')).toBe(registrationError);
-      expect(userCreateMessage('UnexpectedError')).toBe(registrationError);
+      expect(registrationError).toBe(
+        'An Unexpected Error Occurred During Registration. Please Contact The Portal Administrator For Further Information.',
+      );
+      expect(userCreateMessage('user.create.portal_assignment_failed')).toBe(registrationError);
     });
 
-    it('gives InvalidUserName its own wording despite the shared username grouping', () => {
-      expect(userCreateMessage('InvalidUserName')).toBe(
+    it('gives the invalid-name outcome its own wording despite the shared grouping', () => {
+      expect(userCreateMessage('user.create.invalid_username')).toBe(
         'The username specified is invalid. Please specify a valid username.',
       );
-      expect(userCreateMessage('InvalidUserName')).not.toBe(
-        userCreateMessage('UsernameAlreadyExists'),
+      expect(userCreateMessage('user.create.invalid_username')).not.toBe(
+        userCreateMessage('user.create.username_already_exists'),
       );
     });
 
-    it('returns null for the three outcomes that are not failures, instead of throwing', () => {
-      // The legacy Case Else threw ArgumentException for exactly these.
-      expect(userCreateMessage('AddUser')).toBeNull();
-      expect(userCreateMessage('Success')).toBeNull();
-      expect(userCreateMessage('AddUserToPortal')).toBeNull();
+    it('accepts either separator spelling, because the server folds one onto the other', () => {
+      expect(userCreateMessage('user.create.duplicate-email')).toBe(
+        userCreateMessage('user.create.duplicate_email'),
+      );
+      expect(userCreateMessage('user.create.duplicate-email')).not.toBeNull();
+    });
+
+    it('words no legacy member name, and never throws on one', () => {
+      // Every legacy spelling resolves to nothing. That is the defect this vocabulary
+      // was carrying: keyed on these names, not one lookup could ever have succeeded.
+      for (const legacyName of [
+        'AddUser',
+        'Success',
+        'AddUserToPortal',
+        'UsernameAlreadyExists',
+        'DuplicateUserName',
+        'InvalidUserName',
+        'ProviderError',
+        'UnexpectedError',
+        'DuplicateProviderUserKey',
+        'InvalidProviderUserKey',
+        'UserRejected',
+        'InvalidAnswer',
+        'InvalidQuestion',
+      ]) {
+        expect(userCreateMessage(legacyName))
+          .withContext(`${legacyName} is provenance, not a wire code`)
+          .toBeNull();
+      }
+
+      // The legacy Case Else threw ArgumentException. A display adapter that throws on
+      // an unrecognised input converts a cosmetic gap into a broken screen.
       expect(() => userCreateMessage('AnythingElse')).not.toThrow();
       expect(userCreateMessage('AnythingElse')).toBeNull();
+      expect(userCreateMessage(null)).toBeNull();
     });
 
     it('omits the password-policy numbers rather than inventing them', () => {
-      const message = userCreateMessage('InvalidPassword');
+      const message = userCreateMessage('user.create.invalid_password');
 
       expect(message).toBe('The password specified is invalid. Please specify a valid password.');
       expect(message).not.toContain('[PasswordLength]');
@@ -1014,26 +1147,23 @@ describe('form-errors.util', () => {
       // Several of these are written as two joined literals to stay inside the
       // workspace column limit. Joining is exactly where a space goes missing, so the
       // full sentence is asserted character for character rather than by substring.
-      expect(userCreateMessage('UsernameAlreadyExists')).toBe(
+      expect(userCreateMessage('user.create.username_already_exists')).toBe(
         'A User Already Exists For the Username Specified. Please Register Again Using A Different Username.',
       );
-      expect(userCreateMessage('DuplicateEmail')).toBe(
+      expect(userCreateMessage('user.create.duplicate_email')).toBe(
         'A user already exists for the email address specified. Please login using the registered account of that email address.',
       );
-      expect(userCreateMessage('ProviderError')).toBe(
+      expect(userCreateMessage('user.create.provider_error')).toBe(
         'An Unexpected Error Occurred During Registration. Please Contact The Portal Administrator For Further Information.',
       );
-      expect(userCreateMessage('UserRejected')).toBe(
-        'This user registration has been rejected. Please contact an administrator for more information.',
-      );
-      expect(passwordUpdateMessage('PasswordInvalid')).toBe(
+      expect(passwordUpdateMessage('user.password.invalid')).toBe(
         'You must enter a valid password. Please check with the Portal Administrator if you do not know the password requirements.',
       );
-      expect(conflictMessage('TabExists')).toBe(
-        'The Page Name you chose is already being used for another page at the same level of the page hierarchy.',
-      );
-      expect(conflictMessage('DuplicateRoleGroup')).toBe(
+      expect(conflictMessage('role_group.name_duplicate')).toBe(
         'A role group with the same name already exists. The new group was not added.',
+      );
+      expect(conflictMessage('role_assignment.protected')).toBe(
+        'You Can Not Remove The Portal Administrator Or The Registered Users Role',
       );
     });
 
@@ -1052,11 +1182,44 @@ describe('form-errors.util', () => {
   });
 
   // -------------------------------------------------------------------------
-  // CONFLICT CODES, VERBATIM
+  // STATE-REFUSAL CODES, SPELLED AS THE API PUBLISHES THEM
   // -------------------------------------------------------------------------
   describe('conflict vocabulary', () => {
-    it('carries all eleven codes, spelled exactly as they arrive', () => {
+    it('carries the nine codes that have legacy wording', () => {
       expect([...CONFLICT_CODES]).toEqual([
+        'portal.alias_duplicate',
+        'portal.last_remaining',
+        'role.name_duplicate',
+        'role_group.name_duplicate',
+        'role_assignment.protected',
+        'tab.name_reserved',
+        'module.content_invalid',
+        'module.content_type_mismatch',
+        'module.not_portable',
+      ]);
+      expect(CONFLICT_CODES.length).toBe(9);
+    });
+
+    it('treats a dotted code as ONE string, not as a path', () => {
+      expect(conflictMessage('portal.last_remaining')).toBe(
+        'You Can Not Delete The Last Portal In Your Database',
+      );
+      expect(conflictMessage('portal')).toBeNull();
+      expect(conflictMessage('last_remaining')).toBeNull();
+    });
+
+    it('words every code and leaves none blank', () => {
+      for (const code of CONFLICT_CODES) {
+        expect(conflictMessage(code)).toBe(CONFLICT_MESSAGE[code]);
+        expect((conflictMessage(code) ?? '').length).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports null for a code it does not recognise, and for every legacy name', () => {
+      expect(conflictMessage('DuplicateSomethingElse')).toBeNull();
+      expect(conflictMessage(null)).toBeNull();
+
+      for (const legacyName of [
         'DuplicatePortalAlias',
         'Portal.LastPortal',
         'DuplicateAlias',
@@ -1068,32 +1231,41 @@ describe('form-errors.util', () => {
         'NotValidXml',
         'NotCorrectType',
         'ImportNotSupported',
-      ]);
-    });
-
-    it('treats the dotted code as ONE string, not as a path', () => {
-      expect(conflictMessage('Portal.LastPortal')).toBe(
-        'You Can Not Delete The Last Portal In Your Database',
-      );
-      expect(conflictMessage('Portal')).toBeNull();
-      expect(conflictMessage('LastPortal')).toBeNull();
-    });
-
-    it('words every code and leaves none blank', () => {
-      for (const code of CONFLICT_CODES) {
-        expect(conflictMessage(code)).toBe(CONFLICT_MESSAGE[code]);
-        expect((conflictMessage(code) ?? '').length).toBeGreaterThan(0);
+      ]) {
+        expect(conflictMessage(legacyName))
+          .withContext(`${legacyName} is provenance, not a wire code`)
+          .toBeNull();
       }
     });
 
-    it('reports null for a code it does not recognise', () => {
-      expect(conflictMessage('DuplicateSomethingElse')).toBeNull();
-      expect(conflictMessage(null)).toBeNull();
+    it('carries no key for the two legacy refusals the API cannot report', () => {
+      // The terser duplicate-alias wording collapses onto the same code as the
+      // actionable one, so only the actionable sentence survives. And the
+      // duplicate-page-name refusal has no code at all: the legacy guard belonged to
+      // the create path (ManageTabs.ascx.vb:L279 versus the edit branch at L304) and
+      // this API exposes no page create, so wording it would describe a refusal no
+      // request can elicit.
+      const wording = Object.values(CONFLICT_MESSAGE);
+
+      expect(wording).not.toContain('The Portal Alias already exists.');
+
+      for (const message of wording) {
+        expect(message).not.toContain('page hierarchy');
+        expect(message).not.toContain('page heirarchy');
+      }
     });
 
-    it('corrects the legacy misspelling in the page-name conflict wording', () => {
-      expect(conflictMessage('TabExists')).toContain('hierarchy');
-      expect(conflictMessage('TabExists')).not.toContain('heirarchy');
+    it('keeps the page-name key on the refusal that IS reachable', () => {
+      // The reserved-device-name check survives on the update verb, and its legacy
+      // wording with it.
+      expect(conflictMessage('tab.name_reserved')).toBe('This is an invalid Page Name');
+    });
+
+    it('accepts either separator spelling of a code', () => {
+      expect(conflictMessage('portal.alias-duplicate')).toBe(
+        conflictMessage('portal.alias_duplicate'),
+      );
+      expect(conflictMessage('portal.alias-duplicate')).not.toBeNull();
     });
   });
 
@@ -1135,9 +1307,10 @@ describe('form-errors.util', () => {
       expect(Object.isFrozen(AUTH_FAILURE_CODES)).toBeTrue();
       expect(Object.isFrozen(CONFLICT_CODES)).toBeTrue();
       expect(Object.isFrozen(CONFLICT_MESSAGE)).toBeTrue();
+      expect(Object.isFrozen(USER_CREATE_CODES)).toBeTrue();
       expect(Object.isFrozen(USER_CREATE_MESSAGE)).toBeTrue();
-      expect(Object.isFrozen(USER_CREATE_STATUS_NAMES)).toBeTrue();
-      expect(Object.isFrozen(PASSWORD_UPDATE_STATUS_NAMES)).toBeTrue();
+      expect(Object.isFrozen(PASSWORD_UPDATE_CODES)).toBeTrue();
+      expect(Object.isFrozen(PASSWORD_UPDATE_MESSAGE)).toBeTrue();
       expect(Object.isFrozen(ADVISORY_MESSAGE)).toBeTrue();
     });
 
@@ -1184,21 +1357,50 @@ describe('form-errors.util', () => {
       expect(UserLoginStatus.UserLockedOut).not.toBe(UserLoginStatus.Failure);
     });
 
-    it('derives the creation vocabulary from the authoritative enumeration', () => {
-      // The guard against the two definitions drifting apart: the derived array must be
-      // exactly the enumeration's string members, in ordinal order.
+    it('preserves every legacy creation ordinal on the authoritative enumeration', () => {
+      // This module no longer derives a vocabulary from the enumeration, because the
+      // vocabulary is now the failure codes the API publishes and those are not
+      // derivable from legacy member names. The enumeration itself is still a legacy
+      // contract worth pinning, and it is pinned directly here: eighteen members with
+      // explicit values 0 to 17 in declaration order.
       const fromEnum = Object.values(UserCreateStatus).filter(
         (member): member is string => typeof member === 'string',
       );
 
-      expect([...USER_CREATE_STATUS_NAMES]).toEqual(fromEnum);
-      expect(USER_CREATE_STATUS_NAMES.length).toBe(18);
+      expect(fromEnum.length).toBe(18);
+      expect(fromEnum[0]).toBe('AddUser');
 
-      for (let ordinal = 0; ordinal < USER_CREATE_STATUS_NAMES.length; ordinal += 1) {
-        const name = USER_CREATE_STATUS_NAMES[ordinal] as keyof typeof UserCreateStatus;
+      for (let ordinal = 0; ordinal < fromEnum.length; ordinal += 1) {
+        const name = fromEnum[ordinal] as keyof typeof UserCreateStatus;
         expect(UserCreateStatus[name])
           .withContext(`${name} must sit at ordinal ${ordinal}`)
           .toBe(ordinal);
+      }
+    });
+
+    it('keys every vocabulary on the published code, never on a legacy member name', () => {
+      // The single assertion that would have caught the defect these vocabularies
+      // carried. Every key of every table must be a code the server could publish:
+      // lower case, dot-separated, and free of the legacy PascalCase spelling.
+      const keys = [
+        ...AUTH_FAILURE_CODES,
+        ...PASSWORD_UPDATE_CODES,
+        ...USER_CREATE_CODES,
+        ...CONFLICT_CODES,
+      ];
+
+      expect(keys.length).toBe(27);
+
+      for (const key of keys) {
+        expect(key).withContext(`${key} must be a published failure code`).toMatch(/^[a-z0-9_]+(\.[a-z0-9_]+)+$/);
+      }
+
+      // And each is reachable through the parser from a document as the server writes
+      // it, which is the property that makes the tables usable at all.
+      for (const key of keys) {
+        expect(failureCode({ type: `urn:dnnmigration:error:${key}` }))
+          .withContext(`${key} must round-trip through failureCode`)
+          .toBe(key);
       }
     });
   });

@@ -8,9 +8,10 @@ import { PageHeaderComponent } from '../../../shared/components/page-header/page
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 import {
   PROFILE_VISIBILITY,
+  type CreateProfilePropertyDefinitionRequest,
   type ProfilePropertyDefinition,
-  type ProfilePropertyDefinitionSubmission,
   type ProfileVisibilityCode,
+  type UpdateProfilePropertyDefinitionRequest,
 } from '../../../core/models/profile.model';
 
 /**
@@ -36,8 +37,14 @@ export interface ProfileDefinitionUpdate {
   /** The declaration being replaced. */
   readonly propertyDefinitionId: number;
 
-  /** Its new shape. */
-  readonly submission: ProfilePropertyDefinitionSubmission;
+  /**
+   * Its new shape.
+   *
+   * The replace contract, not the create one. The two differ by exactly one member -
+   * the module association, which only a create may decide - so a shared shape would
+   * have to send that member on a verb that refuses it.
+   */
+  readonly submission: UpdateProfilePropertyDefinitionRequest;
 }
 
 /**
@@ -68,14 +75,17 @@ interface DefinitionFormModel {
   viewOrder: FormControl<number>;
   required: FormControl<boolean>;
   visible: FormControl<boolean>;
-  visibility: FormControl<ProfileVisibilityCode>;
 }
 
 /**
- * One selectable visibility.
+ * One visibility code and the wording shown for it.
+ *
+ * Read-side only. The grid renders a declaration's resolved visibility hint through
+ * {@link ProfileDefinitionListComponent.visibilityLabel}; the editor offers no control
+ * for it, because no write contract accepts one - see the note on the form.
  */
 interface VisibilityOption {
-  /** The code written back to the API. */
+  /** The code the API reports. */
   readonly code: ProfileVisibilityCode;
 
   /** The wording shown to the operator. */
@@ -157,6 +167,21 @@ const DEFAULT_HEADING = 'Profile Properties';
 export class ProfileDefinitionListComponent {
   /**
    * The inline create-and-edit form.
+   *
+   * The controls are exactly the members both write contracts share, and there is
+   * deliberately NO visibility control. `ProfilePropertyDefinition` has no
+   * `Visibility` column at any point in the schema's upgrade history, so neither
+   * write contract declares the member and the API refuses a body carrying it rather
+   * than discarding it — an editor offering the choice would collect it and then have
+   * the whole save answered `400`. The legacy editor
+   * (`Website/admin/Users/EditProfileDefinition.ascx`) offered no such control either,
+   * so its absence is parity rather than a reduction. The value a declaration
+   * REPORTS is still rendered in the grid, because it is a resolved default hint a
+   * reader needs.
+   *
+   * The module association is likewise not a control. Only a create may set it, the
+   * legacy screen never offered it, and this form has nothing to fill it in from — so
+   * {@link onSubmit} sends `null` rather than the form carrying a field nobody edits.
    */
   protected readonly form = new FormGroup<DefinitionFormModel>({
     propertyName: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
@@ -171,13 +196,14 @@ export class ProfileDefinitionListComponent {
     viewOrder: new FormControl(0, { nonNullable: true, validators: [Validators.min(0)] }),
     required: new FormControl(false, { nonNullable: true }),
     visible: new FormControl(true, { nonNullable: true }),
-    visibility: new FormControl<ProfileVisibilityCode>(PROFILE_VISIBILITY.adminOnly, {
-      nonNullable: true,
-    }),
   });
 
   /**
-   * The visibility choices offered, in the order the legacy editor offered them.
+   * The visibility wording, in the order the legacy vocabulary declared it.
+   *
+   * A display lookup for the grid column, not a set of choices: `UserVisibilityMode`
+   * declared `AllUsers` 0, `MembersOnly` 1 and `AdminOnly` 2, and the API reports one
+   * of those codes as a declaration's resolved default hint.
    */
   protected readonly visibilityOptions: readonly VisibilityOption[] = [
     { code: PROFILE_VISIBILITY.allUsers, label: 'All users' },
@@ -279,7 +305,7 @@ export class ProfileDefinitionListComponent {
   /**
    * Emitted when the operator submits the form in creating mode.
    */
-  @Output() readonly create = new EventEmitter<ProfilePropertyDefinitionSubmission>();
+  @Output() readonly create = new EventEmitter<CreateProfilePropertyDefinitionRequest>();
 
   /**
    * Emitted when the operator submits the form in editing mode.
@@ -418,7 +444,6 @@ export class ProfileDefinitionListComponent {
       viewOrder: this.held.length,
       required: false,
       visible: true,
-      visibility: PROFILE_VISIBILITY.adminOnly,
     });
     this.formOpen = true;
   }
@@ -440,7 +465,6 @@ export class ProfileDefinitionListComponent {
       viewOrder: definition.viewOrder,
       required: definition.required,
       visible: definition.visible,
-      visibility: definition.visibility,
     });
     this.formOpen = true;
   }
@@ -492,7 +516,12 @@ export class ProfileDefinitionListComponent {
     const target = this.editing;
 
     if (target === null) {
-      this.create.emit(submission);
+      // The create verb accepts one member the replace verb does not, and the API
+      // refuses a body carrying an undeclared member rather than ignoring it - so the
+      // module association is added HERE, on the create arm alone, instead of sitting
+      // on the shared shape where it would make every replace fail. This screen offers
+      // no module picker, exactly as the legacy editor did not, so the value is null.
+      this.create.emit({ ...submission, moduleDefId: null });
       return;
     }
 
@@ -584,15 +613,18 @@ export class ProfileDefinitionListComponent {
   }
 
   /**
-   * Converts the form's value into a submission.
+   * Converts the form's value into the members both write verbs share.
    *
    * Blank optional text becomes `null` rather than the empty string, because the columns
    * behind them are nullable and the API distinguishes "no default declared" from "a
    * default that is the empty string".
    *
-   * @returns The submission to emit.
+   * The shared members are all this produces. The create arm of {@link onSubmit} adds
+   * the one member only a create may carry; nothing here decides which verb applies.
+   *
+   * @returns The shared write members to emit.
    */
-  private toSubmission(): ProfilePropertyDefinitionSubmission {
+  private toSubmission(): UpdateProfilePropertyDefinitionRequest {
     const value = this.form.getRawValue();
 
     return {
@@ -606,7 +638,6 @@ export class ProfileDefinitionListComponent {
         value.validationExpression.length === 0 ? null : value.validationExpression,
       viewOrder: value.viewOrder,
       visible: value.visible,
-      visibility: value.visibility,
     };
   }
 
